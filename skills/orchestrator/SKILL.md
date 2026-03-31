@@ -1,19 +1,22 @@
 ---
 name: orchestrator
 description: >
-  Sequence the full protein-protein interaction design pipeline across three expert
-  skills: structural analysis (chimerax-ppi-analysis), literature analysis
-  (molecular-biology-expert), and design input generation (protein-design-script).
-  Synthesises a go/no-go campaign recommendation before committing to design compute.
+  Sequence the full protein-protein interaction design pipeline across four expert
+  skills: target selection (pathway-expert, conditional), structural analysis
+  (chimerax-ppi-analysis), literature analysis (molecular-biology-expert), and design
+  input generation (protein-design-script). Synthesises a go/no-go campaign
+  recommendation before committing to design compute.
   Trigger on: "run the full pipeline", "design campaign for [target]", "orchestrate",
   "start the design workflow", "full analysis of [target]", "go from structure to
   design", or when a PDB ID is provided and the user asks to run the complete workflow.
-  Requires: ChimeraX MCP tools (for Stage 1) and literature-db MCP server (for Stage 2).
+  Also trigger when a disease or cancer type is provided without a specific PPI target,
+  in which case Stage 0 (pathway-expert) runs first to identify the target.
+  Requires: ChimeraX MCP tools (for Stage 1) and literature-db MCP server (for Stage 0 and 2).
 ---
 
 # Design Campaign Orchestrator
 
-This skill coordinates the three expert skills in sequence, manages their handoffs,
+This skill coordinates the expert skills in sequence, manages their handoffs,
 and synthesises a go/no-go recommendation before generating design inputs. It does
 not perform analysis itself — it directs, extracts key signals, and decides when to
 proceed.
@@ -21,10 +24,11 @@ proceed.
 ## Pipeline Overview
 
 ```
-Stage 1: Structural Analysis    →  chimerax-ppi-analysis
-Stage 2: Literature Analysis    →  molecular-biology-expert
-Stage 3: Go/No-Go Synthesis     →  CAMPAIGN RECOMMENDATION (this skill)
-Stage 4: Design Input           →  protein-design-script
+Stage 0: Target Selection (conditional) →  pathway-expert
+Stage 1: Structural Analysis            →  chimerax-ppi-analysis
+Stage 2: Literature Analysis            →  molecular-biology-expert
+Stage 3: Go/No-Go Synthesis             →  CAMPAIGN RECOMMENDATION (this skill)
+Stage 4: Design Input                   →  protein-design-script
 ```
 
 ## Prerequisites
@@ -32,9 +36,45 @@ Stage 4: Design Input           →  protein-design-script
 Before starting, verify tool availability:
 - **ChimeraX MCP tools** (`chimerax:open_structure`, etc.) — required for Stage 1.
   If not connected: halt and tell the user to connect ChimeraX before proceeding.
-- **literature-db MCP tools** (`search_corpus`, `get_fingerprint`) — required for Stage 2.
-  If not connected: note this, offer to run Stage 1 only, and skip Stage 2 if the
+- **literature-db MCP tools** (`search_corpus`, `get_fingerprint`) — required for Stage 0 and Stage 2.
+  If not connected: note this, offer to run Stage 1 only, and skip Stages 0 and 2 if the
   user agrees.
+
+---
+
+## Stage 0: Target Selection (Conditional)
+
+**Run Stage 0 only when the user has provided a disease or cancer context without
+specifying a PPI target or PDB ID.**
+
+**Skip conditions — proceed directly to Stage 1:**
+- User provides a PDB ID (e.g. "PDB 3KYS")
+- User provides a protein pair (e.g. "YAP/TEAD4", "KRAS/RAF")
+- A PPI target has already been agreed upon earlier in the conversation
+
+**Trigger conditions for Stage 0:**
+- User provides only a disease or cancer type (e.g. "mesothelioma", "PDAC")
+- User asks "which node should we target in [pathway] in [disease]?"
+- No specific complex is named
+
+Invoke the **pathway-expert** skill with the disease context and any pathway hint
+from the user.
+
+Wait for the full `## PATHWAY BIOLOGY REPORT` to be produced. Then extract:
+- **Recommended PPI** — the ProteinA / ProteinB complex from `RECOMMENDED PPI TARGET`
+- **Suggested PDB ID(s)** — for Stage 1 input
+- **Redundancy risks** — carry forward to the Stage 3 CAMPAIGN RECOMMENDATION
+
+If the pathway-expert reports no corpus coverage (all scores < 0.20 and fallback used):
+- State this to the user
+- Ask whether to (a) proceed with a manually specified PPI or (b) pause to run the
+  fetch/curate pipeline with the suggested keywords first
+- Do not proceed to Stage 1 without a confirmed PPI target
+
+Present a one-paragraph summary and confirm the target with the user:
+
+> "Stage 0 complete. Recommended target: [complex]. Suggested PDB: [ID].
+> Proceed to structural analysis?"
 
 ---
 
@@ -152,6 +192,7 @@ different target protein, different approach), and do not proceed to Stage 4.
 - Structural tractability: <Excellent / Good / Marginal / Poor>
 - Literature tractability: <Excellent / Good / Marginal / Poor>
 - Corpus confidence: <High / Medium / Low> (<N> relevant papers found)
+- Pathway redundancy risks: <from Stage 0 pathway-expert, or "Stage 0 not run")
 
 ### CROSS-VALIDATED HOTSPOTS
 

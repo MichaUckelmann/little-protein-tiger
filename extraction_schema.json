@@ -1,6 +1,34 @@
 {
   "schema_version": "2.0",
   "relevant": true,
+  "study_category": "enum[biochemistry, pathway_biology, structural_biology, clinical, review]",
+  "pathway_context": {
+    "pathways": ["string"],
+    "disease_associations": [
+      {
+        "disease": "string",
+        "mechanism": "string",
+        "mutation_frequency": "string or null",
+        "genetic_evidence_type": "string or null",
+        "source_span": "string"
+      }
+    ],
+    "target_nodes": [
+      {
+        "protein": "string",
+        "pathway_position": "enum[upstream_regulator, kinase, effector, transcription_factor, adaptor, ligand, receptor]",
+        "dysregulation": "string",
+        "genetic_dependency_evidence": "string or null",
+        "prior_therapeutic_targeting": "string or null",
+        "suggested_pdb_structures": ["string"],
+        "source_span": "string"
+      }
+    ],
+    "pathway_logic": "string or null (max 50 words)",
+    "redundancy_risks": ["string"],
+    "upstream_regulators": ["string"],
+    "downstream_effectors": ["string"]
+  },
   "curation_metadata": {
     "model": "string",
     "curated_at": "ISO-8601 datetime",

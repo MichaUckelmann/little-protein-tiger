@@ -33,6 +33,7 @@ class VectorStore:
         pa.field("doi",              pa.string()),
         pa.field("title",            pa.string()),
         pa.field("study_type",       pa.string()),
+        pa.field("study_category",   pa.string()),
         pa.field("embed_text",       pa.string()),
         pa.field("vector",           pa.list_(pa.float32(), _EMBEDDING_DIM)),
         pa.field("fingerprint_json", pa.string()),
@@ -67,7 +68,7 @@ class VectorStore:
                 },
                 "study_type": {
                     "type": "string",
-                    "description": "Optional filter by study type.",
+                    "description": "Optional filter by study methodology.",
                     "enum": [
                         "experimental_in_vitro",
                         "experimental_in_vivo",
@@ -75,6 +76,21 @@ class VectorStore:
                         "computational",
                         "review",
                         "case_study",
+                    ],
+                },
+                "study_category": {
+                    "type": "string",
+                    "description": (
+                        "Optional filter by scientific domain. Use 'pathway_biology' "
+                        "to find disease mechanism and target selection papers. "
+                        "Use 'biochemistry' for binding assay and inhibitor papers."
+                    ),
+                    "enum": [
+                        "biochemistry",
+                        "pathway_biology",
+                        "structural_biology",
+                        "clinical",
+                        "review",
                     ],
                 },
             },
@@ -145,19 +161,50 @@ class VectorStore:
 
     @staticmethod
     def _build_embed_text(fp: dict) -> str:
-        """Concatenate situational_context_hook + all claim values."""
+        """Concatenate situational_context_hook + pathway context (if present) + claim values."""
         hook = (fp.get("paper_metadata") or {}).get("situational_context_hook") or ""
+
+        # Enrich embed text with pathway context for pathway_biology papers
+        pathway_str = ""
+        pathway_ctx = fp.get("pathway_context")
+        if pathway_ctx:
+            parts = []
+            pathways = pathway_ctx.get("pathways") or []
+            if pathways:
+                parts.append(f"Pathways: {', '.join(pathways)}.")
+            for d in (pathway_ctx.get("disease_associations") or []):
+                disease = d.get("disease", "")
+                mechanism = d.get("mechanism", "")
+                if disease and mechanism:
+                    parts.append(f"{disease}: {mechanism}.")
+            for n in (pathway_ctx.get("target_nodes") or []):
+                protein = n.get("protein", "")
+                position = n.get("pathway_position", "")
+                dysreg = n.get("dysregulation", "")
+                if protein:
+                    parts.append(f"{protein} ({position}, {dysreg}).")
+            regs = pathway_ctx.get("upstream_regulators") or []
+            effs = pathway_ctx.get("downstream_effectors") or []
+            if regs:
+                parts.append(f"Upstream regulators: {', '.join(regs)}.")
+            if effs:
+                parts.append(f"Downstream effectors: {', '.join(effs)}.")
+            if parts:
+                pathway_str = " ".join(parts)
+
         claims = [
             kf.get("claim", "")
             for kf in (fp.get("key_findings") or [])
             if kf.get("claim")
         ]
+        findings_str = ""
         if claims:
             findings_str = "Findings: " + " ".join(
                 c if c.endswith(".") else c + "." for c in claims
             )
-            return f"{hook}\n\n{findings_str}".strip()
-        return hook.strip()
+
+        sections = [s for s in [hook, pathway_str, findings_str] if s.strip()]
+        return "\n\n".join(sections).strip()
 
     @staticmethod
     def _derive_paper_key(fp: dict, filename_stem: str) -> str:
@@ -247,11 +294,12 @@ class VectorStore:
 
             batch_texts.append(embed_text)
             batch_meta.append({
-                "paper_key": paper_key,
-                "doi":        (fp.get("paper_metadata") or {}).get("doi") or "",
-                "title":      (fp.get("paper_metadata") or {}).get("title") or "",
-                "study_type": (fp.get("paper_metadata") or {}).get("study_type") or "",
-                "embed_text": embed_text,
+                "paper_key":       paper_key,
+                "doi":             (fp.get("paper_metadata") or {}).get("doi") or "",
+                "title":           (fp.get("paper_metadata") or {}).get("title") or "",
+                "study_type":      (fp.get("paper_metadata") or {}).get("study_type") or "",
+                "study_category":  fp.get("study_category") or "",
+                "embed_text":      embed_text,
                 "fingerprint_json": json.dumps(fp, ensure_ascii=False),
             })
 
@@ -281,6 +329,7 @@ class VectorStore:
         query: str,
         top_k: int = 5,
         study_type: Optional[str] = None,
+        study_category: Optional[str] = None,
     ) -> list[dict]:
         """
         Semantic search over the indexed corpus.
@@ -289,15 +338,16 @@ class VectorStore:
         -------
         list[dict]
             Ranked list, each containing: score, paper_key, doi, title,
-            study_type, embed_text, fingerprint (full dict).
+            study_type, study_category, embed_text, fingerprint (full dict).
         """
         table = self._get_table(create_if_missing=False)
         encoder = self._get_encoder()
 
         query_vec = encoder.encode(query, normalize_embeddings=True).tolist()
 
-        # Over-fetch when filtering by study_type so post-filter has headroom
-        fetch_limit = top_k if study_type is None else top_k * 4
+        # Over-fetch when filtering so post-filter has headroom
+        any_filter = study_type is not None or study_category is not None
+        fetch_limit = top_k if not any_filter else top_k * 4
 
         search_builder = (
             table.search(query_vec)
@@ -306,15 +356,23 @@ class VectorStore:
         )
 
         if study_type:
-            # prefilter=False → run vector search first, filter after (better recall)
             try:
                 search_builder = search_builder.where(
                     f"study_type = '{study_type}'", prefilter=False
                 )
             except TypeError:
-                # Older LanceDB versions don't have prefilter kwarg
                 search_builder = search_builder.where(
                     f"study_type = '{study_type}'"
+                )
+
+        if study_category:
+            try:
+                search_builder = search_builder.where(
+                    f"study_category = '{study_category}'", prefilter=False
+                )
+            except TypeError:
+                search_builder = search_builder.where(
+                    f"study_category = '{study_category}'"
                 )
 
         results_arrow = search_builder.to_arrow()
@@ -330,13 +388,14 @@ class VectorStore:
 
             fp = json.loads(results_arrow["fingerprint_json"][i].as_py())
             output.append({
-                "score":      score,
-                "paper_key":  results_arrow["paper_key"][i].as_py(),
-                "doi":        results_arrow["doi"][i].as_py(),
-                "title":      results_arrow["title"][i].as_py(),
-                "study_type": results_arrow["study_type"][i].as_py(),
-                "embed_text": results_arrow["embed_text"][i].as_py(),
-                "fingerprint": fp,
+                "score":          score,
+                "paper_key":      results_arrow["paper_key"][i].as_py(),
+                "doi":            results_arrow["doi"][i].as_py(),
+                "title":          results_arrow["title"][i].as_py(),
+                "study_type":     results_arrow["study_type"][i].as_py(),
+                "study_category": results_arrow["study_category"][i].as_py(),
+                "embed_text":     results_arrow["embed_text"][i].as_py(),
+                "fingerprint":    fp,
             })
 
         return output
@@ -359,8 +418,12 @@ class VectorStore:
         query = tool_input.get("query", "")
         top_k = max(1, min(int(tool_input.get("top_k", 5)), 20))
         study_type = tool_input.get("study_type")
+        study_category = tool_input.get("study_category")
 
-        results = self.search(query=query, top_k=top_k, study_type=study_type)
+        results = self.search(
+            query=query, top_k=top_k,
+            study_type=study_type, study_category=study_category,
+        )
 
         if not results:
             return json.dumps({"result_text": "No results found.", "papers": []})
@@ -392,7 +455,7 @@ class VectorStore:
 
             block = (
                 f"[{i}] score={r['score']:.3f} | {r['title']}\n"
-                f"    DOI: {r['doi'] or 'N/A'} | study_type: {r['study_type']}\n"
+                f"    DOI: {r['doi'] or 'N/A'} | study_type: {r['study_type']} | study_category: {r.get('study_category', '')}\n"
                 f"    Context: {pm.get('situational_context_hook', '')}\n"
             )
             if finding_lines:
@@ -408,6 +471,7 @@ class VectorStore:
                 "doi":                     r["doi"],
                 "title":                   r["title"],
                 "study_type":              r["study_type"],
+                "study_category":          r.get("study_category", ""),
                 "situational_context_hook": pm.get("situational_context_hook", ""),
                 "key_findings":            findings,
                 "proteins":                proteins,

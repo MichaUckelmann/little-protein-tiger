@@ -41,28 +41,34 @@ def _get_store() -> VectorStore:
 
 
 @mcp.tool()
-def search_corpus(query: str, top_k: int = 5, study_type: str = "") -> str:
+def search_corpus(query: str, top_k: int = 5, study_type: str = "", study_category: str = "") -> str:
     """
     Semantically search the curated scientific literature corpus.
 
     Returns the top-k most relevant paper fingerprints ranked by similarity.
     Each result includes the situational context, key quantitative findings
-    (Kd, Ki), protein lists, DOI, and study type.
+    (Kd, Ki), protein lists, DOI, study type, and study category.
 
     Use this tool when asked about proteins, mechanisms, assay results,
     inhibitors, binding affinities, or study designs present in the corpus.
 
     Args:
-        query:      Natural language query. Include protein names, assay types,
-                    or quantitative terms for best results.
-        top_k:      Number of results to return (1-20). Default 5.
-        study_type: Optional filter — one of: experimental_in_vitro,
-                    experimental_in_vivo, experimental_structural,
-                    computational, review, case_study. Leave empty for no filter.
+        query:          Natural language query. Include protein names, assay types,
+                        or quantitative terms for best results.
+        top_k:          Number of results to return (1-20). Default 5.
+        study_type:     Optional methodology filter — one of: experimental_in_vitro,
+                        experimental_in_vivo, experimental_structural,
+                        computational, review, case_study. Leave empty for no filter.
+        study_category: Optional domain filter — one of: biochemistry,
+                        pathway_biology, structural_biology, clinical, review.
+                        Use pathway_biology to find disease mechanism and target
+                        selection papers. Leave empty for no filter.
     """
     tool_input: dict = {"query": query, "top_k": top_k}
     if study_type:
         tool_input["study_type"] = study_type
+    if study_category:
+        tool_input["study_category"] = study_category
     return _get_store().execute_search_tool(tool_input)
 
 

@@ -43,6 +43,29 @@ keywords:
   - "MARCH E3 ligase[Title/Abstract] AND degradation[Title/Abstract]"
   - "targeted protein degradation[Title/Abstract] AND antibody[Title/Abstract]"
 
+  # --- Pathway biology: Hippo / YAP-TAZ ---
+  - "YAP[Title/Abstract] AND Hippo[Title/Abstract] AND cancer[Title/Abstract]"
+  - "YAP TAZ[Title/Abstract] AND transcription[Title/Abstract] AND tumor[Title/Abstract]"
+  - "NF2[Title/Abstract] AND LATS[Title/Abstract] AND mesothelioma[Title/Abstract]"
+  - "YAP1[Title/Abstract] AND CRISPR[Title/Abstract] AND cancer[Title/Abstract]"
+
+  # --- Pathway biology: KRAS signaling ---
+  - "KRAS[Title/Abstract] AND RAF MEK ERK[Title/Abstract] AND oncogene[Title/Abstract]"
+  - "KRAS mutation[Title/Abstract] AND synthetic lethality[Title/Abstract]"
+
+  # --- Pathway biology: cGAS-STING ---
+  - "cGAS STING[Title/Abstract] AND cancer[Title/Abstract] AND immune evasion[Title/Abstract]"
+  - "STING pathway[Title/Abstract] AND tumor microenvironment[Title/Abstract]"
+
+  # --- Pathway biology: SCAP-SREBP lipid metabolism ---
+  - "SCAP SREBP[Title/Abstract] AND cancer[Title/Abstract] AND lipid metabolism[Title/Abstract]"
+
+  # --- Pathway biology: MARCH E3 ligase immune evasion ---
+  - "MARCH E3 ligase[Title/Abstract] AND immune evasion[Title/Abstract] AND cancer[Title/Abstract]"
+
+  # --- Pathway biology: targeted protein degradation ---
+  - "PROTAC[Title/Abstract] AND oncology[Title/Abstract] AND mechanism[Title/Abstract]"
+
   
   
 search:

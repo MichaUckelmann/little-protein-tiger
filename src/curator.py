@@ -73,9 +73,39 @@ class Entities(BaseModel):
     equations: list[str] = []
 
 
+class DiseaseAssociation(BaseModel):
+    disease: str
+    mechanism: str
+    mutation_frequency: Optional[str] = None
+    genetic_evidence_type: Optional[str] = None
+    source_span: str
+
+
+class TargetNode(BaseModel):
+    protein: str
+    pathway_position: str
+    dysregulation: str
+    genetic_dependency_evidence: Optional[str] = None
+    prior_therapeutic_targeting: Optional[str] = None
+    suggested_pdb_structures: list[str] = []
+    source_span: str
+
+
+class PathwayContext(BaseModel):
+    pathways: list[str] = []
+    disease_associations: list[DiseaseAssociation] = []
+    target_nodes: list[TargetNode] = []
+    pathway_logic: Optional[str] = None
+    redundancy_risks: list[str] = []
+    upstream_regulators: list[str] = []
+    downstream_effectors: list[str] = []
+
+
 class Fingerprint(BaseModel):
     schema_version: str = "2.0"
     relevant: bool
+    study_category: Optional[str] = None
+    pathway_context: Optional[PathwayContext] = None
     curation_metadata: Optional[CurationMetadata] = None
     paper_metadata: Optional[PaperMetadata] = None
     methodology: Optional[Methodology] = None

@@ -47,6 +47,44 @@ Use the following closed enum for `study_type`:
 - `review` — literature review or meta-analysis
 - `case_study` — single patient or clinical case
 
+# STUDY CATEGORY CLASSIFICATION
+Set `study_category` using the following closed enum. This is **orthogonal** to `study_type` — it describes the scientific domain, not the methodology. A cell-based CRISPR screen is `study_type=experimental_in_vitro` AND `study_category=pathway_biology`.
+
+- `biochemistry` — binding assays, inhibitor characterisation, affinity measurements (Kd/Ki), mutagenesis mapping binding energy; the focus is molecular interaction at the protein or chemical level
+- `pathway_biology` — signalling cascade mechanisms, disease-specific pathway dysregulation, genetic dependency (CRISPR essentiality, siRNA screens), oncogenic mechanisms, upstream/downstream node relationships
+- `structural_biology` — primarily structural determination (X-ray, cryo-EM, NMR) with minimal functional or binding data; structure is the end goal
+- `clinical` — patient cohort data, clinical outcomes, biomarker studies, epidemiology
+- `review` — literature review, meta-analysis, or perspective with no original experimental data
+
+When in doubt between `biochemistry` and `pathway_biology`: if the paper measures binding affinities or inhibitor potency, choose `biochemistry`. If the paper characterises how a protein drives disease through a signalling cascade, choose `pathway_biology`.
+
+# PATHWAY CONTEXT EXTRACTION
+**Only populate `pathway_context` when `study_category == "pathway_biology"`.** For all other categories, set `pathway_context: null`.
+
+When extracting pathway context, apply the same factual provenance rules — `source_span` is required for every `disease_associations` and `target_nodes` entry. Do not infer; only extract what is explicitly stated.
+
+- `pathways`: list the named signalling pathways covered (e.g., ["Hippo", "YAP-TAZ", "mTOR"])
+- `disease_associations`: for each disease discussed, extract:
+  - `disease`: disease or cancer subtype name
+  - `mechanism`: the mechanistic link (e.g., "NF2 loss → LATS1/2 inactivation → YAP nuclear accumulation")
+  - `mutation_frequency`: if stated (e.g., "~50% of mesothelioma cases"); null if not stated
+  - `genetic_evidence_type`: type of evidence (patient sequencing / TCGA analysis / CRISPR screen / animal model / cell line); null if unclear
+  - `source_span`: provenance
+- `target_nodes`: for each protein discussed as a pathway node or therapeutic target:
+  - `protein`: gene symbol (e.g., "YAP1", "LATS1", "TEAD4")
+  - `pathway_position`: one of [upstream_regulator, kinase, effector, transcription_factor, adaptor, ligand, receptor]
+  - `dysregulation`: how it is dysregulated in disease (e.g., "hyperactivated via nuclear translocation in NF2-null tumours")
+  - `genetic_dependency_evidence`: CRISPR essentiality scores, siRNA knockdown phenotype, or null
+  - `prior_therapeutic_targeting`: known inhibitor classes or peptidomimetic strategies, or null
+  - `suggested_pdb_structures`: any PDB IDs mentioned in the paper for this protein; empty list if none
+  - `source_span`: provenance
+- `pathway_logic`: compact ON/OFF logic of the cascade (max 50 words); null if not described
+- `redundancy_risks`: compensatory proteins that could rescue loss of a given node (e.g., ["TAZ compensates for YAP loss"])
+- `upstream_regulators`: gene symbols of upstream suppressors or activators (e.g., ["NF2", "MST1", "MST2", "LATS1", "LATS2"])
+- `downstream_effectors`: gene symbols of downstream targets (e.g., ["TEAD1", "CTGF", "CYR61"])
+
+For `key_findings` in `pathway_biology` papers: capture genetic dependency evidence and disease association claims. `affinities_kd_Molar` and `inhibitory_constant_Ki` are not expected and should be null. `protein_pair` should capture the regulatory relationship (e.g., ["LATS1", "YAP1"]). `confidence_score` rubric applies normally.
+
 # LENGTH LIMITS — strictly enforced
 - `situational_context_hook`: 100–150 words
 - `key_findings`: maximum **5** entries — pick the most quantitatively significant
@@ -55,6 +93,10 @@ Use the following closed enum for `study_type`:
 - `contradictions_and_negative_results`: maximum **3** entries
 - `entities.chemicals`, `entities.proteins`, `entities.equations`: maximum **10** items each
 - `methodology.experimental_methods_used`, `controls`, `instruments_used`: maximum **8** items each
+- `pathway_context.disease_associations`: maximum **5** entries
+- `pathway_context.target_nodes`: maximum **8** entries
+- `pathway_context.pathway_logic`: maximum **50** words
+- `pathway_context.upstream_regulators`, `downstream_effectors`, `redundancy_risks`: maximum **10** items each
 
 # OUTPUT FORMAT
 Strict JSON only. No prose. No preamble. No markdown code fences. Output must conform exactly to the schema below.
@@ -64,6 +106,8 @@ Strict JSON only. No prose. No preamble. No markdown code fences. Output must co
 {
   "schema_version": "2.0",
   "relevant": true,
+  "study_category": "enum[biochemistry, pathway_biology, structural_biology, clinical, review]",
+  "pathway_context": null,
   "curation_metadata": {
     "model": "string",
     "curated_at": "ISO-8601 datetime",
