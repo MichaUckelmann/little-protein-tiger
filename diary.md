@@ -154,6 +154,57 @@
 
 ---
 
+## Session 2026-03-31 (evening) — Pathway Biology Expert + Manual Paper Ingestion
+
+### Pathway biology expert implementation
+
+Full implementation across 8 files (see git commit `215d3ce`):
+
+- **`extraction_schema.json`** + **`src/curator.py`**: added `study_category` enum (`biochemistry`, `pathway_biology`, `structural_biology`, `clinical`, `review`) and `pathway_context` block (`disease_associations`, `target_nodes`, `pathway_logic`, `redundancy_risks`, `upstream_regulators`, `downstream_effectors`). All new fields `Optional` — 82 existing fingerprints stay valid.
+- **`curation_prompt.md`**: added STUDY CATEGORY CLASSIFICATION and PATHWAY CONTEXT EXTRACTION sections (conditional on `study_category == "pathway_biology"`).
+- **`src/vector_store.py`**: `study_category` added to LanceDB schema; `_build_embed_text()` enriched with pathway fields for better semantic retrieval; `study_category` filter added to `search()` and `execute_search_tool()`.
+- **`src/mcp_server.py`**: `study_category` parameter added to `search_corpus` MCP tool.
+- **`config.yaml`**: 12 new pathway biology keyword queries covering Hippo/YAP-TAZ, KRAS, cGAS-STING, SCAP-SREBP, MARCH E3 ligase, PROTAC pathways.
+- **`skills/pathway-expert/SKILL.md`**: new skill — disease-driven target selection via corpus; 3-tier corpus gap fallback; outputs `## PATHWAY BIOLOGY REPORT` with recommended PPI + PDB ID.
+- **`skills/orchestrator/SKILL.md`**: conditional Stage 0 (pathway-expert) added before structural analysis; triggers when disease provided without a PPI target.
+
+**Next steps before pathway expert is useful:**
+1. `python scripts/ingest_vectors.py --rebuild` — migrate LanceDB schema to include `study_category`
+2. `python scripts/fetch_papers.py` with new pathway keywords — pull pathway biology papers
+3. `python scripts/curate_papers.py` on new papers — populate `pathway_context`
+4. Re-run `ingest_vectors.py --rebuild` to index new fingerprints
+
+### Manual paper ingestion workflow
+
+Some papers exist as open-access PDFs but are not indexed in Europe PMC or PubMed (e.g. recent Annual Reviews articles). The automated fetch pipeline will never find these. Tested with: *"Development of PROTAC Degrader Drugs for Cancer"*, Annual Review of Cancer Biology, DOI `10.1146/annurev-cancerbio-061824-105806`.
+
+**Manual ingestion process:**
+
+1. **Find the free PDF** — check [Unpaywall](https://unpaywall.org/products/api): `GET https://api.unpaywall.org/v2/<doi>?email=<email>`. Look for `oa_locations[].url_for_pdf` with `host_type=repository`.
+
+2. **Download the PDF** to `data/pdfs/` with a filename derived from the DOI (replace `/` and `:` with `_`):
+   ```bash
+   # example filename: doi_10.1146_annurev-cancerbio-061824-105806.pdf
+   ```
+
+3. **Insert into SQLite** using `Database.upsert_paper()` with `download_status=DownloadStatus.downloaded` and `priority_score=1.0`. Set `pdf_path` to the absolute path.
+
+4. **Curate** as normal:
+   ```bash
+   python scripts/curate_papers.py --paper-key "doi:<doi>"
+   ```
+
+5. **Ingest into vector DB**:
+   ```bash
+   python scripts/ingest_vectors.py
+   ```
+
+**Curation result for the PROTAC review:** `study_category=review`, `pathway_context=null` (correct — it's a clinical overview, not a pathway dysregulation paper). Key findings captured clinical trial milestones, degradation efficacy data, and resistance mechanism taxonomy.
+
+**Note on Annual Reviews:** Does not deposit to PMC; papers only appear via author/institutional open-access deposits. Unpaywall is the reliable way to find these.
+
+---
+
 ## TODO
 
 - [ ] **Local Qwen3.5-9B curation provider** — code is in place (`--provider local`), needs a GPU with ~18–20 GB VRAM (fp16) or ~10 GB (fp8 quantized). Server command: `vllm serve Qwen/Qwen3.5-9B --port 8000 --reasoning-parser qwen3 --language-model-only [--quantization fp8]`
