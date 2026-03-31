@@ -1,0 +1,49 @@
+{
+  "schema_version": "2.0",
+  "relevant": true,
+  "curation_metadata": {
+    "model": "string",
+    "curated_at": "ISO-8601 datetime",
+    "input_tokens": "integer",
+    "output_tokens": "integer"
+  },
+  "paper_metadata": {
+    "title": "string",
+    "doi": "string",
+    "study_type": "enum[experimental_in_vitro, experimental_in_vivo, experimental_structural, computational, review, case_study]",
+    "situational_context_hook": "string (100-150 words)"
+  },
+  "methodology": {
+    "experimental_methods_used": ["string"],
+    "protein_origin_organism": ["integer"],
+    "controls": ["string"],
+    "instruments_used": ["string"]
+  },
+  "key_findings": [
+    {
+      "claim": "string",
+      "evidence_value": "string or number",
+      "quantitative_or_qualitative": "string",
+      "protein_pair": ["string", "string"],
+      "experimental_context": "string",
+      "affinities_kd_Molar": "float or null",
+      "inhibitory_constant_Ki": "float or null",
+      "key_amino_acid_residues": ["string"],
+      "confidence_score": "float (0.0-1.0)",
+      "is_statistically_significant": "boolean",
+      "source_span": "string"
+    }
+  ],
+  "contradictions_and_negative_results": [
+    {
+      "finding": "string",
+      "conflicts_with_prior_work": "boolean",
+      "reasoning": "string"
+    }
+  ],
+  "entities": {
+    "chemicals": ["string"],
+    "proteins": ["string"],
+    "equations": ["string"]
+  }
+}

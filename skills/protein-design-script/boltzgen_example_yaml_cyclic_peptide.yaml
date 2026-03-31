@@ -1,0 +1,21 @@
+entities:
+  # Specification of the target which is extracted from a .cif file
+  - file:
+      path: /home/muckelmann/proteinDesign/designTargets/6g6k.cif
+
+      # Which chain and residues in the .cif file to use as target (uses all chains if unspecified)
+      include:
+        - chain:
+            id: A
+
+      # Which regions of the target the design should or should NOT
+      # bind to (this can be left unspecified, then we just bind anywhere)
+      binding_types:
+        - chain:
+            id: A
+            binding: 27,53,34,31,60
+  # A designed cyclic peptide with 12-15 residues
+  - protein:
+      id: F
+      sequence: 12..15
+      cyclic: True

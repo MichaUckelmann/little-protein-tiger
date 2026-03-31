@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "literature-db": {
+      "command": "C:\\Users\\micha\\Documents\\literature_search_agent\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "src.mcp_server"],
+      "cwd": "C:\\Users\\micha\\Documents\\literature_search_agent",
+      "env": {
+        "VECTOR_DB_PATH":  "C:\\Users\\micha\\Documents\\literature_search_agent\\data\\vectors",
+        "FINGERPRINT_DIR": "C:\\Users\\micha\\Documents\\literature_search_agent\\data\\fingerprints",
+        "EMBEDDING_MODEL": "NeuML/pubmedbert-base-embeddings",
+        "HF_HUB_OFFLINE": "1",
+        "CUDA_VISIBLE_DEVICES": "-1",
+        "PATH": "C:\\Users\\micha\\Documents\\literature_search_agent\\.venv\\Scripts;C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.0\\bin\\x64;C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.0\\bin;C:\\Windows\\system32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\;C:\\Windows\\System32\\OpenSSH\\;C:\\Program Files\\dotnet\\;C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common;C:\\Program Files\\NVIDIA Corporation\\NVIDIA NvDLISR;C:\\Program Files\\nodejs\\;C:\\Program Files\\Git\\cmd;C:\\Users\\micha\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Users\\micha\\.local\\bin"
+      }
+    }
+  }
+}

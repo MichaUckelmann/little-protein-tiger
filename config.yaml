@@ -1,0 +1,84 @@
+# ---------------------------------------------------------------------------
+# Quality scoring
+# ---------------------------------------------------------------------------
+quality:
+  # Extra journals to add to tier 1 (score 1.0) beyond the built-in list.
+  # Use the journal name exactly as it appears in NCBI (usually abbreviated).
+  tier1_extra: []
+
+  # Extra journals to add to tier 2 (score 0.7).
+  tier2_extra: []
+
+  # Papers with these NCBI pub types are excluded from downloads entirely.
+  # Conference abstracts have PMCIDs but no individual files on AWS.
+  exclude_pub_types:
+    - "Congress"
+    - "Meeting Abstract"
+
+  # Minimum priority_score to attempt download (0.0 = download everything).
+  min_score_to_download: 0.0
+
+  # Restrict downloads to papers from journals in the tier 1/2 list only.
+  # TODO: set to false once initial high-quality database is built and curated,
+  #       then re-run to pull in broader literature.
+  require_tiered_journal: true
+
+# ---------------------------------------------------------------------------
+# Search keywords
+# ---------------------------------------------------------------------------
+keywords:
+  - "SCAP[Title/Abstract] AND (SREBP[Title/Abstract] OR INSIG[Title/Abstract])"
+  - "TEAD[Title/Abstract] AND YAP[Title/Abstract]"
+  - "cGAS[Title/Abstract] AND STING[Title/Abstract]"
+  - "LPAR6[Title/Abstract] AND LPA[Title/Abstract]"
+  - "macrocyclic peptide[Title/Abstract] AND protein interaction[Title/Abstract]"
+  - "de novo protein design[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "KRAS structure[Title/Abstract]"
+  - "KRAS [Title/Abstract] AND RAF[Title/Abstract] AND intetraction[Title/Abstract]"
+  - "macrocyclic peptide[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "macrocyclic peptide[Title/Abstract] AND drug discovery[Title/Abstract]"
+  - "protein interaction[Title/Abstract] AND inhibitor[Title/Abstract]" 
+  - "MARCH E3 ligase[Title/Abstract]"
+  - "MARCH E3 ligase[Title/Abstract] AND structure[Title/Abstract]"
+  - "MARCH E3 ligase[Title/Abstract] AND degradation[Title/Abstract]"
+  - "targeted protein degradation[Title/Abstract] AND antibody[Title/Abstract]"
+
+  
+  
+search:
+  max_results_per_query: 200
+  # NCBI eSearch covers PMC full-text articles (including those indexed as
+  # MEDLINE in Europe PMC that HAS_FT:Y / SRC:PMC would miss)
+  ncbi_pmc: true
+  # Europe PMC covers preprints (bioRxiv / medRxiv)
+  europepmc_sources: ["ppr"]
+
+paths:
+  pdf_dir: "data/pdfs"
+  db_path: "data/literature.db"
+  fingerprint_dir: "data/fingerprints"
+
+curation:
+  provider: "claude"            # "claude" or "gemini"
+  model: "claude-haiku-4-5-20251001"    # options: "claude-haiku-4-5-20251001" and "claude-sonnet-4-6"
+  gemini_model: "gemini-3.1-flash-lite-preview"  # used when provider = "gemini"
+  # alternatives: "gemini-3-flash-preview" (standard), "gemini-3.1-flash-lite-preview" (high-volume/lower-cost)
+  local_model: "Qwen/Qwen3.5-9B"
+  local_endpoint: "http://localhost:8000/v1"
+  max_tokens: 8000
+  max_input_chars: 90000
+  delay_s: 1.0
+  max_retries: 3
+  prompt_path: "curation_prompt.md"
+  schema_path: "extraction_schema.json"
+
+rate_limits:
+  europepmc_delay_s: 0.5
+  ncbi_delay_s: 0.34        # ~3 req/s without API key; auto-speeds to 0.1 with NCBI_API_KEY
+  download_delay_s: 1.0
+  max_retries: 3
+
+vector_store:
+  db_path: "data/vectors"
+  embedding_model: "NeuML/pubmedbert-base-embeddings"
+  top_k_default: 5
