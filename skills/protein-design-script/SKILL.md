@@ -23,6 +23,17 @@ re-derive residue indices.
 - Budget (final diversity-optimized set): 50
 - Hotspot residues: 2–8 residues, as specified in the MODEL-READY HOTSPOTS section, for cyclic peptides 2-5 residues, specified in subsection BoltzGen cyclic peptide binding_types
  
+## Output Location
+
+If invoked by the orchestrator, a `run_folder` path will be provided in the handoff
+message (e.g. `C:\Users\micha\Documents\LittleProteinTiger\YAP_TEAD4_2026-04-01\04_design_inputs\`).
+
+- Create the `04_design_inputs\` subfolder using the filesystem tool if it does not exist.
+- Write all output files (YAML, JSON, submission scripts) to that folder using `filesystem:write_file`.
+
+If invoked standalone (no run_folder in context), ask the user where to save output files,
+or write to the current working directory if they confirm.
+
 ## Workflow
 1. Parse the PPI analysis report: identify target chain, partner chain, recommended modality, and hotspot residues
 2. Read the MODEL-READY HOTSPOTS section to get pre-formatted `binding_types` (BoltzGen) or `select_hotspots` (RFD3)
@@ -30,7 +41,8 @@ re-derive residue indices.
 4. Select the appropriate model (BoltzGen default, or RFD3 if user specifies)
 5. Write the input file (YAML for BoltzGen, JSON for RFD3) using the correct format from references
 6. Write the SLURM submission script (see Shell Context below)
-7. Brief report to user: which target selected, which hotspots, which protein design model, which modality
+7. Save all files to the run folder (or working directory if standalone)
+8. Brief report to user: which target selected, which hotspots, which protein design model, which modality, and the full paths of all saved files
  
 ## BoltzGen Input Generation
  

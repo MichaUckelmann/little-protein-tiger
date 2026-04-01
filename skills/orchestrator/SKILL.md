@@ -41,6 +41,45 @@ Before starting, verify tool availability:
 - **literature-db MCP tools** (`search_corpus`, `get_fingerprint`) — required for Stage 0 and Stage 2.
   If not connected: note this, offer to run Stage 1 only, and skip Stages 0 and 2 if the
   user agrees.
+- **Filesystem MCP tool** — required for saving outputs to LittleProteinTiger.
+  If not connected: warn the user; continue the pipeline but note that outputs will not be saved.
+
+---
+
+## LittleProteinTiger Output Management
+
+LittleProteinTiger is the name of this design framework. All pipeline outputs are
+saved to a dedicated run folder under `C:\Users\micha\Documents\LittleProteinTiger\`.
+
+**At the very start of the pipeline**, before Stage 0:
+
+1. Determine `{ProteinA}` and `{ProteinB}` from the user's request (or use the
+   disease/complex name if Stage 0 is needed — update after Stage 0 resolves the target).
+2. Set the run folder path:
+   ```
+   C:\Users\micha\Documents\LittleProteinTiger\{ProteinA}_{ProteinB}_{YYYY-MM-DD}\
+   ```
+   Use today's date in `YYYY-MM-DD` format.
+3. Create the folder using the filesystem tool (`create_directory`).
+4. Announce the path to the user:
+   > "Run folder: `C:\Users\micha\Documents\LittleProteinTiger\{ProteinA}_{ProteinB}_{YYYY-MM-DD}\`"
+
+**After each stage**, write the expert's full report to the run folder:
+
+| Stage | File |
+|-------|------|
+| Stage 0A (pathway-expert) | `00_target_selection.md` |
+| Stage 0B (complex-expert) | `00_complex_analysis.md` |
+| Stage 1 (chimerax) | `01_structural_analysis.md` |
+| Stage 2 (mol-bio expert) | `02_literature_report.md` |
+| Stage 3 (campaign recommendation) | `03_campaign_recommendation.md` |
+| Stage 4 (design inputs) | `04_design_inputs\` subfolder — written by protein-design-script |
+
+Use `filesystem:write_file` with the full path and the complete report content
+(copy verbatim from the conversation — do not summarise or truncate).
+
+Pass the run folder path explicitly to the **protein-design-script** at Stage 4:
+> "Write all output files to: `{run_folder}\04_design_inputs\`"
 
 ---
 
@@ -122,6 +161,10 @@ Present a one-paragraph summary and confirm the target with the user:
 > "Stage 0 complete. Recommended target: [complex / interface]. Suggested PDB: [ID or 'AlphaFold local file'].
 > Proceed to structural analysis?"
 
+**Save Stage 0 output:** Write the full pathway-expert or complex-expert report to
+`{run_folder}\00_target_selection.md` (Stage 0A) or `{run_folder}\00_complex_analysis.md` (Stage 0B).
+If the run folder name used a placeholder (disease name), rename it now that the target proteins are known.
+
 ---
 
 ## Stage 1: Structural Analysis
@@ -148,6 +191,9 @@ and the top hotspot residues. Then ask:
 
 > "Stage 1 complete. Proceed to literature analysis?"
 
+**Save Stage 1 output:** Write the full `## PPI ANALYSIS REPORT` to
+`{run_folder}\01_structural_analysis.md`.
+
 ---
 
 ## Stage 2: Literature Analysis
@@ -173,6 +219,9 @@ Wait for the full `## MOLECULAR BIOLOGY REPORT` to be produced. Then extract:
 - **Suggested modality** — from `DESIGN RECOMMENDATIONS`
 
 Present a one-paragraph summary covering tractability, any prior art found, and key risks.
+
+**Save Stage 2 output:** Write the full `## MOLECULAR BIOLOGY REPORT` to
+`{run_folder}\02_literature_report.md`.
 
 ---
 
@@ -271,6 +320,10 @@ Blocker: <specific reason — only if NO-GO>
 Next step: <"Proceed to generate design inputs" / "Address [X] before proceeding">
 ```
 
+**Save Stage 3 output:** Write the full `## CAMPAIGN RECOMMENDATION` block to
+`{run_folder}\03_campaign_recommendation.md`. Include a header line with the target
+name, date, and pipeline decision (GO / CONDITIONAL GO / NO-GO).
+
 After presenting the CAMPAIGN RECOMMENDATION, for GO or CONDITIONAL GO ask:
 
 > "Proceed to generate design inputs?"
@@ -289,6 +342,10 @@ Invoke the **protein-design-script** skill. Provide it with the combined context
 The design skill will generate BoltzGen YAML and/or RFD3 JSON inputs. Do not
 anticipate or pre-fill these yourself — hand off the context and let the design skill
 apply its own logic.
+
+When invoking protein-design-script, explicitly include the run folder path in your
+handoff message:
+> "Write all output files to: `{run_folder}\04_design_inputs\`"
 
 After Stage 4 completes, present a brief campaign summary:
 

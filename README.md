@@ -1,172 +1,295 @@
 # Literature Search Agent
 
-Automated discovery and download of open-access scientific PDFs from PubMed Central and bioRxiv/medRxiv, focused on protein-protein interaction (PPI) therapeutics. Part of a larger pipeline for AI-powered literature curation (Sprint 2: Claude-based extraction + vector database).
+An end-to-end pipeline for building a curated scientific literature corpus, focused on protein-protein interaction (PPI) therapeutics for drug target discovery. Covers automated paper discovery, Claude-powered structured extraction, vector database ingestion, and an MCP server for LLM agent access.
+
+**Current corpus state (2026-04-01):** ~9,865 papers indexed · 1,944 downloaded · 988 curated fingerprints
+
+---
 
 ## Requirements
 
 - Python 3.10+
-- Conda or pip environment
+- Virtual environment (`.venv` recommended)
 
 ```bash
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+source .venv/bin/activate     # Linux/macOS
 pip install -r requirements.txt
 ```
 
-## Configuration
-
-All tunable parameters live in `config.yaml`:
-
-```yaml
-keywords:
-  - "protein-protein interaction inhibitor peptide"
-  - "stapled peptide protein interaction"
-  # ...
-
-search:
-  max_results_per_query: 200
-  open_access_only: true
-  sources: ["pmc", "ppr"]   # pmc = PubMed Central, ppr = bioRxiv/medRxiv
-
-paths:
-  pdf_dir: "data/pdfs"
-  db_path: "data/literature.db"
-
-rate_limits:
-  europepmc_delay_s: 0.5
-  download_delay_s: 1.0
-  max_retries: 3
-```
-
-Copy `.env.example` to `.env` and fill in credentials (optional for Sprint 1):
+Copy `.env.example` to `.env` and fill in your API keys:
 
 ```bash
 cp .env.example .env
 ```
 
+`.env` keys:
+| Key | Required for |
+|-----|---|
+| `ANTHROPIC_API_KEY` | Curation (`curate_papers.py`) |
+| `NCBI_EMAIL` | Polite crawling (NCBI rate limits) |
+| `NCBI_API_KEY` | Higher NCBI rate limit (optional) |
+
+---
+
+## Configuration
+
+All parameters live in `config.yaml`. To run a targeted search expansion without touching the main config, copy or write a separate config file and pass it with `--config`.
+
+Key sections:
+
+```yaml
+keywords:
+  - "TEAD[Title/Abstract] AND YAP[Title/Abstract]"
+  - "macrocyclic peptide[Title/Abstract] AND protein interaction[Title/Abstract]"
+
+search:
+  max_results_per_query: 200
+  ncbi_pmc: true
+  europepmc_sources: ["ppr"]   # ppr = bioRxiv/medRxiv preprints
+
+quality:
+  require_tiered_journal: true
+  min_score_to_download: 0.0
+
+curation:
+  provider: "claude"           # "claude" | "gemini" | "local"
+  model: "claude-haiku-4-5-20251001"
+
+rate_limits:
+  europepmc_delay_s: 0.5
+  ncbi_delay_s: 0.34
+  download_delay_s: 1.0
+
+vector_store:
+  db_path: "data/vectors"
+  embedding_model: "NeuML/pubmedbert-base-embeddings"
+```
+
+---
+
+## Pipeline overview
+
+```
+fetch_papers.py          Search + download XMLs/PDFs → literature.db
+      ↓
+curate_papers.py         Claude extracts structured fingerprint JSONs
+      ↓
+ingest_vectors.py        Embed fingerprints into LanceDB vector store
+      ↓
+mcp_server.py            Serve search_corpus + get_fingerprint as MCP tools
+                         (used by expert skills in Claude Desktop)
+```
+
+---
+
 ## Usage
 
-All commands are run from the repository root.
+All commands are run from the repository root with the venv active.
 
-### Dry run — search only, no downloads
+### 1. Fetch papers
 
-```bash
-python scripts/fetch_papers.py --dry-run
-```
-
-Prints the list of papers found (up to 50 shown, full count reported) and DB stats. Nothing is written to `data/pdfs/`.
-
-### Download papers
+Search all keywords in `config.yaml`, upsert metadata to `data/literature.db`, and download available XMLs/PDFs.
 
 ```bash
+# Full run
 python scripts/fetch_papers.py
+
+# Dry run — search only, no downloads, no DB writes
+python scripts/fetch_papers.py --dry-run
+
+# Use a separate config (e.g. a topic expansion)
+python scripts/fetch_papers.py --config config_search_expansion.yaml
+
+# Override keywords inline
+python scripts/fetch_papers.py --keywords "MDM2 p53 inhibitor peptide" --max 100
 ```
 
-Searches all keywords in `config.yaml`, upserts metadata to `data/literature.db`, and downloads PDFs to `data/pdfs/`. Re-running is safe — already-downloaded papers are skipped.
+Re-running is safe — already-downloaded papers are skipped.
 
-### Override keywords or result limit
+### 2. Curate papers
+
+Extract structured fingerprints from downloaded papers using Claude (or Gemini).
 
 ```bash
-# Single custom keyword
-python scripts/fetch_papers.py --keywords "BCL2 inhibitor BH3 mimetic" --max 50
+# Curate all downloaded-but-not-yet-curated papers
+python scripts/curate_papers.py
 
-# Multiple keywords
-python scripts/fetch_papers.py --keywords "MDM2 p53 inhibitor" "KRAS inhibitor peptide" --max 100
+# Limit batch size
+python scripts/curate_papers.py --limit 50
 
-# Limit results per keyword (overrides config.yaml)
-python scripts/fetch_papers.py --max 20
+# Dry run — list pending papers without calling the API
+python scripts/curate_papers.py --dry-run
+
+# Reprocess already-curated papers (e.g. after prompt update)
+python scripts/curate_papers.py --reprocess --limit 20
+
+# Curate a single paper by its DB key
+python scripts/curate_papers.py --paper-key "doi:10.1101/2024.01.01.123456"
+
+# Use a different provider
+python scripts/curate_papers.py --provider gemini
 ```
 
-### Use a different config file
+Fingerprints are saved to `data/fingerprints/<paper_key>.json`.
+
+### 3. Ingest vectors
+
+Embed fingerprints into LanceDB for semantic search. Run after any new curation batch.
 
 ```bash
-python scripts/fetch_papers.py --config my_config.yaml
+# Incremental — only embeds fingerprints not yet in the vector store
+python scripts/ingest_vectors.py
+
+# Full rebuild — drop and re-embed everything (e.g. after a schema change)
+python scripts/ingest_vectors.py --rebuild
 ```
 
-### Full CLI reference
+### 4. Interactive corpus search
 
-```
-usage: fetch_papers.py [-h] [--config CONFIG] [--keywords KEYWORDS [KEYWORDS ...]]
-                       [--max MAX] [--dry-run]
+Query the corpus in a conversational loop using Claude + semantic search.
 
-options:
-  --config    Path to config YAML (default: config.yaml)
-  --keywords  One or more search terms, overriding config keywords
-  --max       Max results per keyword (overrides config)
-  --dry-run   Search only, print results, skip all downloads
+```bash
+python scripts/ask_corpus.py
+
+# Options
+python scripts/ask_corpus.py --model claude-sonnet-4-6 --top-k 10
 ```
 
-## Output
+---
 
-| Path | Contents |
-|------|----------|
-| `data/pdfs/` | Downloaded PDF files, named `{identifier}_{hash}.pdf` |
-| `data/literature.db` | SQLite database with full paper metadata |
+## Database queries
 
-### Database schema
-
-The `papers` table mirrors the `Paper` model:
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `paper_key` | TEXT PK | `doi:{doi}` \| `pmcid:{pmcid}` \| `title:{md5}` |
-| `doi`, `pmcid`, `pmid` | TEXT | Identifiers |
-| `title`, `authors`, `journal`, `year`, `abstract` | TEXT/INT | Metadata |
-| `source` | TEXT | `pmc` \| `biorxiv` \| `medrxiv` |
-| `pdf_url` | TEXT | Resolved download URL |
-| `pdf_path` | TEXT | Local path after download |
-| `download_status` | TEXT | `pending` \| `downloaded` \| `failed` |
-| `curated` | INT | Reserved for Sprint 2 (Claude curation) |
-
-Query the DB directly with Python:
+Quick inspection commands using Python's sqlite3:
 
 ```python
 import sqlite3
 conn = sqlite3.connect('data/literature.db')
-conn.row_factory = sqlite3.Row
 
-# Status summary
-for r in conn.execute("SELECT download_status, COUNT(*) as n FROM papers GROUP BY download_status"):
-    print(dict(r))
+# --- Status summary ---
+for r in conn.execute("SELECT download_status, COUNT(*) FROM papers GROUP BY download_status"):
+    print(r)
 
-# Browse papers
-for r in conn.execute("SELECT title, source, download_status FROM papers LIMIT 10"):
-    print(dict(r))
+for r in conn.execute("SELECT curation_status, COUNT(*) FROM papers GROUP BY curation_status"):
+    print(r)
+
+# --- Total counts ---
+conn.execute("SELECT COUNT(*) FROM papers").fetchone()
+conn.execute("SELECT COUNT(*) FROM papers WHERE download_status = 'downloaded'").fetchone()
+conn.execute("SELECT COUNT(*) FROM papers WHERE curation_status = 'completed'").fetchone()
+
+# --- Downloaded but not yet curated (ready to process) ---
+conn.execute("""
+    SELECT COUNT(*) FROM papers
+    WHERE download_status = 'downloaded' AND curation_status != 'completed'
+""").fetchone()
+
+# --- Papers by source ---
+for r in conn.execute("SELECT source, COUNT(*) FROM papers GROUP BY source"):
+    print(r)
+
+# --- Recent papers ---
+for r in conn.execute("""
+    SELECT title, journal, year, curation_status
+    FROM papers ORDER BY year DESC LIMIT 10
+"""):
+    print(r)
+
+# --- Browse fingerprints by keyword ---
+for r in conn.execute("""
+    SELECT title, fingerprint_path FROM papers
+    WHERE curation_status = 'completed' AND title LIKE '%TEAD%'
+"""):
+    print(r)
+
+# --- Curation failures ---
+for r in conn.execute("""
+    SELECT paper_key, curation_error FROM papers
+    WHERE curation_status = 'failed'
+"""):
+    print(r)
 ```
 
-## How it works
+Or use the sqlite3 CLI directly:
 
-1. **Search** — Queries the [Europe PMC REST API](https://europepmc.org/RestfulWebService) for each keyword with `OPEN_ACCESS:Y` and source filters (`SRC:PMC OR SRC:PPR`). Uses cursor-based pagination. Deduplicates across keywords by DOI.
+```bash
+sqlite3 data/literature.db "SELECT curation_status, COUNT(*) FROM papers GROUP BY curation_status"
+```
 
-2. **PDF URL resolution** — For PMC papers, queries the [NCBI PMC Open Access service](https://www.ncbi.nlm.nih.gov/pmc/tools/oa-service/) for a direct FTP PDF link (served over HTTPS). For bioRxiv/medRxiv preprints, uses the URL from Europe PMC's `fullTextUrlList` or constructs it from the DOI.
+---
 
-3. **Download** — Streams each PDF to disk, validates the `%PDF` magic bytes, retries with exponential backoff on failure. Updates the SQLite DB after each paper.
+## MCP server (Claude Desktop integration)
 
-4. **Dedup on re-run** — Papers already in the DB with `status=downloaded` and a file on disk are skipped entirely.
+The MCP server exposes two tools to LLM agents:
+
+| Tool | Description |
+|------|-------------|
+| `search_corpus` | Semantic search over curated fingerprints |
+| `get_fingerprint` | Retrieve full fingerprint JSON by DOI or paper key |
+
+The server is registered in `~/.config/Claude/claude_desktop_config.json` (macOS/Linux) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows). Restart Claude Desktop after any config change.
+
+To debug connection issues, check `data/mcp_server.log`. Known fix for sentence_transformers import hang on Windows: ensure `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, and `TOKENIZERS_PARALLELISM=false` are set in the server env block.
+
+---
 
 ## Project structure
 
 ```
 literature_search_agent/
-├── config.yaml              # Keywords, limits, paths
+├── config.yaml                  # Main config: keywords, limits, paths, curation settings
+├── config_search_expansion.yaml # Topic-specific search expansion (run separately)
+├── curation_prompt.md           # System prompt for Claude curation
+├── extraction_schema.json       # Target JSON schema for fingerprints (v2.0)
 ├── requirements.txt
-├── .env.example             # NCBI_EMAIL, NCBI_API_KEY, ANTHROPIC_API_KEY stubs
+├── .env.example
+├── .mcp.json                    # MCP server registration for Claude Code
+├── diary.md                     # Development log and architectural decisions
+│
 ├── src/
-│   ├── models.py            # Pydantic Paper model
-│   ├── database.py          # SQLite wrapper
-│   ├── search.py            # Europe PMC client
-│   └── downloader.py        # PDF fetcher
+│   ├── models.py                # Pydantic Paper + CurationStatus models
+│   ├── database.py              # SQLite wrapper (upsert, status tracking)
+│   ├── search.py                # Europe PMC + NCBI search clients
+│   ├── downloader.py            # PDF/XML fetcher with retry logic
+│   ├── ranking.py               # Paper scoring/prioritisation
+│   ├── text_extractor.py        # PDF (pymupdf) + XML (lxml) text extraction
+│   ├── curator.py               # Claude/Gemini API curation, Pydantic validation
+│   ├── fingerprint_store.py     # Save/load fingerprint JSONs
+│   ├── vector_store.py          # LanceDB wrapper + PubMedBERT embeddings
+│   └── mcp_server.py            # FastMCP server (search_corpus, get_fingerprint)
+│
 ├── scripts/
-│   └── fetch_papers.py      # CLI entry point
-├── curation_prompt.md       # System prompt for Sprint 2 Claude curation
-├── extraction_schema.json   # Target JSON schema for Sprint 2 output
-├── diary.md                 # Development log
-└── data/                    # Gitignored
-    ├── pdfs/
-    └── literature.db
+│   ├── fetch_papers.py          # CLI: search + download
+│   ├── curate_papers.py         # CLI: Claude curation pipeline
+│   ├── ingest_vectors.py        # CLI: embed fingerprints into LanceDB
+│   └── ask_corpus.py            # CLI: interactive conversational search
+│
+├── skills/                      # Claude Desktop expert skills (upload as zip)
+│   ├── molecular-biology-expert/
+│   ├── orchestrator/
+│   └── protein-design-script/
+│
+└── data/                        # Gitignored
+    ├── literature.db            # SQLite paper metadata + status tracking
+    ├── fingerprints/            # One JSON fingerprint per curated paper
+    ├── vectors/                 # LanceDB vector store
+    └── pdfs/                    # Downloaded PDF/XML files
 ```
 
-## Sprint 2 (upcoming)
+---
 
-- PDF text extraction with `pdfplumber` or `pymupdf`
-- Claude-powered curation using `curation_prompt.md` → structured JSON per `extraction_schema.json`
-- Vector database (ChromaDB or LanceDB) for semantic search over findings
-- Tool-callable search interface for LLM agents
+## Workflow after adding new search terms
+
+```bash
+# 1. Run the new searches
+python scripts/fetch_papers.py --config config_search_expansion.yaml
+
+# 2. Curate the new downloads
+python scripts/curate_papers.py --limit 100
+
+# 3. Refresh the vector index
+python scripts/ingest_vectors.py
+
+# 4. Restart Claude Desktop to pick up new fingerprints via MCP
+```

@@ -1,0 +1,102 @@
+keywords:
+
+  # --- MASH / MASLD / Steatotic Liver Disease ---
+  - "MASH MASLD[Title/Abstract] AND drug target[Title/Abstract]"
+  - "NASH liver fibrosis[Title/Abstract] AND TGF-beta signaling[Title/Abstract]"
+  - "SREBP lipid metabolism[Title/Abstract] AND liver steatosis[Title/Abstract]"
+  - "FXR farnesoid X receptor[Title/Abstract] AND liver disease[Title/Abstract]"
+  - "ACC FASN[Title/Abstract] AND fatty acid synthesis[Title/Abstract] AND liver[Title/Abstract]"
+  - "PNPLA3 HSD17B13[Title/Abstract] AND liver disease[Title/Abstract]"
+  - "MASH macrophage[Title/Abstract] AND NF-kB[Title/Abstract] AND inflammation[Title/Abstract]"
+
+  # --- Lupus / Autoimmune ---
+  - "lupus[Title/Abstract] AND type I interferon[Title/Abstract] AND signaling[Title/Abstract]"
+  - "cGAS STING[Title/Abstract] AND lupus[Title/Abstract] AND autoimmune[Title/Abstract]"
+  - "BAFF BLYS[Title/Abstract] AND B cell[Title/Abstract] AND lupus[Title/Abstract]"
+  - "JAK STAT[Title/Abstract] AND autoimmune[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "complement pathway[Title/Abstract] AND lupus[Title/Abstract] AND C3 C5[Title/Abstract]"
+  - "TLR7 TLR9[Title/Abstract] AND nucleic acid sensing[Title/Abstract] AND autoimmune[Title/Abstract]"
+
+  # --- Cancer: Transcription Factor / Coactivator PPIs ---
+  - "YAP TAZ TEAD[Title/Abstract] AND Hippo[Title/Abstract] AND cancer[Title/Abstract]"
+  - "MYC MAX[Title/Abstract] AND protein interaction[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "p53 MDM2[Title/Abstract] AND interaction[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "beta-catenin TCF[Title/Abstract] AND WNT[Title/Abstract] AND cancer[Title/Abstract]"
+  - "BRD4 BET bromodomain[Title/Abstract] AND cancer[Title/Abstract] AND transcription[Title/Abstract]"
+  - "RAS effector[Title/Abstract] AND protein interaction[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "KRAS SOS1[Title/Abstract] AND interaction[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "oncofusion transcription factor[Title/Abstract] AND cancer signaling[Title/Abstract]"
+
+  # --- LPA Signalling ---
+  - "lysophosphatidic acid[Title/Abstract] AND receptor[Title/Abstract] AND cancer[Title/Abstract]"
+  - "autotaxin LPA[Title/Abstract] AND fibrosis[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "LPAR1 LPAR3[Title/Abstract] AND signaling[Title/Abstract]"
+  - "LPA signaling[Title/Abstract] AND autoimmune[Title/Abstract] AND inflammation[Title/Abstract]"
+  - "lysophosphatidic acid[Title/Abstract] AND liver disease[Title/Abstract] AND metabolism[Title/Abstract]"
+
+  # --- Peptide / Macrocycle / Miniprotein Therapeutics ---
+  - "macrocyclic peptide[Title/Abstract] AND protein-protein interaction[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "stapled peptide[Title/Abstract] AND alpha-helix[Title/Abstract] AND protein interaction[Title/Abstract]"
+  - "miniprotein binder[Title/Abstract] AND de novo design[Title/Abstract]"
+  - "cyclic peptide[Title/Abstract] AND oral bioavailability[Title/Abstract] AND beyond rule of five[Title/Abstract]"
+  - "peptide macrocycle[Title/Abstract] AND intracellular target[Title/Abstract]"
+
+  # --- AI-Driven Protein Design ---
+  - "RFdiffusion[Title/Abstract] AND protein binder[Title/Abstract] AND design[Title/Abstract]"
+  - "ProteinMPNN[Title/Abstract] AND sequence design[Title/Abstract]"
+  - "diffusion model[Title/Abstract] AND protein structure[Title/Abstract] AND design[Title/Abstract]"
+  - "AlphaFold[Title/Abstract] AND protein complex[Title/Abstract] AND structure prediction[Title/Abstract]"
+  - "machine learning[Title/Abstract] AND peptide[Title/Abstract] AND therapeutic design[Title/Abstract]"
+
+  # --- Development Challenges: Permeability & Solubility ---
+  - "macrocycle[Title/Abstract] AND membrane permeability[Title/Abstract] AND passive diffusion[Title/Abstract]"
+  - "cyclic peptide[Title/Abstract] AND proteolytic stability[Title/Abstract] AND N-methylation[Title/Abstract]"
+  - "peptide[Title/Abstract] AND half-life[Title/Abstract] AND in vivo stability[Title/Abstract]"
+
+  # --- Development Challenges: Intracellular Delivery ---
+  - "lipid nanoparticle mRNA[Title/Abstract] AND intracellular protein delivery[Title/Abstract]"
+  - "intracellular peptide delivery[Title/Abstract] AND endosomal escape[Title/Abstract]"
+  - "cell penetrating peptide[Title/Abstract] AND miniprotein[Title/Abstract] AND delivery[Title/Abstract]"
+
+search:
+  max_results_per_query: 200
+  ncbi_pmc: true
+  europepmc_sources: ["ppr"]
+
+paths:
+  pdf_dir: "data/pdfs"
+  db_path: "data/literature.db"
+  fingerprint_dir: "data/fingerprints"
+
+quality:
+  exclude_pub_types:
+  - Congress
+  - Meeting Abstract
+  min_score_to_download: 0.0
+  require_tiered_journal: true
+  tier1_extra: []
+  tier2_extra: []
+
+curation:
+  provider: "claude"
+  model: "claude-haiku-4-5-20251001"
+  gemini_model: "gemini-3.1-flash-lite-preview"
+  local_model: "Qwen/Qwen3.5-9B"
+  local_endpoint: "http://localhost:8000/v1"
+  max_tokens: 8000
+  max_input_chars: 90000
+  delay_s: 1.0
+  max_retries: 3
+  prompt_path: "curation_prompt.md"
+  schema_path: "extraction_schema.json"
+
+rate_limits:
+  europepmc_delay_s: 0.5
+  ncbi_delay_s: 0.34
+  download_delay_s: 1.0
+  max_retries: 3
+
+vector_store:
+  db_path: data/vectors
+  embedding_model: NeuML/pubmedbert-base-embeddings
+  top_k_default: 5
