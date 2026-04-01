@@ -217,6 +217,104 @@ Some papers exist as open-access PDFs but are not indexed in Europe PMC or PubMe
 
 ---
 
+## Sprint 5 — Complex Expert + Database Expansion
+
+### Session 2026-03-31
+
+#### New skills and scripts
+
+**`skills/complex-expert/SKILL.md`** — new skill for characterising predicted or novel protein complexes from a gene list. Two modes:
+- *Summary mode* (default, ~4–6 tool calls): rapid triage — pathway, disease relevance, novelty signal, fetch keywords. For screening many complexes.
+- *Full pipeline mode*: deep characterisation + handoff to `chimerax-ppi-analysis`. Passes local AlphaFold `.cif` path via `run_command "open ..."` (not `open_structure` which is RCSB-only).
+- Novelty signal logic: sparse/no corpus coverage on a predicted assembly = High novelty signal (possible new biology), not a failure.
+
+**`skills/chimerax-ppi-analysis/SKILL.md`** — added Phase 1 section for local AlphaFold file handling: use `chimerax:run_command command="open /path/to/file.cif"` instead of `open_structure` for local files. Added note on pLDDT < 70 = lower interface geometry confidence.
+
+**`skills/orchestrator/SKILL.md`** — Stage 0 now has two variants:
+- Stage 0A: disease → target (pathway-expert, unchanged)
+- Stage 0B: protein list → target (complex-expert, new). Handles local AlphaFold path passthrough to Stage 1. CAMPAIGN RECOMMENDATION template extended with `Novelty signal` and `Structure source` fields.
+
+**`scripts/convert_complex_list.py`** — converts the project's complex metadata JSON (`info/meta_for_website_v20_041125_with_hash_corrected.json`, 518 complexes) into NCBI keyword queries. Uses GO terms and disease associations already embedded in the metadata — no UniProt API calls needed. Generates per-complex queries: pairwise interaction, full-complex AND, GO-term pathway, disease association, structure. Output: clean `complex_list.json` + `complex_keywords.yaml`.
+
+**`scripts/generate_complex_keywords.py`** — generic keyword generator for arbitrary complex lists (CSV or JSON input). Uses UniProt API for GO-term lookup when the metadata doesn't already have it. Slower alternative to `convert_complex_list.py` for new complex lists.
+
+#### Database expansion plan
+
+Input metadata: `info/meta_for_website_v20_041125_with_hash_corrected.json`
+- 518 predicted/known complexes, with `GeneNames`, `UniProtIDs`, `cluster_top5GO`, `Cluster_OT_top10_Disease` already populated
+
+Generated keyword files (committed to `info/`):
+- `info/complex_list.json` — clean complex list (id, proteins, go_terms, diseases)
+- `info/complex_keywords.yaml` — 4499 unique NCBI queries
+
+**Dry run benchmark** (100 keywords, `--max 50`, `require_tiered_journal: true`):
+- 94 seconds search time
+- 49 unique papers found (heavy deduplication — many queries overlap)
+- Extrapolated full run: ~70 min search, ~500–2000 new papers before curation
+
+**To run the full fetch overnight** — see instructions at end of this entry.
+
+#### Rate limiting (confirmed safe for overnight run)
+NCBI requests are rate-limited in `src/search.py`:
+- Without `NCBI_API_KEY`: 0.34s delay between requests (~3 req/s — NCBI's stated limit)
+- With `NCBI_API_KEY` in `.env`: auto-speeds to 0.1s delay (~10 req/s — NCBI's key tier)
+- Europe PMC: 0.5s delay per request
+- Both clients use `requests.Session` with `User-Agent: LiteratureSearchAgent/1.0`
+
+Setting `NCBI_API_KEY` in `.env` would reduce the 70-min search time to ~25 min. Free key available at: https://www.ncbi.nlm.nih.gov/account/
+
+#### Keyword generation workflow (for future reference)
+
+Starting from the project's complex metadata JSON:
+
+```powershell
+# 1. Generate clean complex list + keyword YAML from complex metadata
+python scripts/convert_complex_list.py `
+    --input info/meta_for_website_v20_041125_with_hash_corrected.json `
+    --output-list info/complex_list.json `
+    --output-keywords info/complex_keywords.yaml
+
+# 2. Merge complex keywords into a config copy (deduplicates against existing)
+python scripts/merge_config_keywords.py
+# Output: config_with_complexes.yaml  (base keywords + 4499 complex queries)
+
+# 3. Dry run to check paper counts before committing to a full fetch
+python scripts/fetch_papers.py --config config_with_complexes.yaml --dry-run --max 50
+
+# 4. Full overnight fetch + curate + vector rebuild
+python scripts/fetch_papers.py --config config_with_complexes.yaml
+python scripts/curate_papers.py
+python scripts/ingest_vectors.py --rebuild
+```
+
+For a generic protein list not in the complex metadata (e.g. a new set from a collaborator):
+```powershell
+python scripts/generate_complex_keywords.py --input my_proteins.csv --output-keywords my_keywords.yaml
+python scripts/merge_config_keywords.py --keywords my_keywords.yaml
+python scripts/fetch_papers.py --config config_with_complexes.yaml
+```
+
+#### Known issue: keyword specificity causing zero results
+
+Several generated keywords returned 0 results, likely because:
+- Queries combine two gene symbols AND a pathway/function term, all restricted to `[Title/Abstract]`
+- Gene symbols for less-studied proteins rarely appear together in a paper's title or abstract
+- GO-derived phrases (e.g. `"semaphorin-plexin signaling pathway"`) are often too verbose for T/A matching
+
+**To revisit:** Consider a less restrictive fallback strategy in `convert_complex_list.py`:
+- Drop the GO-phrase queries (keep pairwise interaction + cancer + structure queries which are simpler)
+- Or switch some queries from `[Title/Abstract]` to full-text / no-field-restriction for obscure gene pairs
+- Or add a `[MeSH Terms]` alternative for disease terms
+- Run a post-hoc analysis: after a full fetch, identify which queries returned 0 hits and flag those complexes for alternative search strategies (e.g. UniProt function text search, STRING database, preprint servers)
+
+#### Pending after overnight run
+1. Run `curate_papers.py` on new downloads
+2. Run `ingest_vectors.py --rebuild` (required to migrate LanceDB schema to include `study_category` column — not yet done)
+3. Test `complex-expert` skill against newly curated papers
+4. Audit zero-hit keywords and refine query strategy if coverage is thin
+
+---
+
 ## Sprint 4 — Expert Skills
 
 ### Session 2026-03-31

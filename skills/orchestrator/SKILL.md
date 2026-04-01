@@ -2,15 +2,16 @@
 name: orchestrator
 description: >
   Sequence the full protein-protein interaction design pipeline across four expert
-  skills: target selection (pathway-expert, conditional), structural analysis
-  (chimerax-ppi-analysis), literature analysis (molecular-biology-expert), and design
-  input generation (protein-design-script). Synthesises a go/no-go campaign
+  skills: target selection (pathway-expert OR complex-expert, conditional), structural
+  analysis (chimerax-ppi-analysis), literature analysis (molecular-biology-expert), and
+  design input generation (protein-design-script). Synthesises a go/no-go campaign
   recommendation before committing to design compute.
   Trigger on: "run the full pipeline", "design campaign for [target]", "orchestrate",
   "start the design workflow", "full analysis of [target]", "go from structure to
   design", or when a PDB ID is provided and the user asks to run the complete workflow.
-  Also trigger when a disease or cancer type is provided without a specific PPI target,
-  in which case Stage 0 (pathway-expert) runs first to identify the target.
+  Also trigger when a disease or cancer type is provided without a specific PPI target
+  (Stage 0 = pathway-expert), or when a set of proteins / predicted complex is the
+  starting point (Stage 0 = complex-expert).
   Requires: ChimeraX MCP tools (for Stage 1) and literature-db MCP server (for Stage 0 and 2).
 ---
 
@@ -24,7 +25,8 @@ proceed.
 ## Pipeline Overview
 
 ```
-Stage 0: Target Selection (conditional) →  pathway-expert
+Stage 0: Target Selection (conditional) →  pathway-expert  [disease → target]
+                                    OR  →  complex-expert  [proteins → target]
 Stage 1: Structural Analysis            →  chimerax-ppi-analysis
 Stage 2: Literature Analysis            →  molecular-biology-expert
 Stage 3: Go/No-Go Synthesis             →  CAMPAIGN RECOMMENDATION (this skill)
@@ -44,18 +46,20 @@ Before starting, verify tool availability:
 
 ## Stage 0: Target Selection (Conditional)
 
-**Run Stage 0 only when the user has provided a disease or cancer context without
-specifying a PPI target or PDB ID.**
+Stage 0 has two variants depending on the starting point. Choose the right one:
 
 **Skip conditions — proceed directly to Stage 1:**
 - User provides a PDB ID (e.g. "PDB 3KYS")
 - User provides a protein pair (e.g. "YAP/TEAD4", "KRAS/RAF")
 - A PPI target has already been agreed upon earlier in the conversation
+- User provides a path to a pre-existing pathway expert or complex expert report (see below)
 
-**Trigger conditions for Stage 0:**
-- User provides only a disease or cancer type (e.g. "mesothelioma", "PDAC")
-- User asks "which node should we target in [pathway] in [disease]?"
-- No specific complex is named
+---
+
+### Stage 0A: Disease → Target (pathway-expert)
+
+**Trigger**: User provides only a disease or cancer type without a specific PPI target.
+(e.g. "mesothelioma", "PDAC", "which node in the Hippo pathway?")
 
 Invoke the **pathway-expert** skill with the disease context and any pathway hint
 from the user.
@@ -71,16 +75,60 @@ If the pathway-expert reports no corpus coverage (all scores < 0.20 and fallback
   fetch/curate pipeline with the suggested keywords first
 - Do not proceed to Stage 1 without a confirmed PPI target
 
+---
+
+### Stage 0B: Proteins → Target (complex-expert)
+
+**Trigger**: User provides a set of protein/gene names or a predicted complex without
+specifying which interface to target or which PDB to use.
+(e.g. "run the full pipeline for ARFRP1/JTB/SYS1/ARL1", "design a binder for this complex")
+
+Invoke the **complex-expert** skill in **Full pipeline mode** with the protein list.
+
+Wait for the full `## COMPLEX CHARACTERISATION REPORT` to be produced. Then extract:
+- **Recommended interface** — the ProteinA–ProteinB pair to target from `NOVELTY ASSESSMENT`
+- **PDB ID or local AlphaFold path** — from `THERAPEUTIC HISTORY` or provided by the user
+- **Novelty signal** — carry forward to Stage 3 CAMPAIGN RECOMMENDATION
+- **Fetch keywords** — if coverage was Sparse or None, flag for the user before proceeding
+
+If the complex-expert finds no PDB and no local AlphaFold file:
+- Report this to the user
+- Do not proceed to Stage 1 without a structure
+- Suggest: run the fetch keywords first, then re-run; or provide the AlphaFold file path
+
+**Local AlphaFold file handling at Stage 1:**
+If Stage 0B identified a local AlphaFold file (user-provided path), pass it to the
+chimerax-ppi-analysis skill explicitly:
+> "Use `run_command 'open /path/to/file.cif'` instead of `open_structure` for this structure."
+
+---
+
+### Pre-existing Stage 0 report
+
+If the user provides a file path to a prior pathway-expert or complex-expert output
+(e.g. `"the pathway expert output is at results/yap_pathway.md"`), read the file
+using the filesystem MCP tool and treat its contents as the Stage 0 output.
+
+- For a pathway-expert report: extract `RECOMMENDED PPI TARGET`, `REDUNDANCY AND RESISTANCE RISKS`
+- For a complex-expert report: extract `NOVELTY ASSESSMENT → Recommended interface`,
+  `THERAPEUTIC HISTORY → Known structures`, and novelty signal
+
+Do not re-run the skill.
+
+---
+
 Present a one-paragraph summary and confirm the target with the user:
 
-> "Stage 0 complete. Recommended target: [complex]. Suggested PDB: [ID].
+> "Stage 0 complete. Recommended target: [complex / interface]. Suggested PDB: [ID or 'AlphaFold local file'].
 > Proceed to structural analysis?"
 
 ---
 
 ## Stage 1: Structural Analysis
 
-Invoke the **chimerax-ppi-analysis** skill with the target PDB ID and complex name.
+Invoke the **chimerax-ppi-analysis** skill with the target PDB ID (or local AlphaFold
+file path) and complex name. If Stage 0B produced a local AlphaFold path, pass the
+instruction to use `run_command "open /path/to/file.cif"` rather than `open_structure`.
 If the user has not specified which protein is the target chain, let the chimerax skill
 ask — do not anticipate this yourself.
 
@@ -192,7 +240,9 @@ different target protein, different approach), and do not proceed to Stage 4.
 - Structural tractability: <Excellent / Good / Marginal / Poor>
 - Literature tractability: <Excellent / Good / Marginal / Poor>
 - Corpus confidence: <High / Medium / Low> (<N> relevant papers found)
-- Pathway redundancy risks: <from Stage 0 pathway-expert, or "Stage 0 not run")
+- Pathway redundancy risks: <from Stage 0 pathway-expert, or "Stage 0 not run">
+- Novelty signal: <High / Medium / Low / N/A — from Stage 0 complex-expert, or "Stage 0 not run">
+- Structure source: <RCSB PDB [ID] | AlphaFold local file | AlphaFold DB>
 
 ### CROSS-VALIDATED HOTSPOTS
 

@@ -81,12 +81,30 @@ are available.
 
 ## Phase 1: Load and Inspect
 
-### Open the structure and inspect in two calls
+### Opening the structure — RCSB vs local AlphaFold file
 
+**RCSB PDB ID** (default — 4-character code like `3KYS`):
 ```
 chimerax:open_structure  identifier=<PDB_ID>
 chimerax:get_model_info  model_id=#1
 ```
+
+**Local AlphaFold file** (user provides a `.cif` or `.pdb` path):
+`open_structure` is for RCSB only. For local files, use `run_command`:
+```
+chimerax:run_command  command="open /path/to/complex_001.cif"
+chimerax:get_model_info  model_id=#1
+```
+The path must be the absolute path as provided by the user. Use forward slashes
+or double backslashes on Windows. After opening, the workflow is identical —
+`get_model_info` will return the chain layout from the loaded file.
+
+> **Note for AlphaFold multimer predictions**: chain confidence (pLDDT) varies
+> across the structure. Treat interface regions with pLDDT < 70 cautiously —
+> the predicted interface geometry may be less reliable. Note this in the report
+> if the structure is an AF prediction.
+
+### Inspect in two calls (same for RCSB and local files)
 
 From the model info, determine:
 - How many chains are present and what each one is (use UniProt descriptions)
