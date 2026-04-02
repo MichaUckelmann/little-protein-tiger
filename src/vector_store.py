@@ -89,6 +89,7 @@ class VectorStore:
                         "biochemistry",
                         "pathway_biology",
                         "structural_biology",
+                        "host_pathogen",
                         "clinical",
                         "review",
                     ],
@@ -161,8 +162,19 @@ class VectorStore:
 
     @staticmethod
     def _build_embed_text(fp: dict) -> str:
-        """Concatenate situational_context_hook + pathway context (if present) + claim values."""
+        """Concatenate protein names + situational_context_hook + pathway context (if present) + claim values."""
         hook = (fp.get("paper_metadata") or {}).get("situational_context_hook") or ""
+
+        # Prepend all protein names so gene symbols are reliably findable by vector search
+        protein_names: list[str] = []
+        for p in (fp.get("entities") or {}).get("proteins") or []:
+            if isinstance(p, str) and p:
+                protein_names.append(p)
+        for kf in (fp.get("key_findings") or []):
+            for p in (kf.get("protein_pair") or []):
+                if isinstance(p, str) and p and p not in protein_names:
+                    protein_names.append(p)
+        proteins_str = f"Proteins: {', '.join(protein_names)}." if protein_names else ""
 
         # Enrich embed text with pathway context for pathway_biology papers
         pathway_str = ""
@@ -203,7 +215,7 @@ class VectorStore:
                 c if c.endswith(".") else c + "." for c in claims
             )
 
-        sections = [s for s in [hook, pathway_str, findings_str] if s.strip()]
+        sections = [s for s in [proteins_str, hook, pathway_str, findings_str] if s.strip()]
         return "\n\n".join(sections).strip()
 
     @staticmethod

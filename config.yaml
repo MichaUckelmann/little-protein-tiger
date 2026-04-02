@@ -75,6 +75,9 @@ search:
   ncbi_pmc: true
   # Europe PMC covers preprints (bioRxiv / medRxiv)
   europepmc_sources: ["ppr"]
+  # Semantic Scholar: discovers OA papers outside PMC and provides citation counts
+  # for ranking.  Requires S2_API_KEY env var for best rate limits.
+  semantic_scholar: true
 
 paths:
   pdf_dir: "data/pdfs"
@@ -98,6 +101,7 @@ curation:
 rate_limits:
   europepmc_delay_s: 0.5
   ncbi_delay_s: 0.34        # ~3 req/s without API key; auto-speeds to 0.1 with NCBI_API_KEY
+  s2_delay_s: 1.1           # ~1 req/s without S2_API_KEY; auto-reduces to 0.2 with key
   download_delay_s: 1.0
   max_retries: 3
 

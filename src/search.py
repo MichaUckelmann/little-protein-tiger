@@ -12,12 +12,13 @@ EUROPEPMC_BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 PMC_AWS_BASE   = "https://pmc-oa-opendata.s3.amazonaws.com"
 NCBI_ESEARCH   = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 NCBI_ESUMMARY  = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
-
-# These URL patterns consistently serve HTML redirect pages rather than PDFs
-_UNRELIABLE_PDF_HOSTS = (
-    "europepmc.org/articles",        # ?pdf=render endpoint — aborts connection
-    "ncbi.nlm.nih.gov/pmc/articles", # ?tool=EBI redirect — returns HTML
+S2_BULK_SEARCH = "https://api.semanticscholar.org/graph/v1/paper/search/bulk"
+S2_FIELDS      = (
+    "paperId,title,abstract,year,authors,journal,publicationTypes,"
+    "externalIds,openAccessPdf,citationCount,isOpenAccess"
 )
+
+from .downloader import UNRELIABLE_PDF_HOSTS as _UNRELIABLE_PDF_HOSTS
 
 
 # ---------------------------------------------------------------------------
@@ -382,4 +383,173 @@ class NCBIPMCClient:
                     all_papers[key] = p
             time.sleep(self.delay_s)
         logger.info(f"[NCBI] {len(all_papers)} unique PMC papers")
+        return list(all_papers.values())
+
+
+# ---------------------------------------------------------------------------
+# Semantic Scholar bulk search client
+# ---------------------------------------------------------------------------
+
+def _to_s2_query(keyword: str) -> str:
+    """
+    Convert an NCBI-style keyword (with [Title/Abstract] tags) to
+    Semantic Scholar bulk-search query syntax.
+
+    S2 uses: space = AND, | = OR, - = NOT, "phrase" = exact phrase.
+    """
+    # Strip field tags
+    q = re.sub(r"\[Title/Abstract\]", "", keyword, flags=re.IGNORECASE)
+    # OR → |  (must come before AND removal)
+    q = re.sub(r"\bOR\b", "|", q, flags=re.IGNORECASE)
+    # AND → space (all terms required by default)
+    q = re.sub(r"\bAND\b", " ", q, flags=re.IGNORECASE)
+    # NOT → -
+    q = re.sub(r"\bNOT\b", "-", q, flags=re.IGNORECASE)
+    # Tidy whitespace around |
+    q = re.sub(r"\s*\|\s*", " | ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
+
+
+class SemanticScholarClient:
+    """
+    Searches Semantic Scholar via the bulk-search endpoint.
+
+    Discovers papers that have open-access PDFs outside the PMC Open Access
+    subset, and provides citation counts to improve ranking for all papers.
+
+    Set S2_API_KEY in the environment for higher rate limits (10 req/s vs
+    ~1 req/s unauthenticated).
+    """
+
+    def __init__(self, api_key: str | None = None, delay_s: float = 1.1):
+        self.api_key = api_key or os.getenv("S2_API_KEY")
+        # With a key the burst limit is much higher; stay conservative
+        self.delay_s = 0.2 if self.api_key else delay_s
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": "LiteratureSearchAgent/1.0"})
+        if self.api_key:
+            self.session.headers["x-api-key"] = self.api_key
+
+    def _fetch_bulk(self, query: str, token: str | None, limit: int) -> dict:
+        params: dict = {
+            "query": query,
+            "fields": S2_FIELDS,
+            "limit": min(limit, 1000),
+            "publicationTypes": "JournalArticle,Review",
+            "sort": "citationCount:desc",
+        }
+        if token:
+            params["token"] = token
+        resp = self.session.get(S2_BULK_SEARCH, params=params, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _to_paper(self, record: dict) -> Paper | None:
+        title = (record.get("title") or "").strip()
+        if not title:
+            return None
+
+        ext   = record.get("externalIds") or {}
+        doi   = ext.get("DOI") or None
+        pmcid_raw = ext.get("PubMedCentral") or None
+        pmcid = (f"PMC{pmcid_raw}" if pmcid_raw and not str(pmcid_raw).startswith("PMC")
+                 else pmcid_raw) or None
+        pmid  = str(ext.get("PubMed") or "") or None
+
+        authors = [
+            a.get("name", "") for a in (record.get("authors") or [])
+            if a.get("name")
+        ]
+        journal_info = record.get("journal") or {}
+        journal  = journal_info.get("name") or None
+        year     = record.get("year") or None
+        abstract = record.get("abstract") or None
+        pub_types = record.get("publicationTypes") or []
+        citation_count = record.get("citationCount")
+        s2_id = record.get("paperId")
+
+        # Determine source and PDF URL
+        oa_pdf    = record.get("openAccessPdf") or {}
+        oa_status = (oa_pdf.get("status") or "").upper()
+        green_url = oa_pdf.get("url") if oa_status == "GREEN" else None
+        is_oa     = bool(record.get("isOpenAccess"))
+
+        if pmcid:
+            # Only include PMC papers that are actually open-access — non-OA
+            # PMC IDs exist but their files aren't in the S3 OA bucket (→ 404).
+            if not is_oa:
+                return None
+            source   = Source.pmc
+            pdf_url, xml_url = _pmc_aws_urls(pmcid)
+            # Store a GREEN repository URL as fallback: downloader tries it
+            # if the AWS PDF/XML both 404 (paper in PMC but not yet on S3).
+            # Exclude known-unreliable hosts that return HTML instead of PDFs.
+            if green_url and not green_url.startswith("https://pmc-oa-opendata") \
+                    and not any(bad in green_url for bad in _UNRELIABLE_PDF_HOSTS):
+                pdf_url = green_url
+                xml_url = None
+        else:
+            # No PMC ID — only usable if there's a GREEN (repository) PDF.
+            # GOLD/HYBRID/BRONZE are publisher-hosted and return 403.
+            if not green_url:
+                return None
+            source   = Source.semantic_scholar
+            pdf_url  = green_url
+            xml_url  = None
+
+        return Paper(
+            doi=doi, pmcid=pmcid, pmid=pmid, title=title,
+            authors=authors, journal=journal, year=year, abstract=abstract,
+            source=source, pub_types=pub_types,
+            pdf_url=pdf_url, xml_url=xml_url,
+            citation_count=citation_count,
+            s2_paper_id=s2_id,
+        )
+
+    def search_keyword(self, keyword: str, max_results: int) -> list[Paper]:
+        query = _to_s2_query(keyword)
+        logger.debug(f"[S2] Query: {query}")
+        papers: list[Paper] = []
+        seen_keys: set[str] = set()
+        token: str | None = None
+
+        while len(papers) < max_results:
+            try:
+                data = self._fetch_bulk(query, token, max_results - len(papers))
+            except requests.RequestException as e:
+                logger.warning(f"S2 search failed for '{keyword}': {e}")
+                break
+
+            for record in data.get("data") or []:
+                paper = self._to_paper(record)
+                if paper is None:
+                    continue
+                key = paper.doi or paper.pmcid or paper.title
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                papers.append(paper)
+                if len(papers) >= max_results:
+                    break
+
+            token = data.get("token")
+            if not token:
+                break
+            time.sleep(self.delay_s)
+
+        return papers
+
+    def search(self, keywords: list[str], max_results: int) -> list[Paper]:
+        all_papers: dict[str, Paper] = {}
+        for kw in keywords:
+            logger.info(f"[S2]       Searching: '{kw}'")
+            results = self.search_keyword(kw, max_results)
+            logger.info(f"  -> {len(results)} results")
+            for p in results:
+                key = p.doi or p.pmcid or p.title
+                if key not in all_papers:
+                    all_papers[key] = p
+            time.sleep(self.delay_s)
+        logger.info(f"[S2] {len(all_papers)} unique papers")
         return list(all_papers.values())

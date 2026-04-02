@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database import Database
 from src.models import DownloadStatus
-from src.search import EuropePMCClient, NCBIPMCClient
+from src.search import EuropePMCClient, NCBIPMCClient, SemanticScholarClient
 from src.downloader import download_papers
 from src.ranking import score_paper, is_conference_abstract, is_tiered_journal
 
@@ -58,10 +58,12 @@ def main():
     max_results  = args.max or config["search"]["max_results_per_query"]
     epmc_sources = config["search"].get("europepmc_sources", ["ppr"])
     use_ncbi     = config["search"].get("ncbi_pmc", True)
+    use_s2       = config["search"].get("semantic_scholar", False)
     pdf_dir      = Path(config["paths"]["pdf_dir"])
     db_path      = Path(config["paths"]["db_path"])
     delay_epmc   = config["rate_limits"]["europepmc_delay_s"]
     delay_ncbi   = config["rate_limits"].get("ncbi_delay_s", 0.34)
+    delay_s2     = config["rate_limits"].get("s2_delay_s", 1.1)
     delay_dl     = config["rate_limits"]["download_delay_s"]
     max_retries  = config["rate_limits"]["max_retries"]
     quality_cfg  = config.get("quality", {})
@@ -97,6 +99,25 @@ def main():
             key = p.doi or p.pmcid or p.title
             if key not in all_papers:
                 all_papers[key] = p
+
+    # --- Semantic Scholar search (OA PDFs outside PMC + citation counts) ---
+    if use_s2:
+        logger.info("=== Semantic Scholar (bulk search) ===")
+        s2 = SemanticScholarClient(delay_s=delay_s2)
+        s2_papers = s2.search(keywords=keywords, max_results=max_results)
+        new_s2 = 0
+        enriched = 0
+        for p in s2_papers:
+            key = p.doi or p.pmcid or p.title
+            if key in all_papers:
+                # Enrich existing paper with citation count from S2
+                if p.citation_count is not None and all_papers[key].citation_count is None:
+                    all_papers[key].citation_count = p.citation_count
+                    enriched += 1
+            else:
+                all_papers[key] = p
+                new_s2 += 1
+        logger.info(f"[S2] {new_s2} new papers added, {enriched} existing papers enriched with citation count")
 
     papers = list(all_papers.values())
     logger.info(f"Total unique papers across all sources: {len(papers)}")

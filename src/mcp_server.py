@@ -60,9 +60,11 @@ def search_corpus(query: str, top_k: int = 5, study_type: str = "", study_catego
                         experimental_in_vivo, experimental_structural,
                         computational, review, case_study. Leave empty for no filter.
         study_category: Optional domain filter — one of: biochemistry,
-                        pathway_biology, structural_biology, clinical, review.
-                        Use pathway_biology to find disease mechanism and target
-                        selection papers. Leave empty for no filter.
+                        pathway_biology, structural_biology, host_pathogen,
+                        clinical, review. Use pathway_biology to find disease
+                        mechanism and target selection papers. Use host_pathogen
+                        for bacterial/viral virulence and AMR papers. Leave
+                        empty for no filter.
     """
     tool_input: dict = {"query": query, "top_k": top_k}
     if study_type:

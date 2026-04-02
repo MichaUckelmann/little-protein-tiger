@@ -7,6 +7,7 @@ class Source(str, Enum):
     pmc = "pmc"
     biorxiv = "biorxiv"
     medrxiv = "medrxiv"
+    semantic_scholar = "semantic_scholar"
 
 
 class DownloadStatus(str, Enum):
@@ -38,6 +39,8 @@ class Paper(BaseModel):
     pdf_path: Optional[str] = None
     download_status: DownloadStatus = DownloadStatus.pending
     priority_score: float = 0.5        # 0.0 = exclude (conference abstract), 1.0 = top journal
+    citation_count: Optional[int] = None   # from Semantic Scholar; used as ranking signal
+    s2_paper_id: Optional[str] = None      # Semantic Scholar paperId for deduplication
     curated: bool = False
     curation_status: CurationStatus = CurationStatus.pending
     curated_at: Optional[str] = None

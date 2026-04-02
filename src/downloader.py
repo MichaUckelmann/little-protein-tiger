@@ -13,6 +13,12 @@ from .database import Database
 PDF_MAGIC = b"%PDF"
 XML_SIGNATURES = (b"<?xml", b"<article", b"<pmc-articleset", b"<!DOCTYPE")
 
+# URL patterns that consistently return HTML redirect pages instead of actual files
+UNRELIABLE_PDF_HOSTS = (
+    "europepmc.org/articles",        # ?pdf=render endpoint — aborts connection
+    "ncbi.nlm.nih.gov/pmc/articles", # ?tool=EBI redirect — returns HTML
+)
+
 
 def _safe_stem(paper: Paper) -> str:
     """Generate a safe base filename stem (without extension) for a paper."""
@@ -63,7 +69,7 @@ def _try_download(url: str, dest_stem: Path, session: requests.Session, timeout:
         content_type = resp.headers.get("Content-Type", "")
         if "html" in content_type.lower():
             logger.debug(f"HTML content-type at {url}")
-            return None
+            return NOT_FOUND  # definitive — retrying won't change the response
 
         dest_stem.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest_stem.with_suffix(".tmp")
@@ -172,7 +178,9 @@ def download_papers(
                 aws_xml_urls.append(aws_xml)
 
         # 2. pdf_url from search (preprints / Europe PMC fulltextRepo)
-        if paper.pdf_url and not paper.pdf_url.startswith("https://pmc-oa-opendata"):
+        if (paper.pdf_url
+                and not paper.pdf_url.startswith("https://pmc-oa-opendata")
+                and not any(bad in paper.pdf_url for bad in UNRELIABLE_PDF_HOSTS)):
             urls_to_try.append(("pdf", paper.pdf_url))
 
         # 3. AWS XML fallback (v1, v2)

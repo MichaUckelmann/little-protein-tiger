@@ -9,6 +9,7 @@ excluded from downloads entirely — they are conference abstract collections
 that have PMCIDs but no individual article files on AWS.
 """
 
+import math
 import re
 from .models import Paper, Source
 
@@ -22,6 +23,8 @@ _TIER1_JOURNALS: set[str] = {
     # Multidisciplinary flagships
     "nature", "science", "cell", "pnas",
     "proceedings of the national academy of sciences",
+    "new england journal of medicine","n engl j med",
+    "n"
     # Nature family
     "nature chemical biology", "nat chem biol",
     "nature structural & molecular biology", "nat struct mol biol",
@@ -30,6 +33,7 @@ _TIER1_JOURNALS: set[str] = {
     "nature cell biology", "nat cell biol",
     "nature medicine", "nat med",
     "nature cancer", "nat cancer",
+    "nature genetics", "nat genet"
     # Cell Press
     "cell chemical biology","cell chem biol",
     "molecular cell", "mol cell",
@@ -47,6 +51,19 @@ _TIER1_JOURNALS: set[str] = {
     "science translational medicine", "sci transl med",
     "nucleic acids research", "nucleic acids res",
     "cancer discovery", "cancer discov",
+    "nature microbiology", "nat microbiol",
+    "cell host & microbe", "cell host microbe",
+    "fems microbiology reviews","fems microbiol rev",
+    "current opinion microbiology", "curr opin microbiol",
+    "the isme journal", "imse j",
+    "circulation", 
+    "jama the journal of the american medical association", "jama",
+    "cardiovascular research", "cardiovasc res",
+    "blood", 
+    "nature immunology", "nat immunol",
+    "cell systems", "cell sys", 
+    "genes & development", "genes dev",
+    "molecular systems biology", "mol syst biol"
 }
 
 # Tier 2 — solid domain-specific journals
@@ -149,6 +166,17 @@ def _recency(year: int | None) -> float:
     return max(0.5, min(1.0, 0.7 + (year - 2015) * 0.03))
 
 
+def _citation_boost(citation_count: int | None) -> float:
+    """
+    Log-normalised citation signal: 0.0 (no cites) → 1.0 (≥10 000 cites).
+    log10(10 000) / 4 = 1.0, so papers with >10k citations are capped at 1.0.
+    Returned as a small additive boost (≤0.08) so it never dominates journal tier.
+    """
+    if not citation_count:
+        return 0.0
+    return min(1.0, math.log10(max(1, citation_count)) / 4.0)
+
+
 def is_conference_abstract(pub_types: list[str]) -> bool:
     types_lower = {t.lower() for t in pub_types}
     return bool(types_lower & _CONFERENCE_PUB_TYPES)
@@ -173,14 +201,17 @@ def score_paper(
         # Preprints: capped at 0.55 regardless of other factors
         type_w = _pub_type_weight(paper.pub_types)
         rec    = _recency(paper.year)
-        return round(min(0.55, 0.55 * type_w * rec), 3)
+        base   = min(0.55, 0.55 * type_w * rec)
+        boost  = 0.08 * _citation_boost(paper.citation_count)
+        return round(min(0.55, base + boost), 3)
 
     j_tier  = _journal_tier(paper.journal, t1, t2)
     type_w  = _pub_type_weight(paper.pub_types)
     rec     = _recency(paper.year)
 
-    # Weighted combination: journal tier dominates
+    # Weighted combination: journal tier dominates; citation count adds a small boost
     score = 0.55 * j_tier + 0.30 * type_w + 0.15 * rec
+    score = min(1.0, score + 0.08 * _citation_boost(paper.citation_count))
     return round(score, 3)
 
 
