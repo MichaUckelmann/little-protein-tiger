@@ -205,13 +205,74 @@ Some papers exist as open-access PDFs but are not indexed in Europe PMC or PubMe
 
 ---
 
+---
+
+## Session 2026-04-02 — CLI Skill Runner, Structure Tools, Token Management
+
+### Core architectural shift: IDE-independent pipeline
+
+The pipeline previously required Claude Desktop or Claude Code — MCP tools were only accessible via the IDE. Removing the ChimeraX dependency (see below) cleared the last blocker: all tools are now pure Python, so skills can run via direct API calls without any IDE.
+
+### Pure Python structure analysis (`src/structure_tools.py`, `src/structure_tools_server.py`)
+
+Replaced the ChimeraX MCP dependency for all geometric analysis with a standalone Python library:
+
+- **`src/structure_tools.py`** — five public functions: `analyze_interface`, `get_residue_contacts`, `check_mutation_clash`, `get_sequence_map`, `score_surface_patch`
+  - Parsing: gemmi (mmCIF auth_seq_id → label_seq_id mapping, .pdb fallback via biopython)
+  - SASA/BSA: `Bio.PDB.SASA.ShrakeRupley` (replaces freesasa — no C compiler needed on Windows)
+  - Distances: scipy KDTree for fast heavy-atom contact queries
+  - Interaction classification: electrostatic, h_bond, h_bond_candidate, hydrophobic, pi_stacking_candidate, vdw_contact
+  - Clash detection: Cβ heuristic with sidechain reach radii table
+  - Patch scoring: KD hydrophobicity, spatial spread (Cα RMSD), Excellent/Good/Marginal/Poor rating
+- **`src/structure_tools_server.py`** — FastMCP wrapper; tool names prefixed `tool_` to distinguish from literature tools
+- **`scripts/launch_structure_tools.py`** — venv-aware launcher, mirrors `launch_mcp.py` pattern
+- **`.mcp.json`** updated: `structure-tools` server added alongside `literature-db`
+
+**Note on freesasa**: failed to build on Windows (`Microsoft Visual C++ 14.0 required`). `Bio.PDB.SASA.ShrakeRupley` is equivalent algorithm with pre-built wheel.
+
+**Key advantage over ChimeraX**: Claude receives exact numerical outputs (BSA floats, contact distances, interaction types) rather than parsing ChimeraX text output. More reliable and model-agnostic.
+
+### Skills updated
+
+- **`skills/chimerax-ppi-analysis/`** renamed → **`skills/complex-structure-analysis/`** — all cross-skill references updated via sed
+- **`skills/complex-structure-analysis/SKILL.md`** rewritten: all ChimeraX tool calls replaced with structure-tools MCP tools; `tool_analyze_interface` single call covers full interface data; `tool_score_surface_patch` for quantitative hotspot scoring; pre-flight RCSB download via curl
+- **`skills/binder-optimizer/SKILL.md`** — new skill: takes a predicted binder-target complex, proposes 4 independent single-point mutations (no combined round-1 submissions — non-additivity makes them uninterpretable), validates with `tool_check_mutation_clash`, emits 4 AF3 JSON objects; 5 mutation reasoning rules + hard constraints (no PRO, no GLY in turns, binder chain only)
+- **`skills/pathway-expert/SKILL.md`** — added Phase 3.5 query expansion: extracts gene symbols and mutation terms from retrieved fingerprints, runs ≤2 follow-up searches with genuinely new terms only
+- **`skills/complex-expert/SKILL.md`** — added Phase 2.5 query expansion: extracts pathway names and disease context terms (not gene symbols, which were the original query input)
+- **`skills/complex-structure-analysis/SKILL.md`** — fixed B-factor/pLDDT confusion: skill now identifies `structure_source` (experimental / af3_boltz / rfdiffusion) from user input; defaults to `experimental`; never thresholds or flags B-factors on experimental structures
+- **`skills/chimerax-visualization/SKILL.md`** — new skill: generates a commented `.cxc` ChimeraX script from a prior analysis report; target chain in focus (steel blue cartoon + amber hotspot surfaces), binder washed out (`transparency 70 cartoons` + `transparency 85 surfaces`), H-bonds in gold, labels on top hotspot residues, `supersample 3` save. No MCP tools needed — single LLM call, cheapest skill in the pipeline.
+
+### CLI skill runner (`src/skill_runner.py`, `scripts/run_skill.py`)
+
+- **`src/skill_runner.py`** — `SkillRunner` class: loads `skills/<name>/SKILL.md` as system prompt; orchestrator mode appends all sub-skill SKILL.mds; agentic loop with separate Claude (Anthropic SDK) and Gemini (REST API) paths; tool definitions in one list (`_TOOL_DEFS`), converted to `input_schema` (Claude) or `functionDeclarations` (Gemini) format; 7 tools routed to direct Python calls (no MCP subprocess); lazy VectorStore init; AA normalisation for `tool_check_mutation_clash`; DOI prefix normalisation for `get_fingerprint`
+- **`scripts/run_skill.py`** — argparse CLI: `--skill`, `--query` (`@file` redirect), `--model claude|gemini`, `--model-id`, `--context`, `--output`, `--max-iter`, `--max-tokens`
+- Default models: `claude-sonnet-4-6` / `gemini-3.1-flash-lite-preview`
+
+### Token management
+
+- **Rate limit retry**: `anthropic.RateLimitError` caught in `_run_claude`; exponential backoff (65s, 130s); re-raises after 3 attempts
+- **`search_corpus` token reduction**: `execute_search_tool()` returns `{result_text, papers}`; stripped `papers` array in `_execute_tool` — the structured list duplicates the formatted text and adds ~1,500 tokens/paper × ~28 papers per pathway-expert run (~42k tokens saved per run)
+- **`get_fingerprint` token reduction**: stripped `curation_metadata`, `methodology`, `contradictions_and_negative_results` — never read by any skill; saves ~500–1k tokens per fingerprint
+- **Per-call token budget** (`max_input_tokens`, default 100k): API response token counts logged after every call; if `input_tokens > max_input_tokens`, run aborts with clear error message showing cumulative usage and remediation steps. Exposed as `--max-tokens` in CLI.
+- **Architecture note**: context between pipeline stages should be passed via `--context` (final report, 3–5k tokens), not by chaining in a single conversation (tool-call history, 100k+ tokens). Each skill run starts with a fresh context window.
+
+### README updated
+
+- Title: `Literature Search Agent` → `Little Protein Tiger`
+- Added `GEMINI_API_KEY` to `.env` table
+- Updated pipeline overview diagram
+- New section 5: full `run_skill.py` documentation with skill table, examples, options table
+- Updated project structure
+
+---
+
 ## TODO
 
 - [ ] **Local Qwen3.5-9B curation provider** — code is in place (`--provider local`), needs a GPU with ~18–20 GB VRAM (fp16) or ~10 GB (fp8 quantized). Server command: `vllm serve Qwen/Qwen3.5-9B --port 8000 --reasoning-parser qwen3 --language-model-only [--quantization fp8]`
-- [ ] **Expert system: molecular biology expert skill** — write `skills/molecular-biology-expert/SKILL.md` that uses `search_corpus` + `get_fingerprint` MCP tools to reason over biological effects, feasibility, prior art, and drawbacks for a given target complex. Mirror the structured-report output format of `chimerax-ppi-analysis`.
-- [ ] **Expert system: orchestrator skill** — a meta-skill that sequences the three experts (structural → literature → design), defines handoff points, and synthesises a go/no-go recommendation for a design campaign.
+- [x] **Expert system: molecular biology expert skill** — implemented
+- [x] **Expert system: orchestrator skill** — implemented
+- [x] **Refine chimerax-ppi-analysis skill** — replaced with `complex-structure-analysis` (pure Python structure tools, no ChimeraX dependency)
 - [ ] **Expert system: results/iteration expert** — future skill for analysing design run outputs and experimental results to close the design-test-iterate loop.
-- [ ] **Refine chimerax-ppi-analysis skill** — review in light of the multi-expert architecture; ensure its structured report output is explicitly formatted for consumption by both the molecular biology expert and the protein-design-script skill.
 - [ ] **`get_fingerprint` usability** — the MCP tool currently requires an exact DOI. Consider adding a fallback that calls `search_corpus` with `top_k=1` when no exact match is found, so Claude can resolve fuzzy paper references.
 - [ ] **Ingest workflow documentation** — add a note to README or CLAUDE.md: after `curate_papers.py --reprocess`, run `ingest_vectors.py --rebuild` to refresh the vector index.
 - [ ] **Expert system: clinical trial expert (planned sprint)** — given a target protein identified by the pipeline, looks up clinical trials via a two-hop query: (1) OpenTargets GraphQL API to map target → known drugs/compounds, (2) ClinicalTrials.gov API v2 to fetch trials by compound. Implemented as a new MCP tool `search_clinical_trials(target_protein)` returning structured trial data (phase, status, primary endpoints, outcomes). Skill synthesises only from API response — prompt must explicitly forbid drawing on training-data knowledge of trials. Output block: trials found (by phase), status breakdown, endpoints used, outcomes met/not met, failure modes if terminated. Slots into pipeline after mol-bio expert, before orchestrator GO/NO-GO. Key interpretation rule: "no trials found" = possible white space, not a red flag; distinguish clearly from "tried and failed".

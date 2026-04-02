@@ -25,6 +25,13 @@ Output: `## PPI ANALYSIS REPORT` with MODEL-READY HOTSPOT formats for BoltzGen a
 
 ## Pre-flight: Obtain a Local Structure File
 
+Before calling any tools, identify the **structure source** from the user's message:
+- `experimental` — X-ray crystallography, cryo-EM, NMR, or any RCSB PDB ID not explicitly described as a prediction. **This is the default if not stated.**
+- `af3_boltz` — explicitly described as AlphaFold3, Boltz, or another confidence-scored prediction model
+- `rfdiffusion` — RFDiffusion or other diffusion-based design output (B-factors are placeholders, not confidence)
+
+The B-factor column in experimental structures contains crystallographic B-factors, not pLDDT. **Never interpret B-factors as confidence scores unless the user explicitly states this is an AF3/Boltz output.**
+
 **Local file** (CIF or PDB): use the path directly.
 
 **RCSB PDB ID**: download first, then use the local path:
@@ -63,8 +70,11 @@ From the result, extract and note:
 - `chain_a_interface_residues[]` — per-residue: type, hydrophobicity, contacts, gap_flag, BSA
 - `chain_a_categories` — pre-computed hydrophobic/aromatic/charged/polar breakdown
 - `interface.bsa_per_residue[]` — BSA contribution per residue (key for hotspot ranking)
-- `plddt_at_interface` — confidence scores; note residues < 70 if AF prediction
-- `low_confidence_residues` — pre-flagged list
+- `plddt_at_interface` — B-factor column values. Interpret as pLDDT **only** if
+  `structure_source` is `af3_boltz`. For `experimental` structures these are
+  crystallographic B-factors — do not flag, threshold, or reason over them as
+  confidence scores. For `rfdiffusion` they are placeholders — ignore entirely.
+- `low_confidence_residues` — pre-flagged list; relevant only for `af3_boltz` sources.
 
 ### If chain IDs are unknown
 
@@ -170,6 +180,7 @@ types from residue names — all of these are now in the tool results.
 
 ### COMPLEX OVERVIEW
 - Structure: <file path or PDB ID>
+- Structure source: <experimental | af3_boltz | rfdiffusion>
 - Target chain: <id> (<protein name>)
 - Partner chain: <id> (<protein name>)
 - BSA total: <value> Å²
@@ -209,7 +220,10 @@ Chain <id>: <same breakdown>
 - Primary target region: <region name and rating>
 - Key target residues: <list>
 - Partner residues to mimic: <list>
-- Caveats: <low pLDDT, disorder, deep pockets inaccessible to peptides, etc.>
+- Confidence / B-factors: <"pLDDT not applicable — experimental structure (B-factors in file)" |
+  "pLDDT not applicable — RFDiffusion output (B-factors are placeholders)" |
+  list of low-pLDDT residues (< 70) if af3_boltz>
+- Caveats: <disorder, deep pockets inaccessible to peptides, missing loops, etc.>
 
 ### MODEL-READY HOTSPOTS
 
@@ -256,9 +270,13 @@ select_hotspots:
   They are low-priority design targets unless BSA is high (buried but few contacts =
   large flat contact, not deeply engaged).
 
-- **pLDDT < 70 at interface**: for AF predictions, flag these regions. Interface
-  geometry may be unreliable; note in the report and weight literature evidence more
-  heavily for those positions.
+- **B-factor ≠ pLDDT**: the B-factor column is only a confidence score for AF3/Boltz
+  outputs. For experimental structures (X-ray, cryo-EM, NMR) and for RFDiffusion outputs,
+  never threshold or flag B-factor values — they carry different physical meaning.
+  Default to `experimental` if the source is not stated by the user.
+
+- **pLDDT < 70 at interface** (af3_boltz only): flag these regions — interface geometry
+  may be unreliable. Weight literature evidence more heavily for those positions.
 
 - **score_surface_patch spread > 15 Å**: the patch is too dispersed for a single
   cyclic peptide to engage. Either sub-select a tighter cluster or recommend
