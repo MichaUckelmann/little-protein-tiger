@@ -8,10 +8,10 @@ description: >
 ---
 # Generation of input scripts for protein designing AI models to generate cyclic peptides or mini-protein binders targeting specified PPI sites.
  
-Should be used together with a PPI analysis uploaded as .md file from the chimerax-ppi-analysis skill. Hotspots and target chain are specified in the input analysis. User should provide the path to the PDB/CIF file holding the target chain.
+Should be used together with a PPI analysis uploaded as .md file from the complex-structure-analysis skill. Hotspots and target chain are specified in the input analysis. User should provide the path to the PDB/CIF file holding the target chain.
  
 ## Prerequisites
-Input is a PPI analysis report from the chimerax-ppi-analysis skill. The report
+Input is a PPI analysis report from the complex-structure-analysis skill. The report
 contains a MODEL-READY HOTSPOTS section with pre-formatted hotspot data for both
 BoltzGen and RFD3 (correct indexing and atom names). Use these directly — do not
 re-derive residue indices.

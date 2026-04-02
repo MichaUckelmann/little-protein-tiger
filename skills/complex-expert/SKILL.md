@@ -5,12 +5,12 @@ description: >
   Searches the curated literature corpus to determine pathway involvement, disease
   relevance, and therapeutic targeting potential. Operates in two modes: Summary mode
   (default — brief biology blurb, ~4–6 tool calls) for rapid triage of many complexes,
-  and Full pipeline mode (deep follow-up — ends with a chimerax-ppi-analysis handoff)
+  and Full pipeline mode (deep follow-up — ends with a complex-structure-analysis handoff)
   for high-value hits. Invoke ONLY when the user explicitly asks for analysis starting
   from a set of proteins or a predicted complex (e.g. "what do we know about the
   ARFRP1/JTB/SYS1/ARL1 complex?", "characterise this complex", "what pathway is this
   in?"). Do NOT invoke for disease-first questions (use pathway-expert) or when a PDB
-  ID is the starting point (use chimerax-ppi-analysis directly).
+  ID is the starting point (use complex-structure-analysis directly).
   Requires: literature-db MCP server.
 ---
 
@@ -122,6 +122,53 @@ From each fingerprint, extract:
 
 ---
 
+## Phase 2.5: Pathway/Disease Term-Expansion Search
+
+This phase runs **only for Sparse coverage** — it is skipped in two cases:
+- **Good coverage** (≥8 papers, score ≥0.35) — the core biology is likely covered; proceed to Phase 3.
+- **None coverage** (all scores < 0.25 or <2 results) — no fingerprints to expand from; proceed to Phase 3 and generate fetch keywords instead.
+
+### What to extract from Phase 2 fingerprints
+
+The user already provided the gene symbols, so re-querying with them adds nothing. Instead,
+extract **new vocabulary** that the fingerprints reveal but the Phase 1 queries did not use:
+
+| Source field | What to extract |
+|---|---|
+| `pathway_context.pathways` | Pathway names not used in Phase 1 queries (e.g. "ARF GTPase cycle", "Golgi trafficking") |
+| `pathway_context.disease_associations[].disease` | Cancer types or disease contexts not in Phase 1 queries |
+| `situational_context_hook` | Biological process terms (e.g. "vesicle budding", "lipid transfer", "membrane tethering") |
+| `pathway_context.upstream_regulators` / `downstream_effectors` | Interacting partners outside the original complex set |
+
+Identify the **2–3 most specific new terms**. Prefer pathway names and biological process
+terms over disease terms, as these are more likely to find mechanistic papers in the corpus.
+
+### Expansion queries (at most 2)
+
+**Expansion Query A — Pathway/process context** (top_k=6):
+```
+search_corpus
+  query="<pathway_name OR biological_process_term> <anchor_protein> mechanism"
+  top_k=6
+```
+
+**Expansion Query B — Disease context** (top_k=5, only if a disease term was identified
+AND no disease-relevant paper was found in Phase 1):
+```
+search_corpus
+  query="<disease_term> <pathway_name OR anchor_protein> cancer dependency"
+  top_k=5
+```
+
+Deduplicate against all DOIs already collected from Phase 1. For any new papers with
+score ≥ 0.25, call `get_fingerprint` and merge their extracted fields into the working
+set before Phase 3.
+
+**Record for output**: how many new unique papers the expansion round added and which
+terms triggered them (reported in the CORPUS SOURCES section of the final output).
+
+---
+
 ## Phase 3: Knowledge Gap Assessment
 
 Before generating output, assess what is NOT known:
@@ -154,7 +201,7 @@ Produce a `## COMPLEX SUMMARY` block. Keep it concise — this is for triage.
 
 **Known / predicted**: <Known complex (characterised in corpus) | Predicted assembly (limited corpus coverage — possible new biology)>
 
-**Corpus coverage**: <Good / Sparse / None> (<N> relevant papers found, best score: <X>)
+**Corpus coverage**: <Good / Sparse / None> (<N> relevant papers found, best score: <X>; expansion round: <ran / skipped — why>; <+N new papers> if ran)
 
 **Pathway involvement**:
 <1–2 sentences: which pathway(s), what role, cite DOI if from corpus. If not found: "Pathway not established in corpus — likely unstudied or novel context.">
@@ -222,9 +269,13 @@ Produce the full `## COMPLEX CHARACTERISATION REPORT`, then hand off to downstre
 - Recommended interface to target: <ProteinA–ProteinB interface, or "unclear — structural analysis needed">
 
 ### CORPUS SOURCES
-| # | Title (truncated) | DOI | Score | Key finding |
-|---|-------------------|-----|-------|-------------|
-| 1 | ...               | ... | ...   | ...         |
+| # | Title (truncated) | DOI | Score | Source round | Key finding |
+|---|-------------------|-----|-------|--------------|-------------|
+| 1 | ...               | ... | ...   | Phase 1 / Expansion | ...   |
+
+- Expansion round: <ran / skipped — reason>
+- Expansion terms used: <pathway names, process terms, disease terms>
+- New papers added by expansion: <N>
 
 ### FETCH KEYWORDS FOR DATABASE EXPANSION
 Run: `python scripts/fetch_papers.py --keywords "<keyword>"`
@@ -239,14 +290,14 @@ Run: `python scripts/fetch_papers.py --keywords "<keyword>"`
 After the COMPLEX CHARACTERISATION REPORT, determine the handoff:
 
 **If a known PDB ID was found in corpus:**
-> "Proceeding to structural analysis. Invoking chimerax-ppi-analysis with PDB [ID],
+> "Proceeding to structural analysis. Invoking complex-structure-analysis with PDB [ID],
 > target interface: [ProteinA / ProteinB]."
-Then invoke **chimerax-ppi-analysis** with that PDB ID and the recommended interface pair.
+Then invoke **complex-structure-analysis** with that PDB ID and the recommended interface pair.
 
 **If no PDB ID found but complex has therapeutic potential:**
 > "No PDB structure found in corpus. Before structural analysis, the database should
 > be expanded using the fetch keywords above. Once curated, run AlphaFold structure
-> analysis: invoke chimerax-ppi-analysis with the local .cif file path."
+> analysis: invoke complex-structure-analysis with the local .cif file path."
 Provide the local AlphaFold path if the user has specified it.
 
 **If novelty signal is High:**
@@ -266,7 +317,7 @@ include it in the chimerax handoff:
 > `run_command 'open /data/alphafold/complex_001.cif'`
 > rather than `open_structure` (which is for RCSB IDs only)."
 
-The chimerax-ppi-analysis skill will handle the rest once the structure is open.
+The complex-structure-analysis skill will handle the rest once the structure is open.
 
 ---
 
@@ -302,3 +353,10 @@ The chimerax-ppi-analysis skill will handle the rest once the structure is open.
   per section maximum.
 - **Always generate fetch keywords**, even for well-covered complexes. The corpus is
   never complete and new structures / mutagenesis data may be missing.
+- **In Phase 2.5, do not re-query with the original gene symbols** — those were already
+  used in Phase 1. The point is to expand into pathway/process vocabulary revealed by
+  the fingerprints. Querying "ARFRP1 ARL1 interaction" again after Phase 1 already did
+  that is wasted calls.
+- **Phase 2.5 is not useful for None-coverage complexes.** If no fingerprints were
+  retrieved, there is nothing to extract expansion terms from. Go straight to fetch
+  keywords and database expansion instead.

@@ -5,10 +5,10 @@ description: >
   feasibility, and design challenges for a protein-protein interaction (PPI) target.
   Use whenever the user asks about the biology of a target complex, known inhibitors,
   what the literature says about a protein pair, or as the second step in the
-  structural → literature → design pipeline after chimerax-ppi-analysis.
+  structural → literature → design pipeline after complex-structure-analysis.
   Trigger on: "what does the literature say about", "prior art for", "known inhibitors
   of", "has anyone targeted", "biology of [complex name]", "feasibility of targeting",
-  "molecular biology analysis", or when a chimerax-ppi-analysis report is present and
+  "molecular biology analysis", or when a complex-structure-analysis report is present and
   the user asks to proceed with the pipeline. Requires the literature-db MCP server
   (search_corpus and get_fingerprint tools).
 ---
@@ -26,7 +26,7 @@ protein design agent.
 Verify that `search_corpus` and `get_fingerprint` tools are available (literature-db
 MCP server must be connected). Both tools will be used extensively.
 
-If a `chimerax-ppi-analysis` report is present in the conversation, read it before
+If a `complex-structure-analysis` report is present in the conversation, read it before
 starting — the PDB ID, hotspot residues, and interface characterization will sharpen
 the literature queries and enable cross-referencing in the report.
 
@@ -203,12 +203,12 @@ List residues that were mutated with minimal effect on binding, if reported.
 These should be avoided as design anchors.
 
 #### Cross-reference with structural report
-If a chimerax-ppi-analysis report is present, explicitly state:
+If a complex-structure-analysis report is present, explicitly state:
 - Which chimerax hotspot residues are **confirmed** by literature
 - Which are **not found** in the corpus (structural prediction only, no experimental validation)
 - Any additional hotspots from literature **not identified** by ChimeraX
 
-If no structural report is present, write: "No chimerax-ppi-analysis report present —
+If no structural report is present, write: "No complex-structure-analysis report present —
 cross-referencing not applicable."
 
 ### FEASIBILITY ASSESSMENT

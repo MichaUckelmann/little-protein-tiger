@@ -3,7 +3,7 @@ name: orchestrator
 description: >
   Sequence the full protein-protein interaction design pipeline across four expert
   skills: target selection (pathway-expert OR complex-expert, conditional), structural
-  analysis (chimerax-ppi-analysis), literature analysis (molecular-biology-expert), and
+  analysis (complex-structure-analysis), literature analysis (molecular-biology-expert), and
   design input generation (protein-design-script). Synthesises a go/no-go campaign
   recommendation before committing to design compute.
   Trigger on: "run the full pipeline", "design campaign for [target]", "orchestrate",
@@ -27,7 +27,7 @@ proceed.
 ```
 Stage 0: Target Selection (conditional) →  pathway-expert  [disease → target]
                                     OR  →  complex-expert  [proteins → target]
-Stage 1: Structural Analysis            →  chimerax-ppi-analysis
+Stage 1: Structural Analysis            →  complex-structure-analysis
 Stage 2: Literature Analysis            →  molecular-biology-expert
 Stage 3: Go/No-Go Synthesis             →  CAMPAIGN RECOMMENDATION (this skill)
 Stage 4: Design Input                   →  protein-design-script
@@ -137,7 +137,7 @@ If the complex-expert finds no PDB and no local AlphaFold file:
 
 **Local AlphaFold file handling at Stage 1:**
 If Stage 0B identified a local AlphaFold file (user-provided path), pass it to the
-chimerax-ppi-analysis skill explicitly:
+complex-structure-analysis skill explicitly:
 > "Use `run_command 'open /path/to/file.cif'` instead of `open_structure` for this structure."
 
 ---
@@ -169,7 +169,7 @@ If the run folder name used a placeholder (disease name), rename it now that the
 
 ## Stage 1: Structural Analysis
 
-Invoke the **chimerax-ppi-analysis** skill with the target PDB ID (or local AlphaFold
+Invoke the **complex-structure-analysis** skill with the target PDB ID (or local AlphaFold
 file path) and complex name. If Stage 0B produced a local AlphaFold path, pass the
 instruction to use `run_command "open /path/to/file.cif"` rather than `open_structure`.
 If the user has not specified which protein is the target chain, let the chimerax skill
