@@ -517,25 +517,86 @@ Each skill now writes a machine-readable block at the end of every report:
 
 `go_recommendation` is the primary go/no-go signal: `GO | CONDITIONAL_GO | NO_GO`.
 
-#### Web deployment plan (brainstorm, not yet implemented)
+#### Web deployment plan
 
-**Architecture:** FastAPI wrapper around `PipelineRunner`, background task per run, file-based project directories, LanceDB stays file-based (no separate DB process needed).
+**Architecture:** FastAPI + Celery/Redis + SQLModel/SQLite + React/Vite frontend + Mol* structure viewer. B2B SaaS, BYOK (user supplies Anthropic API key). Deployed on Hetzner CX32 (~€13/mo).
 
-**Project model:** `projects/{id}/runs/` + `projects/{id}/corpus/` (project-private fingerprints layered over the global corpus at query time). A project represents a disease/target area and accumulates .md reports and corpus expansions over time.
+**Project model:** Each project represents a disease/target area and accumulates corpus + run history over time. Runs are file-based (`web/runs/{id}/`), metadata in SQLite (`web/web.db`). Project-private corpus namespaced by `project_id` in LanceDB.
 
-**LLM cost management:**
-- Launch with BYOK (user supplies Anthropic API key) — zero cost liability, low friction for research users
-- Later: prepaid credits with usage meter and per-stage cost estimate before each run
-- Cache structure analysis results per PDB (output is deterministic enough to reuse within a project)
+**Extended workflow (beyond first-pass design):**
+- Design run (pipeline stages 0–4) → experimental result uploaded (SPR/ITC Kd) → binder-optimizer run → AF3 JSONs for next round
+- Optimizer runs are child `Run` records with `parent_run_id`; lineage tree shown in UI
 
-**Corpus expansion:**
-- Users trigger `fetch_papers.py` queries within a project-specific curation budget (e.g. 20 papers/month free)
-- Curated papers go to project-private corpus first; opt-in "contribute to global" promotes them to shared corpus via a staging/approval step
-- Curation cost: ~$0.02–0.05/paper with Claude Haiku (structured extraction, fast, cheap)
+**LLM cost:** BYOK for private beta (zero cost liability). Later: prepaid credits via Stripe.
 
-**Hosting:** single Hetzner CX32 (4 vCPU, 8GB RAM, ~€13/mo) is sufficient for private beta. Embedding model stays resident in memory; MCP servers spawn as subprocesses per run. Scale to CX42 when running >5 concurrent pipelines.
+**Hosting:** Hetzner CX32 for private beta. Scale to CX42 at >5 concurrent pipelines. Redis via WSL or Docker locally; native on Linux server.
 
-**Build sequence:**
-1. Phase 1 (private beta): FastAPI + BYOK + minimal frontend (query form, polling status, .md download links) + GitHub OAuth
-2. Phase 2: layered corpus search + fetch/curation job queue + curation budget UI
-3. Phase 3: managed credits via Stripe + team projects + usage dashboard
+**Security baseline:** Fernet-encrypted API keys, JWT auth (8h expiry), GitHub OAuth, path-traversal guards on all file routes, audit log table, no query content in logs.
+
+#### Web platform sprint plan (started 2026-04-06)
+
+**Sprint 1 — Backend Foundation** ✅ COMPLETE (2026-04-06)
+- FastAPI app (`web/backend/app.py`) with 22 routes
+- SQLModel schema: User, Project, Run, ExperimentalMeasurement, AuditEvent (`web/backend/models_db.py`)
+- Celery worker tasks: `run_pipeline_task`, `run_optimizer_task` skeleton (`web/backend/tasks.py`)
+- GitHub OAuth + JWT (`web/backend/auth.py`)
+- Fernet BYOK encryption (`web/backend/crypto.py`)
+- Auth-protected CIF serving with PDB-ID validation (`web/backend/routers/structures.py`)
+- SSE status stream at `GET /runs/{id}/status`
+- Dev stack confirmed working: uvicorn + celery --pool=solo + Redis (WSL)
+
+**Sprint 2 — Frontend Core** ✅ COMPLETE (2026-04-06)
+- React + Vite scaffold with react-router-dom, TanStack Query, react-markdown
+- Pages: Login, AuthCallback (/oauth route), Projects, ProjectDetail, RunDetail, Settings
+- Stage progress stepper (StagePanel) + per-stage markdown rendering
+- SSE hook (useRunStatus) via fetch+ReadableStream for live status updates
+- BYOK API key entry in Settings page
+- OAuth flow debugged: Vite proxy intercept issue → fixed with /oauth route + window.location.replace
+
+**Pipeline token issues found and fixed (2026-04-06):**
+- Structure stage was receiving full 00_pathway.md as context (~8k tokens) — now passes empty context (structure_query handoff field is sufficient)
+- Literature stage now passes only 01_structure.md (not pathway + structure combined)
+- `tool_get_sequence_map` was returning full auth_to_string_idx + auth_to_label_idx dicts (~15k tokens per chain) for ALL skills — now stripped to sequence+length for all skills except protein-design-script and binder-optimizer (which actually need the index maps to build AF3 JSONs)
+- max_tokens raised to 200k in tasks.py (structure analysis legitimately hits 100k+ due to tool_analyze_interface output)
+- Rate limiting (429) hits frequently at tier 1 (40k TPM) — consider Anthropic tier upgrade or Haiku/flash-lite for cheaper stages
+
+**TODO — Model selection (implement next session):**
+
+Allow users to choose model per run. Cheapest/fastest option matters for long pipelines.
+
+Available models to expose:
+- `claude-sonnet-4-6` — default, best quality (~$3/MTok in)
+- `claude-haiku-4-5-20251001` — ~10x cheaper, faster, good for corpus-heavy stages
+- `gemini-3.1-flash-lite-preview` — very cheap, already supported in SkillRunner
+
+Implementation plan:
+1. **Backend `Run` model already has `provider` and `model_id` fields** — no schema change needed
+2. **`ProjectDetail.tsx` RunNew form** — add a model selector dropdown:
+   - "Sonnet 4.6 (best quality)"
+   - "Haiku 4.5 (fast + cheap)"
+   - "Gemini Flash Lite (experimental)"
+   - Maps to provider+model_id pairs passed to `POST /projects/{id}/runs`
+3. **`tasks.py` `run_pipeline_task`** — already reads `run.provider` and `run.model_id` and passes to `_TrackedRunner`. No change needed — it already works.
+4. **Gemini BYOK** — currently only Anthropic key stored. For Gemini, add `gemini_key_enc` field to `User` model and a second key entry in Settings. Or: use a single `provider_keys: JSON` field to store multiple keys.
+5. **Per-stage model** — longer-term: allow cheap model for pathway/literature (corpus search, summarisation) and expensive model only for structure (spatial reasoning). Would require changing `PipelineRunner` to accept per-stage model config.
+
+Quick win: just expose the three model options in the run form for now, all stages use the same model. Per-stage routing is a later optimisation.
+
+**Sprint 3 — Structure Viewer**
+- Mol* embedded in run detail
+- Hotspot residues colored from stage 1 handoff
+- Contact table sidebar
+
+**Sprint 4 — Binder Optimizer Workflow**
+- Experimental data entry (SPR/ITC)
+- Optimizer child run submission
+- Run lineage tree component
+
+**Sprint 5 — Corpus Expansion**
+- DOI/PubMed query form → curation Celery task
+- Project-private LanceDB namespace
+
+**Sprint 6 — Production Hardening**
+- Docker Compose bundle (api + worker + redis + nginx)
+- Security headers, rate limiting, audit log middleware
+- Deploy to Hetzner CX32

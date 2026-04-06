@@ -453,6 +453,12 @@ class SkillRunner:
             if name == "tool_get_sequence_map":
                 from src.structure_tools import get_sequence_map
                 result = get_sequence_map(_resolve(input_dict["file_path"]), input_dict["chain"])
+                # auth_to_string_idx and auth_to_label_idx are large index dicts
+                # (~15k tokens per chain) only needed by design/optimizer skills for
+                # AF3 JSON construction. Strip them for all other skills.
+                _NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer"}
+                if self.skill_name not in _NEEDS_INDEX_MAPS:
+                    result = {"sequence": result["sequence"], "length": len(result["sequence"])}
                 return json.dumps(result, indent=2)
 
             if name == "tool_score_surface_patch":

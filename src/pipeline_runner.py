@@ -270,7 +270,9 @@ class PipelineRunner:
             "Identify target and partner chains, map interface hotspot residues for binder design."
         )
         logger.info("Stage 1: complex-structure-analysis")
-        handoff = self._run_stage("complex-structure-analysis", query, context_files, output_file)
+        # Don't pass prior stage context: structure_query already contains everything
+        # the skill needs, and the full pathway.md adds ~8k tokens per LLM call.
+        handoff = self._run_stage("complex-structure-analysis", query, [], output_file)
         result.stages_completed.append("structure")
         result.stage_files["structure"] = output_file
         result.target_complex = handoff.get("target_complex") or result.target_complex
@@ -291,7 +293,10 @@ class PipelineRunner:
             "Cross-reference the structural hotspot residues identified in the structure report."
         )
         logger.info("Stage 2: molecular-biology-expert")
-        handoff = self._run_stage("molecular-biology-expert", query, context_files, output_file)
+        # Pass only the structure report (hotspot residues), not the full pathway report.
+        # The literature_query already encodes the key structural findings.
+        structure_ctx = [f for f in [result.stage_files.get("structure")] if f and f.exists()]
+        handoff = self._run_stage("molecular-biology-expert", query, structure_ctx, output_file)
         result.stages_completed.append("literature")
         result.stage_files["literature"] = output_file
         return handoff
