@@ -456,3 +456,86 @@ Skills serve as "expert mode prompts"; the MCP server makes the literature DB av
 #### Corpus state (end of session)
 - 82 fingerprints indexed in vector DB
 - MCP server implemented, pending first live test after Claude Code restart
+
+---
+
+## Sprint 4 — Programmatic Pipeline Orchestrator
+
+### Session 2026-04-05
+
+#### CLI pipeline orchestrator (`src/pipeline_runner.py`, `scripts/run_pipeline.py`)
+
+**Goal:** automate the full expert chain from a single terminal command, without requiring an interactive Claude session.
+
+**Design:**
+- `PipelineRunner` is a plain synchronous class — no async, no subprocess, no stdout. All output goes to files and a returned `PipelineResult` dataclass. This makes it trivially wrappable in FastAPI background tasks later without changes.
+- Each stage calls `SkillRunner` directly (existing agentic loop), writes a `.md` report, and parses a `### PIPELINE HANDOFF` block from the output.
+- Handoff blocks use `- key: value` bullet lines parsed by regex. Models sometimes wrap this in a code fence — parser handles both formats robustly.
+
+**Stage sequence:**
+```
+Stage 0: pathway-expert       → 00_pathway.md    (PDB ID, target complex)
+Stage 1: complex-structure-analysis → 01_structure.md  (hotspots, BSA, modality)
+Stage 2: molecular-biology-expert   → 02_literature.md (GO/NO_GO, design_query)
+Stage 3: go/no-go decision    → stops or continues (writes 02_campaign_recommendation.md on NO_GO)
+Stage 4: protein-design-script → 03_design_inputs/ (BoltzGen YAML, RFD3 JSON)
+```
+
+**Resume / partial runs:** `--start-from {pathway|structure|literature|design}` with `--context path/to/prior.md` re-seeds the handoff from an existing report. `--pdb ACCESSION` skips the pathway stage entirely.
+
+**Output layout:**
+```
+outputs/{slug}_{date}/
+  00_pathway.md
+  01_structure.md
+  02_literature.md
+  02_campaign_recommendation.md   (only on NO_GO)
+  03_design_inputs/
+    {complex}_boltzgen.yaml
+    {complex}_rfd3.json
+```
+
+**Bug fixed:** first real run showed pathway expert wrote the `### PIPELINE HANDOFF` section inside a markdown code fence, breaking the regex. Fixed in two places:
+1. `_parse_handoff()` now strips ``` fence lines and accepts bare `key: value` in addition to `- key: value`
+2. Added explicit `**IMPORTANT:** Do NOT wrap in a code fence` warnings to all three SKILL.md files
+
+**CLI usage:**
+```bash
+python scripts/run_pipeline.py --query "design PPI inhibitors for antibiotic resistant S. aureus"
+python scripts/run_pipeline.py --query "..." --pdb 4U6V   # skip pathway stage
+python scripts/run_pipeline.py --query "..." --start-from structure \
+    --context outputs/my_run/00_pathway.md --output-dir outputs/my_run/
+```
+
+Exit codes: 0 = success, 1 = pipeline error, 2 = blocked (PDB not found, needs user input).
+
+#### `### PIPELINE HANDOFF` spec added to all skill SKILL.md files
+Each skill now writes a machine-readable block at the end of every report:
+- `pathway-expert`: emits `pdb_id`, `target_complex`, `structure_query`
+- `complex-structure-analysis`: emits `pdb_id`, `target_chain`, `partner_chain`, `target_complex`, `modality`, `bsa_A2`, `tractability`, `literature_query`
+- `molecular-biology-expert`: emits `target_complex`, `tractability`, `go_recommendation`, `go_rationale`, `modality`, `design_query`
+
+`go_recommendation` is the primary go/no-go signal: `GO | CONDITIONAL_GO | NO_GO`.
+
+#### Web deployment plan (brainstorm, not yet implemented)
+
+**Architecture:** FastAPI wrapper around `PipelineRunner`, background task per run, file-based project directories, LanceDB stays file-based (no separate DB process needed).
+
+**Project model:** `projects/{id}/runs/` + `projects/{id}/corpus/` (project-private fingerprints layered over the global corpus at query time). A project represents a disease/target area and accumulates .md reports and corpus expansions over time.
+
+**LLM cost management:**
+- Launch with BYOK (user supplies Anthropic API key) — zero cost liability, low friction for research users
+- Later: prepaid credits with usage meter and per-stage cost estimate before each run
+- Cache structure analysis results per PDB (output is deterministic enough to reuse within a project)
+
+**Corpus expansion:**
+- Users trigger `fetch_papers.py` queries within a project-specific curation budget (e.g. 20 papers/month free)
+- Curated papers go to project-private corpus first; opt-in "contribute to global" promotes them to shared corpus via a staging/approval step
+- Curation cost: ~$0.02–0.05/paper with Claude Haiku (structured extraction, fast, cheap)
+
+**Hosting:** single Hetzner CX32 (4 vCPU, 8GB RAM, ~€13/mo) is sufficient for private beta. Embedding model stays resident in memory; MCP servers spawn as subprocesses per run. Scale to CX42 when running >5 concurrent pipelines.
+
+**Build sequence:**
+1. Phase 1 (private beta): FastAPI + BYOK + minimal frontend (query form, polling status, .md download links) + GitHub OAuth
+2. Phase 2: layered corpus search + fetch/curation job queue + curation budget UI
+3. Phase 3: managed credits via Stripe + team projects + usage dashboard

@@ -18,11 +18,13 @@ Deconstruct the provided paper into a **concise** structured JSON object. The fi
 
 2. **Contextual Hook**: Write a 100–150 word `situational_context_hook` summarising the study's specific experimental environment, target proteins, and key quantitative finding. Example: "In vitro SPR measurements show KRAS binding affinity to RAF RBD domain is reduced from 200 nM to 900 nM for the RBD R59A mutation."
 
-3. **Negative Results**: Explicitly capture what did *not* work or where the hypothesis failed in `contradictions_and_negative_results`.
+3. **PDB Accessions**: Extract every PDB accession code explicitly mentioned in the paper — deposited structures, reference structures, and any codes in methods, data availability, or figure legends. PDB codes are exactly 4 characters (digit + 3 alphanumeric, e.g. 7AHL, 4U6V, 2OI0). Store in `paper_metadata.pdb_accessions`. Use empty list `[]` if none are mentioned. Do NOT infer or guess PDB codes — only include codes that appear verbatim in the paper text.
 
-4. **Entity Mapping**: Identify all key chemical, biological, and mathematical entities.
+4. **Negative Results**: Explicitly capture what did *not* work or where the hypothesis failed in `contradictions_and_negative_results`.
 
-5. **Protein-Protein Interactions**: Map domains and amino acid residues critical for binding. Report affinity measures if available. Populate `protein_pair` and `experimental_context` for each relevant finding. Structural data: X-ray crystallography and cryo-EM structures of protein complexes are evidence of interaction, map amino acid residues and domains in interfaces. 
+5. **Entity Mapping**: Identify all key chemical, biological, and mathematical entities.
+
+6. **Protein-Protein Interactions**: Map domains and amino acid residues critical for binding. Report affinity measures if available. Populate `protein_pair` and `experimental_context` for each relevant finding. Structural data: X-ray crystallography and cryo-EM structures of protein complexes are evidence of interaction, map amino acid residues and domains in interfaces. 
 
 # UNIT CONVERSION RULES
 - `affinities_kd_Molar` and `inhibitory_constant_Ki` MUST be expressed as Molar floats.
@@ -120,7 +122,8 @@ Strict JSON only. No prose. No preamble. No markdown code fences. Output must co
     "title": "string",
     "doi": "string or null",
     "study_type": "enum[experimental_in_vitro, experimental_in_vivo, experimental_structural, computational, review, case_study]",
-    "situational_context_hook": "string (100-150 words)"
+    "situational_context_hook": "string (100-150 words)",
+    "pdb_accessions": ["string"]
   },
   "methodology": {
     "experimental_methods_used": ["string"],

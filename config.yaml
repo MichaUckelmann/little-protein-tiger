@@ -83,6 +83,7 @@ paths:
   pdf_dir: "data/pdfs"
   db_path: "data/literature.db"
   fingerprint_dir: "data/fingerprints"
+  structures_dir: "data/structures"
 
 curation:
   provider: "claude"            # "claude" or "gemini"

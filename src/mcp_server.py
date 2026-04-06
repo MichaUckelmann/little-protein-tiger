@@ -21,7 +21,9 @@ from src.fingerprint_store import load_fingerprint
 from src.vector_store import VectorStore
 
 logger.info("MCP server starting up — pre-importing sentence_transformers...")
-import sentence_transformers  # noqa: F401 — must import before event loop starts to avoid thread deadlock
+import sentence_transformers  # noqa: F401 — must import on main thread before FastMCP starts
+                               # its thread pool; importing from inside run_in_executor causes
+                               # an OpenMP/MKL deadlock with the asyncio event loop.
 logger.info("sentence_transformers imported. Starting MCP server.")
 mcp = FastMCP("literature-db")
 

@@ -49,5 +49,16 @@ os.environ.setdefault("MKL_NUM_THREADS",        "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 sys.path.insert(0, str(root))
+
+# Import mcp_server first — this triggers the module-level
+# `import sentence_transformers` on the main thread, before FastMCP's thread
+# pool starts. Loading it later (lazily, inside a tool call) causes an
+# OpenMP/MKL deadlock with the asyncio event loop on Windows.
+# NOTE: do NOT pre-load model weights here (_get_store()._get_encoder()).
+# Doing so blocks mcp.run() for 30-60 s on cold start and causes Claude
+# Desktop to time out before the MCP handshake completes. The sentence_transformers
+# import above is sufficient to avoid the OpenMP deadlock; model weights load
+# lazily on the first search_corpus call (~0.5 s overhead, acceptable).
 from src.mcp_server import mcp
+
 mcp.run()

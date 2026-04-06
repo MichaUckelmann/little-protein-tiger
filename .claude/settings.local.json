@@ -1,5 +1,7 @@
 {
   "enabledMcpjsonServers": [
-    "literature-db"
-  ]
+    "literature-db",
+    "structure-tools"
+  ],
+  "enableAllProjectMcpServers": true
 }

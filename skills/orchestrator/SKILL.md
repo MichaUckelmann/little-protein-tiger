@@ -12,7 +12,7 @@ description: >
   Also trigger when a disease or cancer type is provided without a specific PPI target
   (Stage 0 = pathway-expert), or when a set of proteins / predicted complex is the
   starting point (Stage 0 = complex-expert).
-  Requires: ChimeraX MCP tools (for Stage 1) and literature-db MCP server (for Stage 0 and 2).
+  Requires: structure-tools MCP server (for Stage 1) and literature-db MCP server (for Stage 0 and 2).
 ---
 
 # Design Campaign Orchestrator
@@ -36,8 +36,9 @@ Stage 4: Design Input                   →  protein-design-script
 ## Prerequisites
 
 Before starting, verify tool availability:
-- **ChimeraX MCP tools** (`chimerax:open_structure`, etc.) — required for Stage 1.
-  If not connected: halt and tell the user to connect ChimeraX before proceeding.
+- **structure-tools MCP tools** (`tool_analyze_interface`, `tool_get_residue_contacts`, etc.) — required for Stage 1.
+  If not connected: halt and tell the user to start the structure-tools MCP server before proceeding
+  (`python scripts/launch_structure_tools.py`).
 - **literature-db MCP tools** (`search_corpus`, `get_fingerprint`) — required for Stage 0 and Stage 2.
   If not connected: note this, offer to run Stage 1 only, and skip Stages 0 and 2 if the
   user agrees.
@@ -70,7 +71,7 @@ saved to a dedicated run folder under `C:\Users\micha\Documents\LittleProteinTig
 |-------|------|
 | Stage 0A (pathway-expert) | `00_target_selection.md` |
 | Stage 0B (complex-expert) | `00_complex_analysis.md` |
-| Stage 1 (chimerax) | `01_structural_analysis.md` |
+| Stage 1 (structure-tools) | `01_structural_analysis.md` |
 | Stage 2 (mol-bio expert) | `02_literature_report.md` |
 | Stage 3 (campaign recommendation) | `03_campaign_recommendation.md` |
 | Stage 4 (design inputs) | `04_design_inputs\` subfolder — written by protein-design-script |
@@ -170,10 +171,10 @@ If the run folder name used a placeholder (disease name), rename it now that the
 ## Stage 1: Structural Analysis
 
 Invoke the **complex-structure-analysis** skill with the target PDB ID (or local AlphaFold
-file path) and complex name. If Stage 0B produced a local AlphaFold path, pass the
-instruction to use `run_command "open /path/to/file.cif"` rather than `open_structure`.
-If the user has not specified which protein is the target chain, let the chimerax skill
-ask — do not anticipate this yourself.
+file path) and complex name. The skill uses the structure-tools MCP server — no ChimeraX
+required. If Stage 0B produced a local AlphaFold path, pass the file path directly.
+If the user has not specified which protein is the target chain, let the
+complex-structure-analysis skill ask — do not anticipate this yourself.
 
 Wait for the full `## PPI ANALYSIS REPORT` to be produced. Then extract:
 
@@ -232,18 +233,18 @@ synthesise signals from both reports and produce a `CAMPAIGN RECOMMENDATION`.
 
 ### Cross-reference hotspots
 
-Compare the chimerax MODEL-READY HOTSPOTS against the literature
+Compare the structure-tools MODEL-READY HOTSPOTS against the literature
 `INTERFACE INSIGHTS FROM LITERATURE` validated residues. Normalise naming conventions
 when comparing (e.g. "Phe69" = "F69" = "PHE69" = "hYAP Phe69" — match on residue
 number + amino acid identity).
 
 Classify each hotspot residue as:
-- **Cross-validated** — confirmed by both ChimeraX interface analysis AND published
+- **Cross-validated** — confirmed by both structure-tools interface analysis AND published
   mutagenesis/structural data in the literature corpus
-- **Structurally predicted only** — in the ChimeraX hotspot list but not found in
+- **Structurally predicted only** — in the structure-tools hotspot list but not found in
   literature corpus (novel, or corpus coverage gap)
 - **Literature-validated only** — in the corpus as a validated residue but not in the
-  ChimeraX hotspot list (may be outside the primary pocket, or from a different structure)
+  structure-tools hotspot list (may be outside the primary pocket, or from a different structure)
 
 ### Go/No-Go rubric
 
@@ -271,7 +272,7 @@ disqualifying. Proceed to Stage 4 with caveats explicitly listed.
 
 **NO-GO** — Either rating Poor AND structural rating Marginal/Poor; zero cross-validated
 hotspots; OR a severe structural blocker: fully disordered target on both sides of the
-complex, interface BSA < 300 Å², or no druggable surface identified by ChimeraX.
+complex, interface BSA < 300 Å², or no druggable surface identified by structure-tools.
 Absence of prior art alone is NEVER a NO-GO reason.
 
 For NO-GO: explain the specific blocker, suggest alternatives (different interface region,
@@ -285,7 +286,7 @@ different target protein, different approach), and do not proceed to Stage 4.
 ### TARGET SUMMARY
 - Complex: <ProteinA / ProteinB>
 - Target chain: <chain ID> (<protein name>)
-- Interface: <BSA> Å² — <modality recommendation from chimerax>
+- Interface: <BSA> Å² — <modality recommendation from structure-tools>
 - Structural tractability: <Excellent / Good / Marginal / Poor>
 - Literature tractability: <Excellent / Good / Marginal / Poor>
 - Corpus confidence: <High / Medium / Low> (<N> relevant papers found)
@@ -296,14 +297,14 @@ different target protein, different approach), and do not proceed to Stage 4.
 ### CROSS-VALIDATED HOTSPOTS
 
 Confirmed by BOTH structural analysis and literature:
-| Residue | ChimeraX evidence | Literature evidence (DOI) | Confidence |
+| Residue | Structure-tools evidence | Literature evidence (DOI) | Confidence |
 |---------|-------------------|---------------------------|------------|
 | ...     | interface contact, hydrophobic core | alanine scan ΔΔG=X kcal/mol | High/Med |
 
 Structurally predicted only (no literature confirmation):
 - <list — note: may be valid, just not yet studied>
 
-Literature-validated only (not in primary ChimeraX hotspot list):
+Literature-validated only (not in primary structure-tools hotspot list):
 - <list — consider expanding the hotspot selection if structurally accessible>
 
 ### PRIOR ART SUMMARY
@@ -334,7 +335,7 @@ After presenting the CAMPAIGN RECOMMENDATION, for GO or CONDITIONAL GO ask:
 
 Invoke the **protein-design-script** skill. Provide it with the combined context:
 
-- From the chimerax report: `MODEL-READY HOTSPOTS` table (with BoltzGen and RFD3
+- From the structure-tools report: `MODEL-READY HOTSPOTS` table (with BoltzGen and RFD3
   formatted blocks), target chain ID, PDB ID, modality recommendation
 - From the mol-bio report: literature-validated residues to prioritise, any residues
   to avoid, known binding epitope to mimic, suggested affinity target
@@ -362,8 +363,9 @@ After Stage 4 completes, present a brief campaign summary:
   compute on a NO-GO target.
 - **Keep stage summaries concise.** The full PPI ANALYSIS REPORT and MOLECULAR BIOLOGY
   REPORT are already in the conversation — do not repeat them. One paragraph per stage.
-- **ChimeraX tools missing at Stage 1 = hard stop.** Structural analysis is the
-  foundation; the pipeline cannot proceed without it.
+- **structure-tools missing at Stage 1 = hard stop.** Structural analysis is the
+  foundation; the pipeline cannot proceed without it. Tell the user to run
+  `python scripts/launch_structure_tools.py` and add it to their MCP config.
 - **literature-db missing at Stage 2 = soft stop.** Offer to run structural-only mode:
   skip Stage 2, produce a limited CAMPAIGN RECOMMENDATION based on structural signals
   only, and flag the missing literature context explicitly.

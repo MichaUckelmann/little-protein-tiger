@@ -34,14 +34,13 @@ The B-factor column in experimental structures contains crystallographic B-facto
 
 **Local file** (CIF or PDB): use the path directly.
 
-**RCSB PDB ID**: download first, then use the local path:
+**RCSB PDB ID**: check `data/structures/<ID>.cif` first — structures cited in the
+literature corpus are pre-downloaded there by `scripts/download_pdb_structures.py`.
+If not present, download on the fly:
 ```
-! curl -o /tmp/<ID>.pdb https://files.rcsb.org/download/<ID>.pdb
+! curl -o data/structures/<ID>.cif https://files.rcsb.org/download/<ID>.cif
 ```
-or for CIF (preferred for AF3-era structures):
-```
-! curl -o /tmp/<ID>.cif https://files.rcsb.org/download/<ID>.cif
-```
+(PDB format if needed: replace `.cif` with `.pdb`)
 
 ---
 
@@ -243,7 +242,20 @@ select_hotspots:
     <chain><auth_resnum>: <atom1>,<atom2>
     <chain><auth_resnum>: <atom1>,<atom2>
 ```
-```
+
+### PIPELINE HANDOFF
+- pdb_id: <PDB accession used>
+- target_chain: <chain ID>
+- partner_chain: <chain ID>
+- target_complex: <ProteinA / ProteinB>
+- modality: <cyclic_peptide | mini_protein | stapled_helix | either>
+- bsa_A2: <integer BSA in Å²>
+- tractability: <Excellent | Good | Marginal | Poor>
+- literature_query: <one sentence — e.g. "Search for published inhibitors and mutagenesis data for {ProteinA}/{ProteinB}. Cross-reference hotspot residues {res1}, {res2}, {res3} on {target_chain_protein}.">
+
+**IMPORTANT:** Write the `### PIPELINE HANDOFF` section as plain bullet lines exactly as shown above.
+Do NOT wrap it in a code fence (no ``` before or after). Do NOT omit the `- ` prefix.
+The programmatic orchestrator parses these lines with a regex — any deviation breaks the pipeline.
 
 ---
 

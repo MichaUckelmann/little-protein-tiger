@@ -58,6 +58,23 @@ keywords:
   - "intracellular peptide delivery[Title/Abstract] AND endosomal escape[Title/Abstract]"
   - "cell penetrating peptide[Title/Abstract] AND miniprotein[Title/Abstract] AND delivery[Title/Abstract]"
 
+  # --- Developmental biology and stem cell reprogrammin ---
+  - "development[Title/Abstract] AND protein-protein interactions[Title/Abstract]"
+  - "signaling networks[Title/Abstract] AND development[Title/Abstract]"
+  - "development[Title/Abstract] AND synthetic biology[Title/Abstract]"
+  - "synthetic developmental biology[Title/Abstract]"
+  - "stem cell reprogramming[Title/Abstract]"
+  - "reprogramming[Title/Abstract] AND protein interactions[Title/Abstract]"
+  - "reprogramming[Title/Abstract] AND singaling networks[Title/Abstract]"
+  - "signaling networks[Title/Abstract] AND stem cell[Title/Abstract]"
+  - "gene regulatory networks[Title/Abstract] AND development[Title/Abstract]"
+  - "synthetic[Title/Abstract] AND gene circuits[Title/Abstract]"
+  - "synthetic[Title/Abstract] AND protein circuits[Title/Abstract]"
+  - "protein circuits[Title/Abstract]"
+  - "membrane protein[Title/Abstract] AND structure[Title/Abstract]"
+  
+
+
 search:
   max_results_per_query: 200
   ncbi_pmc: true

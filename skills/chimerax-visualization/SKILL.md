@@ -96,33 +96,33 @@ transparency #1/<target_chain> 0 cartoons
 
 # Molecular surface on full target interface region
 surface #1/<target_chain>
-color #1/<target_chain> surface #2E86C1
+color #1/<target_chain> #2E86C1 target s
 transparency #1/<target_chain> 50 surfaces
 
 # Hotspot patch: opaque surface + sphere atoms
 color #1/<target_chain>:<hotspot_residues> #E67E22
-color #1/<target_chain>:<hotspot_residues> surface #E67E22
+color #1/<target_chain>:<hotspot_residues> #E67E22 target s
 transparency #1/<target_chain>:<hotspot_residues> 20 surfaces
 show #1/<target_chain>:<hotspot_residues> atoms
 style #1/<target_chain>:<hotspot_residues> sphere
 
 # --- Partner / binder chain: <partner_chain> (ghost) ---
 color #1/<partner_chain> #BDBDBD
-transparency #1/<partner_chain> 70 cartoons
+transparency #1/<partner_chain> 40 cartoons
 surface #1/<partner_chain>
-color #1/<partner_chain> surface #D5D8DC
-transparency #1/<partner_chain> 85 surfaces
+color #1/<partner_chain> #D5D8DC target s
+transparency #1/<partner_chain> 55 surfaces
 
 # --- H-bonds at interface ---
 # (omit this block if no hbond data was in the report)
 hbonds #1 restrict both reveal true color #F4D03F showDist false
 
 # --- Labels on key hotspot residues ---
-label #1/<target_chain>:<label_residues> residues text "{0.name}{0.number}" \
-    color #2C3E50 height 0.6
+label #1/<target_chain>:<label_residues> residues text "{0.label_name}{0.label_number}" color #2C3E50 height 0.6
+
 
 # --- Focus view on hotspot ---
-view #1/<target_chain>:<hotspot_residues> pad 12
+view #1/<target_chain>:<hotspot_residues> pad 0.7
 turn y 15
 
 # --- Save image ---

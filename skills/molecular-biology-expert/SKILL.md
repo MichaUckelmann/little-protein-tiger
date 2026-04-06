@@ -204,9 +204,9 @@ These should be avoided as design anchors.
 
 #### Cross-reference with structural report
 If a complex-structure-analysis report is present, explicitly state:
-- Which chimerax hotspot residues are **confirmed** by literature
+- Which structure-tools hotspot residues are **confirmed** by literature
 - Which are **not found** in the corpus (structural prediction only, no experimental validation)
-- Any additional hotspots from literature **not identified** by ChimeraX
+- Any additional hotspots from literature **not identified** by structure-tools
 
 If no structural report is present, write: "No complex-structure-analysis report present —
 cross-referencing not applicable."
@@ -233,7 +233,7 @@ cross-referencing not applicable."
 
 ### DESIGN RECOMMENDATIONS
 - Suggested binder modality: <cyclic peptide / mini-protein / stapled peptide / other>
-  Reasoning: <based on prior art modality, interface size from chimerax if available,
+  Reasoning: <based on prior art modality, interface size from structural report if available,
   and surface character>
 - Residues to prioritise (literature-validated hotspots): <list with confidence>
 - Residues to avoid as design anchors: <tolerant-of-mutation residues, if known>
@@ -247,7 +247,23 @@ cross-referencing not applicable."
 | # | Title (truncated to 60 chars) | DOI | Study type | Score | Key quantitative finding |
 |---|-------------------------------|-----|------------|-------|--------------------------|
 | 1 | ...                           | ... | ...        | ...   | ...                      |
-```
+
+### PIPELINE HANDOFF
+- target_complex: <ProteinA / ProteinB>
+- tractability: <Excellent | Good | Marginal | Poor>
+- go_recommendation: <GO | CONDITIONAL_GO | NO_GO>
+- go_rationale: <one sentence — the single most decisive reason for the recommendation>
+- modality: <cyclic_peptide | mini_protein | stapled_helix | either>
+- design_query: <one sentence — e.g. "Generate {modality} design inputs for {complex}, PDB {pdb_id}, target chain {chain}. Priority hotspots: {res_list}. Affinity target: {kd}. {key constraint if any}.">
+
+**IMPORTANT:** Write the `### PIPELINE HANDOFF` section as plain bullet lines exactly as shown above.
+Do NOT wrap it in a code fence (no ``` before or after). Do NOT omit the `- ` prefix.
+The programmatic orchestrator parses these lines with a regex — any deviation breaks the pipeline.
+
+Rules for `### PIPELINE HANDOFF`:
+- `go_recommendation` must be exactly one of: `GO`, `CONDITIONAL_GO`, or `NO_GO`. Use the tractability rubric: Excellent/Good → GO; Marginal → CONDITIONAL_GO; Poor → NO_GO.
+- `go_rationale` is a single sentence — the programmatic orchestrator displays this directly to the user.
+- `design_query` is the verbatim query string passed to protein-design-script; include PDB ID, chain, top 3–5 hotspot residues, and suggested affinity target.
 
 ---
 
@@ -280,9 +296,9 @@ traced to a DOI and then to a `source_span` within the full fingerprint.
 - **`get_fingerprint` identifier.** Use the `paper_key` value from search results
   (e.g. `doi:10.7554/eLife.25068`). If the tool requires a bare DOI, strip the
   `doi:` prefix.
-- **Residue name normalisation.** When cross-referencing chimerax hotspots against
-  fingerprint `key_amino_acid_residues`, treat "Phe69", "F69", "PHE 69", and
-  "hYAP Phe69" as equivalent. Match on residue number + one-letter or three-letter
+- **Residue name normalisation.** When cross-referencing structure-tools hotspots
+  against fingerprint `key_amino_acid_residues`, treat "Phe69", "F69", "PHE 69",
+  and "hYAP Phe69" as equivalent. Match on residue number + one-letter or three-letter
   amino acid code.
 - **Corpus bias.** The corpus is focused on biochemistry and biophysics. In vivo
   validation, clinical data, and ADMET properties are rarely in the corpus — flag

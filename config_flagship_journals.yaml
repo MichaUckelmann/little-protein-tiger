@@ -1,0 +1,230 @@
+# ---------------------------------------------------------------------------
+# Flagship Journal Sweep — Nature, Science, Cell (last 10 years, OA only)
+#
+# Target: open-access papers from Nature, Science, and Cell published
+#         between 2016-04-02 and 2026-04-02, filtered to topics relevant
+#         to protein biochemistry and drug target discovery.
+#
+# Usage (dry run first to gauge volume):
+#   python scripts/fetch_papers.py --config config_flagship_journals.yaml --dry-run
+#   python scripts/fetch_papers.py --config config_flagship_journals.yaml
+#
+# Notes:
+#   - Europe PMC and Semantic Scholar are disabled; neither can filter
+#     reliably by journal name.
+#   - The OA filter (open_access OR author_manuscript) is appended
+#     automatically by the NCBI client.
+#   - "Cell"[Journal] will occasionally match Cell sub-journals (Cell
+#     Chemical Biology etc.); these are also tier 1 and welcome.
+#   - Increase max_results_per_query if a topic query is known to be rich.
+# ---------------------------------------------------------------------------
+
+quality:
+  tier1_extra: []
+  tier2_extra: []
+  exclude_pub_types:
+    - "Congress"
+    - "Meeting Abstract"
+  min_score_to_download: 0.7        # tier 1/2 only
+  require_tiered_journal: true      # Nature/Science/Cell are tier 1 → all pass
+
+search:
+  max_results_per_query: 500
+  ncbi_pmc: true
+  europepmc_sources: []             # preprints excluded for this sweep
+  semantic_scholar: false           # no journal filter in S2 client
+
+paths:
+  pdf_dir: "data/pdfs"
+  db_path: "data/literature.db"
+  fingerprint_dir: "data/fingerprints"
+
+curation:
+  provider: "claude"
+  model: "claude-haiku-4-5-20251001"
+  gemini_model: "gemini-3.1-flash-lite-preview"
+  local_model: "Qwen/Qwen3.5-9B"
+  local_endpoint: "http://localhost:8000/v1"
+  max_tokens: 8000
+  max_input_chars: 90000
+  delay_s: 1.0
+  max_retries: 3
+  prompt_path: "curation_prompt.md"
+  schema_path: "extraction_schema.json"
+
+rate_limits:
+  europepmc_delay_s: 0.5
+  ncbi_delay_s: 0.34
+  s2_delay_s: 1.1
+  download_delay_s: 1.0
+  max_retries: 3
+
+vector_store:
+  db_path: "data/vectors"
+  embedding_model: "NeuML/pubmedbert-base-embeddings"
+  top_k_default: 5
+
+# ---------------------------------------------------------------------------
+# Keywords — NCBI query syntax (passed verbatim; [Journal] restricts source)
+#
+# Structure: (journal filter) AND (topic terms) AND (date range)
+# The NCBI client appends:  AND (open_access[filter] OR author_manuscript[filter])
+# ---------------------------------------------------------------------------
+
+keywords:
+
+  # --- Structural biology: cryo-EM ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("cryo-EM"[Title/Abstract] OR "cryo-electron microscopy"[Title/Abstract] OR "cryoEM"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Structural biology: X-ray crystallography ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("X-ray crystallography"[Title/Abstract] OR "crystal structure"[Title/Abstract] OR "X-ray diffraction"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Protein-protein interactions ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("protein-protein interaction"[Title/Abstract] OR "protein complex"[Title/Abstract] OR "binding interface"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Small molecule inhibitors & drug mechanisms ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("small molecule inhibitor"[Title/Abstract] OR "allosteric inhibitor"[Title/Abstract] OR "binding mechanism"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Targeted protein degradation / PROTACs ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("PROTAC"[Title/Abstract] OR "targeted protein degradation"[Title/Abstract] OR "molecular glue"[Title/Abstract] OR "degrader"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Macrocyclic and cyclic peptides ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("macrocyclic peptide"[Title/Abstract] OR "cyclic peptide"[Title/Abstract] OR "stapled peptide"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Transcription factors ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("transcription factor"[Title/Abstract] OR "transcriptional regulation"[Title/Abstract] OR "gene regulation"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Chromatin and epigenetics ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("chromatin remodeling"[Title/Abstract] OR "epigenetics"[Title/Abstract] OR "histone modification"[Title/Abstract] OR "DNA methylation"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Oncogene signaling and cancer therapy ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("oncogene"[Title/Abstract] OR "cancer signaling"[Title/Abstract] OR "tumor microenvironment"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Tumor suppressors and apoptosis ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("tumor suppressor"[Title/Abstract] OR "apoptosis"[Title/Abstract] OR "cell death"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- KRAS and RAS-MAPK signaling ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("KRAS"[Title/Abstract] OR "RAS signaling"[Title/Abstract] OR "RAF MEK ERK"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Hippo / YAP / TEAD pathway ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("Hippo pathway"[Title/Abstract] OR "YAP"[Title/Abstract] OR "TEAD"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Innate immunity and interferon signaling ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("innate immunity"[Title/Abstract] OR "interferon signaling"[Title/Abstract] OR "pattern recognition receptor"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- cGAS-STING pathway ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("cGAS"[Title/Abstract] OR "STING"[Title/Abstract] OR "cyclic dinucleotide"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- GPCR structure and signaling ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("GPCR"[Title/Abstract] OR "G protein-coupled receptor"[Title/Abstract] OR "receptor structure"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Kinase structure and inhibitor resistance ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("kinase inhibitor"[Title/Abstract] OR "drug resistance"[Title/Abstract] OR "kinase structure"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Ubiquitin, proteasome and E3 ligases ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("ubiquitin"[Title/Abstract] OR "E3 ligase"[Title/Abstract] OR "proteasome"[Title/Abstract] OR "ubiquitination"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Membrane proteins and transporters ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("membrane protein"[Title/Abstract] OR "ion channel"[Title/Abstract] OR "transporter"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Protein folding, misfolding and aggregation ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("protein folding"[Title/Abstract] OR "protein misfolding"[Title/Abstract] OR "amyloid"[Title/Abstract] OR "chaperone"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Antibiotic resistance ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("antibiotic resistance"[Title/Abstract] OR "antimicrobial resistance"[Title/Abstract] OR "multidrug resistance"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Antimicrobial peptides and novel antibiotics ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("antimicrobial peptide"[Title/Abstract] OR "novel antibiotic"[Title/Abstract] OR "bactericidal"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- MASLD / MASH / fatty liver disease ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("MASLD"[Title/Abstract] OR "MASH"[Title/Abstract] OR "NAFLD"[Title/Abstract] OR "NASH"[Title/Abstract] OR "non-alcoholic fatty liver"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- Lipid metabolism and SREBP / cholesterol ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("SREBP"[Title/Abstract] OR "cholesterol biosynthesis"[Title/Abstract] OR "lipid metabolism"[Title/Abstract] OR "SCAP"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- RNA splicing and post-transcriptional regulation ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("RNA splicing"[Title/Abstract] OR "spliceosome"[Title/Abstract] OR "RNA binding protein"[Title/Abstract] OR "post-transcriptional"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- CRISPR genome editing and therapeutic applications ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("CRISPR"[Title/Abstract] OR "genome editing"[Title/Abstract] OR "base editing"[Title/Abstract] OR "prime editing"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])
+
+  # --- De novo protein design and AlphaFold ---
+  - >-
+    ("Nature"[Journal] OR "Science"[Journal] OR "Cell"[Journal])
+    AND ("de novo protein design"[Title/Abstract] OR "AlphaFold"[Title/Abstract] OR "protein structure prediction"[Title/Abstract])
+    AND ("2016/04/02"[PDAT] : "2026/04/02"[PDAT])

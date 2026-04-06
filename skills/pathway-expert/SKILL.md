@@ -151,6 +151,31 @@ expansion round added and which expansion terms triggered them.
 
 ## Phase 4: Synthesise and Output Report
 
+### 4a — Inferred PPI reasoning (run before writing the report)
+
+For every dysregulated node where `prior_therapeutic_targeting` is null or "None found
+in corpus", explicitly reason through the following before writing the report:
+
+1. **Interaction necessity**: Does this protein's known pathway role require it to
+   physically engage a specific partner to exert its disease-relevant activity?
+   Use `pathway_logic`, `upstream_regulators`, `downstream_effectors`, and
+   `key_findings` as evidence sources.
+2. **Consequence of disruption**: Would breaking that interaction predictably attenuate
+   the dysregulated output (e.g. loss of complex formation → loss of downstream
+   signalling, loss of transcriptional co-activation, failure to relay a
+   pathological signal)?
+3. **Interaction knowability**: Is the specific binding partner named or strongly
+   implied in the corpus (e.g. a co-activator, scaffold, receptor partner)?
+   Do not infer a generic "this protein must bind something" — name the partner.
+
+If all three conditions are met, label this node **[PATHWAY INFERRED]** in the report.
+If genetic dependency is also confirmed, label it **[BIOLOGICALLY JUSTIFIED]**.
+If prior therapeutic targeting is documented in the corpus, label it **[VALIDATED]**.
+
+A node may carry only one label — use the highest tier supported by evidence.
+
+---
+
 Produce the full `## PATHWAY BIOLOGY REPORT` using **only information retrieved from
 the corpus**. Do not hallucinate pathway details. If a section cannot be filled from
 retrieved fingerprints, write "Not found in corpus."
@@ -161,16 +186,16 @@ retrieved fingerprints, write "Not found in corpus."
 ## PATHWAY BIOLOGY REPORT
 
 ### DISEASE CONTEXT
-- Disease / cancer subtype: <name>
+- Disease / indication: <name>
 - Pathway(s) implicated: <list from pathway_context.pathways across papers>
-- Primary oncogenic mechanism: <mechanism from disease_associations — cite DOI + source_span>
-- Frequency of pathway activation: <mutation_frequency if stated, else "not stated in corpus">
+- Primary disease mechanism: <mechanism from disease_associations — cite DOI + source_span>
+- Frequency of pathway dysregulation: <mutation_frequency if stated, else "not stated in corpus">
 
 ### PATHWAY MAP
-- Upstream suppressors / regulators: <list with mutation types in disease — from upstream_regulators + disease_associations>
+- Upstream suppressors / regulators: <list with alteration types in disease — from upstream_regulators + disease_associations>
 - Core cascade logic: <pathway_logic from retrieved fingerprints, or reconstruct from disease_associations>
 - Effectors / transcription factors: <from downstream_effectors>
-- Known downstream transcriptional targets: <from downstream_effectors or key_findings>
+- Known downstream targets: <from downstream_effectors or key_findings>
 
 ### DYSREGULATED NODES ASSESSMENT
 
@@ -183,30 +208,65 @@ For each candidate target node aggregated from target_nodes across all fingerpri
 - Prior therapeutic strategies: <prior_therapeutic_targeting, or "None found in corpus">
 - Suggested PDB structures: <suggested_pdb_structures, or "None mentioned">
 - Targetability note: <assess: intracellular vs extracellular; PPI vs enzymatic; accessible interface?>
+- Inferred PPI opportunity: <If prior_therapeutic_targeting is absent: reason explicitly —
+  does this protein require a specific named partner interaction to propagate the
+  dysregulated signal? State the partner, the interaction evidence, and the predicted
+  consequence of disruption. If the three conditions in Phase 4a are not all met,
+  write "Insufficient evidence to infer specific PPI target.">
 
-### RECOMMENDED PPI TARGET
+### TARGET OPPORTUNITY LANDSCAPE
 
-Based on the evidence above, the highest-priority PPI for intervention is:
+Present 2–3 PPI candidates, each assigned an evidence tier from Phase 4a.
+List highest tier first. Within the same tier, rank by PDB availability.
+
+For each candidate:
+
+#### [<TIER>] <ProteinA / ProteinB>
+- **Evidence basis**: <1–2 sentences citing the specific corpus evidence — genetic
+  dependency result, pathway logic, prior drug program, or inferred interaction necessity>
+- **What makes it attractive**: <therapeutic rationale — pathway position, druggable interface, unmet need>
+- **Key uncertainty**: <what is not yet established — no therapeutic precedent, no structure, redundancy risk>
+- **Suggested PDB ID(s)**: <verbatim from fingerprint fields only; "Not found in corpus" if absent>
+
+Tier definitions for the header labels:
+- [VALIDATED]           — Prior therapeutic targeting documented in corpus
+- [BIOLOGICALLY JUSTIFIED] — Genetic dependency confirmed; interaction necessity supported
+                             by pathway evidence; no therapeutic precedent in corpus
+- [PATHWAY INFERRED]    — No genetic dependency data; but named interaction is required
+                          for disease-relevant pathway output per corpus logic
+
+### PRIMARY RECOMMENDATION
+
+State which candidate from the TARGET OPPORTUNITY LANDSCAPE is recommended for
+the downstream pipeline, and why (1–2 sentences balancing evidence strength,
+structural tractability, and novelty value). If the user has provided a constraint
+(e.g. "focus on unexplored targets"), weight accordingly.
 
 - **Target complex**: <ProteinA / ProteinB>
-- **Rationale**: <2–3 sentences: why this node, why this interaction, what evidence supports it>
-- **Suggested PDB ID(s)**: <from suggested_pdb_structures or known structures — list all available>
-- **Proposed next step**: Run complex-structure-analysis on PDB <ID>, target chain = <protein>
+- **Evidence tier**: <[VALIDATED] / [BIOLOGICALLY JUSTIFIED] / [PATHWAY INFERRED]>
+- **Suggested PDB ID(s)**: <verbatim from corpus; "Not found in corpus" if absent —
+  provide RCSB search terms and ask user to confirm before proceeding>
+- **Proposed next step**: Run complex-structure-analysis on PDB <ID>
+  (only if PDB confirmed from corpus; otherwise await user input)
 
-Selection criteria (apply in order):
+Selection criteria (apply in order, but surface all tiers in the landscape regardless):
 1. Genetic dependency confirmed (CRISPR essential in disease-relevant lines) — strongest evidence
-2. Pathway position as a convergence node (multiple upstream suppressors feed into it)
-3. Prior therapeutic targeting attempts — validates the surface is engageable
-4. Known PDB structure available — required for the downstream chimerax step
-5. Extracellular or interface-accessible — prefer over deep intracellular enzymatic sites
+2. Pathway position as a convergence node (multiple upstream alterations feed into it)
+3. Prior therapeutic targeting attempts — validates the interface is engageable
+4. Inferred interaction necessity — named partner, corpus-supported pathway logic,
+   predictable consequence of disruption (see Phase 4a)
+5. Known PDB structure available — required for the downstream chimerax step
+6. Accessible interface — prefer extracellular or surface-exposed over buried enzymatic sites
 
-If no clear recommendation can be made from corpus data alone, state this explicitly and
+If no recommendation can be made from corpus data alone, state this explicitly and
 suggest the user run `python scripts/fetch_papers.py` with specific pathway keywords.
 
 ### REDUNDANCY AND RESISTANCE RISKS
 - <List from pathway_context.redundancy_risks across all retrieved fingerprints>
 - <Note any compensatory proteins that might rescue loss of the recommended target>
 - <Flag if dual-targeting may be required>
+- <For [PATHWAY INFERRED] candidates: note that absence of therapeutic precedent
+  also means resistance liabilities are less characterised — flag this explicitly>
 
 ### CORPUS COVERAGE ASSESSMENT
 - Papers with study_category=pathway_biology found: <N>
@@ -226,20 +286,36 @@ suggest the user run `python scripts/fetch_papers.py` with specific pathway keyw
 | # | Title (truncated) | DOI | Study type | Category | Key node |
 |---|-------------------|-----|------------|----------|----------|
 | 1 | ...               | ... | ...        | ...      | ...      |
-```
+
+### PIPELINE HANDOFF
+- pdb_id: <PDB accession from corpus (pdb_accessions or suggested_pdb_structures fields only), or NOT_FOUND>
+- target_complex: <ProteinA / ProteinB>
+- structure_query: <one sentence — e.g. "Analyze PDB {pdb_id} at data/structures/{pdb_id}.cif. Target chain {chain} ({ProteinA}). Partner chain {chain} ({ProteinB}). Identify hotspot residues for {modality} design.">
+
+**IMPORTANT:** Write the `### PIPELINE HANDOFF` section as plain bullet lines exactly as shown above.
+Do NOT wrap it in a code fence (no ``` before or after). Do NOT omit the `- ` prefix.
+The programmatic orchestrator parses these lines with a regex — any deviation breaks the pipeline.
+
+Rules for `### PIPELINE HANDOFF`:
+- `pdb_id` must come from `paper_metadata.pdb_accessions` or `pathway_context.target_nodes[].suggested_pdb_structures` in retrieved fingerprints. Write `NOT_FOUND` if nothing found — never guess.
+- `structure_query` is the verbatim query string passed to complex-structure-analysis by the programmatic orchestrator; make it self-contained (include the local file path `data/structures/{pdb_id}.cif`).
 
 ---
 
 ## Handoff Contract
 
-The `RECOMMENDED PPI TARGET` section is the primary handoff to downstream skills:
+The `PRIMARY RECOMMENDATION` (within TARGET OPPORTUNITY LANDSCAPE) is the primary
+handoff to downstream skills:
 
-- **→ complex-structure-analysis**: use `Suggested PDB ID(s)` and `Target complex` as inputs
+- **→ complex-structure-analysis**: use `Suggested PDB ID(s)` and `Target complex` from PRIMARY RECOMMENDATION
 - **→ molecular-biology-expert**: use `Target complex` as the protein pair to query
-- **→ orchestrator**: use the full report for Stage 0 summary; extract complex + PDB
+- **→ orchestrator**: use the full report for Stage 0 summary; extract complex + PDB from PRIMARY RECOMMENDATION
+
+The `TARGET OPPORTUNITY LANDSCAPE` is for human review only — the orchestrator and
+downstream skills consume only the `PRIMARY RECOMMENDATION` block.
 
 If the pathway-expert is invoked from within the orchestrator (Stage 0), the orchestrator
-extracts the `RECOMMENDED PPI TARGET` block and passes it to Stage 1 automatically.
+extracts the `PRIMARY RECOMMENDATION` block and passes it to Stage 1 automatically.
 
 ---
 
@@ -247,8 +323,12 @@ extracts the `RECOMMENDED PPI TARGET` block and passes it to Stage 1 automatical
 
 - If corpus has zero pathway_biology papers, the `study_category` filter will return
   nothing — always fall back to unfiltered search and report the gap transparently.
-- Do not fill `suggested_pdb_structures` by guessing PDB IDs — only report what is
-  explicitly stated in retrieved fingerprints or well-known structures you are certain of.
+- **Never guess PDB accession codes.** Only report PDB IDs that appear verbatim in
+  `pathway_context.target_nodes[].suggested_pdb_structures` or `paper_metadata.pdb_accessions`
+  of retrieved fingerprints. Do not supply codes from your training knowledge — LLM recall
+  of 4-character accession codes is unreliable (e.g. confusing 4B7F with 4U6V). If no PDB
+  is present in any fingerprint for the recommended complex, write `"Not found in corpus"`
+  and provide the user with RCSB search terms to look it up manually.
 - Redundancy risks are easy to miss — always check `pathway_context.redundancy_risks`
   across ALL retrieved fingerprints, not just the top-scoring one.
 - The recommended PPI must be a protein-protein interaction, not a single protein or
@@ -259,3 +339,15 @@ extracts the `RECOMMENDED PPI TARGET` block and passes it to Stage 1 automatical
 - Do not run more than 2 expansion queries. If Phase 3.5 surfaces a large number of new
   terms, pick the 2–3 most specific (gene symbols > pathway names > disease terms) and
   stop. More expansion rounds have sharply diminishing returns on a focused corpus.
+- **[PATHWAY INFERRED] guardrail**: an inferred PPI target must name a *specific* binding
+  partner supported by the corpus (e.g. co-activator, scaffold, receptor subunit). Do not
+  assign this tier to vague statements like "this protein must interact with a partner" or
+  "complex formation is implied" — name the partner or write "Insufficient evidence."
+- **Do not conflate tiers**: the absence of a drug program ([VALIDATED] missing) does not
+  itself make a target [BIOLOGICALLY JUSTIFIED] — that tier requires confirmed genetic
+  dependency. Pathway inference alone is [PATHWAY INFERRED], regardless of how compelling
+  the biology looks.
+- **Disease agnosticism**: avoid disease-specific framing (e.g. "tumour suppressor",
+  "oncogenic"). Use neutral language: "pathway suppressor", "disease-relevant activity",
+  "pathological signalling output", "dysregulated node". The pipeline applies to any
+  indication, not only cancer.

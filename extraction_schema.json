@@ -39,7 +39,8 @@
     "title": "string",
     "doi": "string",
     "study_type": "enum[experimental_in_vitro, experimental_in_vivo, experimental_structural, computational, review, case_study]",
-    "situational_context_hook": "string (100-150 words)"
+    "situational_context_hook": "string (100-150 words)",
+    "pdb_accessions": ["string"]
   },
   "methodology": {
     "experimental_methods_used": ["string"],

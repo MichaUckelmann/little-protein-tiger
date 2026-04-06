@@ -23,6 +23,25 @@ from src.structure_tools import (
 mcp = FastMCP("structure-tools")
 
 
+def _resolve(file_path: str) -> str:
+    """Resolve relative or root-relative paths against the project root.
+
+    Handles three cases:
+    - Fully-qualified absolute path (C:\\... on Windows, /... on Linux) → pass through
+    - Root-relative with leading slash (/data/structures/x.cif) → strip slash, join ROOT
+    - Plain relative path (data/structures/x.cif) → join ROOT
+
+    The leading-slash strip is critical on Windows: pathlib's / operator interprets
+    a slash-prefixed path as drive-relative, producing C:\\data\\... instead of
+    ROOT\\data\\...
+    """
+    import sys
+    p = Path(file_path)
+    if p.is_absolute() and (sys.platform != "win32" or bool(p.drive)):
+        return str(p)
+    return str(ROOT / Path(file_path.lstrip("/\\")))
+
+
 @mcp.tool()
 def tool_analyze_interface(
     file_path: str,
@@ -51,7 +70,7 @@ def tool_analyze_interface(
         cutoff:    Heavy-atom distance cutoff for contact detection in Å (default 4.5)
     """
     try:
-        result = analyze_interface(file_path, chain_a, chain_b, cutoff)
+        result = analyze_interface(_resolve(file_path), chain_a, chain_b, cutoff)
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.exception("analyze_interface failed")
@@ -82,7 +101,7 @@ def tool_get_residue_contacts(
         cutoff:        Heavy-atom distance cutoff in Å (default 4.5)
     """
     try:
-        result = get_residue_contacts(file_path, chain, resnum, partner_chain, cutoff)
+        result = get_residue_contacts(_resolve(file_path), chain, resnum, partner_chain, cutoff)
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.exception("get_residue_contacts failed")
@@ -124,7 +143,7 @@ def tool_check_mutation_clash(
         }.items()}
         aa = one_to_three.get(aa, aa)
     try:
-        result = check_mutation_clash(file_path, chain, resnum, aa, partner_chain)
+        result = check_mutation_clash(_resolve(file_path), chain, resnum, aa, partner_chain)
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.exception("check_mutation_clash failed")
@@ -146,7 +165,7 @@ def tool_get_sequence_map(file_path: str, chain: str) -> str:
         chain:     Chain ID
     """
     try:
-        result = get_sequence_map(file_path, chain)
+        result = get_sequence_map(_resolve(file_path), chain)
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.exception("get_sequence_map failed")
@@ -174,7 +193,7 @@ def tool_score_surface_patch(
         residue_list: List of residue numbers (auth_seq_id) defining the patch
     """
     try:
-        result = score_surface_patch(file_path, chain, residue_list)
+        result = score_surface_patch(_resolve(file_path), chain, residue_list)
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.exception("score_surface_patch failed")
