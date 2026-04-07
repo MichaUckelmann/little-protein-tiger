@@ -600,3 +600,97 @@ Quick win: just expose the three model options in the run form for now, all stag
 - Docker Compose bundle (api + worker + redis + nginx)
 - Security headers, rate limiting, audit log middleware
 - Deploy to Hetzner CX32
+
+#### Key rotation (2026-04-06)
+
+JWT_SECRET and FERNET_KEY were accidentally committed in .env.example and have been rotated. GitHub OAuth client secret was also regenerated. .env updated with new values.
+
+**Action required:** Fernet key changed → all previously encrypted API keys in web.db are unreadable. Re-upload Anthropic API key in Settings before running any pipeline jobs.
+
+---
+
+## Sprint 2 continued — Interactive Pause Points + Bug Sprint
+
+### Session 2026-04-07
+
+#### Interactive pause points (`PAUSED` status)
+
+Goal: let users review pathway-expert output and select a target before committing to expensive structure + literature + design stages.
+
+**New run lifecycle state: `PAUSED`**
+Unlike `BLOCKED` (terminal error), `PAUSED` is a resumable wait state. The pipeline raises `PipelinePausedError` (a new exception subclass) instead of continuing; the Celery task catches it and writes DB fields, then returns normally.
+
+**Four new DB columns on `Run`:**
+- `auto_mode: bool = True` — existing runs stay fully automatic; new runs default to `False` (interactive)
+- `pause_point: str | None` — `"pathway_choice"` or `"structure_choice"` while paused
+- `pathway_choices_json: str | None` — JSON list of parsed target cards shown in UI
+- `structure_next_step: str | None` — user's choice: `"literature_and_design"` / `"design_only"` / `"stop"`
+
+Migration: `web/backend/migrate.py` extended with four `_add_column_if_missing` calls.
+
+**Choices JSON approach (chosen after markdown parsing proved too fragile):**
+The pathway-expert SKILL.md now requires a `choices_json` field in the `### PIPELINE HANDOFF` block — a single-line JSON array with tier, complex, pdb_ids, evidence_basis, key_uncertainty for each candidate. `_parse_pathway_choices()` in `pipeline_runner.py` tries JSON first (Path A), falls back to markdown regex (Path B). Eliminates the fragility of bold tier labels, nested headers, etc.
+
+**`_parse_pathway_choices()` implementation:**
+- Reads `choices_json` from primary_handoff dict first
+- Falls back to markdown `TARGET OPPORTUNITY LANDSCAPE` regex parser
+- `_annotate_choices()` helper: adds `index`, `structure_query`, `chain_ids_inferred` to each choice
+- `primary_claimed` flag prevents multiple choices from claiming primary status when they share a PDB ID
+
+**New API endpoints:**
+- `POST /runs/{id}/resume` — `ResumeRunBody(chosen_target_index, next_step)` — validates pause state, writes chosen pdb_id/target_complex, re-queues `resume_pipeline_task`
+- `POST /runs/{id}/retry` — for FAILED/BLOCKED runs; auto-detects start stage from `stage_current` (if pdb_id is set but stage is "pathway", starts from structure to preserve user's selection)
+
+**New Celery tasks:**
+- `resume_pipeline_task` — re-enters pipeline from `start_from` stage determined by `pause_point`
+- `retry_run_task(run_id, start_from)` — general retry with explicit start stage; handles all three PipelineError types
+
+**Frontend:**
+- `PathwayChoicePanel.tsx` — amber card grid with tier badges (VALIDATED=green, BIOLOGICALLY_JUSTIFIED=amber, PATHWAY_INFERRED=gray); cards without PDB IDs are disabled
+- `StructureChoicePanel.tsx` — three buttons: Run Full Pipeline / Skip Literature → Design / Stop Here
+- `StagePanel.tsx` — `"paused"` StageStatus (amber, ⏸ icon); `StageStepper` renders choice panels after the relevant stage card
+- `RunDetail.tsx` — PAUSED status pill, "Waiting for your input" banner, `handleResumed()` invalidates query cache
+- `ProjectDetail.tsx` — "Skip review pauses" checkbox (default unchecked = interactive mode)
+
+#### Reliability and output token fixes
+
+**max_tokens raised to 24,000** (skill_runner.py, both Claude and Gemini). Anthropic SDK enforces streaming for `max_tokens ≥ ~16k` — replaced `client.messages.create()` with `client.messages.stream()` context manager + `stream.get_final_message()`.
+
+**Skill conciseness instructions added** (all three main skills):
+- pathway-expert: 3,000–4,500 word budget; max 4 target nodes × 6 bullets
+- complex-structure-analysis: 3,000–4,000 words; H-bond table max 12 rows; max 2 hotspot regions
+- molecular-biology-expert: 2,500–3,500 words; max 4 inhibitor classes × 5 bullets; max 8 sources rows
+
+#### Bug: SQLModel + Pydantic v2 serializes table models as `{}`
+
+**Root cause:** FastAPI returns SQLModel table model instances inside plain dicts. With SQLModel + Pydantic v2, `jsonable_encoder(run)` / `model_dump()` silently returns `{}` for table-backed models loaded from the DB session. Affects all endpoints returning `run` or `project` objects.
+
+**Fix:** `_run_dict(run)` helper in `routers/runs.py` that iterates `run.__table__.columns` via SQLAlchemy and calls `getattr(run, col.key)` directly. Datetimes are `.isoformat()`'d. Same pattern applied in `routers/projects.py` as `_model_dict(obj)`. Applied to all endpoints returning Run or Project instances.
+
+**Impact:** This was silently breaking the entire frontend — `data.run: {}` meant status, pause_point, pathway_choices_json etc. were all `undefined` in the browser.
+
+#### Bug: pause_point cleared before Celery task reads it
+
+**Root cause:** `resume_run` endpoint set `run.pause_point = None` then committed, then queued `resume_pipeline_task`. By the time the task ran and did `pause_point = run.pause_point`, the value was already `None` → "Cannot resume: unknown pause_point None".
+
+**Fix:** Don't clear `pause_point` in the endpoint. The task already clears it at the start via `_set_run_fields(run_id, status="RUNNING", pause_point=None)`.
+
+#### Bug: SSE payload missing pathway_choices_json
+
+Live-watching runs: SSE fires PAUSED event → frontend sets `liveStatus` → overlay constructs `run` from `{ ...data.run (stale), ...liveStatus }`. The `pathway_choices_json` field only exists in the GET response, which hasn't refreshed yet. 
+
+**Fix:** Add `pathway_choices_json` to SSE payload; add it to the `liveStatus` overlay in `RunDetail.tsx`. Panel renders immediately when SSE arrives.
+
+#### Retry button
+
+`POST /runs/{id}/retry` queues `retry_run_task` with auto-detected `start_from`. Logic: use `stage_current`, but if `stage_current = "pathway"` and `pdb_id` is already set (user previously selected a target), start from `"structure"` instead. Retry button rendered in the FAILED and BLOCKED error banners.
+
+#### Skill quality fixes (observed in live runs)
+
+**complex-structure-analysis — sequence numbering:**
+Model was estimating auth→label offset from sequence comparison ("auth ≈ label for chain D given gap at C-terminus") instead of reading it from `get_sequence_map`. Added hard rule: use `auth_to_label` map verbatim, never estimate. Added Common Pitfall section on this. Also added `Separability` line to HOTSPOT REGIONS format and a `MODEL-READY HOTSPOTS — Region N` split instruction for independent regions.
+
+**protein-design-script — multiple hotspots and missing PIPELINE HANDOFF:**
+- When two independent hotspot regions exist (spatial spread > 15 Å between them), the skill now generates separate YAML + SLURM files per region rather than merging residues
+- Added `### PIPELINE HANDOFF` section to the skill — eliminates "No PIPELINE HANDOFF block found" warning and sets `go_recommendation: GO` for the design stage completion
+- `pipeline_runner.py`: design stage now reads its own handoff to update `result.go_recommendation`; when literature is skipped and `go_recommendation` is still "INCOMPLETE", defaults to `"GO"`

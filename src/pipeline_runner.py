@@ -18,6 +18,7 @@ Designed as a plain synchronous class so it can be:
 """
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -40,6 +41,14 @@ _DEFAULT_MODELS = {
     "gemini": "gemini-3.1-flash-lite-preview",
 }
 
+# Maps stage name → skill name (inverse of tasks.py _SKILL_TO_STAGE)
+_STAGE_TO_SKILL: dict[str, str] = {
+    "pathway":    "pathway-expert",
+    "structure":  "complex-structure-analysis",
+    "literature": "molecular-biology-expert",
+    "design":     "protein-design-script",
+}
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -51,6 +60,25 @@ class PipelineError(RuntimeError):
 
 class PipelineBlockedError(PipelineError):
     """Pipeline cannot continue automatically — user input required."""
+
+
+class PipelinePausedError(PipelineError):
+    """
+    Pipeline is pausing for user input.  Not an error — the run resumes after
+    the user makes a choice via the web UI.
+
+    Attributes
+    ----------
+    pause_point : str
+        ``"pathway_choice"`` or ``"structure_choice"``
+    payload : dict
+        Data to persist alongside the pause point (e.g. parsed target choices).
+    """
+
+    def __init__(self, pause_point: str, payload: dict) -> None:
+        super().__init__(f"Paused at {pause_point}")
+        self.pause_point = pause_point
+        self.payload = payload
 
 
 # ---------------------------------------------------------------------------
@@ -105,13 +133,24 @@ class PipelineRunner:
         output_dir: Path | None = None,
         max_iter: int = 30,
         max_tokens: int = 100_000,
+        stage_models: dict[str, str] | None = None,
+        extended_thinking_stages: set[str] | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
-        self.model_id = model_id or _DEFAULT_MODELS[provider]
+        self._default_model = model_id or _DEFAULT_MODELS[provider]
         self._output_dir_override = output_dir
         self.max_iter = max_iter
         self.max_tokens = max_tokens
+        # Per-stage overrides: {stage_name: model_id}. Empty = uniform default.
+        self._stage_models: dict[str, str] = stage_models or {}
+        # Stages that get Claude extended thinking. Ignored for Gemini.
+        self._ext_thinking: set[str] = extended_thinking_stages or set()
+
+    @property
+    def model_id(self) -> str:
+        """Uniform model for callers that don't care about per-stage routing."""
+        return self._default_model
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -123,6 +162,8 @@ class PipelineRunner:
         start_from: str = "pathway",
         pdb_id: str | None = None,
         context_file: Path | None = None,
+        auto_mode: bool = True,
+        structure_next_step: str | None = None,
     ) -> PipelineResult:
         """
         Run the pipeline from `start_from` onwards.
@@ -139,6 +180,14 @@ class PipelineRunner:
         context_file : Path | None
             Prior stage output .md file to seed context.  Required when
             start_from != "pathway" and pdb_id is not given.
+        auto_mode : bool
+            When True (default) the pipeline runs end-to-end without pausing.
+            When False, raises PipelinePausedError after pathway and structure
+            stages so the web UI can collect user choices before continuing.
+        structure_next_step : str | None
+            Injected on resume from a structure_choice pause.
+            "literature_and_design" | "design_only" | "stop".
+            Ignored when auto_mode=True.
         """
         if pdb_id and start_from == "pathway":
             start_from = "structure"
@@ -171,6 +220,20 @@ class PipelineRunner:
             if start_idx == 0:
                 handoff = self._stage_pathway(query, run_dir, result)
 
+                # ── Pause point 1: let the user pick a target ────────────────
+                if not auto_mode:
+                    choices = self._parse_pathway_choices(
+                        (run_dir / "00_pathway.md").read_text(encoding="utf-8"),
+                        handoff,
+                    )
+                    if not choices:
+                        raise PipelineBlockedError(
+                            "Pathway report had no TARGET OPPORTUNITY LANDSCAPE section — "
+                            "cannot pause for target selection.  Check the pathway report "
+                            "or re-run in auto mode."
+                        )
+                    raise PipelinePausedError("pathway_choice", {"choices": choices})
+
             # ── Stage 0.5: ensure structure on disk ──────────────────────────
             if start_idx <= 1:
                 pdb = result.pdb_id or handoff.get("pdb_id", "")
@@ -187,8 +250,19 @@ class PipelineRunner:
                 ctx = [f for f in [result.stage_files.get("pathway"), context_file] if f and f.exists()]
                 handoff = self._stage_structure(handoff, run_dir, result, ctx)
 
+                # ── Pause point 2: let the user choose the next step ─────────
+                if not auto_mode and structure_next_step is None:
+                    raise PipelinePausedError("structure_choice", {
+                        "tractability": handoff.get("tractability"),
+                        "modality":     handoff.get("modality"),
+                        "bsa_A2":       handoff.get("bsa_A2"),
+                        "target_complex": result.target_complex,
+                    })
+
             # ── Stage 2: molecular-biology-expert ────────────────────────────
-            if start_idx <= 2:
+            # Skipped when the user chose "design_only" at the structure pause.
+            _run_literature = structure_next_step in (None, "literature_and_design")
+            if start_idx <= 2 and _run_literature:
                 ctx = [
                     f for f in [
                         result.stage_files.get("pathway"),
@@ -323,10 +397,15 @@ class PipelineRunner:
             query += f"\n\nWrite all output files to: {design_dir}"
 
         logger.info("Stage 4: protein-design-script")
-        self._run_stage("protein-design-script", query, context_files, design_report)
+        design_handoff = self._run_stage("protein-design-script", query, context_files, design_report)
         result.stages_completed.append("design")
         result.stage_files["design"] = design_report
         result.design_files = [f for f in design_dir.iterdir() if f.is_file()]
+        # If literature was skipped, pull go_recommendation from design handoff;
+        # fall back to GO (design completing implies at least a conditional go-ahead).
+        if result.go_recommendation == "INCOMPLETE":
+            go = design_handoff.get("go_recommendation", "").upper().replace("-", "_")
+            result.go_recommendation = go or "GO"
 
     def _write_no_go_report(self, result: PipelineResult, handoff: dict) -> None:
         path = result.run_dir / "02_campaign_recommendation.md"
@@ -352,6 +431,33 @@ class PipelineRunner:
     # Core helpers
     # ------------------------------------------------------------------
 
+    def _resolve_stage(self, skill_name: str) -> tuple[str, bool]:
+        """
+        Return (model_id, use_extended_thinking) for a given skill.
+
+        Per-stage model overrides are keyed by stage name (pathway / structure /
+        literature / design).  Extended thinking is silently ignored for Gemini.
+        If an override specifies Haiku but extended thinking is requested, the
+        model is auto-upgraded to Sonnet with a warning.
+        """
+        # Invert the skill name back to a stage name for lookup
+        stage = next(
+            (s for s, sk in _STAGE_TO_SKILL.items() if sk == skill_name),
+            skill_name,
+        )
+        model_id = self._stage_models.get(stage, self._default_model)
+        use_thinking = (
+            self.provider == "claude"
+            and stage in self._ext_thinking
+        )
+        if use_thinking and "haiku" in model_id.lower():
+            logger.warning(
+                f"Extended thinking requires Sonnet — auto-upgrading {stage} "
+                f"stage from {model_id} to claude-sonnet-4-6"
+            )
+            model_id = "claude-sonnet-4-6"
+        return model_id, use_thinking
+
     def _run_stage(
         self,
         skill_name: str,
@@ -364,13 +470,15 @@ class PipelineRunner:
         if context_files:
             context_text = self._merge_context(*context_files)
 
+        model_id, use_thinking = self._resolve_stage(skill_name)
         runner = SkillRunner(
             skill_name=skill_name,
             provider=self.provider,
-            model_id=self.model_id,
+            model_id=model_id,
             config=self.config,
             max_iter=self.max_iter,
             max_input_tokens=self.max_tokens,
+            use_extended_thinking=use_thinking,
         )
 
         logger.info(f"  [{skill_name}] {query[:100]}{'...' if len(query) > 100 else ''}")
@@ -441,6 +549,170 @@ class PipelineRunner:
             )
         logger.info(f"  Downloaded {dest} ({dest.stat().st_size // 1024} KB)")
         return dest
+
+    def _parse_pathway_choices(
+        self, report_text: str, primary_handoff: dict
+    ) -> list[dict]:
+        """
+        Parse the ``### TARGET OPPORTUNITY LANDSCAPE`` section of a pathway report.
+
+        Returns a list of up to 4 dicts:
+        ```
+        {
+            "index": int,
+            "tier": str,               # VALIDATED | BIOLOGICALLY_JUSTIFIED | PATHWAY_INFERRED
+            "complex": str,            # "ProteinA / ProteinB"
+            "pdb_ids": list[str],      # may be empty if not found in corpus
+            "evidence_basis": str,
+            "key_uncertainty": str,
+            "structure_query": str,    # from handoff for primary; synthesised for others
+            "chain_ids_inferred": bool,
+        }
+        ```
+        Returns ``[]`` if the section is absent or no candidates can be extracted.
+        """
+        primary_structure_query = primary_handoff.get("structure_query", "")
+        primary_complex = (primary_handoff.get("target_complex") or "").strip().lower()
+        primary_pdb = (primary_handoff.get("pdb_id") or "").strip().upper()
+
+        # ── Path A: choices_json in PIPELINE HANDOFF (preferred) ─────────────
+        # The skill emits a compact JSON line:
+        #   - choices_json: [{"tier":...,"complex":...,"pdb_ids":[...],...}, ...]
+        # This is unambiguous and requires no markdown parsing.
+        raw_json = primary_handoff.get("choices_json", "").strip()
+        if raw_json:
+            try:
+                raw_choices = json.loads(raw_json)
+                return self._annotate_choices(
+                    raw_choices, primary_complex, primary_pdb, primary_structure_query
+                )
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    f"choices_json in PIPELINE HANDOFF is not valid JSON ({exc}) — "
+                    "falling back to markdown parsing"
+                )
+
+        # ── Path B: regex fallback for old reports without choices_json ───────
+        logger.debug("_parse_pathway_choices: falling back to markdown regex parser")
+
+        section_match = re.search(
+            r"###\s+TARGET OPPORTUNITY LANDSCAPE\s*\n(.*?)(?=\n###(?!#)|\Z)",
+            report_text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if not section_match:
+            return []
+
+        section = section_match.group(1)
+        candidate_blocks = re.split(r"(?=####)", section)
+        candidate_blocks = [b.strip() for b in candidate_blocks if b.strip().startswith("####")]
+        if not candidate_blocks:
+            return []
+
+        tier_map = {
+            "VALIDATED": "VALIDATED",
+            "BIOLOGICALLY JUSTIFIED": "BIOLOGICALLY_JUSTIFIED",
+            "PATHWAY INFERRED": "PATHWAY_INFERRED",
+        }
+
+        def _extract_field(pattern: str, text: str) -> str:
+            m = re.search(
+                r"\*\*" + pattern + r":?\*\*\s*:?\s*(.+?)(?=\n\s*-\s*\*\*|\Z)",
+                text,
+                re.DOTALL,
+            )
+            return " ".join(m.group(1).split()).strip() if m else ""
+
+        raw_choices = []
+        for block in candidate_blocks[:4]:
+            header_match = re.match(
+                r"####\s*\*{0,2}\[([^\]]+)\]\s*\*{0,2}\s+(.+?)(?:\*{0,2})?\s*[\r\n]",
+                block,
+            )
+            if not header_match:
+                continue
+            raw_tier = header_match.group(1).strip().upper()
+            complex_name = header_match.group(2).strip()
+            pdb_raw = _extract_field(r"Suggested PDB ID\(s\)", block)
+            pdb_ids = [
+                p.upper()
+                for p in re.findall(r"\b[0-9][A-Za-z0-9]{3}\b", pdb_raw)
+                if not p.isdigit()
+            ]
+            raw_choices.append({
+                "tier": tier_map.get(raw_tier, raw_tier.replace(" ", "_")),
+                "complex": complex_name,
+                "pdb_ids": pdb_ids,
+                "evidence_basis": _extract_field("Evidence basis", block),
+                "key_uncertainty": _extract_field("Key uncertainty", block),
+            })
+
+        return self._annotate_choices(
+            raw_choices, primary_complex, primary_pdb, primary_structure_query
+        )
+
+    def _annotate_choices(
+        self,
+        raw_choices: list[dict],
+        primary_complex: str,
+        primary_pdb: str,
+        primary_structure_query: str,
+    ) -> list[dict]:
+        """
+        Add ``index``, ``structure_query``, and ``chain_ids_inferred`` to each
+        choice dict.  The first choice whose complex name or PDB matches the
+        primary handoff gets the real ``structure_query``; all others get a
+        synthesised one.
+        """
+        choices: list[dict] = []
+        primary_claimed = False
+
+        for raw in raw_choices[:4]:
+            complex_name = raw.get("complex", "")
+            pdb_ids = [p.upper() for p in raw.get("pdb_ids", [])]
+            cn_lower = complex_name.lower()
+
+            is_primary = not primary_claimed and (
+                cn_lower == primary_complex
+                or (primary_complex and primary_complex in cn_lower)
+                or (primary_complex and cn_lower in primary_complex)
+                or (primary_pdb and primary_pdb in pdb_ids)
+            )
+            if is_primary:
+                primary_claimed = True
+
+            if is_primary and primary_structure_query:
+                structure_query = primary_structure_query
+                chain_ids_inferred = False
+            else:
+                ref_pdb = pdb_ids[0] if pdb_ids else "UNKNOWN"
+                structure_query = (
+                    f"Analyze PDB {ref_pdb} at data/structures/{ref_pdb}.cif. "
+                    f"{complex_name} interface for PPI inhibitor design."
+                )
+                chain_ids_inferred = True
+
+            choices.append({
+                "index": len(choices),
+                "tier": raw.get("tier", "UNKNOWN"),
+                "complex": complex_name,
+                "pdb_ids": pdb_ids,
+                "evidence_basis": raw.get("evidence_basis", ""),
+                "key_uncertainty": raw.get("key_uncertainty", ""),
+                "structure_query": structure_query,
+                "chain_ids_inferred": chain_ids_inferred,
+            })
+
+        # Bubble primary to index 0 if it wasn't first
+        primary_idx = next(
+            (i for i, c in enumerate(choices) if not c["chain_ids_inferred"]), None
+        )
+        if primary_idx is not None and primary_idx != 0:
+            choices.insert(0, choices.pop(primary_idx))
+            for i, c in enumerate(choices):
+                c["index"] = i
+
+        return choices
 
     def _merge_context(self, *paths: Path) -> str:
         """

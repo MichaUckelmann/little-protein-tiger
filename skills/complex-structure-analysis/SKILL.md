@@ -151,6 +151,11 @@ Returns `auth_to_label` map: `{auth_seq_id → label_seq_id}`.
 
 Both are now available from a single tool call.
 
+**Critical rule**: Use the `auth_to_label` map verbatim — never compute, estimate,
+or infer the mapping from sequence comparison, chain start residues, or
+observed gaps. If a residue's `auth_seq_id` is not a key in the map, omit it
+from the MODEL-READY HOTSPOTS table and note it as unmapped.
+
 ### Sidechain atoms for RFD3
 
 For each hotspot residue, select 2 interface-facing sidechain heavy atoms using
@@ -171,8 +176,18 @@ this lookup (from the residue type and its known contact geometry):
 
 ## Phase 4: Output Report
 
+**Do not call `write_file`.** All output belongs in the report text below.
+The pipeline captures this report automatically; `protein-design-script` reads
+the MODEL-READY HOTSPOTS section from it in Stage 4.
+
 Populate from tool outputs only. Do not infer distances, BSA values, or interaction
 types from residue names — all of these are now in the tool results.
+
+**Token budget:** The full PPI ANALYSIS REPORT must fit in 3,000–4,000 words.
+- Interface residue categories: one comma-separated line per category, not sub-tables.
+- H-bond table: max 12 rows — keep the 12 shortest distances (strongest bonds).
+- Hotspot regions: max 2 (primary + one alternative). If more were scored, note the
+  ratings in a single line and focus the write-up on the top 2.
 
 ```
 ## PPI ANALYSIS REPORT
@@ -188,21 +203,17 @@ types from residue names — all of these are now in the tool results.
 - Design modality: <cyclic_peptide / mini_protein / either> — rationale
 
 ### TARGET CHAIN INTERFACE RESIDUES
-Chain <id>:
-  Hydrophobic: <from chain_a_categories.hydrophobic>
-  Aromatic:    <from chain_a_categories.aromatic>
-  Charged:     <from chain_a_categories.charged>
-  Polar:       <from chain_a_categories.polar>
+Chain <id>: Hydrophobic: <comma-separated list> | Aromatic: <list> | Charged: <list> | Polar: <list>
 
 ### PARTNER CHAIN INTERFACE RESIDUES
-Chain <id>: <same breakdown>
+Chain <id>: Hydrophobic: <list> | Aromatic: <list> | Charged: <list> | Polar: <list>
 
-### H-BONDS AT INTERFACE
+### H-BONDS AT INTERFACE (top 12 by distance)
 | Donor | Donor atom | Acceptor | Acceptor atom | Distance (Å) |
 |---|---|---|---|---|
 | <chain:ResNum> | <atom> | <chain:ResNum> | <atom> | <dist> |
 
-### HOTSPOT REGIONS (ranked by suitability)
+### HOTSPOT REGIONS (top 2, ranked by suitability)
 
 #### Region N: <name> — <Excellent/Good/Marginal/Poor>
 - Residues: <list with auth_seq_id>
@@ -213,6 +224,8 @@ Chain <id>: <same breakdown>
 - Partner contacts: <which partner residues engage this region>
 - Literature evidence: <mutagenesis data, inhibitor data, or "not found">
 - Design note: <what the binder must mimic>
+- Separability: <"Independent — separate design submission required" if Cα-Cα centroid
+  distance to other region > 15 Å, otherwise "Combined with Region X feasible">
 
 ### DESIGN RECOMMENDATIONS
 - Recommended modality: <cyclic_peptide / mini_protein / either>
@@ -226,7 +239,12 @@ Chain <id>: <same breakdown>
 
 ### MODEL-READY HOTSPOTS
 
-Target chain <id> — selected <N> residues:
+**If two regions are flagged "Independent" above, repeat this entire section once
+per region, labelled `### MODEL-READY HOTSPOTS — Region 1` and
+`### MODEL-READY HOTSPOTS — Region 2`. Do NOT merge residues across independent
+regions. Protein-design-script generates a separate submission for each.**
+
+Target chain <id> — Region <N>: <name> — selected <M> residues:
 
 | Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |
 |---|---|---|---|
@@ -298,3 +316,11 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
   (no explicit H positions). Values are reliable for identifying H-bonding residue
   pairs; the raw count may be elevated vs X-ray crystallography reports. Use the
   individual H-bond records for reasoning, not the aggregate count as an absolute.
+
+- **auth_seq_id vs label_seq_id**: use `auth_seq_id` for all hotspot identification,
+  BSA ranking, and reasoning throughout the report. Only switch to `label_seq_id`
+  in the MODEL-READY HOTSPOTS table, and only by direct lookup in the
+  `auth_to_label` map from `get_sequence_map`. Never estimate the mapping with
+  phrases like "auth = label for this chain" or "offset is approximately N" —
+  these guesses propagate silently into wrong BoltzGen specs. If you are unsure,
+  call `get_sequence_map` again; it is cheap.

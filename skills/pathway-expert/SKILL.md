@@ -83,7 +83,7 @@ If all `study_category="pathway_biology"` results have scores < 0.20 or return e
 re-run the same queries **without** the `study_category` filter. Many existing
 biochemistry papers have incidental pathway context in their situational_context_hook.
 
-**Always state the fallback explicitly in the report** — see CORPUS COVERAGE ASSESSMENT.
+**Always state the fallback explicitly in the report** — see CORPUS COVERAGE section.
 
 ---
 
@@ -144,7 +144,7 @@ Deduplicate expansion results against all DOIs already collected from Phase 2. F
 **new** papers (DOIs not seen before) with score ≥ 0.25, call `get_fingerprint` and
 merge their extracted fields into the working set before Phase 4.
 
-**State in the CORPUS COVERAGE ASSESSMENT section** how many new unique papers the
+**State in the CORPUS COVERAGE section** how many new unique papers the
 expansion round added and which expansion terms triggered them.
 
 ---
@@ -178,7 +178,11 @@ A node may carry only one label — use the highest tier supported by evidence.
 
 Produce the full `## PATHWAY BIOLOGY REPORT` using **only information retrieved from
 the corpus**. Do not hallucinate pathway details. If a section cannot be filled from
-retrieved fingerprints, write "Not found in corpus."
+retrieved fingerprints, omit the line entirely — do not write "Not found in corpus"
+placeholders for empty fields.
+
+**Token budget:** The full PATHWAY BIOLOGY REPORT must fit in 3,000–4,500 words.
+Write bullet points, not prose paragraphs. Each section should be a tight list.
 
 ### Report Format
 
@@ -187,32 +191,26 @@ retrieved fingerprints, write "Not found in corpus."
 
 ### DISEASE CONTEXT
 - Disease / indication: <name>
-- Pathway(s) implicated: <list from pathway_context.pathways across papers>
-- Primary disease mechanism: <mechanism from disease_associations — cite DOI + source_span>
-- Frequency of pathway dysregulation: <mutation_frequency if stated, else "not stated in corpus">
+- Pathway(s) implicated: <comma-separated list>
+- Primary disease mechanism: <one sentence — cite DOI + source_span>
+- Frequency of pathway dysregulation: <mutation_frequency if stated>
 
 ### PATHWAY MAP
-- Upstream suppressors / regulators: <list with alteration types in disease — from upstream_regulators + disease_associations>
-- Core cascade logic: <pathway_logic from retrieved fingerprints, or reconstruct from disease_associations>
-- Effectors / transcription factors: <from downstream_effectors>
-- Known downstream targets: <from downstream_effectors or key_findings>
+- Upstream regulators: <max 3 items with alteration type>
+- Core cascade: <one sentence of pathway logic>
+- Key effectors / transcription factors: <max 3 items>
 
 ### DYSREGULATED NODES ASSESSMENT
 
-For each candidate target node aggregated from target_nodes across all fingerprints:
+For each candidate target node — max 4 nodes total, 6 bullet lines per node:
 
 #### <ProteinName (gene symbol)>
 - Pathway position: <pathway_position>
-- Dysregulation in disease: <dysregulation — cite source_span + DOI>
-- Genetic dependency evidence: <genetic_dependency_evidence, or "Not found in corpus">
-- Prior therapeutic strategies: <prior_therapeutic_targeting, or "None found in corpus">
-- Suggested PDB structures: <suggested_pdb_structures, or "None mentioned">
-- Targetability note: <assess: intracellular vs extracellular; PPI vs enzymatic; accessible interface?>
-- Inferred PPI opportunity: <If prior_therapeutic_targeting is absent: reason explicitly —
-  does this protein require a specific named partner interaction to propagate the
-  dysregulated signal? State the partner, the interaction evidence, and the predicted
-  consequence of disruption. If the three conditions in Phase 4a are not all met,
-  write "Insufficient evidence to infer specific PPI target.">
+- Dysregulation: <one sentence — cite source_span + DOI>
+- Genetic dependency: <evidence, or omit if absent>
+- Prior therapeutic strategies: <prior targeting, or omit if absent>
+- Suggested PDB structures: <IDs, or omit if absent>
+- Inferred PPI opportunity: <max 2 sentences: named partner, evidence, consequence of disruption — or "Insufficient evidence." if Phase 4a conditions not met>
 
 ### TARGET OPPORTUNITY LANDSCAPE
 
@@ -262,35 +260,25 @@ If no recommendation can be made from corpus data alone, state this explicitly a
 suggest the user run `python scripts/fetch_papers.py` with specific pathway keywords.
 
 ### REDUNDANCY AND RESISTANCE RISKS
-- <List from pathway_context.redundancy_risks across all retrieved fingerprints>
-- <Note any compensatory proteins that might rescue loss of the recommended target>
-- <Flag if dual-targeting may be required>
-- <For [PATHWAY INFERRED] candidates: note that absence of therapeutic precedent
-  also means resistance liabilities are less characterised — flag this explicitly>
+- <max 3 bullet points from redundancy_risks — compensatory proteins, dual-targeting need, resistance gaps>
 
-### CORPUS COVERAGE ASSESSMENT
-- Papers with study_category=pathway_biology found: <N>
-- Papers with pathway_context populated: <N>
-- Pathways covered in corpus: <list>
-- Coverage gaps: <diseases or nodes not found in corpus — be specific>
-- Fallback used: <Yes / No — if yes, explain which queries fell back to unfiltered search>
-- Expansion round run: <Yes / No — if skipped, state why (early-exit condition met)>
-- Expansion terms used: <gene symbols or mutation terms that triggered follow-up queries>
-- New papers added by expansion: <N — unique DOIs not found in Phase 2>
-- Recommended keywords to add (if gaps are critical):
-  - "<keyword 1 in NCBI format>"
-  - "<keyword 2 in NCBI format>"
-  Run: `python scripts/fetch_papers.py --keywords "<keyword>"` then re-curate and re-ingest.
+### CORPUS COVERAGE
+- Papers analysed: <N fingerprints> from <M search hits>
+- Fallback used: <Yes / No — if yes, which queries>
+- Expansion round: <Yes / No — terms used, new papers added>
+- Critical gaps: <specific missing nodes or diseases, one line each — omit section if none>
+- Keywords to add (if gaps are critical): `python scripts/fetch_papers.py --keywords "<keyword>"`
 
 ### PATHWAY SOURCES
-| # | Title (truncated) | DOI | Study type | Category | Key node |
-|---|-------------------|-----|------------|----------|----------|
-| 1 | ...               | ... | ...        | ...      | ...      |
+| # | Title (truncated to 60 chars) | DOI | Key node |
+|---|-------------------------------|-----|----------|
+| 1 | ...                           | ... | ...      |
 
 ### PIPELINE HANDOFF
 - pdb_id: <PDB accession from corpus (pdb_accessions or suggested_pdb_structures fields only), or NOT_FOUND>
 - target_complex: <ProteinA / ProteinB>
 - structure_query: <one sentence — e.g. "Analyze PDB {pdb_id} at data/structures/{pdb_id}.cif. Target chain {chain} ({ProteinA}). Partner chain {chain} ({ProteinB}). Identify hotspot residues for {modality} design.">
+- choices_json: <compact JSON array — see format below>
 
 **IMPORTANT:** Write the `### PIPELINE HANDOFF` section as plain bullet lines exactly as shown above.
 Do NOT wrap it in a code fence (no ``` before or after). Do NOT omit the `- ` prefix.
@@ -299,6 +287,17 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
 Rules for `### PIPELINE HANDOFF`:
 - `pdb_id` must come from `paper_metadata.pdb_accessions` or `pathway_context.target_nodes[].suggested_pdb_structures` in retrieved fingerprints. Write `NOT_FOUND` if nothing found — never guess.
 - `structure_query` is the verbatim query string passed to complex-structure-analysis by the programmatic orchestrator; make it self-contained (include the local file path `data/structures/{pdb_id}.cif`).
+- `choices_json` must be a single-line JSON array listing every candidate from TARGET OPPORTUNITY LANDSCAPE in the same order. Each element has exactly these keys:
+  - `tier`: one of `"VALIDATED"`, `"BIOLOGICALLY_JUSTIFIED"`, or `"PATHWAY_INFERRED"`
+  - `complex`: the protein pair name exactly as written in the `####` header (e.g. `"YAP1 / TEAD4"`)
+  - `pdb_ids`: array of PDB accession strings from corpus only — empty array `[]` if none found
+  - `evidence_basis`: one sentence summary of the evidence (no newlines, no quotes inside the string)
+  - `key_uncertainty`: one sentence summary of the key uncertainty (no newlines, no quotes inside the string)
+
+  Example (must be on ONE line, no line breaks inside):
+  `- choices_json: [{"tier":"VALIDATED","complex":"YAP1 / TEAD4","pdb_ids":["5GN0","8J9A"],"evidence_basis":"Mesothelioma xenograft regression confirmed upon YAP-TEAD inhibition.","key_uncertainty":"TAZ paralog redundancy may require dual targeting."},{"tier":"BIOLOGICALLY_JUSTIFIED","complex":"NF2 / LATS1","pdb_ids":[],"evidence_basis":"CRISPR dependency confirmed in NF2-null cell lines.","key_uncertainty":"No structural data in corpus."}]`
+
+  Use straight double-quotes only. No trailing commas. Escape any double-quote inside a string value as `\"`.
 
 ---
 

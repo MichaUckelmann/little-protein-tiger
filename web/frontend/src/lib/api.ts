@@ -34,12 +34,18 @@ export interface Run {
   query: string;
   provider: string;
   model_id: string | null;
-  status: "QUEUED" | "RUNNING" | "COMPLETE" | "FAILED" | "BLOCKED";
+  stage_models_json: string | null;
+  extended_thinking: boolean;
+  status: "QUEUED" | "RUNNING" | "COMPLETE" | "FAILED" | "BLOCKED" | "PAUSED";
   stage_current: string | null;
   pdb_id: string | null;
   target_complex: string | null;
   go_recommendation: string | null;
   hotspot_residues: string | null;
+  auto_mode: boolean;
+  pause_point: string | null;
+  pathway_choices_json: string | null;
+  structure_next_step: string | null;
   celery_task_id: string | null;
   parent_run_id: number | null;
   round_number: number;
@@ -47,6 +53,17 @@ export interface Run {
   created_at: string;
   completed_at: string | null;
   error: string | null;
+}
+
+export interface TargetChoice {
+  index: number;
+  tier: string; // VALIDATED | BIOLOGICALLY_JUSTIFIED | PATHWAY_INFERRED
+  complex: string;
+  pdb_ids: string[];
+  evidence_basis: string;
+  key_uncertainty: string;
+  structure_query: string;
+  chain_ids_inferred: boolean;
 }
 
 export interface RunDetail {
@@ -92,6 +109,11 @@ async function apiFetch<T>(
     },
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      clearToken();
+      window.location.replace("/login");
+      throw new Error("Session expired");
+    }
     const detail = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(detail.detail ?? res.statusText);
   }
@@ -145,7 +167,15 @@ export const api = {
   runs: {
     create: (
       projectId: number,
-      payload: { query: string; pdb_id?: string; provider?: string; model_id?: string }
+      payload: {
+        query: string;
+        pdb_id?: string;
+        provider?: string;
+        model_id?: string;
+        stage_models?: Record<string, string>;
+        extended_thinking?: boolean;
+        auto_mode?: boolean;
+      }
     ) =>
       apiFetch<Run>(`/projects/${projectId}/runs`, {
         method: "POST",
@@ -169,6 +199,19 @@ export const api = {
         method: "POST",
         body: JSON.stringify(payload),
       }),
+    resume: (
+      id: number,
+      payload: {
+        chosen_target_index?: number;
+        next_step?: string;
+      }
+    ) =>
+      apiFetch<Run>(`/runs/${id}/resume`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    retry: (id: number) =>
+      apiFetch<Run>(`/runs/${id}/retry`, { method: "POST" }),
     fileUrl: (id: number, filename: string) =>
       `${BASE}/runs/${id}/files/${filename}`,
   },

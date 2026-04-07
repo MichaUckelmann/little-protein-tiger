@@ -257,6 +257,22 @@ _TOOL_DEFS: list[dict[str, Any]] = [
 ]
 
 
+# Only design/optimizer skills should write files — analysis skills produce
+# their output as return text which PipelineRunner writes to disk.
+# Restricting at the schema level is more reliable than prompt instructions alone.
+_WRITE_FILE_SKILLS = {"protein-design-script", "binder-optimizer"}
+
+# Skills that need the full residue index maps for AF3/BoltzGen JSON construction
+_NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer"}
+
+
+def _filter_tools(defs: list[dict], skill_name: str) -> list[dict]:
+    """Return the tool list for a given skill, removing tools the skill shouldn't have."""
+    if skill_name not in _WRITE_FILE_SKILLS:
+        defs = [d for d in defs if d["name"] != "write_file"]
+    return defs
+
+
 def _to_claude_tools(defs: list[dict]) -> list[dict]:
     return [
         {"name": d["name"], "description": d["description"], "input_schema": d["parameters"]}
@@ -310,6 +326,7 @@ class SkillRunner:
         config: dict,
         max_iter: int = 30,
         max_input_tokens: int = 100_000,
+        use_extended_thinking: bool = False,
     ) -> None:
         self.skill_name = skill_name
         self.provider = provider
@@ -317,6 +334,9 @@ class SkillRunner:
         self.config = config
         self.max_iter = max_iter
         self.max_input_tokens = max_input_tokens
+        # Extended thinking: Claude only, ignored silently for Gemini.
+        # Requires max_tokens > thinking_budget; budget_tokens=10000 + 14000 output headroom = 24000.
+        self.use_extended_thinking = use_extended_thinking and provider == "claude"
 
         # Token usage tracking — populated during run()
         self._total_input_tokens: int = 0
@@ -342,6 +362,7 @@ class SkillRunner:
         self.system_prompt = self._load_system_prompt()
         logger.info(
             f"SkillRunner ready: skill={skill_name}, provider={provider}, model={model_id}"
+            + (" [extended thinking]" if self.use_extended_thinking else "")
         )
 
     # ------------------------------------------------------------------
@@ -456,7 +477,6 @@ class SkillRunner:
                 # auth_to_string_idx and auth_to_label_idx are large index dicts
                 # (~15k tokens per chain) only needed by design/optimizer skills for
                 # AF3 JSON construction. Strip them for all other skills.
-                _NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer"}
                 if self.skill_name not in _NEEDS_INDEX_MAPS:
                     result = {"sequence": result["sequence"], "length": len(result["sequence"])}
                 return json.dumps(result, indent=2)
@@ -517,21 +537,33 @@ class SkillRunner:
 
     def _run_claude(self, messages: list[dict]) -> str:
         client = anthropic.Anthropic()
-        claude_tools = _to_claude_tools(_TOOL_DEFS)
+        claude_tools = _to_claude_tools(_filter_tools(_TOOL_DEFS, self.skill_name))
 
         for iteration in range(self.max_iter):
             logger.info(f"[claude] call #{iteration + 1} — messages={len(messages)}")
 
-            # Retry up to 3 times on rate-limit errors (30k tokens/min window)
+            # Extended thinking: budget_tokens must be < max_tokens.
+            # We allocate 10 000 to thinking and leave 14 000 for visible output.
+            thinking_param = (
+                {"thinking": {"type": "enabled", "budget_tokens": 10000}}
+                if self.use_extended_thinking
+                else {}
+            )
+
+            # Retry up to 3 times on rate-limit errors (30k tokens/min window).
+            # Use streaming — required by the SDK when max_tokens is large enough
+            # that the request could exceed 10 minutes non-streamed.
             for attempt in range(3):
                 try:
-                    response = client.messages.create(
+                    with client.messages.stream(
                         model=self.model_id,
-                        max_tokens=16000,
+                        max_tokens=24000,
                         system=self.system_prompt,
                         tools=claude_tools,
                         messages=messages,
-                    )
+                        **thinking_param,
+                    ) as stream:
+                        response = stream.get_final_message()
                     break
                 except anthropic.RateLimitError:
                     if attempt == 2:
@@ -540,13 +572,18 @@ class SkillRunner:
                     logger.warning(f"Rate limit hit — waiting {wait}s then retrying…")
                     time.sleep(wait)
 
-            # Serialise content blocks for history
+            # Serialise content blocks for history.
+            # thinking blocks: must round-trip in message history but are never
+            # included in the visible text output — they are the model's scratchpad.
             content_list: list[dict] = []
             text_parts: list[str] = []
             tool_use_blocks = []
 
             for block in response.content:
-                if block.type == "text":
+                if block.type == "thinking":
+                    # Preserve in history; never emit to output text.
+                    content_list.append({"type": "thinking", "thinking": block.thinking})
+                elif block.type == "text":
                     text_parts.append(block.text)
                     content_list.append({"type": "text", "text": block.text})
                 elif block.type == "tool_use":
@@ -617,7 +654,7 @@ class SkillRunner:
     def _run_gemini(self, messages: list[dict]) -> str:
         api_key = os.environ.get("GEMINI_API_KEY", "")
         url = _GEMINI_GENERATE_URL.format(model=self.model_id)
-        gemini_tools = _to_gemini_tools(_TOOL_DEFS)
+        gemini_tools = _to_gemini_tools(_filter_tools(_TOOL_DEFS, self.skill_name))
 
         for iteration in range(self.max_iter):
             logger.info(f"[gemini] call #{iteration + 1} — messages={len(messages)}")
@@ -626,7 +663,7 @@ class SkillRunner:
                 "system_instruction": {"parts": [{"text": self.system_prompt}]},
                 "contents": messages,
                 "tools": gemini_tools,
-                "generationConfig": {"maxOutputTokens": 8192},
+                "generationConfig": {"maxOutputTokens": 24000},
             }
             resp = requests.post(
                 url, params={"key": api_key}, json=payload, timeout=180
@@ -634,7 +671,14 @@ class SkillRunner:
             resp.raise_for_status()
             body = resp.json()
 
-            parts: list[dict] = body["candidates"][0]["content"]["parts"]
+            candidate = body["candidates"][0]
+            parts: list[dict] = candidate["content"]["parts"]
+
+            if candidate.get("finishReason") == "MAX_TOKENS":
+                logger.warning(
+                    f"Gemini response truncated at maxOutputTokens on call #{iteration + 1} "
+                    f"— '### PIPELINE HANDOFF' may be missing."
+                )
 
             usage = body.get("usageMetadata", {})
             in_tok = usage.get("promptTokenCount", 0)

@@ -63,7 +63,7 @@ def _load_config() -> dict:
 def run_pipeline_task(self, run_id: int) -> None:
     """Execute the full 4-stage design pipeline for a queued Run."""
     from sqlmodel import Session
-    from src.pipeline_runner import PipelineRunner, PipelineBlockedError
+    from src.pipeline_runner import PipelineRunner, PipelineBlockedError, PipelinePausedError
 
     # Load run + user data
     with Session(engine) as session:
@@ -76,13 +76,30 @@ def run_pipeline_task(self, run_id: int) -> None:
         pdb_id = run.pdb_id
         provider = run.provider
         model_id = run.model_id
+        stage_models = json.loads(run.stage_models_json) if run.stage_models_json else None
+        extended_thinking = run.extended_thinking
+        auto_mode = run.auto_mode
 
     # Inject BYOK API key into this worker's environment
     from web.backend.crypto import decrypt_key
-    if user and user.anthropic_key_enc:
-        os.environ["ANTHROPIC_API_KEY"] = decrypt_key(user.anthropic_key_enc)
-    if user and user.gemini_key_enc:
-        os.environ["GEMINI_API_KEY"] = decrypt_key(user.gemini_key_enc)
+    from cryptography.fernet import InvalidToken
+    try:
+        if user and user.anthropic_key_enc:
+            os.environ["ANTHROPIC_API_KEY"] = decrypt_key(user.anthropic_key_enc)
+        if user and user.gemini_key_enc:
+            os.environ["GEMINI_API_KEY"] = decrypt_key(user.gemini_key_enc)
+    except InvalidToken:
+        _set_run_fields(
+            run_id,
+            status="FAILED",
+            error=(
+                "API key could not be decrypted — the server encryption key may have changed. "
+                "Please re-enter your API key in account settings."
+            ),
+            completed_at=datetime.utcnow(),
+        )
+        logger.error(f"Run {run_id}: InvalidToken decrypting API key (FERNET_KEY rotation?)")
+        return
 
     # Validate that the required key for the chosen provider is present
     if provider == "gemini" and not os.environ.get("GEMINI_API_KEY"):
@@ -121,8 +138,10 @@ def run_pipeline_task(self, run_id: int) -> None:
             model_id=model_id,
             output_dir=run_dir,
             max_tokens=200_000,  # structure analysis legitimately needs large context
+            stage_models=stage_models,
+            extended_thinking_stages={"structure"} if extended_thinking else None,
         )
-        result = runner.run(query=query, pdb_id=pdb_id)
+        result = runner.run(query=query, pdb_id=pdb_id, auto_mode=auto_mode)
 
         _set_run_fields(
             run_id,
@@ -137,6 +156,17 @@ def run_pipeline_task(self, run_id: int) -> None:
             f"Run {run_id} complete: {result.go_recommendation}, "
             f"stages={result.stages_completed}"
         )
+
+    except PipelinePausedError as exc:
+        fields: dict = {"status": "PAUSED", "pause_point": exc.pause_point, "completed_at": None}
+        if exc.pause_point == "pathway_choice":
+            fields["pathway_choices_json"] = json.dumps(exc.payload["choices"])
+            fields["stage_current"] = "pathway"
+        elif exc.pause_point == "structure_choice":
+            fields["stage_current"] = "structure"
+        _set_run_fields(run_id, **fields)
+        logger.info(f"Run {run_id} paused at {exc.pause_point}")
+        # Do NOT re-raise — PAUSED is expected, not an error
 
     except PipelineBlockedError as exc:
         _set_run_fields(
@@ -156,6 +186,266 @@ def run_pipeline_task(self, run_id: int) -> None:
         )
         logger.error(f"Run {run_id} failed: {exc}")
         raise  # re-raise so Celery marks task as FAILURE
+
+
+# ---------------------------------------------------------------------------
+# Resume task — re-enters the pipeline after a PAUSED user choice
+# ---------------------------------------------------------------------------
+
+@celery_app.task(bind=True, name="resume_pipeline")
+def resume_pipeline_task(self, run_id: int) -> None:
+    """Resume a PAUSED run from the stored pause_point."""
+    from sqlmodel import Session
+    from src.pipeline_runner import (
+        PipelineRunner,
+        PipelineBlockedError,
+        PipelinePausedError,
+    )
+
+    with Session(engine) as session:
+        run = session.get(Run, run_id)
+        if not run:
+            logger.error(f"resume_pipeline_task: Run {run_id} not found")
+            return
+        user = session.get(User, run.user_id)
+        query = run.query
+        pdb_id = run.pdb_id
+        provider = run.provider
+        model_id = run.model_id
+        stage_models = json.loads(run.stage_models_json) if run.stage_models_json else None
+        extended_thinking = run.extended_thinking
+        pause_point = run.pause_point
+        structure_next_step = run.structure_next_step
+
+    # Inject BYOK API key
+    from web.backend.crypto import decrypt_key
+    from cryptography.fernet import InvalidToken
+    try:
+        if user and user.anthropic_key_enc:
+            os.environ["ANTHROPIC_API_KEY"] = decrypt_key(user.anthropic_key_enc)
+        if user and user.gemini_key_enc:
+            os.environ["GEMINI_API_KEY"] = decrypt_key(user.gemini_key_enc)
+    except InvalidToken:
+        _set_run_fields(
+            run_id,
+            status="FAILED",
+            error=(
+                "API key could not be decrypted — the server encryption key may have changed. "
+                "Please re-enter your API key in account settings."
+            ),
+            completed_at=datetime.utcnow(),
+        )
+        logger.error(f"Resume run {run_id}: InvalidToken decrypting API key")
+        return
+
+    config = _load_config()
+    run_dir = _ROOT / "web" / "runs" / str(run_id)
+
+    class _TrackedRunner(PipelineRunner):
+        def _run_stage(self, skill_name, query, context_files, output_file):
+            stage = _SKILL_TO_STAGE.get(skill_name, skill_name)
+            _set_run_fields(run_id, stage_current=stage)
+            return super()._run_stage(skill_name, query, context_files, output_file)
+
+    _set_run_fields(run_id, status="RUNNING", pause_point=None)
+
+    # Determine start_from and context_file based on which pause point we're resuming
+    if pause_point == "pathway_choice":
+        start_from = "structure"
+        context_file = run_dir / "00_pathway.md"
+    elif pause_point == "structure_choice":
+        if structure_next_step == "design_only":
+            start_from = "design"
+        else:
+            start_from = "literature"
+        context_file = run_dir / "01_structure.md"
+    else:
+        logger.error(f"Resume run {run_id}: unknown pause_point {pause_point!r}")
+        _set_run_fields(
+            run_id,
+            status="FAILED",
+            error=f"Cannot resume: unknown pause_point {pause_point!r}",
+            completed_at=datetime.utcnow(),
+        )
+        return
+
+    try:
+        runner = _TrackedRunner(
+            config=config,
+            provider=provider,
+            model_id=model_id,
+            output_dir=run_dir,
+            max_tokens=200_000,
+            stage_models=stage_models,
+            extended_thinking_stages={"structure"} if extended_thinking else None,
+        )
+        result = runner.run(
+            query=query,
+            start_from=start_from,
+            pdb_id=pdb_id,
+            context_file=context_file if context_file.exists() else None,
+            auto_mode=False,
+            structure_next_step=structure_next_step,
+        )
+
+        _set_run_fields(
+            run_id,
+            status="COMPLETE",
+            stage_current=None,
+            pdb_id=result.pdb_id,
+            target_complex=result.target_complex,
+            go_recommendation=result.go_recommendation,
+            completed_at=datetime.utcnow(),
+        )
+        logger.info(
+            f"Run {run_id} resumed+complete: {result.go_recommendation}, "
+            f"stages={result.stages_completed}"
+        )
+
+    except PipelinePausedError as exc:
+        # Paused again (e.g. pathway_choice resume → paused at structure_choice)
+        fields: dict = {"status": "PAUSED", "pause_point": exc.pause_point, "completed_at": None}
+        if exc.pause_point == "pathway_choice":
+            fields["pathway_choices_json"] = json.dumps(exc.payload["choices"])
+            fields["stage_current"] = "pathway"
+        elif exc.pause_point == "structure_choice":
+            fields["stage_current"] = "structure"
+        _set_run_fields(run_id, **fields)
+        logger.info(f"Run {run_id} paused again at {exc.pause_point}")
+
+    except PipelineBlockedError as exc:
+        _set_run_fields(
+            run_id,
+            status="BLOCKED",
+            error=str(exc),
+            completed_at=datetime.utcnow(),
+        )
+        logger.warning(f"Run {run_id} blocked on resume: {exc}")
+
+    except Exception as exc:
+        _set_run_fields(
+            run_id,
+            status="FAILED",
+            error=str(exc),
+            completed_at=datetime.utcnow(),
+        )
+        logger.error(f"Run {run_id} failed on resume: {exc}")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Retry task — restart a FAILED run from its failed stage
+# ---------------------------------------------------------------------------
+
+_CONTEXT_FOR_STAGE: dict[str, str] = {
+    "structure": "00_pathway.md",
+    "literature": "01_structure.md",
+    "design": "02_literature.md",
+}
+
+
+@celery_app.task(bind=True, name="retry_run")
+def retry_run_task(self, run_id: int, start_from: str) -> None:
+    """Retry a FAILED run starting from start_from stage."""
+    from sqlmodel import Session
+    from src.pipeline_runner import PipelineRunner, PipelineBlockedError, PipelinePausedError
+
+    with Session(engine) as session:
+        run = session.get(Run, run_id)
+        if not run:
+            logger.error(f"retry_run_task: Run {run_id} not found")
+            return
+        user = session.get(User, run.user_id)
+        query = run.query
+        pdb_id = run.pdb_id
+        provider = run.provider
+        model_id = run.model_id
+        stage_models = json.loads(run.stage_models_json) if run.stage_models_json else None
+        extended_thinking = run.extended_thinking
+        auto_mode = run.auto_mode
+        structure_next_step = run.structure_next_step
+
+    from web.backend.crypto import decrypt_key
+    from cryptography.fernet import InvalidToken
+    try:
+        if user and user.anthropic_key_enc:
+            os.environ["ANTHROPIC_API_KEY"] = decrypt_key(user.anthropic_key_enc)
+        if user and user.gemini_key_enc:
+            os.environ["GEMINI_API_KEY"] = decrypt_key(user.gemini_key_enc)
+    except InvalidToken:
+        _set_run_fields(
+            run_id,
+            status="FAILED",
+            error="API key could not be decrypted — re-enter your key in account settings.",
+            completed_at=datetime.utcnow(),
+        )
+        return
+
+    config = _load_config()
+    run_dir = _ROOT / "web" / "runs" / str(run_id)
+
+    class _TrackedRunner(PipelineRunner):
+        def _run_stage(self, skill_name, query, context_files, output_file):
+            stage = _SKILL_TO_STAGE.get(skill_name, skill_name)
+            _set_run_fields(run_id, stage_current=stage)
+            return super()._run_stage(skill_name, query, context_files, output_file)
+
+    _set_run_fields(run_id, status="RUNNING", error=None)
+
+    # Use the previous stage's output as context if it exists
+    context_filename = _CONTEXT_FOR_STAGE.get(start_from)
+    context_file = run_dir / context_filename if context_filename else None
+    if context_file and not context_file.exists():
+        context_file = None
+
+    try:
+        runner = _TrackedRunner(
+            config=config,
+            provider=provider,
+            model_id=model_id,
+            output_dir=run_dir,
+            max_tokens=200_000,
+            stage_models=stage_models,
+            extended_thinking_stages={"structure"} if extended_thinking else None,
+        )
+        result = runner.run(
+            query=query,
+            start_from=start_from,
+            pdb_id=pdb_id,
+            context_file=context_file,
+            auto_mode=auto_mode,
+            structure_next_step=structure_next_step,
+        )
+
+        _set_run_fields(
+            run_id,
+            status="COMPLETE",
+            stage_current=None,
+            pdb_id=result.pdb_id,
+            target_complex=result.target_complex,
+            go_recommendation=result.go_recommendation,
+            completed_at=datetime.utcnow(),
+        )
+        logger.info(f"Run {run_id} retry complete: {result.go_recommendation}")
+
+    except PipelinePausedError as exc:
+        fields: dict = {"status": "PAUSED", "pause_point": exc.pause_point, "completed_at": None}
+        if exc.pause_point == "pathway_choice":
+            fields["pathway_choices_json"] = json.dumps(exc.payload["choices"])
+            fields["stage_current"] = "pathway"
+        elif exc.pause_point == "structure_choice":
+            fields["stage_current"] = "structure"
+        _set_run_fields(run_id, **fields)
+        logger.info(f"Run {run_id} retry paused at {exc.pause_point}")
+
+    except PipelineBlockedError as exc:
+        _set_run_fields(run_id, status="BLOCKED", error=str(exc), completed_at=datetime.utcnow())
+        logger.warning(f"Run {run_id} retry blocked: {exc}")
+
+    except Exception as exc:
+        _set_run_fields(run_id, status="FAILED", error=str(exc), completed_at=datetime.utcnow())
+        logger.error(f"Run {run_id} retry failed: {exc}")
+        raise
 
 
 # ---------------------------------------------------------------------------

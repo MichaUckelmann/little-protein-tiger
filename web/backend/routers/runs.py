@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -40,6 +41,21 @@ _STAGE_FILES = [
     "03_design_report.md",
     "04_binder_optimizer.md",
 ]
+
+
+def _run_dict(run: Run) -> dict:
+    """Serialize a Run to a plain dict via SQLAlchemy columns.
+
+    Bypasses SQLModel/Pydantic v2 serialization which returns {} for table
+    models in some versions.  Datetimes are ISO-formatted strings.
+    """
+    result: dict = {}
+    for col in run.__table__.columns:
+        val = getattr(run, col.key, None)
+        if val is not None and hasattr(val, "isoformat"):
+            val = val.isoformat()
+        result[col.key] = val
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +93,15 @@ class RunCreate(BaseModel):
     pdb_id: Optional[str] = None
     provider: str = "claude"
     model_id: Optional[str] = None
+    # Per-stage model overrides, e.g. {"pathway": "claude-haiku-4-5-20251001", "structure": "claude-sonnet-4-6"}
+    # Omit or set to null for uniform model_id across all stages.
+    stage_models: Optional[dict[str, str]] = None
+    # Enable Claude extended thinking on the structure stage (off by default)
+    extended_thinking: bool = False
+    # When False (default for new runs), pipeline pauses at pathway_choice and
+    # structure_choice so the user can review and confirm before continuing.
+    # Set to True for fully-automatic end-to-end execution.
+    auto_mode: bool = False
 
 
 @router.post("/projects/{project_id}/runs", status_code=201)
@@ -98,6 +123,9 @@ def create_run(
         pdb_id=body.pdb_id,
         provider=body.provider,
         model_id=body.model_id,
+        stage_models_json=json.dumps(body.stage_models) if body.stage_models else None,
+        extended_thinking=body.extended_thinking,
+        auto_mode=body.auto_mode,
         status="QUEUED",
     )
     session.add(run)
@@ -120,7 +148,7 @@ def create_run(
     session.commit()
     session.refresh(run)
 
-    return run
+    return _run_dict(run)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +173,7 @@ def get_run(
     session.commit()
 
     return {
-        "run": run,
+        "run": _run_dict(run),
         "stages": _stage_contents(run_id),
     }
 
@@ -179,14 +207,153 @@ async def run_status_sse(
                             "target_complex": run.target_complex,
                             "go_recommendation": run.go_recommendation,
                             "error": run.error,
+                            "pause_point": run.pause_point,
+                            "pathway_choices_json": run.pathway_choices_json,
                             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
                         }),
                     }
-                    if run.status in ("COMPLETE", "FAILED", "BLOCKED"):
+                    if run.status in ("COMPLETE", "FAILED", "BLOCKED", "PAUSED"):
                         break
             await asyncio.sleep(3)
 
     return EventSourceResponse(_events())
+
+
+# ---------------------------------------------------------------------------
+# Resume a paused run
+# ---------------------------------------------------------------------------
+
+class ResumeRunBody(BaseModel):
+    chosen_target_index: Optional[int] = None  # for pathway_choice pause
+    next_step: Optional[str] = None            # for structure_choice pause: "literature_and_design" | "design_only" | "stop"
+
+
+@router.post("/runs/{run_id}/resume", status_code=202)
+def resume_run(
+    run_id: int,
+    body: ResumeRunBody,
+    user_id: int = Depends(get_current_user_id),
+    session: Session = Depends(get_session),
+):
+    """Resume a PAUSED run after the user makes a choice."""
+    run = _get_owned_run(run_id, user_id, session)
+
+    if run.status != "PAUSED":
+        raise HTTPException(status_code=409, detail=f"Run is not paused (status={run.status})")
+
+    if run.pause_point == "pathway_choice":
+        if body.chosen_target_index is None:
+            raise HTTPException(status_code=422, detail="chosen_target_index is required for pathway_choice")
+        if not run.pathway_choices_json:
+            raise HTTPException(status_code=409, detail="No pathway choices available on this run")
+
+        choices = json.loads(run.pathway_choices_json)
+        idx = body.chosen_target_index
+        if idx < 0 or idx >= len(choices):
+            raise HTTPException(status_code=422, detail=f"chosen_target_index {idx} out of range (0–{len(choices)-1})")
+
+        chosen = choices[idx]
+        pdb_ids = chosen.get("pdb_ids", [])
+        if not pdb_ids:
+            raise HTTPException(status_code=422, detail="Chosen target has no PDB ID — cannot continue")
+
+        run.pdb_id = pdb_ids[0]
+        run.target_complex = chosen.get("complex")
+        # Do NOT clear pause_point here — resume_pipeline_task reads it from DB
+        # and clears it itself when setting status="RUNNING"
+        run.status = "QUEUED"
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+
+        from web.backend.tasks import resume_pipeline_task
+        task = resume_pipeline_task.delay(run.id)
+        run.celery_task_id = task.id
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+
+    elif run.pause_point == "structure_choice":
+        if body.next_step not in ("literature_and_design", "design_only", "stop"):
+            raise HTTPException(
+                status_code=422,
+                detail="next_step must be 'literature_and_design', 'design_only', or 'stop'",
+            )
+
+        if body.next_step == "stop":
+            run.status = "COMPLETE"
+            run.completed_at = datetime.utcnow()
+            run.pause_point = None
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+        else:
+            run.structure_next_step = body.next_step
+            # Do NOT clear pause_point here — resume_pipeline_task reads it
+            run.status = "QUEUED"
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+
+            from web.backend.tasks import resume_pipeline_task
+            task = resume_pipeline_task.delay(run.id)
+            run.celery_task_id = task.id
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+
+    else:
+        raise HTTPException(status_code=409, detail=f"Unknown pause_point: {run.pause_point!r}")
+
+    return _run_dict(run)
+
+
+# ---------------------------------------------------------------------------
+# Retry a failed run
+# ---------------------------------------------------------------------------
+
+_STAGE_START_ORDER = ["pathway", "structure", "literature", "design"]
+
+
+@router.post("/runs/{run_id}/retry", status_code=202)
+def retry_run(
+    run_id: int,
+    user_id: int = Depends(get_current_user_id),
+    session: Session = Depends(get_session),
+):
+    """Retry a FAILED or BLOCKED run from the stage where it failed."""
+    run = _get_owned_run(run_id, user_id, session)
+
+    if run.status not in ("FAILED", "BLOCKED"):
+        raise HTTPException(status_code=409, detail=f"Run is not failed (status={run.status})")
+
+    # Determine start stage: use stage_current if known, else "pathway"
+    stage = run.stage_current or "pathway"
+
+    # If the run already has a pdb_id set (user had selected a target before
+    # the failure) but stage_current is "pathway", start from structure instead
+    # so we don't throw away the user's target selection.
+    if stage == "pathway" and run.pdb_id:
+        stage = "structure"
+
+    if stage not in _STAGE_START_ORDER:
+        stage = "pathway"
+
+    run.status = "QUEUED"
+    run.error = None
+    run.completed_at = None
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+
+    from web.backend.tasks import retry_run_task
+    task = retry_run_task.delay(run.id, stage)
+    run.celery_task_id = task.id
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+
+    return _run_dict(run)
 
 
 # ---------------------------------------------------------------------------

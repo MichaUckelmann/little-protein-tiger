@@ -22,6 +22,17 @@ from web.backend.models_db import Project, Run
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+def _model_dict(obj) -> dict:
+    """Serialize a SQLModel table instance via SQLAlchemy columns."""
+    result: dict = {}
+    for col in obj.__table__.columns:
+        val = getattr(obj, col.key, None)
+        if val is not None and hasattr(val, "isoformat"):
+            val = val.isoformat()
+        result[col.key] = val
+    return result
+
+
 class ProjectCreate(BaseModel):
     name: str
 
@@ -34,7 +45,7 @@ def list_projects(
     projects = session.exec(
         select(Project).where(Project.owner_id == user_id).order_by(Project.created_at.desc())
     ).all()
-    return projects
+    return [_model_dict(p) for p in projects]
 
 
 @router.post("", status_code=201)
@@ -59,7 +70,7 @@ def create_project(
     session.add(project)
     session.commit()
     session.refresh(project)
-    return project
+    return _model_dict(project)
 
 
 @router.get("/{project_id}")
@@ -74,7 +85,7 @@ def get_project(
         .where(Run.project_id == project_id, Run.parent_run_id == None)  # noqa: E711
         .order_by(Run.created_at.desc())
     ).all()
-    return {"project": project, "runs": runs}
+    return {"project": _model_dict(project), "runs": [_model_dict(r) for r in runs]}
 
 
 @router.delete("/{project_id}", status_code=204)

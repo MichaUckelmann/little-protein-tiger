@@ -54,6 +54,21 @@ class Run(SQLModel, table=True):
     # JSON-serialised list of {chain, resnum, bsa_contribution} dicts populated after stage 1
     hotspot_residues: Optional[str] = None
 
+    # Per-stage model overrides: JSON string {"structure": "claude-sonnet-4-6", ...}
+    # NULL = use model_id for all stages (default uniform behaviour)
+    stage_models_json: Optional[str] = None
+    # Enable Claude extended thinking on the structure stage (off by default)
+    extended_thinking: bool = Field(default=False)
+
+    # Interactive pause points (auto_mode=True keeps the old fully-automatic behaviour)
+    auto_mode: bool = Field(default=True)
+    # Set to "pathway_choice" or "structure_choice" while the run is paused
+    pause_point: Optional[str] = None
+    # JSON list of parsed target choices shown to the user after pathway stage
+    pathway_choices_json: Optional[str] = None
+    # User's decision at the structure pause: "literature_and_design" | "design_only" | "stop"
+    structure_next_step: Optional[str] = None
+
     # Celery
     celery_task_id: Optional[str] = None
 

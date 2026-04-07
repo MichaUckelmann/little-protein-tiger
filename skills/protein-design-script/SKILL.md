@@ -36,13 +36,29 @@ or write to the current working directory if they confirm.
 
 ## Workflow
 1. Parse the PPI analysis report: identify target chain, partner chain, recommended modality, and hotspot residues
-2. Read the MODEL-READY HOTSPOTS section to get pre-formatted `binding_types` (BoltzGen) or `select_hotspots` (RFD3)
-3. Determine design modality (cyclic peptide or mini-protein) from the report's recommendation, or as specified by user
-4. Select the appropriate model (BoltzGen default, or RFD3 if user specifies)
-5. Write the input file (YAML for BoltzGen, JSON for RFD3) using the correct format from references
-6. Write the SLURM submission script (see Shell Context below)
+2. Check how many `### MODEL-READY HOTSPOTS` sections are present:
+   - **One section** — single submission (standard workflow)
+   - **Two sections (Region 1 / Region 2)** — generate separate files for each region (see Multiple Hotspot Regions below)
+3. Read each MODEL-READY HOTSPOTS section to get pre-formatted `binding_types` (BoltzGen) or `select_hotspots` (RFD3)
+4. Determine design modality (cyclic peptide or mini-protein) from the report's recommendation, or as specified by user
+5. Select the appropriate model (BoltzGen default, or RFD3 if user specifies)
+6. Write the input file(s) and SLURM script(s) — one pair per region
 7. Save all files to the run folder (or working directory if standalone)
-8. Brief report to user: which target selected, which hotspots, which protein design model, which modality, and the full paths of all saved files
+8. Write the `### PIPELINE HANDOFF` block (required — see end of this skill)
+9. Brief report to user: which targets selected, which hotspots, which protein design model, which modality, and the full paths of all saved files
+
+## Multiple Hotspot Regions
+
+When the structure analysis report contains two independent hotspot regions
+(both `### MODEL-READY HOTSPOTS — Region 1` and `### MODEL-READY HOTSPOTS — Region 2`
+sections are present), generate **separate** design submissions for each:
+
+- Name files `<complex>_region1_boltzgen.yaml` / `<complex>_region1_submit.sh`
+  and `<complex>_region2_boltzgen.yaml` / `<complex>_region2_submit.sh`
+- Use only the hotspot residues from that region's section — do NOT merge
+  residues across regions into a single submission
+- Rationale note in the report: "Two independent hotspot regions identified.
+  Separate submissions generated; run both and compare hit rates."
  
 ## BoltzGen Input Generation
  
@@ -151,6 +167,21 @@ rfd3 design \
  
 Replace all `<placeholders>` with actual paths based on the user's input.
  
+## Pipeline Handoff
+
+After all files are written, output this section as the final block of your
+response. The programmatic orchestrator parses it to record run completion.
+
+**IMPORTANT:** Write plain bullet lines exactly as shown — no code fence, no
+omitted `- ` prefix.
+
+### PIPELINE HANDOFF
+- go_recommendation: GO
+- design_files: <comma-separated filenames of all generated YAML/JSON/sh files>
+- hotspot_regions: <1 or 2>
+- modality: <cyclic_peptide | mini_protein | either>
+- target_complex: <ProteinA / ProteinB>
+
 ## Reference
  
 For BoltzGen input YAML structure see references/boltzgen_reference.md

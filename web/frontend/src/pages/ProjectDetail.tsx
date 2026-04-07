@@ -9,6 +9,7 @@ const STATUS_COLOR: Record<string, string> = {
   COMPLETE: "#22c55e",
   FAILED: "#ef4444",
   BLOCKED: "#f59e0b",
+  PAUSED: "#0369a1",
 };
 
 function RunRow({ run }: { run: Run }) {
@@ -54,6 +55,14 @@ export default function ProjectDetail() {
   const [showRun, setShowRun] = useState(false);
   const [query, setQuery] = useState("");
   const [pdbId, setPdbId] = useState("");
+  const [mode, setMode] = useState<"standard" | "economy" | "quality" | "custom">("standard");
+  const [extThinking, setExtThinking] = useState(false);
+  const [stageModels, setStageModels] = useState<Record<string, string>>({});
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  // false = interactive (pause for review), true = fully automatic
+  const [fullAuto, setFullAuto] = useState(false);
+
+  // Uniform model selector — used in Standard mode and as Custom base
   const [modelKey, setModelKey] = useState("claude/claude-sonnet-4-6");
 
   const MODEL_OPTIONS = [
@@ -62,22 +71,74 @@ export default function ProjectDetail() {
     { label: "Gemini Flash Lite (experimental)", value: "gemini/gemini-3.1-flash-lite-preview" },
   ];
 
+  const STAGE_MODEL_OPTIONS = [
+    { label: "Same as base model", value: "" },
+    { label: "Claude Sonnet 4.6", value: "claude-sonnet-4-6" },
+    { label: "Claude Haiku 4.5", value: "claude-haiku-4-5-20251001" },
+  ];
+
+  // Resolve the actual API payload from the current mode/settings
+  function resolveRunConfig(): { provider: string; model_id: string; stage_models?: Record<string, string>; extended_thinking?: boolean } {
+    if (mode === "economy") {
+      return {
+        provider: "claude",
+        model_id: "claude-sonnet-4-6",
+        stage_models: {
+          pathway: "claude-haiku-4-5-20251001",
+          literature: "claude-haiku-4-5-20251001",
+          structure: "claude-sonnet-4-6",
+          design: "claude-sonnet-4-6",
+        },
+      };
+    }
+    if (mode === "quality") {
+      return {
+        provider: "claude",
+        model_id: "claude-sonnet-4-6",
+        extended_thinking: true,
+      };
+    }
+    if (mode === "custom") {
+      const [provider, model_id] = modelKey.split("/");
+      const overrides = Object.fromEntries(
+        Object.entries(stageModels).filter(([, v]) => v !== "")
+      );
+      return {
+        provider,
+        model_id,
+        stage_models: Object.keys(overrides).length > 0 ? overrides : undefined,
+        extended_thinking: provider === "claude" ? extThinking : undefined,
+      };
+    }
+    // standard
+    const [provider, model_id] = modelKey.split("/");
+    return { provider, model_id };
+  }
+
+  function resetForm() {
+    setShowRun(false);
+    setQuery("");
+    setPdbId("");
+    setMode("standard");
+    setExtThinking(false);
+    setStageModels({});
+    setShowAdvanced(false);
+    setModelKey("claude/claude-sonnet-4-6");
+  }
+
   const createRun = useMutation({
     mutationFn: () => {
-      const [provider, model_id] = modelKey.split("/");
+      const config = resolveRunConfig();
       return api.runs.create(projectId, {
         query: query.trim(),
         pdb_id: pdbId.trim() || undefined,
-        provider,
-        model_id,
+        auto_mode: fullAuto,
+        ...config,
       });
     },
     onSuccess: (run) => {
       qc.invalidateQueries({ queryKey: ["project", projectId] });
-      setShowRun(false);
-      setQuery("");
-      setPdbId("");
-      setModelKey("claude/claude-sonnet-4-6");
+      resetForm();
       navigate(`/runs/${run.id}`);
     },
   });
@@ -104,6 +165,7 @@ export default function ProjectDetail() {
         <div style={styles.modal}>
           <div style={styles.modalBox}>
             <h2 style={{ margin: "0 0 16px", fontSize: 18 }}>New Design Run</h2>
+
             <label style={styles.label}>Query</label>
             <textarea
               autoFocus
@@ -112,6 +174,7 @@ export default function ProjectDetail() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
+
             <label style={{ ...styles.label, marginTop: 12 }}>
               PDB ID <span style={{ color: "#9ca3af", fontWeight: 400 }}>(optional — skips pathway stage)</span>
             </label>
@@ -121,16 +184,110 @@ export default function ProjectDetail() {
               value={pdbId}
               onChange={(e) => setPdbId(e.target.value.toUpperCase())}
             />
-            <label style={{ ...styles.label, marginTop: 12 }}>Model</label>
-            <select
-              style={styles.input}
-              value={modelKey}
-              onChange={(e) => setModelKey(e.target.value)}
-            >
-              {MODEL_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
+
+            <label style={{ ...styles.label, marginTop: 12 }}>Mode</label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 4 }}>
+              {(["standard", "economy", "quality", "custom"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => { setMode(m); if (m !== "custom") setShowAdvanced(false); }}
+                  style={{
+                    ...styles.modeBtn,
+                    ...(mode === m ? styles.modeBtnActive : {}),
+                  }}
+                >
+                  {m === "standard" && "Standard"}
+                  {m === "economy" && "Economy"}
+                  {m === "quality" && "Quality"}
+                  {m === "custom" && "Custom"}
+                </button>
               ))}
-            </select>
+            </div>
+            <p style={styles.modeHint}>
+              {mode === "standard" && "Sonnet 4.6 for all stages."}
+              {mode === "economy" && "Haiku for pathway + literature · Sonnet for structure + design. ~40% cheaper."}
+              {mode === "quality" && "Sonnet for all stages + extended thinking on structure. Best results, ~30% more expensive."}
+              {mode === "custom" && "Choose base model and per-stage overrides below."}
+            </p>
+
+            {/* Base model selector — shown in standard + custom modes */}
+            {(mode === "standard" || mode === "custom") && (
+              <>
+                <label style={{ ...styles.label, marginTop: 8 }}>Base model</label>
+                <select
+                  style={styles.input}
+                  value={modelKey}
+                  onChange={(e) => setModelKey(e.target.value)}
+                >
+                  {MODEL_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </>
+            )}
+
+            {/* Extended thinking checkbox — custom + claude only */}
+            {mode === "custom" && modelKey.startsWith("claude/") && (
+              <label style={{ ...styles.checkLabel, marginTop: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={extThinking}
+                  onChange={(e) => setExtThinking(e.target.checked)}
+                  style={{ marginRight: 6 }}
+                />
+                Extended thinking on structure stage
+                <span style={styles.hint}> (higher quality · ~2× cost on structure)</span>
+              </label>
+            )}
+
+            {/* Per-stage overrides — custom mode only */}
+            {mode === "custom" && (
+              <>
+                <button
+                  style={styles.advancedToggle}
+                  onClick={() => setShowAdvanced((v) => !v)}
+                >
+                  {showAdvanced ? "▾" : "▸"} Per-stage model overrides
+                </button>
+                {showAdvanced && (
+                  <div style={styles.advancedBox}>
+                    {(["pathway", "structure", "literature", "design"] as const).map((stage) => (
+                      <div key={stage} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <span style={{ width: 80, fontSize: 12, color: "#6b7280", textTransform: "capitalize" }}>{stage}</span>
+                        <select
+                          style={{ ...styles.input, flex: 1, padding: "4px 8px", fontSize: 12 }}
+                          value={stageModels[stage] ?? ""}
+                          onChange={(e) => setStageModels((prev) => ({ ...prev, [stage]: e.target.value }))}
+                        >
+                          {STAGE_MODEL_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Auto-mode toggle */}
+            <label style={{ ...styles.checkLabel, marginTop: 14 }}>
+              <input
+                type="checkbox"
+                checked={fullAuto}
+                onChange={(e) => setFullAuto(e.target.checked)}
+                style={{ marginRight: 6 }}
+              />
+              <span>
+                Skip review pauses — run fully automatic
+              </span>
+            </label>
+            {!fullAuto && (
+              <p style={{ fontSize: 12, color: "#6b7280", margin: "4px 0 0 20px" }}>
+                The pipeline will pause after pathway and structure stages so you can review results and choose the next step.
+              </p>
+            )}
+
             <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
               <button
                 style={styles.btn}
@@ -139,7 +296,7 @@ export default function ProjectDetail() {
               >
                 {createRun.isPending ? "Submitting…" : "Start Run"}
               </button>
-              <button style={styles.btnSecondary} onClick={() => setShowRun(false)}>
+              <button style={styles.btnSecondary} onClick={resetForm}>
                 Cancel
               </button>
             </div>
@@ -186,6 +343,30 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6, fontSize: 14, boxSizing: "border-box" as const, display: "block",
   },
   label: { display: "block", fontSize: 13, fontWeight: 600, marginBottom: 4, color: "#374151" },
+  modeBtn: {
+    padding: "7px 12px", background: "#f3f4f6", color: "#374151",
+    border: "1px solid #d1d5db", borderRadius: 6, cursor: "pointer",
+    fontSize: 13, fontWeight: 500, textTransform: "capitalize" as const,
+  },
+  modeBtnActive: {
+    background: "#18181b", color: "#fff", border: "1px solid #18181b",
+  },
+  modeHint: {
+    fontSize: 12, color: "#6b7280", margin: "4px 0 0", lineHeight: 1.4,
+  },
+  checkLabel: {
+    display: "flex", alignItems: "center", fontSize: 13, color: "#374151",
+    cursor: "pointer",
+  },
+  hint: { color: "#9ca3af", fontWeight: 400 },
+  advancedToggle: {
+    background: "none", border: "none", color: "#6b7280", fontSize: 12,
+    cursor: "pointer", padding: "6px 0 2px", textAlign: "left" as const,
+  },
+  advancedBox: {
+    background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 6,
+    padding: "10px 12px", marginTop: 4,
+  },
   modal: {
     position: "fixed" as const, inset: 0, background: "rgba(0,0,0,.4)",
     display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50,

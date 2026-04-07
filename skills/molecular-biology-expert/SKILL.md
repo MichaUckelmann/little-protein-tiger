@@ -161,6 +161,13 @@ Para 1" of DOI 10.7554/eLife.25068).
 Use the exact section headers below — they are parsed by the downstream design
 agent and the orchestrator skill.
 
+**Token budget:** The full MOLECULAR BIOLOGY REPORT must fit in 2,500–3,500 words.
+- Limit each inhibitor entry to 5 bullet lines.
+- If more than 4 inhibitor classes are found, group minor variants under the closest
+  class rather than adding new `####` blocks.
+- Omit sub-sections that have no content — do not write empty placeholders.
+- Literature sources table: max 8 rows.
+
 ```
 ## MOLECULAR BIOLOGY REPORT
 
@@ -168,85 +175,63 @@ agent and the orchestrator skill.
 - Target complex: <ProteinA / ProteinB>
 - Organism: <human / mouse / etc.>
 - Disease context: <oncology / antiviral / inflammatory / other>
-- Biological role: <what the interaction does — 1–2 sentences>
+- Biological role: <one sentence>
 - Drug target validation: <genetic knockdown, patient data, animal models — cite source_span>
 - Papers analysed: <N full fingerprints> from <M total search hits>
 
 ### KNOWN INHIBITORS AND PRIOR ART
 
-> If no inhibitors are found: "No inhibitors found in corpus. This may indicate a
-> novel target or a corpus coverage gap — consider supplementing with a web search."
+> If no inhibitors are found: "No inhibitors found in corpus — novel target or corpus gap."
 
-For each inhibitor class or compound series found:
+For each inhibitor class (max 4 classes; group variants; max 5 bullets each):
 
 #### <Inhibitor class / compound name>
-- Modality: <small molecule / linear peptide / cyclic peptide / stapled peptide /
-  antibody / nanobody / protein domain>
-- Best reported affinity: <Kd or Ki, include units; e.g. 18 nM Kd by SPR>
+- Modality: <small molecule / linear peptide / cyclic peptide / stapled peptide / antibody / protein domain>
+- Best affinity: <Kd or Ki with units and assay — e.g. 18 nM Kd by SPR>
 - Source: <DOI, source_span>
-- Assay: <SPR / ITC / FP / AlphaScreen / BLI / etc.>
-- Key residues engaged on target: <list, if reported>
-- Cell/in vivo efficacy: <IC50 in cells, animal data — or "not reported">
-- Limitations noted in paper: <selectivity, permeability, metabolic stability, etc.>
+- Key residues engaged: <list, or omit if not reported>
+- Limitations: <selectivity, permeability, stability — or omit if not reported>
 
 ### INTERFACE INSIGHTS FROM LITERATURE
-
-Residues experimentally validated as important for binding:
 
 #### Confirmed hotspots (mutagenesis / structural data)
 | Residue | Protein | ΔΔG or effect | Method | Source (DOI, span) |
 |---------|---------|---------------|--------|--------------------|
 | ...     | ...     | ...           | ...    | ...                |
 
-#### Residues tolerant of mutation (not hotspots)
-List residues that were mutated with minimal effect on binding, if reported.
-These should be avoided as design anchors.
+#### Residues tolerant of mutation
+<Only include if data exists — omit sub-section entirely if not found in corpus.>
 
 #### Cross-reference with structural report
-If a complex-structure-analysis report is present, explicitly state:
-- Which structure-tools hotspot residues are **confirmed** by literature
-- Which are **not found** in the corpus (structural prediction only, no experimental validation)
-- Any additional hotspots from literature **not identified** by structure-tools
+- Confirmed by literature: <hotspot residues from structure report that appear in corpus mutagenesis data>
+- Structural only (no experimental validation): <residues from structure report not found in corpus>
+- Literature-only hotspots: <residues in corpus not in structure report — or omit if none>
 
-If no structural report is present, write: "No complex-structure-analysis report present —
-cross-referencing not applicable."
+If no structural report is present, omit this sub-section.
 
 ### FEASIBILITY ASSESSMENT
 - Target tractability: <Excellent / Good / Marginal / Poor>
-  Use this rubric:
-  - **Excellent** — Known hotspot validated by mutagenesis; prior peptide or protein
-    binder with ≤ 100 nM affinity reported
-  - **Good** — Interface biochemically characterised; some inhibitor precedent (even
-    if weak or small-molecule only); surface character suitable for binder engagement
-  - **Marginal** — Limited interface data; only small-molecule or stapled peptide
-    precedent; flat/polar surface; or only computational predictions
-  - **Poor** — No interface characterisation; no inhibitor precedent; intrinsically
-    disordered target; or clear failure modes reported
-- Corpus confidence: <High (≥ 5 relevant papers) / Medium (2–4) / Low (0–1)>
-- Design challenges:
-  - <List specific challenges: isoform redundancy, intracellular localisation,
-    resistance mutations, flat/polar interface, glycosylation, flexibility, etc.>
-- Negative results from literature:
-  - <What has been tried and failed, and why — cite source_span>
-- Missing data gaps:
-  - <What is not in the corpus that would be important to know>
+  - Excellent: mutagenesis-validated hotspot + prior peptide/protein binder ≤ 100 nM
+  - Good: interface characterised + some inhibitor precedent
+  - Marginal: limited data, only small-molecule or computational precedent
+  - Poor: no characterisation, no precedent, or clear failure modes
+- Corpus confidence: <High (≥ 5 papers) / Medium (2–4) / Low (0–1)>
+- Design challenges: <bullet list — isoform redundancy, localisation, flat surface, etc.>
+- Negative results: <what failed and why — cite source_span; omit if none>
+- Missing data gaps: <what is absent from corpus that matters>
 
 ### DESIGN RECOMMENDATIONS
-- Suggested binder modality: <cyclic peptide / mini-protein / stapled peptide / other>
-  Reasoning: <based on prior art modality, interface size from structural report if available,
-  and surface character>
-- Residues to prioritise (literature-validated hotspots): <list with confidence>
-- Residues to avoid as design anchors: <tolerant-of-mutation residues, if known>
-- Binding epitope to mimic: <if a partner peptide or known binder co-crystal exists,
-  describe what the binder must replicate>
-- Suggested affinity target: <based on best reported prior art; e.g. "aim for ≤ 50 nM
-  Kd — best prior art is 18 nM by SPR (eLife.25068)">
-- Key risk: <the single most important design challenge in one sentence>
+- Suggested modality: <cyclic peptide / mini-protein / stapled peptide / other> — reasoning in one sentence
+- Residues to prioritise: <literature-validated hotspots>
+- Residues to avoid: <tolerant-of-mutation residues — omit if none found>
+- Epitope to mimic: <partner peptide or co-crystal epitope, if known>
+- Affinity target: <e.g. "aim for ≤ 50 nM Kd — best prior art is 18 nM SPR (eLife.25068)">
+- Key risk: <single most important design challenge — one sentence>
 
-### LITERATURE SOURCES
-| # | Title (truncated to 60 chars) | DOI | Study type | Score | Key quantitative finding |
-|---|-------------------------------|-----|------------|-------|--------------------------|
-| 1 | ...                           | ... | ...        | ...   | ...                      |
+### LITERATURE SOURCES (max 8 rows)
+| # | Title (truncated to 60 chars) | DOI | Study type | Score | Key finding |
+|---|-------------------------------|-----|------------|-------|-------------|
+| 1 | ...                           | ... | ...        | ...   | ...         |
 
 ### PIPELINE HANDOFF
 - target_complex: <ProteinA / ProteinB>

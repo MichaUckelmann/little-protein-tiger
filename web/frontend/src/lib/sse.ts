@@ -12,10 +12,12 @@ export interface RunStatus {
   target_complex: string | null;
   go_recommendation: string | null;
   error: string | null;
+  pause_point: string | null;
+  pathway_choices_json: string | null;
   completed_at: string | null;
 }
 
-const TERMINAL = new Set(["COMPLETE", "FAILED", "BLOCKED"]);
+const TERMINAL = new Set(["COMPLETE", "FAILED", "BLOCKED", "PAUSED"]);
 const BASE = import.meta.env.VITE_API_URL ?? "";
 
 export function useRunStatus(runId: number | null, initialStatus?: string) {

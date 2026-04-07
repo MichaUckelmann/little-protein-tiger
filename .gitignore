@@ -10,3 +10,17 @@ venv/
 *.egg-info/
 dist/
 build/
+
+# Pipeline run outputs
+web/runs/
+outputs/
+tmp/
+
+# SQLite DB (runtime state, not source)
+web/web.db
+
+# Temp config files
+config_search_expansion_temp.yaml
+
+# PMC corpus data
+PMC_database/
