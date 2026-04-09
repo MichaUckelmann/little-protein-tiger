@@ -95,6 +95,45 @@ class ExperimentalMeasurement(SQLModel, table=True):
     uploaded_by: int = Field(foreign_key="user.id")
 
 
+class BinderCampaign(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="project.id", index=True)
+    user_id: int = Field(foreign_key="user.id")
+    name: str                          # user-given label, e.g. "YAP1 round 1"
+    target_name: Optional[str] = None  # optional target descriptor
+    csv_filename: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Binder(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    campaign_id: int = Field(foreign_key="bindercampaign.id", index=True)
+    parent_id: Optional[int] = Field(default=None, foreign_key="binder.id")
+    name: str                          # e.g. "design_001" or "design_001_A265E"
+    sequence: str
+    mutation_label: Optional[str] = None   # e.g. "A265E"
+    source: str = "csv_import"         # csv_import | optimizer | manual
+    # CSV quality metrics (null for optimizer/manual entries)
+    design_to_target_iptm: Optional[float] = None
+    min_design_to_target_pae: Optional[float] = None
+    filter_rmsd: Optional[float] = None
+    cif_path: Optional[str] = None     # relative path: data/binders/{id}.cif
+    notes: Optional[str] = None
+    optimizer_report_path: Optional[str] = None  # data/binders/optimizer_{id}.md
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BinderMeasurement(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    binder_id: int = Field(foreign_key="binder.id", index=True)
+    method: str                        # SPR | ITC | FP | other
+    kd_molar: Optional[float] = None
+    ki_molar: Optional[float] = None
+    notes: Optional[str] = None
+    measured_at: datetime = Field(default_factory=datetime.utcnow)
+    uploaded_by: int = Field(foreign_key="user.id")
+
+
 class AuditEvent(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: Optional[int] = Field(default=None, foreign_key="user.id")

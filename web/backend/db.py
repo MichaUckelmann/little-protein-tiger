@@ -21,7 +21,12 @@ engine = create_engine(
 
 
 def init_db() -> None:
-    """Create all tables on first startup."""
+    """Create all tables on first startup.
+
+    Import all models here so SQLModel.metadata is populated before create_all.
+    Adding a new model? Register it in this import.
+    """
+    from web.backend import models_db  # noqa: F401 — registers all table metadata
     SQLModel.metadata.create_all(engine)
 
 

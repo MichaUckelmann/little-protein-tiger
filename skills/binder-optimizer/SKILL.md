@@ -3,10 +3,9 @@ name: binder-optimizer
 description: >
   Analyses a predicted binder-target complex (local CIF/PDB from AF3/RFDiffusion/Boltz),
   maps the binding interface atomically, proposes 4 single-point mutations on the binder
-  to improve affinity, validates steric clashes, and outputs 4 AF3 submission JSONs —
-  one per mutation for clean, interpretable round-1 validation. Optionally
-  cross-validates against molecular-biology-expert or ppi-analysis reports.
-  Requires structure-tools MCP server.
+  to improve affinity, validates steric clashes, and outputs 4 mutated sequences for
+  experimental testing. Optionally cross-validates against molecular-biology-expert or
+  ppi-analysis reports. Requires structure-tools MCP server.
   Trigger on: "optimize binder", "improve binding affinity", "suggest mutations",
   "mutate binder", "affinity maturation", "binder optimization", or any request to
   improve a designed binder given a local structure file. Do NOT invoke for target
@@ -16,11 +15,12 @@ description: >
 
 # Binder Optimizer
 
-Proposes 4 independent single-point binder mutations and emits one AF3 JSON per
-mutation. Combined multi-mutation submissions belong in round 2, after singles are
-ranked — combining before knowing which ones work produces uninterpretable results.
+Proposes 4 independent single-point binder mutations for experimental validation.
+Binders will be tested experimentally — no AlphaFold JSON submission needed.
+Combined multi-mutation candidates belong in round 2, after singles are ranked
+experimentally — combining before knowing which ones work produces uninterpretable results.
 
-Output: `## BINDER OPTIMIZATION REPORT` + 4-JSON AF3 array for batch upload.
+Output: `## BINDER OPTIMIZATION REPORT` + machine-readable `### MUTATION OUTPUT` JSON block.
 
 ---
 
@@ -149,7 +149,7 @@ minor cases. Prune to the best 4–6 passing candidates for Phase 5.
 
 ---
 
-## Phase 6: Final Selection and AF3 JSON Construction
+## Phase 6: Final Selection and Sequence Construction
 
 ### Select top 4
 
@@ -159,55 +159,42 @@ support (hotspot confirmed > structural > none) → pLDDT at position (≥ 70 pr
 Do not recommend two mutations at the same position. Prefer candidates targeting
 **different interface regions** — spatial independence makes round-2 combining cleaner.
 
-### Get sequences
+### Get binder sequence
 
 ```
 mcp__structure-tools__tool_get_sequence_map
   file_path = "<path>"
   chain     = "<binder_chain>"
-
-mcp__structure-tools__tool_get_sequence_map
-  file_path = "<path>"
-  chain     = "<target_chain>"
 ```
 
-Each returns `sequence` (1-letter uppercase string) and `auth_to_string_idx`
-mapping. Use `auth_to_string_idx[resnum]` to find the exact 0-based position in the
-sequence string — do not use the residue number directly.
+Returns `sequence` (1-letter uppercase string) and `auth_to_string_idx` mapping.
+Use `auth_to_string_idx[resnum]` to find the exact 0-based position in the sequence
+string — do not use the residue number directly.
 
-Apply each mutation independently to the binder sequence. Keep target as WT.
+Apply each mutation independently to the binder sequence to produce 4 mutated sequences.
 
-### Construct AF3 JSON array
+### Emit MUTATION OUTPUT block
 
-4 objects, one per mutation. All use:
-- `useStructureTemplate: false` (both chains — must not bias toward WT geometry)
-- `modelSeeds: ["1", "2", "3"]`
-- `dialect: "alphafoldserver"`, `version: 1`
-- Binder (mutated) first, target (WT) second
-- Naming: `<complex_descriptor>_<MutCode>` (e.g. `binder_A265E`)
+After selecting the 4 mutations, output a machine-readable JSON block exactly as shown:
 
+```
+### MUTATION OUTPUT
 ```json
 [
-  {
-    "name": "<complex>_A265E",
-    "modelSeeds": ["1", "2", "3"],
-    "sequences": [
-      { "proteinChain": { "sequence": "<binder_with_A265E>", "count": 1, "useStructureTemplate": false } },
-      { "proteinChain": { "sequence": "<target_WT>",         "count": 1, "useStructureTemplate": false } }
-    ],
-    "dialect": "alphafoldserver",
-    "version": 1
-  },
-  { "name": "<complex>_V271L", ... },
-  { "name": "<complex>_T290N", ... },
-  { "name": "<complex>_K312R", ... }
+  {"mutation": "A265E", "mutated_sequence": "<full binder sequence with A265E applied>"},
+  {"mutation": "V271L", "mutated_sequence": "<full binder sequence with V271L applied>"},
+  {"mutation": "T290N", "mutated_sequence": "<full binder sequence with T290N applied>"},
+  {"mutation": "K312R", "mutated_sequence": "<full binder sequence with K312R applied>"}
 ]
 ```
+```
 
-**Round 2**: rank the 4 predictions by interface quality (interface pLDDT, predicted
-contact geometry, or experimental SPR/ITC). Combine the top 2 into a double mutant —
-re-invoke binder-optimizer on the best single-mutant AF3 output, or build the JSON
-manually from the sequences already extracted above.
+Each `mutated_sequence` must be the complete binder sequence (same length as WT except
+for the single substitution). The block must appear verbatim so it can be parsed
+programmatically.
+
+**Round 2**: after experimental results are in, re-invoke binder-optimizer on the
+uploaded CIF of the best-performing mutant to propose a double mutant.
 
 ---
 
@@ -262,13 +249,12 @@ interaction types. Write "Not determined" where tool data is absent.
 | 2–4 | ... |
 
 Caveats: <pLDDT warnings, geometry notes, minor clash notes>
-Round 2: rank these 4 AF3 predictions → combine top 2 into a double mutant.
+Round 2: after experimental affinity results, upload the best mutant CIF and re-invoke.
 
-### AF3 JSON OUTPUT
-4 single-mutation JSONs — paste array into AF3 server batch upload.
-Seeds: [1, 2, 3] | useStructureTemplate: false (both chains)
-
-[full JSON array]
+### MUTATION OUTPUT
+```json
+[full MUTATION OUTPUT JSON array — see Phase 6]
+```
 ```
 
 ---
@@ -277,8 +263,8 @@ Seeds: [1, 2, 3] | useStructureTemplate: false (both chains)
 
 - **Standalone**: user provides file path + chain IDs + task
 - **From orchestrator**: write report to `<run_folder>/05_binder_optimization.md`
-- **To wet lab**: `RECOMMENDED MUTATIONS` table + AF3 JSON array
-- **To round 2**: re-invoke on best single-mutant AF3 output to build double mutant
+- **To wet lab**: `RECOMMENDED MUTATIONS` table + `MUTATION OUTPUT` sequences
+- **To round 2**: re-invoke on uploaded CIF of best experimentally-validated mutant
 
 ---
 
@@ -291,10 +277,11 @@ Seeds: [1, 2, 3] | useStructureTemplate: false (both chains)
   index map. Use `auth_to_string_idx[resnum]` — do not use the residue number directly
   as a string index; chains may start above 1 or contain numbering gaps.
 
-- **useStructureTemplate: true suppresses mutant geometry**: AF3 uses the WT structure
-  as a template and may correct the mutation back toward WT. Always use `false`.
+- **useStructureTemplate suppresses mutant geometry**: if you ever submit to AF3 in
+  round 2, always use `useStructureTemplate: false` — the WT template would correct
+  the mutation back toward WT geometry.
 
-- **No combined JSONs in round 1**: if a combined mutant underperforms you cannot
+- **No combined mutants in round 1**: if a combined mutant underperforms you cannot
   identify the culprit without the singles. Singles first, always.
 
 - **pLDDT < 70 is a caveat, not a veto**: uncertain geometry ≠ wrong position.

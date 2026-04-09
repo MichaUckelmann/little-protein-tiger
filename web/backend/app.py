@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from web.backend.db import init_db
 from web.backend.routers import auth, projects, runs, structures
+from web.backend.routers import binders
 
 
 @asynccontextmanager
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(projects.router)
     app.include_router(runs.router)
     app.include_router(structures.router)
+    app.include_router(binders.router)
 
     @app.get("/health")
     def health():

@@ -26,7 +26,7 @@ sys.path.insert(0, str(_ROOT))
 
 from web.backend.celery_app import celery_app
 from web.backend.db import engine
-from web.backend.models_db import Run, User
+from web.backend.models_db import Binder, BinderCampaign, Run, User
 
 _SKILL_TO_STAGE: dict[str, str] = {
     "pathway-expert": "pathway",
@@ -563,4 +563,106 @@ def run_optimizer_task(self, run_id: int) -> None:
             completed_at=datetime.utcnow(),
         )
         logger.error(f"Optimizer run {run_id} failed: {exc}")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Binder optimizer task — operates on Binder rows, not Run rows
+# ---------------------------------------------------------------------------
+
+def _parse_mutation_output(report_text: str) -> list[dict]:
+    """Extract the MUTATION OUTPUT JSON block from the optimizer report.
+
+    Looks for a fenced JSON block after '### MUTATION OUTPUT' and returns
+    a list of {mutation, mutated_sequence} dicts.  Returns [] on failure.
+    """
+    import re
+    match = re.search(
+        r"### MUTATION OUTPUT\s*```json\s*(\[.*?\])\s*```",
+        report_text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return []
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return []
+
+
+@celery_app.task(bind=True, name="run_binder_optimizer")
+def run_binder_optimizer_task(self, binder_id: int, user_id: int, cif_abs_path: str) -> None:
+    """Run the binder-optimizer skill on a single Binder and create child rows."""
+    from sqlmodel import Session
+    from src.skill_runner import SkillRunner
+
+    with Session(engine) as session:
+        binder = session.get(Binder, binder_id)
+        if not binder:
+            logger.error(f"run_binder_optimizer_task: Binder {binder_id} not found")
+            return
+        user = session.get(User, user_id)
+        sequence = binder.sequence
+        binder_name = binder.name
+        campaign_id = binder.campaign_id
+
+    if user and user.anthropic_key_enc:
+        from web.backend.crypto import decrypt_key
+        os.environ["ANTHROPIC_API_KEY"] = decrypt_key(user.anthropic_key_enc)
+    elif not os.environ.get("ANTHROPIC_API_KEY"):
+        logger.error(f"run_binder_optimizer_task: No API key for user {user_id}")
+        return
+
+    config = _load_config()
+    _BINDER_DATA_DIR = _ROOT / "data" / "binders"
+    _BINDER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = _BINDER_DATA_DIR / f"optimizer_{binder_id}.md"
+
+    prompt = (
+        f"Optimize binder at {cif_abs_path}, binder chain A, target chain B "
+        f"(Boltz output). Binder sequence: {sequence}"
+    )
+
+    try:
+        skill_runner = SkillRunner(
+            skill_name="binder-optimizer",
+            provider="claude",
+            model_id="claude-sonnet-4-6",
+            config=config,
+        )
+        report_text = skill_runner.run(prompt)
+        report_path.write_text(report_text, encoding="utf-8")
+
+        # Parse mutations and create child Binder rows
+        mutations = _parse_mutation_output(report_text)
+        relative_report = str(report_path.relative_to(_ROOT))
+
+        with Session(engine) as session:
+            # Store report path on parent binder
+            parent = session.get(Binder, binder_id)
+            if parent:
+                parent.optimizer_report_path = relative_report
+                session.add(parent)
+
+            for entry in mutations:
+                mut_label = entry.get("mutation", "")
+                mut_seq = entry.get("mutated_sequence", "")
+                if not mut_seq:
+                    continue
+                child = Binder(
+                    campaign_id=campaign_id,
+                    parent_id=binder_id,
+                    name=f"{binder_name}_{mut_label}" if mut_label else f"{binder_name}_mut",
+                    sequence=mut_seq,
+                    mutation_label=mut_label or None,
+                    source="optimizer",
+                )
+                session.add(child)
+
+            session.commit()
+
+        logger.info(f"Binder optimizer complete for binder {binder_id}: {len(mutations)} mutations created")
+
+    except Exception as exc:
+        logger.error(f"run_binder_optimizer_task failed for binder {binder_id}: {exc}")
         raise

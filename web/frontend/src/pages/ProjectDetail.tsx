@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type Run } from "../lib/api";
+import { api, type Run, type BinderCampaign } from "../lib/api";
 
 const STATUS_COLOR: Record<string, string> = {
   QUEUED: "#9ca3af",
@@ -63,6 +63,91 @@ function RunRow({ run, onDeleted }: { run: Run; onDeleted: () => void }) {
           </button>
         </div>
       </Link>
+    </div>
+  );
+}
+
+function BinderCampaignsSection({ projectId }: { projectId: number }) {
+  const qc = useQueryClient();
+  const [showNew, setShowNew] = useState(false);
+  const [campName, setCampName] = useState("");
+  const [targetName, setTargetName] = useState("");
+
+  const { data: campaigns = [], isLoading } = useQuery({
+    queryKey: ["campaigns", projectId],
+    queryFn: () => api.campaigns.list(projectId),
+  });
+
+  const createCampaign = useMutation({
+    mutationFn: () =>
+      api.campaigns.create(projectId, {
+        name: campName.trim(),
+        target_name: targetName.trim() || undefined,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campaigns", projectId] });
+      setCampName("");
+      setTargetName("");
+      setShowNew(false);
+    },
+  });
+
+  return (
+    <div style={{ marginTop: 40 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Binder Campaigns</h2>
+        <button style={styles.btn} onClick={() => setShowNew(true)}>+ New Campaign</button>
+      </div>
+
+      {showNew && (
+        <div style={{ background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 8, padding: 16, marginBottom: 12 }}>
+          <label style={styles.label}>Campaign name</label>
+          <input
+            autoFocus
+            style={styles.input}
+            placeholder="e.g. YAP1 BoltzGen round 1"
+            value={campName}
+            onChange={(e) => setCampName(e.target.value)}
+          />
+          <label style={{ ...styles.label, marginTop: 10 }}>
+            Target <span style={{ color: "#9ca3af", fontWeight: 400 }}>(optional)</span>
+          </label>
+          <input
+            style={styles.input}
+            placeholder="e.g. YAP1-TEAD4"
+            value={targetName}
+            onChange={(e) => setTargetName(e.target.value)}
+          />
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button
+              style={styles.btn}
+              disabled={!campName.trim() || createCampaign.isPending}
+              onClick={() => createCampaign.mutate()}
+            >
+              {createCampaign.isPending ? "Creating…" : "Create"}
+            </button>
+            <button style={styles.btnSecondary} onClick={() => setShowNew(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {isLoading && <p style={{ color: "#9ca3af", fontSize: 13 }}>Loading…</p>}
+      {!isLoading && campaigns.length === 0 && (
+        <p style={{ color: "#6b7280", fontSize: 13 }}>No campaigns yet. Import design run results above.</p>
+      )}
+      {campaigns.map((c: BinderCampaign) => (
+        <Link key={c.id} to={`/campaigns/${c.id}`} style={styles.runRow}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 500, fontSize: 14 }}>{c.name}</div>
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>
+              {c.target_name && `${c.target_name} · `}
+              {new Date(c.created_at).toLocaleString()}
+              {c.csv_filename && ` · ${c.csv_filename}`}
+            </div>
+          </div>
+          <span style={{ fontSize: 12, color: "#6b7280" }}>View →</span>
+        </Link>
+      ))}
     </div>
   );
 }
@@ -363,11 +448,14 @@ export default function ProjectDetail() {
         </div>
       )}
 
+      <h2 style={{ fontSize: 16, fontWeight: 600, margin: "0 0 12px" }}>Design Runs</h2>
       {runs.length === 0 ? (
         <p style={{ color: "#6b7280" }}>No runs yet. Start a new design run above.</p>
       ) : (
         <div>{runs.map((r) => <RunRow key={r.id} run={r} onDeleted={handleRunDeleted} />)}</div>
       )}
+
+      <BinderCampaignsSection projectId={projectId} />
     </div>
   );
 }

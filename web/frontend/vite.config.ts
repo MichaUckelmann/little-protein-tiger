@@ -58,6 +58,8 @@ export default defineConfig({
       '/projects': 'http://localhost:8000',
       '/runs': 'http://localhost:8000',
       '/structures': 'http://localhost:8000',
+      '/campaigns': 'http://localhost:8000',
+      '/binders': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
     },
   },

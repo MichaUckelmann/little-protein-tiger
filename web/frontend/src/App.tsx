@@ -7,6 +7,7 @@ import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import RunDetail from "./pages/RunDetail";
 import Settings from "./pages/Settings";
+import BinderCampaign from "./pages/BinderCampaign";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -64,6 +65,7 @@ export default function App() {
                     <Route path="/" element={<Projects />} />
                     <Route path="/projects/:id" element={<ProjectDetail />} />
                     <Route path="/runs/:id" element={<RunDetail />} />
+                    <Route path="/campaigns/:id" element={<BinderCampaign />} />
                     <Route path="/settings" element={<Settings />} />
                   </Routes>
                 </AppLayout>
