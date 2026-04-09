@@ -1,7 +1,44 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type Project } from "../lib/api";
+
+function ProjectCard({ project, onDeleted }: { project: Project; onDeleted: () => void }) {
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleDelete(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.confirm(`Delete project "${project.name}" and ALL its runs?`)) return;
+    setDeleting(true);
+    try {
+      await api.projects.delete(project.id);
+      onDeleted();
+    } catch (err) {
+      alert((err as Error).message);
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <Link to={`/projects/${project.id}`} style={styles.card}>
+        <div style={{ fontWeight: 600, marginBottom: 4, paddingRight: 24 }}>{project.name}</div>
+        <div style={{ fontSize: 12, color: "#9ca3af" }}>
+          {new Date(project.created_at).toLocaleDateString()}
+        </div>
+      </Link>
+      <button
+        onClick={handleDelete}
+        disabled={deleting}
+        title="Delete project"
+        style={styles.deleteBtn}
+      >
+        {deleting ? "…" : "✕"}
+      </button>
+    </div>
+  );
+}
 
 export default function Projects() {
   const qc = useQueryClient();
@@ -72,12 +109,11 @@ export default function Projects() {
 
       <div style={styles.grid}>
         {projects?.map((p) => (
-          <Link key={p.id} to={`/projects/${p.id}`} style={styles.card}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>{p.name}</div>
-            <div style={{ fontSize: 12, color: "#9ca3af" }}>
-              {new Date(p.created_at).toLocaleDateString()}
-            </div>
-          </Link>
+          <ProjectCard
+            key={p.id}
+            project={p}
+            onDeleted={() => qc.invalidateQueries({ queryKey: ["projects"] })}
+          />
         ))}
       </div>
     </div>
@@ -94,6 +130,12 @@ const styles: Record<string, React.CSSProperties> = {
     display: "block", padding: 16, border: "1px solid #e5e7eb", borderRadius: 8,
     textDecoration: "none", color: "inherit", background: "#fff",
     transition: "border-color .15s",
+  },
+  deleteBtn: {
+    position: "absolute" as const, top: 10, right: 10,
+    padding: "2px 7px", background: "transparent", color: "#d1d5db",
+    border: "1px solid #e5e7eb", borderRadius: 4, cursor: "pointer",
+    fontSize: 11, lineHeight: 1,
   },
   btn: {
     padding: "8px 16px", background: "#18181b", color: "#fff",

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useRunStatus } from "../lib/sse";
@@ -16,6 +16,7 @@ export default function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const runId = Number(id);
   const qc = useQueryClient();
+  const navigate = useNavigate();
 
   const { data, isLoading } = useQuery({
     queryKey: ["run", runId],
@@ -42,6 +43,19 @@ export default function RunDetail() {
       qc.invalidateQueries({ queryKey: ["run", runId] });
     } finally {
       setRetrying(false);
+    }
+  }
+
+  const [deleting, setDeleting] = useState(false);
+  async function handleDelete() {
+    if (!window.confirm("Delete this run and all its output files? This cannot be undone.")) return;
+    setDeleting(true);
+    try {
+      await api.runs.delete(runId);
+      navigate(`/projects/${data?.run.project_id ?? ""}`, { replace: true });
+    } catch (e) {
+      alert((e as Error).message);
+      setDeleting(false);
     }
   }
 
@@ -94,15 +108,26 @@ export default function RunDetail() {
           </div>
         </div>
 
-        {/* Status pill */}
-        <div style={{
-          ...styles.statusPill,
-          background: STATUS_BG[run.status] ?? "#f3f4f6",
-          color: STATUS_FG[run.status] ?? "#374151",
-          borderColor: STATUS_BORDER_COL[run.status] ?? "#d1d5db",
-        }}>
-          {isRunning && <span style={styles.pillSpinner}>⟳ </span>}
-          {run.status}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {/* Status pill */}
+          <div style={{
+            ...styles.statusPill,
+            background: STATUS_BG[run.status] ?? "#f3f4f6",
+            color: STATUS_FG[run.status] ?? "#374151",
+            borderColor: STATUS_BORDER_COL[run.status] ?? "#d1d5db",
+          }}>
+            {isRunning && <span style={styles.pillSpinner}>⟳ </span>}
+            {run.status}
+          </div>
+          {/* Delete run */}
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            title="Delete run"
+            style={styles.deleteBtn}
+          >
+            {deleting ? "…" : "Delete"}
+          </button>
         </div>
       </div>
 
@@ -219,4 +244,9 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid #e5e7eb", borderRadius: 8,
   },
   downloadLink: { fontSize: 13, color: "#3b82f6" },
+  deleteBtn: {
+    padding: "5px 11px", background: "transparent", color: "#9ca3af",
+    border: "1px solid #e5e7eb", borderRadius: 6, cursor: "pointer",
+    fontSize: 12, fontWeight: 500,
+  },
 };

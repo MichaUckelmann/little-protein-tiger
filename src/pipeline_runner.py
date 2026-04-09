@@ -18,6 +18,7 @@ Designed as a plain synchronous class so it can be:
 """
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import subprocess
@@ -26,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+import requests
 import yaml
 from dotenv import load_dotenv
 from loguru import logger
@@ -96,6 +98,9 @@ class PipelineResult:
     pdb_id: str | None = None
     design_files: list[Path] = field(default_factory=list)
     error: str | None = None
+    # JSON string: {"target_chain": "A", "partner_chain": "B", "residues": [...]}
+    # Populated after stage 1; None if MODEL-READY HOTSPOTS section was not found.
+    hotspot_residues_json: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +243,16 @@ class PipelineRunner:
             if start_idx <= 1:
                 pdb = result.pdb_id or handoff.get("pdb_id", "")
                 if not pdb or pdb.upper() == "NOT_FOUND":
-                    raise PipelineBlockedError(
-                        "No PDB accession found in corpus.  Re-run with --pdb <accession> "
-                        "or add more papers via `python scripts/fetch_papers.py` and re-curate."
+                    raise PipelinePausedError(
+                        "structure_needed",
+                        {
+                            "target_complex": result.target_complex or handoff.get("target_complex", ""),
+                            "message": (
+                                "The pathway analysis could not find a PDB structure in the corpus "
+                                "for the recommended target. Provide a 4-character PDB accession "
+                                "or upload a .cif file to continue."
+                            ),
+                        },
                     )
                 result.pdb_id = pdb
                 self._ensure_structure(pdb)
@@ -272,6 +284,14 @@ class PipelineRunner:
                     if f and f.exists()
                 ]
                 handoff = self._stage_literature(handoff, run_dir, result, ctx)
+
+                # ── Pause point 3: review literature before committing to design ──
+                if not auto_mode:
+                    go_prelim = handoff.get("go_recommendation", "").upper().replace("-", "_")
+                    raise PipelinePausedError("literature_choice", {
+                        "go_recommendation": go_prelim,
+                        "go_rationale": handoff.get("go_rationale", ""),
+                    })
 
             # ── Stage 3: go/no-go ────────────────────────────────────────────
             go = handoff.get("go_recommendation", "").upper().replace("-", "_")
@@ -333,16 +353,51 @@ class PipelineRunner:
     ) -> dict[str, str]:
         output_file = run_dir / "01_structure.md"
         pdb_id = result.pdb_id or prev_handoff.get("pdb_id", "")
-        structure_path = (
-            _ROOT
-            / self.config.get("paths", {}).get("structures_dir", "data/structures")
-            / f"{pdb_id.upper()}.cif"
-        )
+        structures_dir = _ROOT / self.config.get("paths", {}).get("structures_dir", "data/structures")
+        asu_path = structures_dir / f"{pdb_id.upper()}.cif"
+        ba1_path = structures_dir / f"{pdb_id.upper()}_ba1.cif"
 
-        query = prev_handoff.get("structure_query") or (
-            f"Analyze PDB {pdb_id} at {structure_path}. "
-            "Identify target and partner chains, map interface hotspot residues for binder design."
-        )
+        # Prefer biological assembly 1: it contains only the physiological complex,
+        # eliminating crystal-contact chains that mislead chain selection.
+        analysis_path = ba1_path if ba1_path.exists() else asu_path
+        using_ba1 = analysis_path == ba1_path
+        if using_ba1:
+            logger.info(f"  Using biological assembly 1 for structure analysis: {ba1_path}")
+
+        # Parse chain→entity descriptions from the CIF header so the skill can
+        # unambiguously identify target vs. partner chains even in multi-copy ASUs.
+        chain_descs = self._chain_entity_descriptions(analysis_path)
+        target_complex = result.target_complex or prev_handoff.get("target_complex", "the target complex")
+
+        chain_hint = ""
+        if chain_descs:
+            lines = [f"  Chain {ch}: {desc}" for ch, desc in sorted(chain_descs.items())]
+            chain_hint = (
+                "\n\nChain entity descriptions from the mmCIF header "
+                f"({'biological assembly 1' if using_ba1 else 'asymmetric unit'}):\n"
+                + "\n".join(lines)
+                + "\n\nSelect the chains that form the biologically relevant "
+                f"{target_complex} interface. "
+                "Do NOT analyse crystal-packing contacts between identical chain copies."
+            )
+
+        # Use the pathway handoff's structure_query only when its PDB matches the
+        # user-selected PDB. If the user picked a different structure, build a
+        # fresh query so the skill is pointed at the correct file.
+        handoff_pdb = prev_handoff.get("pdb_id", "")
+        handoff_query = prev_handoff.get("structure_query")
+        if handoff_query and handoff_pdb.upper() == pdb_id.upper():
+            # Replace any ASU path in the pathway-generated query with the analysis path
+            query = handoff_query.replace(str(asu_path), str(analysis_path))
+            if str(analysis_path) not in query:
+                query = query + f"\n\nStructure file to use: {analysis_path}"
+            query += chain_hint
+        else:
+            query = (
+                f"Analyse the {target_complex} interface in PDB {pdb_id}.\n"
+                f"Structure file: {analysis_path}{chain_hint}"
+            )
+
         logger.info("Stage 1: complex-structure-analysis")
         # Don't pass prior stage context: structure_query already contains everything
         # the skill needs, and the full pathway.md adds ~8k tokens per LLM call.
@@ -527,28 +582,124 @@ class PipelineRunner:
                 fields[m.group(1).strip()] = m.group(2).strip()
         return fields
 
+    def _parse_hotspot_residues(self, text: str, handoff: dict) -> str | None:
+        """
+        Parse the MODEL-READY HOTSPOTS table(s) from structure stage output.
+
+        Returns a JSON string:
+            {"target_chain": "A", "partner_chain": "B",
+             "residues": [{"residue": "LEU", "auth_seq_id": 245,
+                           "label_seq_id": 245, "rfd3_atoms": "CD1,CG2"}, ...]}
+
+        Returns None if the section is absent (non-fatal).
+        """
+        target_chain = handoff.get("target_chain", "")
+        partner_chain = handoff.get("partner_chain", "")
+
+        sections = re.findall(
+            r"###\s+MODEL.READY HOTSPOTS.*?(?=\n###|\Z)",
+            text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if not sections:
+            return None
+
+        row_pat = re.compile(
+            r"^\|\s*([A-Z]+)\d*\s*\|\s*(\d+)\s*\|\s*(\d+)[^|]*\|\s*([^|]+?)\s*\|",
+            re.MULTILINE,
+        )
+        residues: list[dict] = []
+        seen: set[tuple] = set()
+        for section in sections:
+            for m in row_pat.finditer(section):
+                residue, auth_id, label_id, atoms = m.groups()
+                key = (residue, int(auth_id))
+                if key not in seen:
+                    seen.add(key)
+                    residues.append({
+                        "residue": residue,
+                        "auth_seq_id": int(auth_id),
+                        "label_seq_id": int(label_id),
+                        "rfd3_atoms": atoms.strip(),
+                    })
+
+        if not residues:
+            return None
+
+        return json.dumps({
+            "target_chain": target_chain,
+            "partner_chain": partner_chain,
+            "residues": residues,
+        })
+
     def _ensure_structure(self, pdb_id: str) -> Path:
-        """Return local CIF path, downloading from RCSB if absent."""
+        """Return local ASU CIF path, downloading from RCSB if absent.
+
+        Also attempts to download biological assembly 1 ({PDB_ID}_ba1.cif) which
+        is used by the structure stage to avoid crystal-contact confusion.
+        """
         structures_dir = _ROOT / self.config.get("paths", {}).get("structures_dir", "data/structures")
         dest = structures_dir / f"{pdb_id.upper()}.cif"
-        if dest.exists():
-            logger.info(f"  Structure {pdb_id} on disk: {dest}")
-            return dest
-
-        logger.info(f"  Downloading {pdb_id} from RCSB...")
-        proc = subprocess.run(
-            [sys.executable, str(_ROOT / "scripts" / "download_pdb_structures.py"), "--id", pdb_id],
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode != 0 or not dest.exists():
-            raise PipelineError(
-                f"Failed to download PDB {pdb_id}.\n"
-                f"stderr: {proc.stderr.strip() or '(none)'}\n"
-                f"Try manually: python scripts/download_pdb_structures.py --id {pdb_id}"
+        if not dest.exists():
+            logger.info(f"  Downloading {pdb_id} from RCSB...")
+            proc = subprocess.run(
+                [sys.executable, str(_ROOT / "scripts" / "download_pdb_structures.py"), "--id", pdb_id],
+                capture_output=True,
+                text=True,
             )
-        logger.info(f"  Downloaded {dest} ({dest.stat().st_size // 1024} KB)")
+            if proc.returncode != 0 or not dest.exists():
+                raise PipelineError(
+                    f"Failed to download PDB {pdb_id}.\n"
+                    f"stderr: {proc.stderr.strip() or '(none)'}\n"
+                    f"Try manually: python scripts/download_pdb_structures.py --id {pdb_id}"
+                )
+            logger.info(f"  Downloaded {dest} ({dest.stat().st_size // 1024} KB)")
+        else:
+            logger.info(f"  Structure {pdb_id} on disk: {dest}")
+
+        # Biological assembly 1 — download once; skip silently if unavailable.
+        # BA1 contains only the physiological complex, eliminating crystal contacts
+        # that mislead the structure analysis skill.
+        ba1_dest = structures_dir / f"{pdb_id.upper()}_ba1.cif"
+        if not ba1_dest.exists():
+            try:
+                ba1_url = f"https://files.rcsb.org/download/{pdb_id.upper()}-assembly1.cif.gz"
+                r = requests.get(ba1_url, timeout=30)
+                if r.status_code == 200:
+                    ba1_dest.write_bytes(gzip.decompress(r.content))
+                    logger.info(f"  Downloaded BA1 {ba1_dest} ({ba1_dest.stat().st_size // 1024} KB)")
+                else:
+                    logger.warning(f"  BA1 not available for {pdb_id} (HTTP {r.status_code}) — will use ASU")
+            except Exception as exc:
+                logger.warning(f"  BA1 download failed for {pdb_id}: {exc} — will use ASU")
+
         return dest
+
+    @staticmethod
+    def _chain_entity_descriptions(cif_path: Path) -> dict[str, str]:
+        """Parse a CIF file and return {chain_id: entity_description}.
+
+        Uses gemmi (already a project dep).  Returns empty dict on any failure so
+        the caller can degrade gracefully.
+        """
+        try:
+            import gemmi  # type: ignore
+            doc = gemmi.cif.read(str(cif_path))
+            block = doc.sole_block()
+
+            entity_desc: dict[str, str] = {}
+            for row in block.find(["_entity.id", "_entity.pdbx_description"]):
+                entity_desc[row[0]] = row[1].strip('"').strip("'")
+
+            chain_to_desc: dict[str, str] = {}
+            for row in block.find(["_struct_asym.id", "_struct_asym.entity_id"]):
+                desc = entity_desc.get(row[1], "")
+                if desc:
+                    chain_to_desc[row[0]] = desc
+            return chain_to_desc
+        except Exception as exc:
+            logger.warning(f"Could not read chain descriptions from {cif_path}: {exc}")
+            return {}
 
     def _parse_pathway_choices(
         self, report_text: str, primary_handoff: dict

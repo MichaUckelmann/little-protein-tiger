@@ -203,15 +203,36 @@ export const api = {
       id: number,
       payload: {
         chosen_target_index?: number;
+        chosen_pdb_id?: string;
         next_step?: string;
+        pdb_id?: string;
       }
     ) =>
       apiFetch<Run>(`/runs/${id}/resume`, {
         method: "POST",
         body: JSON.stringify(payload),
       }),
+    uploadStructure: (id: number, file: File): Promise<Run> => {
+      const token = getToken();
+      const fd = new FormData();
+      fd.append("file", file);
+      return fetch(`${BASE}/runs/${id}/upload-structure`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      }).then(async (res) => {
+        if (!res.ok) {
+          if (res.status === 401) { clearToken(); window.location.replace("/login"); throw new Error("Session expired"); }
+          const detail = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error(detail.detail ?? res.statusText);
+        }
+        return res.json();
+      });
+    },
     retry: (id: number) =>
       apiFetch<Run>(`/runs/${id}/retry`, { method: "POST" }),
+    delete: (id: number) =>
+      apiFetch<void>(`/runs/${id}`, { method: "DELETE" }),
     fileUrl: (id: number, filename: string) =>
       `${BASE}/runs/${id}/files/${filename}`,
   },

@@ -5,11 +5,13 @@ Endpoints:
   GET  /projects            List all projects owned by current user
   POST /projects            Create a new project
   GET  /projects/{id}       Get project details + run list
-  DELETE /projects/{id}     Delete project (no runs allowed)
+  DELETE /projects/{id}     Delete project and all its runs
 """
 from __future__ import annotations
 
 import re
+import shutil
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -17,7 +19,9 @@ from sqlmodel import Session, select
 
 from web.backend.auth import get_current_user_id
 from web.backend.db import get_session
-from web.backend.models_db import Project, Run
+from web.backend.models_db import ExperimentalMeasurement, Project, Run
+
+_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -95,14 +99,34 @@ def delete_project(
     session: Session = Depends(get_session),
 ):
     project = _get_owned_project(project_id, user_id, session)
-    has_runs = session.exec(select(Run).where(Run.project_id == project_id)).first()
-    if has_runs:
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot delete a project that has runs. Archive or delete runs first.",
-        )
+    runs = session.exec(select(Run).where(Run.project_id == project_id)).all()
+
+    run_ids = []
+    for run in runs:
+        # Cancel Celery tasks for active runs
+        if run.celery_task_id and run.status in ("QUEUED", "RUNNING"):
+            try:
+                from web.backend.celery_app import celery_app
+                celery_app.control.revoke(run.celery_task_id, terminate=True)
+            except Exception:
+                pass
+        # Delete measurements
+        measurements = session.exec(
+            select(ExperimentalMeasurement).where(ExperimentalMeasurement.run_id == run.id)
+        ).all()
+        for m in measurements:
+            session.delete(m)
+        run_ids.append(run.id)
+        session.delete(run)
+
     session.delete(project)
     session.commit()
+
+    # Clean up output files (best effort)
+    for rid in run_ids:
+        run_dir = _ROOT / "web" / "runs" / str(rid)
+        if run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
 
 
 def _get_owned_project(project_id: int, user_id: int, session: Session) -> Project:

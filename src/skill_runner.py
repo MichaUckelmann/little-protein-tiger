@@ -132,6 +132,59 @@ _TOOL_DEFS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "find_pdb_structures",
+        "description": (
+            "Search the entire corpus fingerprint database for PDB structure accessions "
+            "linked to specific proteins. Checks two sources across ALL fingerprints: "
+            "(1) pathway_context.target_nodes.suggested_pdb_structures — PDB IDs curators "
+            "associated with a target protein in pathway biology papers; "
+            "(2) paper_metadata.pdb_accessions — PDB IDs mentioned in any paper where "
+            "the protein appears in key findings or entity lists. "
+            "Call once with all candidate target proteins before writing the PIPELINE HANDOFF. "
+            "Use returned IDs verbatim — they are corpus-sourced, never hallucinated."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "proteins": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Gene symbols of proteins to look up, e.g. ['YAP1', 'TEAD4', 'NF2']. "
+                        "Include all proteins from all candidate PPIs in one call."
+                    ),
+                },
+            },
+            "required": ["proteins"],
+        },
+    },
+    {
+        "name": "search_rcsb_pdb",
+        "description": (
+            "Search RCSB PDB for structures containing specific proteins. "
+            "Use as a fallback ONLY when find_pdb_structures returns total_found=0 "
+            "(corpus has no PDB IDs for your target proteins). "
+            "Performs a full-text search on RCSB and returns up to 5 entries per protein "
+            "with title, method, resolution, chain count, and entity descriptions. "
+            "Results are NOT corpus-sourced — check entity descriptions to confirm "
+            "the complex you want is actually present before using a PDB ID."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "proteins": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Gene symbols of proteins to search for, e.g. ['YAP1', 'TEAD4']. "
+                        "Focus on the primary target proteins — 2–3 gene symbols is sufficient."
+                    ),
+                },
+            },
+            "required": ["proteins"],
+        },
+    },
+    {
         "name": "tool_analyze_interface",
         "description": (
             "Full interface analysis between two chains of a structure file. "
@@ -263,14 +316,246 @@ _TOOL_DEFS: list[dict[str, Any]] = [
 _WRITE_FILE_SKILLS = {"protein-design-script", "binder-optimizer"}
 
 # Skills that need the full residue index maps for AF3/BoltzGen JSON construction
-_NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer"}
+_NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer", "complex-structure-analysis"}
+
+# Skills that have access to the corpus-wide PDB lookup tool
+_PDB_LOOKUP_SKILLS = {"pathway-expert", "complex-expert", "orchestrator"}
+
+_RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
+_RCSB_GRAPHQL_URL = "https://data.rcsb.org/graphql"
+_RCSB_GRAPHQL_QUERY = """
+query EntriesMetadata($ids: [String!]!) {
+  entries(entry_ids: $ids) {
+    rcsb_id
+    struct { title }
+    rcsb_entry_info {
+      resolution_combined
+      experimental_method
+      polymer_entity_count_protein
+    }
+    polymer_entities {
+      rcsb_polymer_entity { pdbx_description }
+      rcsb_entity_source_organism { ncbi_taxonomy_id ncbi_scientific_name }
+    }
+  }
+}
+"""
+
+
+def _parse_rcsb_entry(entry: dict) -> dict:
+    """Distil an RCSB GraphQL entry to selection-relevant fields."""
+    info = entry.get("rcsb_entry_info") or {}
+    res_list = [r for r in (info.get("resolution_combined") or []) if r is not None]
+    return {
+        "title": (entry.get("struct") or {}).get("title"),
+        "method": info.get("experimental_method"),
+        "resolution_A": round(min(res_list), 2) if res_list else None,
+        "protein_chain_count": info.get("polymer_entity_count_protein") or 0,
+        "entities": [
+            {
+                "description": (pe.get("rcsb_polymer_entity") or {}).get("pdbx_description") or "",
+                "organism_taxid": ((pe.get("rcsb_entity_source_organism") or [{}])[0]).get("ncbi_taxonomy_id"),
+                "organism_name": ((pe.get("rcsb_entity_source_organism") or [{}])[0]).get("ncbi_scientific_name"),
+            }
+            for pe in (entry.get("polymer_entities") or [])
+        ],
+    }
+
+
+def _search_rcsb_pdb(proteins: list[str], fingerprint_dir: Path) -> dict:
+    """
+    Search RCSB PDB for structures containing the given proteins.
+
+    Uses RCSB full-text search (one request per protein, top 5 results each),
+    then batch-fetches title/method/resolution/chain metadata via GraphQL for
+    any IDs not already in the local pdb_metadata.json cache.
+
+    Call this as a fallback when find_pdb_structures returns total_found=0.
+    Results are from RCSB, not the corpus — verify entity descriptions match
+    your target complex before using a PDB ID.
+    """
+    metadata_cache: dict[str, dict] = {}
+    metadata_path = fingerprint_dir.parent / "pdb_metadata.json"
+    if metadata_path.exists():
+        try:
+            metadata_cache = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    queries = [p.strip() for p in proteins if p.strip()]
+    by_protein: dict[str, list[str]] = {}
+
+    for protein in queries:
+        # Search across title, keywords, and entity description for broad coverage
+        payload = {
+            "query": {
+                "type": "group",
+                "logical_operator": "or",
+                "nodes": [
+                    {"type": "terminal", "service": "text", "parameters": {
+                        "attribute": "struct.title", "operator": "contains_words", "value": protein}},
+                    {"type": "terminal", "service": "text", "parameters": {
+                        "attribute": "struct_keywords.text", "operator": "contains_words", "value": protein}},
+                    {"type": "terminal", "service": "text", "parameters": {
+                        "attribute": "rcsb_polymer_entity.pdbx_description", "operator": "contains_words", "value": protein}},
+                ],
+            },
+            "return_type": "entry",
+            "request_options": {"paginate": {"start": 0, "rows": 5}},
+        }
+        try:
+            resp = requests.post(_RCSB_SEARCH_URL, json=payload, timeout=15)
+            resp.raise_for_status()
+            ids = [hit["identifier"] for hit in resp.json().get("result_set", [])]
+            by_protein[protein] = ids
+        except Exception as e:
+            logger.warning(f"[search_rcsb_pdb] {protein}: {e}")
+            by_protein[protein] = []
+
+    # Batch-fetch metadata for IDs not already in local cache
+    new_ids = list(dict.fromkeys(
+        pid for ids in by_protein.values() for pid in ids
+        if pid not in metadata_cache
+    ))
+    if new_ids:
+        try:
+            resp = requests.post(
+                _RCSB_GRAPHQL_URL,
+                json={"query": _RCSB_GRAPHQL_QUERY, "variables": {"ids": new_ids}},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            for entry in (resp.json().get("data") or {}).get("entries") or []:
+                metadata_cache[entry["rcsb_id"]] = _parse_rcsb_entry(entry)
+        except Exception as e:
+            logger.warning(f"[search_rcsb_pdb] GraphQL batch fetch failed: {e}")
+
+    def _enrich(pdb_id: str) -> dict:
+        result: dict = {"pdb_id": pdb_id}
+        result.update(metadata_cache.get(pdb_id, {}))
+        return result
+
+    return {
+        "by_protein": {p: [_enrich(pid) for pid in ids] for p, ids in by_protein.items()},
+        "total_found": sum(len(ids) for ids in by_protein.values()),
+        "note": (
+            "Results from RCSB full-text search — not corpus-sourced. "
+            "Check entity descriptions to confirm your target proteins are present "
+            "and apply the same selection criteria as for corpus results."
+        ),
+    }
 
 
 def _filter_tools(defs: list[dict], skill_name: str) -> list[dict]:
     """Return the tool list for a given skill, removing tools the skill shouldn't have."""
     if skill_name not in _WRITE_FILE_SKILLS:
         defs = [d for d in defs if d["name"] != "write_file"]
+    if skill_name not in _PDB_LOOKUP_SKILLS:
+        defs = [d for d in defs if d["name"] != "find_pdb_structures"]
+        defs = [d for d in defs if d["name"] != "search_rcsb_pdb"]
     return defs
+
+
+def _find_pdb_structures(proteins: list[str], fingerprint_dir: Path) -> dict:
+    """
+    Scan all corpus fingerprints for PDB accessions associated with the given proteins.
+
+    Two sources are checked for each protein:
+    - pathway_context.target_nodes[].suggested_pdb_structures  (pathway biology papers)
+    - paper_metadata.pdb_accessions of papers where the protein appears in
+      entities.proteins or key_findings.protein_pair
+
+    Matching is case-insensitive substring: query "YAP1" matches stored "YAP1",
+    stored "YAP/TAZ", etc. Queries shorter than 3 chars are ignored.
+    """
+    import re as _re
+
+    def _matches(stored: str, query: str) -> bool:
+        if len(query) < 3:
+            return False
+        s, q = stored.upper(), query.upper()
+        return q in s or s.startswith(q)
+
+    queries = [p.strip() for p in proteins if p.strip()]
+    # {query → ordered list of PDB IDs}
+    by_protein: dict[str, list[str]] = {q: [] for q in queries}
+
+    for fp_file in fingerprint_dir.glob("*.json"):
+        try:
+            fp = json.loads(fp_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        # Only valid 4-char PDB IDs from paper_metadata
+        pdb_accessions = [
+            p for p in (fp.get("paper_metadata", {}).get("pdb_accessions") or [])
+            if p and len(p) == 4
+        ]
+        target_nodes = (fp.get("pathway_context") or {}).get("target_nodes") or []
+        entity_proteins = fp.get("entities", {}).get("proteins") or []
+        key_findings = fp.get("key_findings") or []
+
+        for query in queries:
+            hits: set[str] = set()
+
+            # Source 1: pathway_context.target_nodes.suggested_pdb_structures
+            for node in target_nodes:
+                if _matches(node.get("protein", ""), query):
+                    hits.update(
+                        p for p in (node.get("suggested_pdb_structures") or []) if p
+                    )
+
+            # Source 2: pdb_accessions from papers mentioning this protein
+            if pdb_accessions:
+                in_entities = any(_matches(ep, query) for ep in entity_proteins)
+                in_findings = any(
+                    any(_matches(pp, query) for pp in (kf.get("protein_pair") or []) if pp)
+                    for kf in key_findings
+                )
+                if in_entities or in_findings:
+                    hits.update(pdb_accessions)
+
+            # Merge deduplicating while preserving order
+            seen = set(by_protein[query])
+            for h in sorted(hits):
+                if h not in seen:
+                    by_protein[query].append(h)
+                    seen.add(h)
+
+    # Load RCSB metadata cache if available
+    metadata_cache: dict[str, dict] = {}
+    metadata_path = fingerprint_dir.parent / "pdb_metadata.json"
+    if metadata_path.exists():
+        try:
+            metadata_cache = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    def _enrich(pdb_id: str) -> dict:
+        meta = metadata_cache.get(pdb_id.upper(), {})
+        result: dict = {"pdb_id": pdb_id}
+        if meta:
+            result["title"] = meta.get("title")
+            result["method"] = meta.get("method")
+            result["resolution_A"] = meta.get("resolution_A")
+            result["protein_chain_count"] = meta.get("protein_chain_count")
+            result["entities"] = [
+                {
+                    "description": e.get("description"),
+                    "organism_taxid": e.get("organism_taxid"),
+                    "organism_name": e.get("organism_name"),
+                }
+                for e in (meta.get("entities") or [])
+            ]
+        return result
+
+    all_ids = sorted({p for ids in by_protein.values() for p in ids})
+    return {
+        "by_protein": {q: [_enrich(pid) for pid in ids] for q, ids in by_protein.items()},
+        "all_pdb_ids": all_ids,
+        "total_found": len(all_ids),
+        "metadata_available": bool(metadata_cache),
+    }
 
 
 def _to_claude_tools(defs: list[dict]) -> list[dict]:
@@ -436,6 +721,18 @@ class SkillRunner:
                 fp.pop("methodology", None)
                 return json.dumps(fp, ensure_ascii=False, indent=2)
 
+            if name == "find_pdb_structures":
+                result = _find_pdb_structures(
+                    input_dict.get("proteins", []), self._fingerprint_dir
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "search_rcsb_pdb":
+                result = _search_rcsb_pdb(
+                    input_dict.get("proteins", []), self._fingerprint_dir
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
             if name == "tool_analyze_interface":
                 from src.structure_tools import analyze_interface
                 result = analyze_interface(
@@ -474,9 +771,11 @@ class SkillRunner:
             if name == "tool_get_sequence_map":
                 from src.structure_tools import get_sequence_map
                 result = get_sequence_map(_resolve(input_dict["file_path"]), input_dict["chain"])
-                # auth_to_string_idx and auth_to_label_idx are large index dicts
-                # (~15k tokens per chain) only needed by design/optimizer skills for
-                # AF3 JSON construction. Strip them for all other skills.
+                # auth_to_string_idx and auth_to_label_idx are large index dicts.
+                # complex-structure-analysis needs auth_to_label to populate the
+                # MODEL-READY HOTSPOTS table with correct label_seq_ids (not estimates).
+                # Design/optimizer skills need both maps for AF3 JSON construction.
+                # Strip both for all other skills (molecular-biology-expert etc.).
                 if self.skill_name not in _NEEDS_INDEX_MAPS:
                     result = {"sequence": result["sequence"], "length": len(result["sequence"])}
                 return json.dumps(result, indent=2)
@@ -550,7 +849,7 @@ class SkillRunner:
                 else {}
             )
 
-            # Retry up to 3 times on rate-limit errors (30k tokens/min window).
+            # Retry up to 3 times on rate-limit and transient connection errors.
             # Use streaming — required by the SDK when max_tokens is large enough
             # that the request could exceed 10 minutes non-streamed.
             for attempt in range(3):
@@ -570,6 +869,19 @@ class SkillRunner:
                         raise
                     wait = 65 * (attempt + 1)
                     logger.warning(f"Rate limit hit — waiting {wait}s then retrying…")
+                    time.sleep(wait)
+                except anthropic.APIConnectionError:
+                    if attempt == 2:
+                        raise
+                    wait = 10 * (attempt + 1)
+                    logger.warning(f"Connection error on call #{iteration + 1} (attempt {attempt + 1}/3) — retrying in {wait}s")
+                    time.sleep(wait)
+                except anthropic.AnthropicError as exc:
+                    # Catch overloaded_error (529) and retry with backoff.
+                    if attempt == 2 or "overloaded" not in str(exc).lower():
+                        raise
+                    wait = 30 * (attempt + 1)
+                    logger.warning(f"API overloaded on call #{iteration + 1} (attempt {attempt + 1}/3) — retrying in {wait}s")
                     time.sleep(wait)
 
             # Serialise content blocks for history.
@@ -665,9 +977,23 @@ class SkillRunner:
                 "tools": gemini_tools,
                 "generationConfig": {"maxOutputTokens": 24000},
             }
-            resp = requests.post(
-                url, params={"key": api_key}, json=payload, timeout=180
-            )
+            for attempt in range(4):
+                resp = requests.post(
+                    url, params={"key": api_key}, json=payload, timeout=180
+                )
+                if resp.status_code not in (429, 500, 502, 503, 504) or attempt == 3:
+                    break
+                if resp.status_code == 429:
+                    # Honour Retry-After if present; otherwise use exponential backoff
+                    retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+                    wait = int(retry_after) if retry_after and retry_after.isdigit() else 30 * (attempt + 1)
+                else:
+                    wait = 10 * (attempt + 1)
+                logger.warning(
+                    f"[gemini] transient {resp.status_code} on call #{iteration + 1} "
+                    f"(attempt {attempt + 1}/4) — retrying in {wait}s"
+                )
+                time.sleep(wait)
             resp.raise_for_status()
             body = resp.json()
 

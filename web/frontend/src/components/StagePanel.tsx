@@ -4,12 +4,48 @@
  * - Each stage card: colour-coded left border, auto-expands when running
  * - Animated pulse on the active stage
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, lazy, Suspense, Component } from "react";
+import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Run, TargetChoice } from "../lib/api";
 import { PathwayChoicePanel } from "./PathwayChoicePanel";
 import { StructureChoicePanel } from "./StructureChoicePanel";
+import { StructureNeededPanel } from "./StructureNeededPanel";
+import { LiteratureChoicePanel } from "./LiteratureChoicePanel";
+import { ContactTable } from "./ContactTable";
+
+// Lazy-load the Mol* viewer so it doesn't block the initial page render.
+// The ~5 MB Mol* bundle is only fetched when a structure stage result is visible.
+const StructureViewer = lazy(() =>
+  import("./StructureViewer").then((m) => ({ default: m.StructureViewer }))
+);
+
+// Error boundary — prevents any Mol* crash from killing the whole page.
+class ViewerErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: string | null }
+> {
+  state = { error: null };
+  static getDerivedStateFromError(e: unknown) {
+    return { error: e instanceof Error ? e.message : "Viewer error" };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          height: 450, display: "flex", alignItems: "center",
+          justifyContent: "center", background: "#fef2f2",
+          border: "1px solid #fca5a5", borderRadius: 10,
+          color: "#dc2626", fontSize: 13, padding: 16, textAlign: "center",
+        }}>
+          Structure viewer error: {this.state.error}
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const STAGE_ORDER = ["pathway", "structure", "literature", "design"] as const;
 const STAGE_LABELS: Record<string, string> = {
@@ -325,6 +361,65 @@ export function StageStepper({
                 targetComplex={run.target_complex}
                 onResumed={onResumed}
               />
+            )}
+
+          {/* Structure needed panel — shown after pathway stage when no PDB was found */}
+          {stage === "pathway" &&
+            run.status === "PAUSED" &&
+            run.pause_point === "structure_needed" &&
+            onResumed && (
+              <StructureNeededPanel
+                runId={run.id}
+                targetComplex={run.target_complex}
+                onResumed={onResumed}
+              />
+            )}
+
+          {/* Literature choice panel — shown after literature stage card */}
+          {stage === "literature" &&
+            run.status === "PAUSED" &&
+            run.pause_point === "literature_choice" &&
+            onResumed && (
+              <LiteratureChoicePanel
+                runId={run.id}
+                goRecommendation={run.go_recommendation}
+                onResumed={onResumed}
+              />
+            )}
+
+          {/* Structure viewer + contact table — shown once structure stage is complete */}
+          {stage === "structure" &&
+            stageFiles["01_structure.md"] &&
+            run.pdb_id && (
+              <div style={{
+                display: "flex",
+                gap: 14,
+                marginBottom: 14,
+                alignItems: "stretch",
+              }}>
+                <div style={{ flex: 2, minWidth: 0 }}>
+                  <ViewerErrorBoundary>
+                    <Suspense fallback={
+                      <div style={{
+                        height: 450, display: "flex", alignItems: "center",
+                        justifyContent: "center", background: "#f8fafc",
+                        border: "1px solid #e5e7eb", borderRadius: 10,
+                        color: "#9ca3af", fontSize: 13,
+                      }}>
+                        Loading viewer…
+                      </div>
+                    }>
+                      <StructureViewer
+                        pdbId={run.pdb_id}
+                        hotspotResidues={run.hotspot_residues}
+                      />
+                    </Suspense>
+                  </ViewerErrorBoundary>
+                </div>
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <ContactTable hotspotResidues={run.hotspot_residues} />
+                </div>
+              </div>
             )}
         </div>
       ))}

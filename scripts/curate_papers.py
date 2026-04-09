@@ -6,10 +6,12 @@ Usage:
     python scripts/curate_papers.py [--limit N] [--reprocess] [--dry-run] [--paper-key KEY]
 """
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
 
+import requests
 import yaml
 from dotenv import load_dotenv
 from loguru import logger
@@ -24,6 +26,59 @@ from src.models import Paper
 from src.text_extractor import extract_text
 from src.curator import curate_paper
 from src.fingerprint_store import save_fingerprint
+
+RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
+
+
+def _rcsb_accessions_for_doi(doi: str) -> list[str]:
+    """Query RCSB for PDB entries whose primary citation DOI matches.
+
+    Authoritative for structures *deposited* by the paper.  Fast (~200ms).
+    Returns empty list on any error so curation is never blocked.
+    """
+    payload = {
+        "query": {
+            "type": "terminal",
+            "service": "text",
+            "parameters": {
+                "attribute": "rcsb_primary_citation.pdbx_database_id_DOI",
+                "operator": "exact_match",
+                "value": doi.upper(),
+            },
+        },
+        "return_type": "entry",
+        "request_options": {"return_all_hits": True},
+    }
+    try:
+        r = requests.post(RCSB_SEARCH_URL, json=payload, timeout=15)
+        r.raise_for_status()
+        return [hit["identifier"] for hit in r.json().get("result_set", [])]
+    except Exception as exc:
+        logger.warning(f"  RCSB DOI lookup failed for {doi}: {exc}")
+        return []
+
+
+def _merge_pdb_accessions(fingerprint: dict, doi: str | None) -> list[str]:
+    """Merge curator-extracted accessions with RCSB-authoritative ones.
+
+    Returns the merged list (may be empty).  Mutates fingerprint in place.
+    """
+    existing: list[str] = fingerprint.get("paper_metadata", {}).get("pdb_accessions") or []
+    existing_upper = {a.upper() for a in existing}
+
+    rcsb_ids: list[str] = []
+    if doi:
+        rcsb_ids = _rcsb_accessions_for_doi(doi)
+
+    new_ids = [pid for pid in rcsb_ids if pid.upper() not in existing_upper]
+    merged = existing + new_ids
+
+    if merged != existing:
+        fingerprint.setdefault("paper_metadata", {})["pdb_accessions"] = merged
+        if new_ids:
+            logger.info(f"  RCSB lookup added {len(new_ids)} accession(s): {new_ids}")
+
+    return merged
 
 
 def load_config(path: Path = ROOT / "config.yaml") -> dict:
@@ -151,6 +206,10 @@ def main():
             db.mark_curation_skipped(paper_key)
             time.sleep(delay_s)
             continue
+
+        # Merge RCSB-authoritative PDB accessions with whatever the curator extracted.
+        # This catches structures deposited by the paper that the model missed.
+        _merge_pdb_accessions(fingerprint, paper.doi)
 
         # Persist fingerprint
         fp_path = save_fingerprint(paper_key, fingerprint, fingerprint_dir)

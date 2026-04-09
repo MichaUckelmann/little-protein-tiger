@@ -127,7 +127,17 @@ def run_pipeline_task(self, run_id: int) -> None:
         def _run_stage(self, skill_name, query, context_files, output_file):
             stage = _SKILL_TO_STAGE.get(skill_name, skill_name)
             _set_run_fields(run_id, stage_current=stage)
-            return super()._run_stage(skill_name, query, context_files, output_file)
+            handoff = super()._run_stage(skill_name, query, context_files, output_file)
+            if stage == "structure":
+                try:
+                    hotspot_json = self._parse_hotspot_residues(
+                        output_file.read_text(encoding="utf-8"), handoff
+                    )
+                    if hotspot_json:
+                        _set_run_fields(run_id, hotspot_residues=hotspot_json)
+                except Exception as exc:
+                    logger.warning(f"Run {run_id}: hotspot parse failed: {exc}")
+            return handoff
 
     _set_run_fields(run_id, status="RUNNING")
 
@@ -164,6 +174,11 @@ def run_pipeline_task(self, run_id: int) -> None:
             fields["stage_current"] = "pathway"
         elif exc.pause_point == "structure_choice":
             fields["stage_current"] = "structure"
+        elif exc.pause_point == "structure_needed":
+            fields["stage_current"] = "pathway"
+        elif exc.pause_point == "literature_choice":
+            fields["stage_current"] = "literature"
+            fields["go_recommendation"] = exc.payload.get("go_recommendation")
         _set_run_fields(run_id, **fields)
         logger.info(f"Run {run_id} paused at {exc.pause_point}")
         # Do NOT re-raise — PAUSED is expected, not an error
@@ -245,12 +260,25 @@ def resume_pipeline_task(self, run_id: int) -> None:
         def _run_stage(self, skill_name, query, context_files, output_file):
             stage = _SKILL_TO_STAGE.get(skill_name, skill_name)
             _set_run_fields(run_id, stage_current=stage)
-            return super()._run_stage(skill_name, query, context_files, output_file)
+            handoff = super()._run_stage(skill_name, query, context_files, output_file)
+            if stage == "structure":
+                try:
+                    hotspot_json = self._parse_hotspot_residues(
+                        output_file.read_text(encoding="utf-8"), handoff
+                    )
+                    if hotspot_json:
+                        _set_run_fields(run_id, hotspot_residues=hotspot_json)
+                except Exception as exc:
+                    logger.warning(f"Run {run_id}: hotspot parse failed: {exc}")
+            return handoff
 
     _set_run_fields(run_id, status="RUNNING", pause_point=None)
 
     # Determine start_from and context_file based on which pause point we're resuming
     if pause_point == "pathway_choice":
+        start_from = "structure"
+        context_file = run_dir / "00_pathway.md"
+    elif pause_point == "structure_needed":
         start_from = "structure"
         context_file = run_dir / "00_pathway.md"
     elif pause_point == "structure_choice":
@@ -259,6 +287,9 @@ def resume_pipeline_task(self, run_id: int) -> None:
         else:
             start_from = "literature"
         context_file = run_dir / "01_structure.md"
+    elif pause_point == "literature_choice":
+        start_from = "design"
+        context_file = run_dir / "02_literature.md"
     else:
         logger.error(f"Resume run {run_id}: unknown pause_point {pause_point!r}")
         _set_run_fields(
@@ -310,6 +341,11 @@ def resume_pipeline_task(self, run_id: int) -> None:
             fields["stage_current"] = "pathway"
         elif exc.pause_point == "structure_choice":
             fields["stage_current"] = "structure"
+        elif exc.pause_point == "structure_needed":
+            fields["stage_current"] = "pathway"
+        elif exc.pause_point == "literature_choice":
+            fields["stage_current"] = "literature"
+            fields["go_recommendation"] = exc.payload.get("go_recommendation")
         _set_run_fields(run_id, **fields)
         logger.info(f"Run {run_id} paused again at {exc.pause_point}")
 
@@ -388,7 +424,17 @@ def retry_run_task(self, run_id: int, start_from: str) -> None:
         def _run_stage(self, skill_name, query, context_files, output_file):
             stage = _SKILL_TO_STAGE.get(skill_name, skill_name)
             _set_run_fields(run_id, stage_current=stage)
-            return super()._run_stage(skill_name, query, context_files, output_file)
+            handoff = super()._run_stage(skill_name, query, context_files, output_file)
+            if stage == "structure":
+                try:
+                    hotspot_json = self._parse_hotspot_residues(
+                        output_file.read_text(encoding="utf-8"), handoff
+                    )
+                    if hotspot_json:
+                        _set_run_fields(run_id, hotspot_residues=hotspot_json)
+                except Exception as exc:
+                    logger.warning(f"Run {run_id}: hotspot parse failed: {exc}")
+            return handoff
 
     _set_run_fields(run_id, status="RUNNING", error=None)
 
@@ -435,6 +481,11 @@ def retry_run_task(self, run_id: int, start_from: str) -> None:
             fields["stage_current"] = "pathway"
         elif exc.pause_point == "structure_choice":
             fields["stage_current"] = "structure"
+        elif exc.pause_point == "structure_needed":
+            fields["stage_current"] = "pathway"
+        elif exc.pause_point == "literature_choice":
+            fields["stage_current"] = "literature"
+            fields["go_recommendation"] = exc.payload.get("go_recommendation")
         _set_run_fields(run_id, **fields)
         logger.info(f"Run {run_id} retry paused at {exc.pause_point}")
 

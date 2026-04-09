@@ -139,6 +139,8 @@ Upgrade candidates confirmed by ΔΔG data. Note any prior therapeutic targeting
 
 ### Get sequence numbering map
 
+Call once per chain — the result persists in context for the rest of the run.
+
 ```
 mcp__structure-tools__tool_get_sequence_map
   file_path = "<path>"
@@ -149,7 +151,9 @@ Returns `auth_to_label` map: `{auth_seq_id → label_seq_id}`.
 - **label_seq_id** is required for BoltzGen `binding` specs
 - **auth_seq_id** is required for RFD3 `select_hotspots` specs
 
-Both are now available from a single tool call.
+Both are now available from a single tool call. If you already called this for a
+chain earlier in the session (e.g. during Pre-flight), do not call it again —
+look up the result already in context.
 
 **Critical rule**: Use the `auth_to_label` map verbatim — never compute, estimate,
 or infer the mapping from sequence comparison, chain start residues, or
@@ -322,5 +326,8 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
   in the MODEL-READY HOTSPOTS table, and only by direct lookup in the
   `auth_to_label` map from `get_sequence_map`. Never estimate the mapping with
   phrases like "auth = label for this chain" or "offset is approximately N" —
-  these guesses propagate silently into wrong BoltzGen specs. If you are unsure,
-  call `get_sequence_map` again; it is cheap.
+  these guesses propagate silently into wrong BoltzGen specs.
+
+- **Do not re-call `get_sequence_map`**: call it at most once per chain per run.
+  The result is already in context — scroll back to find it rather than issuing
+  a duplicate tool call. A repeated call adds tokens without new information.

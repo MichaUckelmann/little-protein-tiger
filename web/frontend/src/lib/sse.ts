@@ -14,6 +14,7 @@ export interface RunStatus {
   error: string | null;
   pause_point: string | null;
   pathway_choices_json: string | null;
+  hotspot_residues: string | null;
   completed_at: string | null;
 }
 

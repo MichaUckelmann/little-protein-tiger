@@ -117,9 +117,9 @@ any of the Phase 2 query strings. These are high-value expansion candidates:
 | `pathway_context.downstream_effectors` | Effector gene/protein names not in original query |
 | `pathway_context.disease_associations[].mutation_frequency` | Specific mutation types (e.g. "NF2 loss", "LATS1/2 deletion") |
 
-**Skip Phase 3.5** entirely if:
-- The user's original query already named a specific protein pair or pathway node, AND
-- Phase 2 returned ≥ 8 unique papers with scores ≥ 0.30
+**Always run Phase 3.5.** The only exception is when Phase 2 returned ≥ 12 unique papers
+with scores ≥ 0.40 — in that case the corpus is saturated and expansion yields diminishing
+returns. In all other situations, run it.
 
 Otherwise, identify the **2–3 most specific new terms** (prefer gene symbols over pathway
 names, which were likely already queried). Run at most **2 follow-up searches**:
@@ -146,6 +146,49 @@ merge their extracted fields into the working set before Phase 4.
 
 **State in the CORPUS COVERAGE section** how many new unique papers the
 expansion round added and which expansion terms triggered them.
+
+---
+
+## Phase 3.6: Corpus-Wide PDB Lookup
+
+After completing Phases 3 and 3.5, call `find_pdb_structures` **once** with every
+candidate target protein identified across all phases:
+
+```
+find_pdb_structures
+  proteins=["<ProteinA>", "<ProteinB>", "<ProteinC>", ...]
+```
+
+Include all proteins from `target_nodes`, `upstream_regulators`, and any PPI candidates
+you intend to include in the TARGET OPPORTUNITY LANDSCAPE — typically 4–8 gene symbols.
+
+This scans the **entire** fingerprint corpus, including papers not retrieved in Phase 2–3,
+and returns PDB accessions from two sources: `suggested_pdb_structures` in pathway
+fingerprints and `pdb_accessions` from any paper mentioning the protein.
+
+When multiple structures are returned for a protein, select the best one using these
+criteria **in priority order**:
+
+1. **Complex present** — `protein_chain_count ≥ 2` and the `entities[].description`
+   fields mention both the target protein AND its binding partner. A co-complex is
+   far more useful than a monomer for interface-based design.
+2. **Method quality** — prefer `X-RAY DIFFRACTION` > `ELECTRON MICROSCOPY` > `NMR`
+   (NMR structures lack resolution values and are generally not suitable for interface
+   design; cryo-EM is acceptable above 4 Å).
+3. **Resolution** — for X-ray structures, lower `resolution_A` is better; prefer < 2.5 Å
+   when available. For cryo-EM, prefer < 4.0 Å.
+4. **Human organism** — prefer entries where `entities[].organism_taxid = 9606`.
+
+If `metadata_available` is `false` in the tool response (cache not yet populated),
+use the PDB IDs as-is and note in the report that resolution/method data is unavailable.
+
+- Add any newly discovered PDB IDs to the relevant node before writing the report.
+- Use the selected ID verbatim in `Suggested PDB ID(s)` fields and in the
+  `### PIPELINE HANDOFF` `pdb_id` line.
+- If `total_found` is 0, call `search_rcsb_pdb` with the 2–3 primary target proteins
+  as a fallback. Apply the same selection criteria to the RCSB results. If a suitable
+  structure is found, use its PDB ID in the handoff. If no suitable structure is found
+  from either source, write `NOT_FOUND`.
 
 ---
 
@@ -285,7 +328,7 @@ Do NOT wrap it in a code fence (no ``` before or after). Do NOT omit the `- ` pr
 The programmatic orchestrator parses these lines with a regex — any deviation breaks the pipeline.
 
 Rules for `### PIPELINE HANDOFF`:
-- `pdb_id` must come from `paper_metadata.pdb_accessions` or `pathway_context.target_nodes[].suggested_pdb_structures` in retrieved fingerprints. Write `NOT_FOUND` if nothing found — never guess.
+- `pdb_id` must come from `paper_metadata.pdb_accessions`, `pathway_context.target_nodes[].suggested_pdb_structures` in retrieved fingerprints, **or the `find_pdb_structures` tool result from Phase 3.6**. Write `NOT_FOUND` if nothing found — never guess.
 - `structure_query` is the verbatim query string passed to complex-structure-analysis by the programmatic orchestrator; make it self-contained (include the local file path `data/structures/{pdb_id}.cif`).
 - `choices_json` must be a single-line JSON array listing every candidate from TARGET OPPORTUNITY LANDSCAPE in the same order. Each element has exactly these keys:
   - `tier`: one of `"VALIDATED"`, `"BIOLOGICALLY_JUSTIFIED"`, or `"PATHWAY_INFERRED"`

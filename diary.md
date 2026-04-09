@@ -582,9 +582,9 @@ Implementation plan:
 
 Quick win: just expose the three model options in the run form for now, all stages use the same model. Per-stage routing is a later optimisation.
 
-**Sprint 3 — Structure Viewer**
+**Sprint 3 — Structure Viewer** ✅ COMPLETE (2026-04-08)
 - Mol* embedded in run detail
-- Hotspot residues colored from stage 1 handoff
+- Hotspot residues selected/highlighted from stage 1 handoff
 - Contact table sidebar
 
 **Sprint 4 — Binder Optimizer Workflow**
@@ -606,6 +606,108 @@ Quick win: just expose the three model options in the run form for now, all stag
 JWT_SECRET and FERNET_KEY were accidentally committed in .env.example and have been rotated. GitHub OAuth client secret was also regenerated. .env updated with new values.
 
 **Action required:** Fernet key changed → all previously encrypted API keys in web.db are unreadable. Re-upload Anthropic API key in Settings before running any pipeline jobs.
+
+---
+
+## Sprint 3 — Structure Viewer
+
+### Session 2026-04-08
+
+#### Overview
+
+Embedded Mol* 3D structure viewer into the run detail page, displayed below the Structure Analysis stage card once that stage completes. A contact table sidebar lists each hotspot residue's name, PDB sequence number, and RFD3 atom spec. Hotspot residues are persistently selected in the viewer so they are visually distinguished. No LLM calls — everything is derived programmatically from stage output.
+
+#### Backend: parsing `hotspot_residues`
+
+`Run.hotspot_residues` was defined in the DB model but never populated. The complex-structure-analysis skill writes a `### MODEL-READY HOTSPOTS` markdown table at the end of `01_structure.md`; the new `_parse_hotspot_residues(text, handoff)` method in `PipelineRunner` reads it:
+
+- `re.findall(r"###\s+MODEL.READY HOTSPOTS.*?(?=\n###|\Z)", text, re.DOTALL|re.IGNORECASE)` — handles multiple hotspot regions
+- Row regex: `r"^\|\s*([A-Z]+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|"` → columns residue, auth_seq_id, label_seq_id, rfd3_atoms
+- Deduplication by `(residue, auth_seq_id)` key across all sections
+- Returns JSON string `{"target_chain": "A", "partner_chain": "B", "residues": [...]}` or `None` if section absent
+
+Called in all three `_TrackedRunner._run_stage()` overrides (run, resume, retry tasks) immediately after `super()._run_stage()` returns for `stage == "structure"`. Fires whether the run pauses at `structure_choice` or continues — `hotspot_residues` is populated in both cases.
+
+`hotspot_residues` added to the SSE payload in `routers/runs.py` and to the `RunStatus` interface in `sse.ts`.
+
+#### Frontend: components
+
+**`ContactTable.tsx`** — parses `run.hotspot_residues` JSON, renders a compact table (Residue | PDB # | RFD3 Atoms) with an orange dot (`#E67E22`) matching the hotspot color, chain summary in the subheader. Shows "No hotspot data yet" placeholder when null.
+
+**`StructureViewer.tsx`** — loads Mol* and renders the structure. The interesting part is how this was solved — see pitfalls below.
+
+**`StagePanel.tsx`** — lazy-loads `StructureViewer` via `React.lazy()`, wraps it in a `ViewerErrorBoundary` class component, and renders the viewer + table in a `flex` row after the structure stage card whenever `stageFiles["01_structure.md"]` and `run.pdb_id` are both present.
+
+#### Pitfall: Vite 8 (rolldown) + Mol* ESM module initialisation order
+
+This was the main implementation challenge — 5 failed iterations before finding the solution.
+
+**What broke:** `Uncaught TypeError: Cannot read properties of undefined (reading 'registerDefault')` inside `PluginUIContext.initBuiltInBehavior`. Mol*'s plugin context tries to call `PluginBehaviors.Representation.registerDefault(...)` during initialisation; when `PluginBehaviors.Representation` came from a separate Vite chunk, it was `undefined` at call time.
+
+**Root cause:** Vite 8 uses rolldown for dependency bundling. Unlike Vite 4/5's esbuild prebundler, rolldown splits large packages like Mol* into multiple dep chunks (`molstar_lib_apps_viewer_app.js`, `context-CT9cJygy.js`, etc.). These chunks do not guarantee ES module evaluation order across the chunk boundary that Mol*'s internal `registerDefault` pattern requires.
+
+**Things that did NOT fix it:**
+- `optimizeDeps.exclude: ['molstar']` → exposed raw CJS `mutative/dist/index.js` → missing named ESM export `create`
+- `resolve.alias` pointing `mutative` to `.esm.mjs` → failed on subpath imports
+- `optimizeDeps.include: ['mutative']` → same CJS issue different path
+- Parallel `Promise.all([import("molstar/lib/apps/viewer/app"), ...])` → race condition
+- Sequential imports (app first, then others) → still hit chunk ordering issue
+- Headless `PluginContext` + `initViewerAsync` (no React root, no Viewer.create) → blank canvas, 0×0 WebGL context, missing extension registration
+
+**React root crash (earlier issue):** `Viewer.create()` internally calls `createRoot(container)`, creating a second React root inside the component's container div. When Mol*'s inner root threw an error, React 19 propagated it to the outer app root → white page. Fixed by adding `ViewerErrorBoundary` (class component, catches errors at the React tree level) and `React.lazy()` + `Suspense`.
+
+**Solution that worked:** Use the **pre-built Mol* IIFE bundle** (`node_modules/molstar/build/viewer/molstar.js`). This is the same bundle used by `embedded.html` in the Mol* package itself. It sets `window.molstar` and handles all module initialisation ordering internally (webpack built it in correct dependency order). A custom Vite plugin serves it:
+
+```typescript
+// vite.config.ts — molstarBundlePlugin()
+configureServer(server) {
+  server.middlewares.use('/molstar.js', (_req, res) => {
+    res.setHeader('Content-Type', 'application/javascript')
+    fs.createReadStream(path.join(molstarDir, 'molstar.js')).pipe(res)
+  })
+  // same for /molstar.css
+},
+generateBundle() {
+  this.emitFile({ type: 'asset', fileName: 'molstar.js', source: fs.readFileSync(...) })
+  // same for molstar.css
+}
+```
+
+`StructureViewer` loads the bundle via a dynamically-injected `<script>` tag, cached via a singleton Promise so it only loads once regardless of how many viewer instances mount:
+
+```typescript
+let _molstarPromise: Promise<void> | null = null;
+function loadMolstarBundle(): Promise<void> { ... }
+// then: await loadMolstarBundle(); window.molstar!.Viewer.create(container, options)
+```
+
+This eliminates all Vite/rolldown involvement in Mol*'s initialisation — the 4.85 MB bundle is served as a plain static file and parses itself.
+
+**Build result:** `StructureViewer` ESM chunk is 2.75 kB (no Mol* imports at all). Total build: ~350ms.
+
+#### Hotspot selection
+
+The `Viewer` public API exposes `structureInteractivity({ expression, action })`. The `expression` callback receives `typeof MolScriptBuilder` as its argument, so no separate ESM import of `MolScriptBuilder` is needed:
+
+```typescript
+viewer.structureInteractivity({
+  action: "select",
+  expression: (MS) => MS.struct.generator.atomGroups({
+    "chain-test": MS.core.rel.eq([MS.ammp("auth_asym_id"), targetChain]),
+    "residue-test": MS.core.logic.or(residueNums.map(n =>
+      MS.core.rel.eq([MS.ammp("auth_seq_id"), n])
+    )),
+  }),
+});
+```
+
+`action: "select"` is persistent (unlike `"highlight"` which is hover-transient). The selection color is Mol*'s default teal/cyan, not orange — persistent orange overpaint (`setStructureOverpaint`) is not in the `Viewer` public API and would require accessing internal plugin state. The contact table sidebar with orange dots provides the color association; the viewer selection shows which residues are structurally relevant.
+
+Note: `setStructureOverpaint` IS available in Mol*'s `mol-plugin-state/helpers/structure-overpaint` module, but importing it via ESM in Vite 8 hits the same chunk ordering issue. Future option: call it through `viewer.plugin` directly using the state transformer API (`window.molstar.lib.plugin.StateTransforms.Representation`).
+
+#### Hotspot data for old runs
+
+Runs that completed before this sprint have `hotspot_residues = NULL` in the DB (the parsing code didn't exist yet). The UI handles this gracefully: `ContactTable` shows "No hotspot data yet", and `structureInteractivity` is simply not called. This is expected — re-running the structure stage on an old run would populate it.
 
 ---
 

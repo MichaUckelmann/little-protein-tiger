@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.96.2",
+    "molstar": "^5.8.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",

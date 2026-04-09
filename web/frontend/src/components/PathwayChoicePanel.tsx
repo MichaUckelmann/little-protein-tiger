@@ -27,6 +27,9 @@ export function PathwayChoicePanel({ runId, choices, onResumed }: Props) {
   const [selected, setSelected] = useState<number | null>(
     choices.length > 0 ? 0 : null
   );
+  const [selectedPdb, setSelectedPdb] = useState<string | null>(
+    choices[0]?.pdb_ids[0] ?? null
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,14 +37,25 @@ export function PathwayChoicePanel({ runId, choices, onResumed }: Props) {
   const canContinue =
     selected !== null &&
     selectedChoice != null &&
-    selectedChoice.pdb_ids.length > 0;
+    selectedChoice.pdb_ids.length > 0 &&
+    selectedPdb !== null;
+
+  function selectTarget(idx: number) {
+    const choice = choices[idx];
+    if (!choice || choice.pdb_ids.length === 0) return;
+    setSelected(idx);
+    setSelectedPdb(choice.pdb_ids[0] ?? null);
+  }
 
   async function handleContinue() {
-    if (selected === null) return;
+    if (selected === null || selectedPdb === null) return;
     setLoading(true);
     setError(null);
     try {
-      await api.runs.resume(runId, { chosen_target_index: selected });
+      await api.runs.resume(runId, {
+        chosen_target_index: selected,
+        chosen_pdb_id: selectedPdb,
+      });
       onResumed();
     } catch (e: any) {
       setError(e.message ?? "Failed to resume run");
@@ -62,7 +76,7 @@ export function PathwayChoicePanel({ runId, choices, onResumed }: Props) {
           Choose a target to continue
         </h3>
         <p style={{ margin: 0, fontSize: "13px", color: "#78350f" }}>
-          The pathway expert found the following candidates. Select one to proceed with structure analysis.
+          The pathway expert found the following candidates. Select one and choose which structure to analyze.
         </p>
       </div>
 
@@ -74,7 +88,7 @@ export function PathwayChoicePanel({ runId, choices, onResumed }: Props) {
           return (
             <button
               key={choice.index}
-              onClick={() => !noPdb && setSelected(choice.index)}
+              onClick={() => !noPdb && selectTarget(choice.index)}
               disabled={noPdb}
               style={{
                 textAlign: "left",
@@ -113,29 +127,103 @@ export function PathwayChoicePanel({ runId, choices, onResumed }: Props) {
               <div style={{ fontSize: "12px", color: "#4b5563", marginBottom: "4px" }}>
                 <strong>Evidence:</strong> {choice.evidence_basis || "—"}
               </div>
-              <div style={{ fontSize: "12px", color: "#6b7280" }}>
+              <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "8px" }}>
                 <strong>Uncertainty:</strong> {choice.key_uncertainty || "—"}
               </div>
-              <div style={{ marginTop: "6px", display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                {choice.pdb_ids.length > 0 ? (
-                  choice.pdb_ids.map((pdb) => (
-                    <span key={pdb} style={{
-                      fontSize: "11px",
-                      fontFamily: "monospace",
-                      background: "#e0f2fe",
-                      color: "#0369a1",
-                      padding: "1px 6px",
-                      borderRadius: "4px",
-                    }}>
-                      {pdb}
-                    </span>
-                  ))
-                ) : (
-                  <span style={{ fontSize: "11px", color: "#9ca3af", fontStyle: "italic" }}>
-                    No PDB in corpus — cannot select
-                  </span>
-                )}
-              </div>
+
+              {/* PDB structure list */}
+              {noPdb ? (
+                <span style={{ fontSize: "11px", color: "#9ca3af", fontStyle: "italic" }}>
+                  No PDB in corpus — cannot select
+                </span>
+              ) : isSelected ? (
+                /* Selected card: show radio-selectable PDB rows */
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  <div style={{ fontSize: "11px", color: "#78350f", fontWeight: 600, marginBottom: "2px" }}>
+                    Choose structure:
+                  </div>
+                  {choice.pdb_ids.map((pdb) => {
+                    const isPdbSelected = selectedPdb === pdb;
+                    return (
+                      <div
+                        key={pdb}
+                        onClick={(e) => { e.stopPropagation(); setSelectedPdb(pdb); }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          padding: "5px 8px",
+                          borderRadius: "5px",
+                          background: isPdbSelected ? "#fde68a" : "#fffbeb",
+                          border: isPdbSelected ? "1px solid #f59e0b" : "1px solid #fde68a",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {/* Radio indicator */}
+                        <div style={{
+                          width: "14px",
+                          height: "14px",
+                          borderRadius: "50%",
+                          border: isPdbSelected ? "4px solid #d97706" : "2px solid #d97706",
+                          background: isPdbSelected ? "#f59e0b" : "transparent",
+                          flexShrink: 0,
+                          transition: "all 0.1s",
+                        }} />
+                        <span style={{
+                          fontFamily: "monospace",
+                          fontSize: "12px",
+                          fontWeight: isPdbSelected ? 700 : 400,
+                          color: "#0369a1",
+                          flex: 1,
+                        }}>
+                          {pdb}
+                        </span>
+                        <a
+                          href={`https://www.rcsb.org/structure/${pdb}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title={`View ${pdb} on RCSB`}
+                          style={{
+                            fontSize: "12px",
+                            color: "#6b7280",
+                            textDecoration: "none",
+                            padding: "1px 4px",
+                            borderRadius: "3px",
+                            lineHeight: 1,
+                          }}
+                        >
+                          ↗
+                        </a>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* Non-selected card: show PDB IDs as plain link badges */
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  {choice.pdb_ids.map((pdb) => (
+                    <a
+                      key={pdb}
+                      href={`https://www.rcsb.org/structure/${pdb}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        fontSize: "11px",
+                        fontFamily: "monospace",
+                        background: "#e0f2fe",
+                        color: "#0369a1",
+                        padding: "1px 6px",
+                        borderRadius: "4px",
+                        textDecoration: "none",
+                      }}
+                    >
+                      {pdb} ↗
+                    </a>
+                  ))}
+                </div>
+              )}
             </button>
           );
         })}
@@ -159,7 +247,7 @@ export function PathwayChoicePanel({ runId, choices, onResumed }: Props) {
           cursor: canContinue && !loading ? "pointer" : "not-allowed",
         }}
       >
-        {loading ? "Starting…" : "Continue with selected target →"}
+        {loading ? "Starting…" : `Continue with ${selectedPdb ?? "selected structure"} →`}
       </button>
     </div>
   );

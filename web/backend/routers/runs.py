@@ -18,7 +18,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import re
+
+import requests as _requests
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -209,6 +212,7 @@ async def run_status_sse(
                             "error": run.error,
                             "pause_point": run.pause_point,
                             "pathway_choices_json": run.pathway_choices_json,
+                            "hotspot_residues": run.hotspot_residues,
                             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
                         }),
                     }
@@ -225,7 +229,9 @@ async def run_status_sse(
 
 class ResumeRunBody(BaseModel):
     chosen_target_index: Optional[int] = None  # for pathway_choice pause
+    chosen_pdb_id: Optional[str] = None        # for pathway_choice pause: explicit PDB ID to use
     next_step: Optional[str] = None            # for structure_choice pause: "literature_and_design" | "design_only" | "stop"
+    pdb_id: Optional[str] = None               # for structure_needed pause: 4-char PDB accession
 
 
 @router.post("/runs/{run_id}/resume", status_code=202)
@@ -257,7 +263,10 @@ def resume_run(
         if not pdb_ids:
             raise HTTPException(status_code=422, detail="Chosen target has no PDB ID — cannot continue")
 
-        run.pdb_id = pdb_ids[0]
+        if body.chosen_pdb_id and body.chosen_pdb_id in pdb_ids:
+            run.pdb_id = body.chosen_pdb_id
+        else:
+            run.pdb_id = pdb_ids[0]
         run.target_complex = chosen.get("complex")
         # Do NOT clear pause_point here — resume_pipeline_task reads it from DB
         # and clears it itself when setting status="RUNNING"
@@ -302,8 +311,111 @@ def resume_run(
             session.commit()
             session.refresh(run)
 
+    elif run.pause_point == "structure_needed":
+        if not body.pdb_id:
+            raise HTTPException(status_code=422, detail="pdb_id is required to resume from structure_needed")
+        pdb_id = body.pdb_id.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{4}", pdb_id):
+            raise HTTPException(status_code=422, detail=f"Invalid PDB accession {pdb_id!r} — must be 4 alphanumeric characters")
+
+        # Download .cif from RCSB now so the pipeline can start immediately.
+        # _ensure_structure will skip the download if the file is already on disk.
+        structures_dir = _ROOT / "data" / "structures"
+        structures_dir.mkdir(parents=True, exist_ok=True)
+        dest = structures_dir / f"{pdb_id}.cif"
+        if not dest.exists():
+            url = f"https://files.rcsb.org/download/{pdb_id}.cif"
+            try:
+                r = _requests.get(url, timeout=30)
+                if r.status_code == 404:
+                    raise HTTPException(status_code=422, detail=f"PDB ID {pdb_id!r} not found on RCSB")
+                r.raise_for_status()
+                dest.write_bytes(r.content)
+            except HTTPException:
+                raise
+            except _requests.RequestException as e:
+                raise HTTPException(status_code=502, detail=f"Failed to download {pdb_id} from RCSB: {e}")
+
+        run.pdb_id = pdb_id
+        run.status = "QUEUED"
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+
+        from web.backend.tasks import resume_pipeline_task
+        task = resume_pipeline_task.delay(run.id)
+        run.celery_task_id = task.id
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+
+    elif run.pause_point == "literature_choice":
+        if body.next_step not in ("proceed_to_design", "stop"):
+            raise HTTPException(
+                status_code=422,
+                detail="next_step must be 'proceed_to_design' or 'stop'",
+            )
+
+        if body.next_step == "stop":
+            run.status = "COMPLETE"
+            run.completed_at = datetime.utcnow()
+            run.pause_point = None
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+        else:
+            run.status = "QUEUED"
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+
+            from web.backend.tasks import resume_pipeline_task
+            task = resume_pipeline_task.delay(run.id)
+            run.celery_task_id = task.id
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+
     else:
         raise HTTPException(status_code=409, detail=f"Unknown pause_point: {run.pause_point!r}")
+
+    return _run_dict(run)
+
+
+@router.post("/runs/{run_id}/upload-structure", status_code=202)
+async def upload_structure(
+    run_id: int,
+    file: UploadFile = File(...),
+    user_id: int = Depends(get_current_user_id),
+    session: Session = Depends(get_session),
+):
+    """Resume a structure_needed pause by uploading a .cif file directly."""
+    run = _get_owned_run(run_id, user_id, session)
+
+    if run.status != "PAUSED" or run.pause_point != "structure_needed":
+        raise HTTPException(status_code=409, detail="Run is not paused at structure_needed")
+
+    filename = file.filename or f"upload_{run_id}.cif"
+    # Derive a clean ID from the filename (strip extension, uppercase, max 8 chars)
+    pdb_id = re.sub(r"[^A-Z0-9]", "", Path(filename).stem.upper())[:8] or f"U{run_id}"
+
+    structures_dir = _ROOT / "data" / "structures"
+    structures_dir.mkdir(parents=True, exist_ok=True)
+    dest = structures_dir / f"{pdb_id}.cif"
+    dest.write_bytes(await file.read())
+
+    run.pdb_id = pdb_id
+    run.status = "QUEUED"
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+
+    from web.backend.tasks import resume_pipeline_task
+    task = resume_pipeline_task.delay(run.id)
+    run.celery_task_id = task.id
+    session.add(run)
+    session.commit()
+    session.refresh(run)
 
     return _run_dict(run)
 
@@ -354,6 +466,46 @@ def retry_run(
     session.refresh(run)
 
     return _run_dict(run)
+
+
+# ---------------------------------------------------------------------------
+# Delete run
+# ---------------------------------------------------------------------------
+
+@router.delete("/runs/{run_id}", status_code=204)
+def delete_run(
+    run_id: int,
+    user_id: int = Depends(get_current_user_id),
+    session: Session = Depends(get_session),
+):
+    """Delete a run and all associated measurements and output files."""
+    import shutil
+    from sqlmodel import select as _select
+
+    run = _get_owned_run(run_id, user_id, session)
+
+    # Cancel Celery task if still queued/running
+    if run.celery_task_id and run.status in ("QUEUED", "RUNNING"):
+        try:
+            from web.backend.celery_app import celery_app
+            celery_app.control.revoke(run.celery_task_id, terminate=True)
+        except Exception:
+            pass
+
+    # Delete measurements
+    measurements = session.exec(
+        _select(ExperimentalMeasurement).where(ExperimentalMeasurement.run_id == run_id)
+    ).all()
+    for m in measurements:
+        session.delete(m)
+
+    session.delete(run)
+    session.commit()
+
+    # Clean up output files (best effort)
+    run_dir = _ROOT / "web" / "runs" / str(run_id)
+    if run_dir.exists():
+        shutil.rmtree(run_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

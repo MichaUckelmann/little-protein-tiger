@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type Run } from "../lib/api";
@@ -12,32 +12,58 @@ const STATUS_COLOR: Record<string, string> = {
   PAUSED: "#0369a1",
 };
 
-function RunRow({ run }: { run: Run }) {
+function RunRow({ run, onDeleted }: { run: Run; onDeleted: () => void }) {
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleDelete(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.confirm("Delete this run and all its output files?")) return;
+    setDeleting(true);
+    try {
+      await api.runs.delete(run.id);
+      onDeleted();
+    } catch (err) {
+      alert((err as Error).message);
+      setDeleting(false);
+    }
+  }
+
   return (
-    <Link to={`/runs/${run.id}`} style={styles.runRow}>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontWeight: 500, marginBottom: 2, fontSize: 14 }}>
-          {run.target_complex ?? run.query.slice(0, 80)}
+    <div style={{ position: "relative" }}>
+      <Link to={`/runs/${run.id}`} style={styles.runRow}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 500, marginBottom: 2, fontSize: 14 }}>
+            {run.target_complex ?? run.query.slice(0, 80)}
+          </div>
+          <div style={{ fontSize: 12, color: "#9ca3af" }}>
+            {new Date(run.created_at).toLocaleString()}
+            {run.pdb_id && ` · PDB ${run.pdb_id}`}
+          </div>
         </div>
-        <div style={{ fontSize: 12, color: "#9ca3af" }}>
-          {new Date(run.created_at).toLocaleString()}
-          {run.pdb_id && ` · PDB ${run.pdb_id}`}
-        </div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        {run.go_recommendation && (
-          <span style={{ fontSize: 11, fontWeight: 600, color: "#374151" }}>
-            {run.go_recommendation.replace("_", " ")}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {run.go_recommendation && (
+            <span style={{ fontSize: 11, fontWeight: 600, color: "#374151" }}>
+              {run.go_recommendation.replace("_", " ")}
+            </span>
+          )}
+          <span style={{
+            fontSize: 11, fontWeight: 600,
+            color: STATUS_COLOR[run.status] ?? "#9ca3af",
+          }}>
+            {run.status}
           </span>
-        )}
-        <span style={{
-          fontSize: 11, fontWeight: 600,
-          color: STATUS_COLOR[run.status] ?? "#9ca3af",
-        }}>
-          {run.status}
-        </span>
-      </div>
-    </Link>
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            title="Delete run"
+            style={styles.deleteBtn}
+          >
+            {deleting ? "…" : "✕"}
+          </button>
+        </div>
+      </Link>
+    </div>
   );
 }
 
@@ -46,6 +72,24 @@ export default function ProjectDetail() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const projectId = Number(id);
+
+  const handleRunDeleted = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["project", projectId] });
+  }, [qc, projectId]);
+
+  const [deletingProject, setDeletingProject] = useState(false);
+  async function handleDeleteProject() {
+    if (!window.confirm("Delete this project and ALL its runs? This cannot be undone.")) return;
+    setDeletingProject(true);
+    try {
+      await api.projects.delete(projectId);
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      navigate("/", { replace: true });
+    } catch (e) {
+      alert((e as Error).message);
+      setDeletingProject(false);
+    }
+  }
 
   const { data, isLoading } = useQuery({
     queryKey: ["project", projectId],
@@ -156,9 +200,19 @@ export default function ProjectDetail() {
 
       <div style={styles.header}>
         <h1 style={styles.h1}>{project.name}</h1>
-        <button style={styles.btn} onClick={() => setShowRun(true)}>
-          + New Run
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.btn} onClick={() => setShowRun(true)}>
+            + New Run
+          </button>
+          <button
+            style={styles.btnDanger}
+            onClick={handleDeleteProject}
+            disabled={deletingProject}
+            title="Delete project"
+          >
+            {deletingProject ? "Deleting…" : "Delete Project"}
+          </button>
+        </div>
       </div>
 
       {showRun && (
@@ -312,7 +366,7 @@ export default function ProjectDetail() {
       {runs.length === 0 ? (
         <p style={{ color: "#6b7280" }}>No runs yet. Start a new design run above.</p>
       ) : (
-        <div>{runs.map((r) => <RunRow key={r.id} run={r} />)}</div>
+        <div>{runs.map((r) => <RunRow key={r.id} run={r} onDeleted={handleRunDeleted} />)}</div>
       )}
     </div>
   );
@@ -333,6 +387,15 @@ const styles: Record<string, React.CSSProperties> = {
   btn: {
     padding: "8px 16px", background: "#18181b", color: "#fff",
     border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600, fontSize: 14,
+  },
+  btnDanger: {
+    padding: "8px 16px", background: "transparent", color: "#9ca3af",
+    border: "1px solid #e5e7eb", borderRadius: 6, cursor: "pointer", fontSize: 13,
+  },
+  deleteBtn: {
+    padding: "2px 7px", background: "transparent", color: "#d1d5db",
+    border: "1px solid #e5e7eb", borderRadius: 4, cursor: "pointer",
+    fontSize: 11, lineHeight: 1, flexShrink: 0,
   },
   btnSecondary: {
     padding: "8px 16px", background: "#f3f4f6", color: "#374151",
