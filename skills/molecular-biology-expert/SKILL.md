@@ -147,6 +147,15 @@ section cannot be filled from the corpus, write "Not found in corpus." and note
 whether the absence is informative (e.g., no prior inhibitors = novel target) or
 simply a corpus coverage gap.
 
+**Citation policy:** All cited claims must come from retrieved fingerprints.
+- Citation format: DOI string only (e.g. `10.7554/eLife.25068`) + source_span.
+  The `Source:` field in the KNOWN INHIBITORS table and the `Source (DOI, span)`
+  column in the INTERFACE INSIGHTS table must use this format.
+- No author names, journal names, or years. Write the DOI, not "Smith et al. 2023
+  Nature" or "eLife 2024".
+- If a fact is known from training knowledge but no corpus DOI exists for it, state
+  the fact without any citation. Do not invent or guess a reference.
+
 If chimerax hotspot residues are present, explicitly cross-reference them against
 `key_amino_acid_residues` from each fingerprint. Normalise naming conventions when
 comparing (e.g., "Phe69" = "F69" = "PHE69" = "hYAP Phe69").

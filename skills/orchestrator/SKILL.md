@@ -301,6 +301,10 @@ Confirmed by BOTH structural analysis and literature:
 |---------|-------------------|---------------------------|------------|
 | ...     | interface contact, hydrophobic core | alanine scan ΔΔG=X kcal/mol | High/Med |
 
+Note: `Literature evidence (DOI)` must be copied verbatim from the Stage 2
+molecular-biology-expert INTERFACE INSIGHTS table — do not supply DOIs from training
+knowledge. If Stage 2 found no corpus evidence for a residue, write "structural only".
+
 Structurally predicted only (no literature confirmation):
 - <list — note: may be valid, just not yet studied>
 

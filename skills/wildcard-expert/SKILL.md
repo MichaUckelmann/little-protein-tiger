@@ -295,6 +295,15 @@ Produce the full report using **only information retrieved from the corpus** (pl
 the clearly-labeled hypothesis block above). Do not hallucinate pathway details.
 Omit lines that cannot be filled — do not write placeholder text.
 
+**Citation policy:** Every cited claim in the PATHWAY BIOLOGY REPORT must come from
+a retrieved fingerprint. The WILDCARD HYPOTHESIS GENERATION block above is the only
+place where training knowledge is acceptable without a citation.
+- Citation format: `DOI + source_span` (e.g. `10.7554/eLife.77415, Page 3 Para 2`).
+- No author names, journal names, or years — ever. Write the DOI only.
+- If you know a biological fact from training knowledge but have no corpus DOI for it,
+  state the fact without any citation — do not invent a reference.
+- A fact with no citation is acceptable. A fact with a fabricated citation is not.
+
 **Token budget:** 3,500–5,000 words for the combined output (hypothesis block +
 PATHWAY BIOLOGY REPORT).
 

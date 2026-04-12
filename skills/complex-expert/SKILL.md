@@ -349,6 +349,10 @@ The complex-structure-analysis skill will handle the rest once the structure is 
 - **Do not guess PDB IDs.** Only report structures explicitly mentioned in retrieved
   fingerprints or that you are certain exist (well-known structures like 6NB6 for
   TEAD/YAP). If uncertain, say "None found in corpus — check RCSB manually."
+- **Citations: DOI only, no author/journal/year.** Every cited claim must come from a
+  retrieved fingerprint. Write the DOI string (e.g. `10.7554/eLife.77415`) — never
+  author names, journal titles, or years. If you know a fact from training knowledge
+  but have no corpus DOI, state the fact without a citation rather than inventing one.
 - **Keep Summary mode summaries short.** The whole point is rapid triage — one paragraph
   per section maximum.
 - **Always generate fetch keywords**, even for well-covered complexes. The corpus is

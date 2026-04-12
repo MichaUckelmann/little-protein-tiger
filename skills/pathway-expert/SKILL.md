@@ -230,6 +230,13 @@ the corpus**. Do not hallucinate pathway details. If a section cannot be filled 
 retrieved fingerprints, omit the line entirely — do not write "Not found in corpus"
 placeholders for empty fields.
 
+**Citation policy:** Every cited claim must come from a retrieved fingerprint.
+- Citation format: `DOI + source_span` (e.g. `10.7554/eLife.77415, Page 3 Para 2`).
+- No author names, journal names, or years — ever. Write the DOI only.
+- If you know a biological fact from training knowledge but have no corpus DOI for it,
+  state the fact without any citation — do not invent a reference.
+- A fact with no citation is acceptable. A fact with a fabricated citation is not.
+
 **Token budget:** The full PATHWAY BIOLOGY REPORT must fit in 3,000–4,500 words.
 Write bullet points, not prose paragraphs. Each section should be a tight list.
 
