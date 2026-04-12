@@ -12,7 +12,12 @@ const STATUS_COLOR: Record<string, string> = {
   PAUSED: "#0369a1",
 };
 
-function RunRow({ run, onDeleted }: { run: Run; onDeleted: () => void }) {
+function RunRow({ run, projectId, onDeleted, onRerun }: {
+  run: Run;
+  projectId: number;
+  onDeleted: () => void;
+  onRerun: (mode: string) => void;
+}) {
   const [deleting, setDeleting] = useState(false);
 
   async function handleDelete(e: React.MouseEvent) {
@@ -29,6 +34,17 @@ function RunRow({ run, onDeleted }: { run: Run; onDeleted: () => void }) {
     }
   }
 
+  function handleRerun(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const flipped = run.pathway_mode === "wildcard" ? "standard" : "wildcard";
+    onRerun(flipped);
+  }
+
+  const isPathwayDone = run.stage_current != null || run.status === "COMPLETE"
+    || run.status === "PAUSED" || run.status === "FAILED";
+  const flippedLabel = run.pathway_mode === "wildcard" ? "Standard" : "Wildcard";
+
   return (
     <div style={{ position: "relative" }}>
       <Link to={`/runs/${run.id}`} style={styles.runRow}>
@@ -42,6 +58,14 @@ function RunRow({ run, onDeleted }: { run: Run; onDeleted: () => void }) {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {run.pathway_mode === "wildcard" && (
+            <span style={{
+              fontSize: 10, fontWeight: 600, color: "#7c3aed",
+              background: "#ede9fe", borderRadius: 4, padding: "1px 5px",
+            }}>
+              WILDCARD
+            </span>
+          )}
           {run.go_recommendation && (
             <span style={{ fontSize: 11, fontWeight: 600, color: "#374151" }}>
               {run.go_recommendation.replace("_", " ")}
@@ -53,6 +77,15 @@ function RunRow({ run, onDeleted }: { run: Run; onDeleted: () => void }) {
           }}>
             {run.status}
           </span>
+          {isPathwayDone && (
+            <button
+              onClick={handleRerun}
+              title={`Re-run pathway as ${flippedLabel}`}
+              style={styles.rerunBtn}
+            >
+              ↺ {flippedLabel}
+            </button>
+          )}
           <button
             onClick={handleDelete}
             disabled={deleting}
@@ -162,6 +195,26 @@ export default function ProjectDetail() {
     qc.invalidateQueries({ queryKey: ["project", projectId] });
   }, [qc, projectId]);
 
+  const handleRerunAsMode = useCallback(async (sourceRun: Run, newPathwayMode: string) => {
+    try {
+      const stageModels = sourceRun.stage_models_json ? JSON.parse(sourceRun.stage_models_json) : undefined;
+      const newRun = await api.runs.create(projectId, {
+        query: sourceRun.query,
+        pdb_id: undefined, // always re-run from pathway stage
+        provider: sourceRun.provider,
+        model_id: sourceRun.model_id ?? undefined,
+        stage_models: stageModels,
+        extended_thinking: sourceRun.extended_thinking,
+        auto_mode: sourceRun.auto_mode,
+        pathway_mode: newPathwayMode,
+      });
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+      navigate(`/runs/${newRun.id}`);
+    } catch (err) {
+      alert((err as Error).message);
+    }
+  }, [projectId, qc, navigate]);
+
   const [deletingProject, setDeletingProject] = useState(false);
   async function handleDeleteProject() {
     if (!window.confirm("Delete this project and ALL its runs? This cannot be undone.")) return;
@@ -190,6 +243,8 @@ export default function ProjectDetail() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   // false = interactive (pause for review), true = fully automatic
   const [fullAuto, setFullAuto] = useState(false);
+  // Pathway analysis mode
+  const [pathwayMode, setPathwayMode] = useState<"standard" | "wildcard" | "both">("standard");
 
   // Uniform model selector — used in Standard mode and as Custom base
   const [modelKey, setModelKey] = useState("claude/claude-sonnet-4-6");
@@ -253,17 +308,25 @@ export default function ProjectDetail() {
     setStageModels({});
     setShowAdvanced(false);
     setModelKey("claude/claude-sonnet-4-6");
+    setPathwayMode("standard");
   }
 
   const createRun = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const config = resolveRunConfig();
-      return api.runs.create(projectId, {
+      const base = {
         query: query.trim(),
         pdb_id: pdbId.trim() || undefined,
         auto_mode: fullAuto,
         ...config,
-      });
+      };
+      if (pathwayMode === "both") {
+        // Create two runs in sequence; navigate to the first (standard) one
+        const first = await api.runs.create(projectId, { ...base, pathway_mode: "standard" });
+        await api.runs.create(projectId, { ...base, pathway_mode: "wildcard" });
+        return first;
+      }
+      return api.runs.create(projectId, { ...base, pathway_mode: pathwayMode });
     },
     onSuccess: (run) => {
       qc.invalidateQueries({ queryKey: ["project", projectId] });
@@ -323,6 +386,29 @@ export default function ProjectDetail() {
               value={pdbId}
               onChange={(e) => setPdbId(e.target.value.toUpperCase())}
             />
+
+            <label style={{ ...styles.label, marginTop: 12 }}>Pathway Analysis</label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 4 }}>
+              {(["standard", "wildcard", "both"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setPathwayMode(m)}
+                  style={{
+                    ...styles.modeBtn,
+                    ...(pathwayMode === m ? styles.modeBtnActive : {}),
+                  }}
+                >
+                  {m === "standard" && "Standard"}
+                  {m === "wildcard" && "Wildcard"}
+                  {m === "both" && "Both"}
+                </button>
+              ))}
+            </div>
+            <p style={styles.modeHint}>
+              {pathwayMode === "standard" && "Conservative — follows corpus evidence directly."}
+              {pathwayMode === "wildcard" && "Creative — uses a training-knowledge bridge to generate novel hypotheses, then validates against the corpus."}
+              {pathwayMode === "both" && "Creates two runs in parallel (Standard + Wildcard) for direct comparison."}
+            </p>
 
             <label style={{ ...styles.label, marginTop: 12 }}>Mode</label>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 4 }}>
@@ -433,7 +519,10 @@ export default function ProjectDetail() {
                 disabled={!query.trim() || createRun.isPending}
                 onClick={() => createRun.mutate()}
               >
-                {createRun.isPending ? "Submitting…" : "Start Run"}
+                {createRun.isPending
+                  ? (pathwayMode === "both" ? "Creating 2 runs…" : "Submitting…")
+                  : (pathwayMode === "both" ? "Start 2 Runs" : "Start Run")
+                }
               </button>
               <button style={styles.btnSecondary} onClick={resetForm}>
                 Cancel
@@ -452,7 +541,15 @@ export default function ProjectDetail() {
       {runs.length === 0 ? (
         <p style={{ color: "#6b7280" }}>No runs yet. Start a new design run above.</p>
       ) : (
-        <div>{runs.map((r) => <RunRow key={r.id} run={r} onDeleted={handleRunDeleted} />)}</div>
+        <div>{runs.map((r) => (
+          <RunRow
+            key={r.id}
+            run={r}
+            projectId={projectId}
+            onDeleted={handleRunDeleted}
+            onRerun={(mode) => handleRerunAsMode(r, mode)}
+          />
+        ))}</div>
       )}
 
       <BinderCampaignsSection projectId={projectId} />
@@ -484,6 +581,11 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "2px 7px", background: "transparent", color: "#d1d5db",
     border: "1px solid #e5e7eb", borderRadius: 4, cursor: "pointer",
     fontSize: 11, lineHeight: 1, flexShrink: 0,
+  },
+  rerunBtn: {
+    padding: "2px 7px", background: "transparent", color: "#7c3aed",
+    border: "1px solid #c4b5fd", borderRadius: 4, cursor: "pointer",
+    fontSize: 11, lineHeight: 1, flexShrink: 0, whiteSpace: "nowrap" as const,
   },
   btnSecondary: {
     padding: "8px 16px", background: "#f3f4f6", color: "#374151",

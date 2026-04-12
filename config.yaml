@@ -27,47 +27,21 @@ quality:
 # Search keywords
 # ---------------------------------------------------------------------------
 keywords:
-  - "SCAP[Title/Abstract] AND (SREBP[Title/Abstract] OR INSIG[Title/Abstract])"
-  - "TEAD[Title/Abstract] AND YAP[Title/Abstract]"
-  - "cGAS[Title/Abstract] AND STING[Title/Abstract]"
-  - "LPAR6[Title/Abstract] AND LPA[Title/Abstract]"
-  - "macrocyclic peptide[Title/Abstract] AND protein interaction[Title/Abstract]"
-  - "de novo protein design[Title/Abstract] AND inhibitor[Title/Abstract]"
-  - "KRAS structure[Title/Abstract]"
-  - "KRAS [Title/Abstract] AND RAF[Title/Abstract] AND intetraction[Title/Abstract]"
-  - "macrocyclic peptide[Title/Abstract] AND inhibitor[Title/Abstract]"
-  - "macrocyclic peptide[Title/Abstract] AND drug discovery[Title/Abstract]"
-  - "protein interaction[Title/Abstract] AND inhibitor[Title/Abstract]" 
-  - "MARCH E3 ligase[Title/Abstract]"
-  - "MARCH E3 ligase[Title/Abstract] AND structure[Title/Abstract]"
-  - "MARCH E3 ligase[Title/Abstract] AND degradation[Title/Abstract]"
-  - "targeted protein degradation[Title/Abstract] AND antibody[Title/Abstract]"
-
-  # --- Pathway biology: Hippo / YAP-TAZ ---
-  - "YAP[Title/Abstract] AND Hippo[Title/Abstract] AND cancer[Title/Abstract]"
-  - "YAP TAZ[Title/Abstract] AND transcription[Title/Abstract] AND tumor[Title/Abstract]"
-  - "NF2[Title/Abstract] AND LATS[Title/Abstract] AND mesothelioma[Title/Abstract]"
-  - "YAP1[Title/Abstract] AND CRISPR[Title/Abstract] AND cancer[Title/Abstract]"
-
-  # --- Pathway biology: KRAS signaling ---
-  - "KRAS[Title/Abstract] AND RAF MEK ERK[Title/Abstract] AND oncogene[Title/Abstract]"
-  - "KRAS mutation[Title/Abstract] AND synthetic lethality[Title/Abstract]"
-
-  # --- Pathway biology: cGAS-STING ---
-  - "cGAS STING[Title/Abstract] AND cancer[Title/Abstract] AND immune evasion[Title/Abstract]"
-  - "STING pathway[Title/Abstract] AND tumor microenvironment[Title/Abstract]"
-
-  # --- Pathway biology: SCAP-SREBP lipid metabolism ---
-  - "SCAP SREBP[Title/Abstract] AND cancer[Title/Abstract] AND lipid metabolism[Title/Abstract]"
-
-  # --- Pathway biology: MARCH E3 ligase immune evasion ---
-  - "MARCH E3 ligase[Title/Abstract] AND immune evasion[Title/Abstract] AND cancer[Title/Abstract]"
-
-  # --- Pathway biology: targeted protein degradation ---
-  - "PROTAC[Title/Abstract] AND oncology[Title/Abstract] AND mechanism[Title/Abstract]"
-
-  
-  
+  - "HOCM[Title/Abstract] OR HCM[Title/Abstract])"
+  - "HOCM[Title/Abstract] AND protein interaction[Title/Abstract]"
+  - "hypertrophic cardiomyopathy[Title/Abstract] AND protein interaction[Title/Abstract]"
+  - "hypertrophic cardiomyopathy[Title/Abstract] AND molecular[Title/Abstract]"
+  - "hypertrophic cardiomyopathy[Title/Abstract] AND signal transduction[Title/Abstract]" 
+  - "hypertrophic cardiomyopathy[Title/Abstract] AND molecular pathway[Title/Abstract]"
+  - "hypertrophic cardiomyopathy[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "hypertrophic cardiomyopathy[Title/Abstract] AND peptide therapeutics[Title/Abstract]"
+  - "hypertrophic cardiomyopathy[Title/Abstract] AND protein-protein interaction[Title/Abstract]"
+  - "hypertrophic cardiomyopathy[Title/Abstract] AND crystal structure[Title/Abstract]"
+  - "HCM[Title/Abstract] AND MYBPC3[Title/Abstract]"
+  - "cardiac [Title/Abstract] AND sarcomere[Title/Abstract] AND structure[Title/Abstract]"
+  - "cardiac [Title/Abstract] AND myosin[Title/Abstract]"
+  - "cardiac [Title/Abstract] AND myosin[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "cardiac [Title/Abstract] AND myosin[Title/Abstract] AND structure[Title/Abstract]"
 search:
   max_results_per_query: 200
   # NCBI eSearch covers PMC full-text articles (including those indexed as

@@ -157,27 +157,55 @@ async def upload_csv(
     if not rows:
         raise HTTPException(status_code=400, detail="CSV is empty")
 
-    # Validate required columns
+    # Detect CSV format by inspecting column names.
+    # BoltzGen format:      designed_sequence, design_to_target_iptm, min_design_to_target_pae, filter_rmsd
+    # Proteina Complexa:    binder_sequence,   self_complex_i_pTM,    self_complex_i_pAE,        self_binder_scRMSD_ca
     first = rows[0]
-    if "designed_sequence" not in first:
+    if "designed_sequence" in first:
+        seq_col   = "designed_sequence"
+        iptm_col  = "design_to_target_iptm"
+        pae_col   = "min_design_to_target_pae"
+        rmsd_col  = "filter_rmsd"
+        name_cols = ["id", "name", "design_id"]
+    elif "binder_sequence" in first:
+        seq_col   = "binder_sequence"
+        iptm_col  = "self_complex_i_pTM"
+        pae_col   = "self_complex_i_pAE"
+        rmsd_col  = "self_binder_scRMSD_ca"
+        name_cols = ["run_name", "id_gen", "name"]
+    else:
         raise HTTPException(
             status_code=400,
-            detail="CSV must contain a 'designed_sequence' column",
+            detail="Unrecognised CSV format: expected 'designed_sequence' (BoltzGen) or 'binder_sequence' (Proteina Complexa)",
         )
 
     created = []
     for i, row in enumerate(rows):
-        seq = row.get("designed_sequence", "").strip()
+        seq = row.get(seq_col, "").strip()
         if not seq:
             continue
 
-        name = (
-            row.get("id") or row.get("name") or row.get("design_id") or str(i + 1)
-        )
-        name = str(name).strip()
+        # Build a unique name: prefer explicit id columns, fall back to row index.
+        # For Proteina Complexa, combine run_name + id_gen (e.g. "TEAD_010_2") so
+        # rows with the same run_name are still distinguishable.
+        name: str = ""
+        if seq_col == "binder_sequence":
+            run = row.get("run_name", "").strip()
+            gen = row.get("id_gen", "").strip()
+            name = f"{run}_{gen}" if run and gen else run or gen
+        if not name:
+            for col in name_cols:
+                name = row.get(col, "").strip()
+                if name:
+                    break
+        if not name:
+            name = str(i + 1)
 
         def _float(key: str) -> Optional[float]:
             v = row.get(key, "").strip()
+            # Proteina Complexa wraps some values in list notation: "[0.855]"
+            if v.startswith("[") and v.endswith("]"):
+                v = v[1:-1].split(",")[0].strip()
             try:
                 return float(v) if v else None
             except ValueError:
@@ -188,9 +216,9 @@ async def upload_csv(
             name=name,
             sequence=seq,
             source="csv_import",
-            design_to_target_iptm=_float("design_to_target_iptm"),
-            min_design_to_target_pae=_float("min_design_to_target_pae"),
-            filter_rmsd=_float("filter_rmsd"),
+            design_to_target_iptm=_float(iptm_col),
+            min_design_to_target_pae=_float(pae_col),
+            filter_rmsd=_float(rmsd_col),
         )
         session.add(binder)
         created.append(binder)

@@ -30,6 +30,7 @@ from web.backend.models_db import Binder, BinderCampaign, Run, User
 
 _SKILL_TO_STAGE: dict[str, str] = {
     "pathway-expert": "pathway",
+    "wildcard-expert": "pathway",
     "complex-structure-analysis": "structure",
     "molecular-biology-expert": "literature",
     "protein-design-script": "design",
@@ -79,6 +80,7 @@ def run_pipeline_task(self, run_id: int) -> None:
         stage_models = json.loads(run.stage_models_json) if run.stage_models_json else None
         extended_thinking = run.extended_thinking
         auto_mode = run.auto_mode
+        pathway_mode = run.pathway_mode
 
     # Inject BYOK API key into this worker's environment
     from web.backend.crypto import decrypt_key
@@ -150,6 +152,7 @@ def run_pipeline_task(self, run_id: int) -> None:
             max_tokens=200_000,  # structure analysis legitimately needs large context
             stage_models=stage_models,
             extended_thinking_stages={"structure"} if extended_thinking else None,
+            pathway_mode=pathway_mode,
         )
         result = runner.run(query=query, pdb_id=pdb_id, auto_mode=auto_mode)
 
@@ -231,6 +234,7 @@ def resume_pipeline_task(self, run_id: int) -> None:
         extended_thinking = run.extended_thinking
         pause_point = run.pause_point
         structure_next_step = run.structure_next_step
+        pathway_mode = run.pathway_mode
 
     # Inject BYOK API key
     from web.backend.crypto import decrypt_key
@@ -309,6 +313,7 @@ def resume_pipeline_task(self, run_id: int) -> None:
             max_tokens=200_000,
             stage_models=stage_models,
             extended_thinking_stages={"structure"} if extended_thinking else None,
+            pathway_mode=pathway_mode,
         )
         result = runner.run(
             query=query,
@@ -400,6 +405,7 @@ def retry_run_task(self, run_id: int, start_from: str) -> None:
         extended_thinking = run.extended_thinking
         auto_mode = run.auto_mode
         structure_next_step = run.structure_next_step
+        pathway_mode = run.pathway_mode
 
     from web.backend.crypto import decrypt_key
     from cryptography.fernet import InvalidToken
@@ -453,6 +459,7 @@ def retry_run_task(self, run_id: int, start_from: str) -> None:
             max_tokens=200_000,
             stage_models=stage_models,
             extended_thinking_stages={"structure"} if extended_thinking else None,
+            pathway_mode=pathway_mode,
         )
         result = runner.run(
             query=query,

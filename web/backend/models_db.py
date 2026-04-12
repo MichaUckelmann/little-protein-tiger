@@ -69,6 +69,9 @@ class Run(SQLModel, table=True):
     # User's decision at the structure pause: "literature_and_design" | "design_only" | "stop"
     structure_next_step: Optional[str] = None
 
+    # Pathway analysis mode: "standard" = pathway-expert | "wildcard" = wildcard-expert
+    pathway_mode: str = Field(default="standard")
+
     # Celery
     celery_task_id: Optional[str] = None
 

@@ -140,6 +140,7 @@ class PipelineRunner:
         max_tokens: int = 100_000,
         stage_models: dict[str, str] | None = None,
         extended_thinking_stages: set[str] | None = None,
+        pathway_mode: str = "standard",
     ) -> None:
         self.config = config
         self.provider = provider
@@ -151,6 +152,8 @@ class PipelineRunner:
         self._stage_models: dict[str, str] = stage_models or {}
         # Stages that get Claude extended thinking. Ignored for Gemini.
         self._ext_thinking: set[str] = extended_thinking_stages or set()
+        # "standard" = pathway-expert | "wildcard" = wildcard-expert
+        self._pathway_mode: str = pathway_mode
 
     @property
     def model_id(self) -> str:
@@ -336,8 +339,9 @@ class PipelineRunner:
 
     def _stage_pathway(self, query: str, run_dir: Path, result: PipelineResult) -> dict[str, str]:
         output_file = run_dir / "00_pathway.md"
-        logger.info("Stage 0: pathway-expert")
-        handoff = self._run_stage("pathway-expert", query, [], output_file)
+        skill = "wildcard-expert" if self._pathway_mode == "wildcard" else "pathway-expert"
+        logger.info(f"Stage 0: {skill}")
+        handoff = self._run_stage(skill, query, [], output_file)
         result.stages_completed.append("pathway")
         result.stage_files["pathway"] = output_file
         result.pdb_id = result.pdb_id or handoff.get("pdb_id")

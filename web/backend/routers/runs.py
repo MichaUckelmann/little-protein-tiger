@@ -105,6 +105,8 @@ class RunCreate(BaseModel):
     # structure_choice so the user can review and confirm before continuing.
     # Set to True for fully-automatic end-to-end execution.
     auto_mode: bool = False
+    # "standard" = pathway-expert (conservative) | "wildcard" = wildcard-expert (creative)
+    pathway_mode: str = "standard"
 
 
 @router.post("/projects/{project_id}/runs", status_code=201)
@@ -129,6 +131,7 @@ def create_run(
         stage_models_json=json.dumps(body.stage_models) if body.stage_models else None,
         extended_thinking=body.extended_thinking,
         auto_mode=body.auto_mode,
+        pathway_mode=body.pathway_mode,
         status="QUEUED",
     )
     session.add(run)

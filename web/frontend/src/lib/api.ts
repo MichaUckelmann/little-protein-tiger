@@ -43,6 +43,7 @@ export interface Run {
   go_recommendation: string | null;
   hotspot_residues: string | null;
   auto_mode: boolean;
+  pathway_mode: string;
   pause_point: string | null;
   pathway_choices_json: string | null;
   structure_next_step: string | null;
@@ -215,6 +216,7 @@ export const api = {
         stage_models?: Record<string, string>;
         extended_thinking?: boolean;
         auto_mode?: boolean;
+        pathway_mode?: string;
       }
     ) =>
       apiFetch<Run>(`/projects/${projectId}/runs`, {

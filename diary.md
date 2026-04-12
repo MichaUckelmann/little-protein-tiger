@@ -796,3 +796,115 @@ Model was estimating auth→label offset from sequence comparison ("auth ≈ lab
 - When two independent hotspot regions exist (spatial spread > 15 Å between them), the skill now generates separate YAML + SLURM files per region rather than merging residues
 - Added `### PIPELINE HANDOFF` section to the skill — eliminates "No PIPELINE HANDOFF block found" warning and sets `go_recommendation: GO` for the design stage completion
 - `pipeline_runner.py`: design stage now reads its own handoff to update `result.go_recommendation`; when literature is skipped and `go_recommendation` is still "INCOMPLETE", defaults to `"GO"`
+
+---
+
+## Binder Campaign Management
+
+### Session 2026-04-09
+
+#### Overview
+
+The design pipeline produces BoltzGen/RFDiffusion CSV result files and matching CIF structure files. Previously there was no way to import these into the platform, track experimental binding data, or run iterative optimization from the web UI. This session adds a **Binder Campaign** concept — a lightweight container for external design run results, sitting outside the AI pipeline — with full CRUD, affinity tracking, and optimizer integration.
+
+#### New database tables (`web/backend/models_db.py`)
+
+Three new SQLModel tables:
+
+**`BinderCampaign`** — top-level container linked to a Project. Stores campaign name, optional target descriptor, and the original CSV filename once imported.
+
+**`Binder`** — individual binder entry with:
+- `sequence` — the designed/mutated sequence
+- `design_to_target_iptm`, `min_design_to_target_pae`, `filter_rmsd` — quality metrics from the BoltzGen CSV
+- `parent_id` (self-referencing FK) — enables a lineage tree: root binders are CSV imports, children are optimizer-generated or manually-entered mutants
+- `source` enum — `csv_import | optimizer | manual`
+- `mutation_label` — e.g. `A265E` for children
+- `cif_path`, `optimizer_report_path` — file pointers stored as relative paths
+
+**`BinderMeasurement`** — SPR/ITC/FP result per binder. Kd and Ki stored in Molar (UI accepts nM for convenience and converts on submission).
+
+`init_db()` in `web/backend/db.py` updated to explicitly import `models_db` before calling `create_all`, so new tables are discovered on startup without manual migration steps.
+
+#### New REST API (`web/backend/routers/binders.py`)
+
+Ten endpoints covering the full lifecycle:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/projects/{id}/campaigns` | Create campaign |
+| GET | `/projects/{id}/campaigns` | List campaigns |
+| GET | `/campaigns/{id}` | Campaign + all binders + measurements |
+| POST | `/campaigns/{id}/upload-csv` | Parse CSV → Binder rows |
+| POST | `/binders/{id}/upload-cif` | Store CIF at `data/binders/{id}.cif` |
+| GET | `/binders/{id}/cif` | Serve CIF file |
+| GET | `/binders/{id}/optimizer-report` | Serve optimizer report markdown |
+| POST | `/binders/{id}/measurements` | Add BinderMeasurement |
+| DELETE | `/binders/{id}/measurements/{mid}` | Delete measurement |
+| POST | `/binders/{id}/run-optimizer` | Queue Celery task |
+| POST | `/binders/{id}/add-mutation` | Manual child binder |
+
+CSV parsing logic: `csv.DictReader` on the uploaded file, required column `designed_sequence`, optional metrics columns. Row `id` / `name` / `design_id` used as binder name if present, otherwise row index.
+
+Ownership guard pattern (`_get_owned_campaign`, `_get_owned_binder`) mirrors the existing runs router — looks up Project → checks `owner_id == user_id`, returns 404 for any mismatch.
+
+#### Celery task (`web/backend/tasks.py`)
+
+`run_binder_optimizer_task(binder_id, user_id, cif_abs_path)` — runs the `binder-optimizer` skill as a background job:
+
+1. Loads Binder from DB, sets up API key from User
+2. Builds prompt: `"Optimize binder at {cif_path}, binder chain A, target chain B (Boltz output). Sequence: {sequence}"`
+3. Runs `SkillRunner("binder-optimizer", ...)`, writes full report to `data/binders/optimizer_{binder_id}.md`
+4. Parses `### MUTATION OUTPUT` JSON block (see skill changes below) via regex — extracts list of `{mutation, mutated_sequence}` dicts
+5. Creates 4 child `Binder` rows with `parent_id=binder_id`, `source="optimizer"`, `mutation_label` set
+6. Stores `optimizer_report_path` on the parent binder
+
+On failure: logs error, raises (Celery retries per its policy). No DB status field added to Binder — the parent row persists; children simply don't appear if the task fails.
+
+#### binder-optimizer skill changes (`skills/binder-optimizer/SKILL.md`)
+
+**Phase 6 rewritten:** At this scale, binders will be tested experimentally rather than pre-filtered by AF3 reprediction. The AF3 JSON construction section (4 JSON objects per mutation with `useStructureTemplate: false`, `modelSeeds`, `dialect`, etc.) is removed.
+
+Replaced with: after selecting top 4 mutations and calling `tool_get_sequence_map` to get the binder sequence, the skill applies each mutation independently and emits a **`### MUTATION OUTPUT`** fenced JSON block:
+
+```
+### MUTATION OUTPUT
+```json
+[
+  {"mutation": "A265E", "mutated_sequence": "<full binder sequence with substitution>"},
+  ...
+]
+```
+```
+
+This block is both human-readable in the report and machine-parseable by the Celery task.
+
+**Phase 7 output report:** `### AF3 JSON OUTPUT` section replaced with `### MUTATION OUTPUT` block.
+
+**Frontmatter and handoff contract** updated to remove all AF3 references. Common pitfall entry "No combined JSONs in round 1" updated to "No combined mutants in round 1" (AF3-agnostic framing). Round 2 note now reads: "re-invoke on uploaded CIF of best experimentally-validated mutant" rather than "best AF3 prediction".
+
+#### Frontend (`web/frontend/src/`)
+
+**`api.ts`** — added `BinderCampaign`, `Binder`, `BinderMeasurement` TypeScript interfaces plus `api.campaigns.*` (list, create, get, uploadCsv) and `api.binders.*` (uploadCif, cifUrl, optimizerReportUrl, addMeasurement, deleteMeasurement, runOptimizer, addMutation) method groups.
+
+**`ProjectDetail.tsx`** — added `BinderCampaignsSection` component rendered below the design runs list. Shows campaigns as link rows; "New Campaign" button opens an inline creation form with name + optional target fields.
+
+**`BinderCampaign.tsx`** (new page, route `/campaigns/:id`):
+- Header: campaign name + target, "Upload CSV" / "Reimport CSV" button
+- Binder table: Name | Sequence (truncated monospace + clipboard copy button) | iPTM | PAE | RMSD | Best Kd | Actions
+- **Lineage tree**: each row has a ▶/▼ toggle if it has children; expanding shows child rows indented by depth level with mutation label and source badges (AI / manual)
+- **Expanded state**: shows inline measurement table (method, Kd, Ki, notes, delete button) + "+ Add Measurement" button
+- **Actions per row**: Upload CIF / CIF ✓ | Measurements (N) | Run Optimizer (disabled without CIF) | + Mutation | View Report (when optimizer has run)
+- **Polling**: `refetchInterval: 5000` — campaign data refreshes every 5 s to pick up optimizer children as they are created by the Celery task; "Run Optimizer" button also triggers a 10-minute polling interval via `queryClient.invalidateQueries`
+- **Modals**: CSV upload, CIF upload, Add Measurement (nM input → Molar storage), Add Mutation (label + full sequence), Optimizer Report viewer (fetches markdown text, renders in `<pre>`)
+
+**`App.tsx`** — `/campaigns/:id` route added.
+
+**`vite.config.ts`** — `/campaigns` and `/binders` proxy rules added to forward dev requests to the FastAPI backend.
+
+#### Bug: "Campaign not found" on first navigation
+
+After creating a campaign and clicking through to its page, the BinderCampaign component showed "Campaign not found." The root cause was missing Vite proxy entries: requests to `/campaigns/{id}` were hitting the Vite dev server (which returns the HTML shell), `apiFetch` failed to parse it as JSON, React Query put the query in error state with `data = undefined`, and the `if (!campaign)` guard fired. Fixed by adding `/campaigns` and `/binders` to `vite.config.ts`.
+
+#### Commit
+
+`dfa4192` — 1,461 insertions across 11 files, 2 new files. Pushed to `main`.
