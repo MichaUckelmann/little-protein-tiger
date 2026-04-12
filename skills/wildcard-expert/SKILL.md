@@ -245,11 +245,20 @@ If `metadata_available` is `false`, use PDB IDs as-is and note it in the report.
 
 ## Phase 5: Inferred PPI Reasoning
 
-For every candidate node, run the same three-condition reasoning check as
-pathway-expert Phase 4a (interaction necessity, consequence of disruption,
-interaction knowability).
+For every candidate node, run the same four-condition reasoning check as
+pathway-expert Phase 4a (interaction necessity, therapeutic mechanism, consequence
+of disruption or stabilization, interaction knowability).
 
-For **hypothesis-tier candidates**: replace the three-condition check with:
+The therapeutic mechanism step:
+- `disrupt` — breaking the interaction attenuates the disease-relevant output (loss of
+  complex formation → loss of oncogenic signalling, failure to relay a pathological signal)
+- `stabilize` — the disease mechanism is that a normally protective or autoinhibitory
+  interaction is *lost* or *weakened*; reinforcing it restores the healthy state (e.g.
+  restoring an autoinhibitory complex, re-engaging a sequestered OFF-state, protecting
+  a tumour suppressor complex from degradation)
+Record one `design_intent` per node. Default to `disrupt` if ambiguous.
+
+For **hypothesis-tier candidates**: replace the four-condition check with:
 1. Name the two proteins specifically.
 2. State the corpus support level (corpus-supported / weakly supported / corpus-absent).
 3. Give the mechanism rationale in 1–2 sentences from Phase 3.
@@ -392,6 +401,7 @@ higher biological uncertainty."
 ### PIPELINE HANDOFF
 - pdb_id: <PDB accession from corpus (pdb_accessions or suggested_pdb_structures fields only), or NOT_FOUND>
 - target_complex: <ProteinA / ProteinB>
+- design_intent: <disrupt | stabilize — from Phase 5 reasoning for the PRIMARY RECOMMENDATION>
 - structure_query: <one sentence — e.g. "Analyze PDB {pdb_id} at data/structures/{pdb_id}.cif. Target chain {chain} ({ProteinA}). Partner chain {chain} ({ProteinB}). Identify hotspot residues for {modality} design.">
 - choices_json: <compact JSON array — see format below>
 
@@ -410,9 +420,10 @@ Rules for `### PIPELINE HANDOFF`:
   - `pdb_ids`: array of PDB accession strings from corpus only — empty array `[]` if none
   - `evidence_basis`: one sentence summary (no newlines, no quotes inside)
   - `key_uncertainty`: one sentence summary (no newlines, no quotes inside)
+  - `design_intent`: `"disrupt"` or `"stabilize"` from Phase 5 reasoning for this candidate
 
   Example (must be on ONE line):
-  `- choices_json: [{"tier":"PATHWAY_INFERRED","complex":"YAP1 / TEAD4","pdb_ids":["5GN0"],"evidence_basis":"Mesothelioma corpus supports YAP nuclear accumulation requiring TEAD4 co-activation.","key_uncertainty":"TAZ paralog redundancy may require dual targeting."},{"tier":"HYPOTHESIS","complex":"VGLL4 / TEAD4","pdb_ids":[],"evidence_basis":"Training knowledge: VGLL4 competes with YAP for TEAD binding; no direct corpus evidence in this indication.","key_uncertainty":"No corpus evidence in mesothelioma; interaction knowability unverified."}]`
+  `- choices_json: [{"tier":"PATHWAY_INFERRED","complex":"YAP1 / TEAD4","pdb_ids":["5GN0"],"evidence_basis":"Mesothelioma corpus supports YAP nuclear accumulation requiring TEAD4 co-activation.","key_uncertainty":"TAZ paralog redundancy may require dual targeting.","design_intent":"disrupt"},{"tier":"HYPOTHESIS","complex":"VGLL4 / TEAD4","pdb_ids":[],"evidence_basis":"Training knowledge: VGLL4 competes with YAP for TEAD binding; no direct corpus evidence in this indication.","key_uncertainty":"No corpus evidence in mesothelioma; interaction knowability unverified.","design_intent":"stabilize"}]`
 
 ---
 

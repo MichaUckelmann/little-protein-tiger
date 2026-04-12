@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 from src.structure_tools import (
     analyze_interface,
     check_mutation_clash,
+    find_glue_pockets,
     get_residue_contacts,
     get_sequence_map,
     score_surface_patch,
@@ -197,6 +198,57 @@ def tool_score_surface_patch(
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.exception("score_surface_patch failed")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def tool_find_glue_pockets(
+    file_path: str,
+    chain_a: str,
+    chain_b: str,
+    periinterface_radius: float = 10.0,
+    max_bridge_span: float = 20.0,
+    min_periface_sasa: float = 5.0,
+    top_n: int = 3,
+) -> str:
+    """
+    Identify periinterface "glue pockets" for molecular glue / PPI stabilizer design.
+
+    Computes which surface-exposed residue clusters on each chain flank the
+    protein-protein interface, then finds cross-chain pairs whose centroids are
+    close enough for a single mini-protein or bicyclic peptide to bridge both
+    simultaneously — stabilizing rather than disrupting the interaction.
+
+    Returns a ranked list of glue pockets, each with:
+    - chain_a_patch and chain_b_patch: residue lists, SASA, hydrophobic fraction,
+      spatial spread, suitability rating
+    - centroid_separation_A: distance between the two patch centroids
+    - bridgeable: True if within max_bridge_span
+    - design_note: recommended modality based on span
+
+    Use this tool instead of tool_score_surface_patch when the design goal is
+    to STABILIZE a protein-protein interaction (molecular glue mode).
+
+    Args:
+        file_path            : Absolute path to structure file (.cif or .pdb)
+        chain_a              : Chain ID of first protein
+        chain_b              : Chain ID of second protein
+        periinterface_radius : Cα–Cα distance cutoff to nearest interface residue (default 10 Å)
+        max_bridge_span      : Max centroid–centroid distance between the two patches (default 20 Å)
+        min_periface_sasa    : Min SASA in complex (Å²) to include a residue (default 5 Å²)
+        top_n                : Number of top-ranked pockets to return (default 3)
+    """
+    try:
+        result = find_glue_pockets(
+            _resolve(file_path), chain_a, chain_b,
+            periinterface_radius=periinterface_radius,
+            max_bridge_span=max_bridge_span,
+            min_periface_sasa=min_periface_sasa,
+            top_n=top_n,
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.exception("find_glue_pockets failed")
         return json.dumps({"error": str(e)})
 
 

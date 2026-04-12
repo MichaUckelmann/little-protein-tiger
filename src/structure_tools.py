@@ -794,6 +794,341 @@ def score_surface_patch(
 
 
 # ---------------------------------------------------------------------------
+# Molecular glue pocket finder
+# ---------------------------------------------------------------------------
+
+def find_glue_pockets(
+    file_path: str,
+    chain_a: str,
+    chain_b: str,
+    periinterface_radius: float = 10.0,
+    max_bridge_span: float = 20.0,
+    min_periface_sasa: float = 5.0,
+    top_n: int = 3,
+) -> dict[str, Any]:
+    """
+    Identify periinterface "glue pockets" for molecular glue / PPI stabilizer design.
+
+    A glue pocket is a pair of surface-exposed patches (one on each chain) that
+    flank the protein-protein interface edge.  A designed binder bridging both
+    patches simultaneously would stabilize rather than disrupt the interaction.
+
+    Algorithm
+    ---------
+    1. Detect interface residues on both chains (heavy-atom contact < cutoff).
+    2. Compute SASA for every residue in the complex context (both chains present).
+    3. Periinterface residues = non-interface residues whose Cα is within
+       `periinterface_radius` Å of any interface Cα AND whose SASA_complex
+       > `min_periface_sasa` Å² (still solvent-accessible when the complex is formed).
+    4. Cluster each chain's periinterface residues greedily by Cα proximity (8 Å join radius).
+    5. Score each cluster (hydrophobic fraction, spatial spread, KD mean).
+    6. Pair clusters across chains: centroid-to-centroid ≤ `max_bridge_span` Å.
+    7. Rank pairs by combined patch quality, penalised for large separation.
+
+    Args
+    ----
+    file_path           : absolute path to CIF or PDB file
+    chain_a, chain_b    : chain IDs of the two interacting proteins
+    periinterface_radius: Cα–Cα distance cutoff to interface (default 10 Å)
+    max_bridge_span     : max centroid–centroid distance for a bridgeable pair (default 20 Å)
+    min_periface_sasa   : minimum SASA in complex context (default 5 Å²) — filters buried residues
+    top_n               : number of top-ranked pockets to return (default 3)
+    """
+    structure = _load_biopython(file_path)
+    ch_a = _get_biopython_chain(structure, chain_a)
+    ch_b = _get_biopython_chain(structure, chain_b)
+
+    # ------------------------------------------------------------------ #
+    # Step 1 — Build interface residue sets (heavy-atom contact detection) #
+    # ------------------------------------------------------------------ #
+    CONTACT_CUTOFF = 4.5
+
+    def _ca_coord(res) -> np.ndarray | None:
+        for atom in res.get_atoms():
+            if atom.name == "CA":
+                return atom.get_vector().get_array()
+        return None
+
+    def _heavy_coords_res(res) -> np.ndarray:
+        coords = [a.get_vector().get_array() for a in res.get_atoms() if a.element != "H"]
+        return np.array(coords) if coords else np.empty((0, 3))
+
+    res_a = list(ch_a.get_residues())
+    res_b = list(ch_b.get_residues())
+
+    # Build all chain_b heavy atom coords for fast lookup
+    b_atom_coords: list[np.ndarray] = []
+    b_atom_res_idx: list[int] = []
+    for bi, rb in enumerate(res_b):
+        for atom in rb.get_atoms():
+            if atom.element != "H":
+                b_atom_coords.append(atom.get_vector().get_array())
+                b_atom_res_idx.append(bi)
+
+    iface_a_idx: set[int] = set()
+    iface_b_idx: set[int] = set()
+
+    if b_atom_coords:
+        tree_b_atoms = KDTree(np.array(b_atom_coords))
+        for ai, ra in enumerate(res_a):
+            a_coords = _heavy_coords_res(ra)
+            if len(a_coords) == 0:
+                continue
+            for ac in a_coords:
+                hits = tree_b_atoms.query_ball_point(ac, CONTACT_CUTOFF)
+                if hits:
+                    iface_a_idx.add(ai)
+                    for h in hits:
+                        iface_b_idx.add(b_atom_res_idx[h])
+                    break  # one contact is enough to classify as interface
+
+    iface_a_resnums: set[int] = {res_a[i].get_id()[1] for i in iface_a_idx}
+    iface_b_resnums: set[int] = {res_b[i].get_id()[1] for i in iface_b_idx}
+
+    # ------------------------------------------------------------------ #
+    # Step 2 — SASA for all residues in the complex context               #
+    # ------------------------------------------------------------------ #
+    sasa_complex = _compute_sasa_per_residue(structure, [chain_a, chain_b])
+
+    def _sasa_complex(chain_id: str, resnum: int, resname: str) -> float:
+        return sasa_complex.get(f"{chain_id}:{resnum}:{resname}", 0.0)
+
+    # ------------------------------------------------------------------ #
+    # Step 3 — Identify periinterface residues on each chain              #
+    # ------------------------------------------------------------------ #
+    # Build KDTree from interface Cα coords on BOTH chains combined
+    iface_ca_coords: list[np.ndarray] = []
+    for i in iface_a_idx:
+        c = _ca_coord(res_a[i])
+        if c is not None:
+            iface_ca_coords.append(c)
+    for i in iface_b_idx:
+        c = _ca_coord(res_b[i])
+        if c is not None:
+            iface_ca_coords.append(c)
+
+    if not iface_ca_coords:
+        return {
+            "error": "No interface residues detected — check chain IDs and contact cutoff",
+            "chain_a": chain_a, "chain_b": chain_b,
+        }
+
+    tree_iface = KDTree(np.array(iface_ca_coords))
+
+    def _periinterface_residues(res_list: list, chain_id: str, iface_resnums: set[int]) -> list[dict]:
+        out = []
+        for res in res_list:
+            rn = res.get_id()[1]
+            resname = res.get_resname()
+            if rn in iface_resnums:
+                continue  # skip interface residues themselves
+            ca = _ca_coord(res)
+            if ca is None:
+                continue
+            dist_to_iface, _ = tree_iface.query(ca)
+            if dist_to_iface > periinterface_radius:
+                continue
+            sasa = _sasa_complex(chain_id, rn, resname)
+            if sasa < min_periface_sasa:
+                continue  # buried in complex context
+            out.append({
+                "resnum": rn,
+                "resname": resname,
+                "one_letter": AA3_TO_1.get(resname, "X"),
+                "type": _res_type(resname),
+                "kd_hydrophobicity": KD_HYDROPHOBICITY.get(resname, 0.0),
+                "sasa_complex_A2": round(sasa, 1),
+                "dist_to_interface_ca_A": round(float(dist_to_iface), 1),
+                "ca_coord": ca.tolist(),
+            })
+        # Sort: closest to interface first, then most exposed
+        out.sort(key=lambda r: (r["dist_to_interface_ca_A"], -r["sasa_complex_A2"]))
+        return out
+
+    peri_a = _periinterface_residues(res_a, chain_a, iface_a_resnums)
+    peri_b = _periinterface_residues(res_b, chain_b, iface_b_resnums)
+
+    # ------------------------------------------------------------------ #
+    # Step 4 — Greedy Cα clustering (join radius 8 Å)                     #
+    # ------------------------------------------------------------------ #
+    CLUSTER_RADIUS = 8.0
+
+    def _cluster(peri: list[dict]) -> list[list[dict]]:
+        if not peri:
+            return []
+        unassigned = list(peri)  # already sorted by dist_to_interface
+        clusters: list[list[dict]] = []
+        while unassigned:
+            seed = unassigned.pop(0)
+            cluster = [seed]
+            remaining = []
+            for r in unassigned:
+                seed_ca = np.array(seed["ca_coord"])
+                member_cas = np.array([m["ca_coord"] for m in cluster])
+                dists = np.linalg.norm(member_cas - np.array(r["ca_coord"]), axis=1)
+                if dists.min() <= CLUSTER_RADIUS:
+                    cluster.append(r)
+                else:
+                    remaining.append(r)
+            unassigned = remaining
+            clusters.append(cluster)
+        # Sort each cluster: closest to interface first; sort clusters by proximity to interface
+        for c in clusters:
+            c.sort(key=lambda r: r["dist_to_interface_ca_A"])
+        clusters.sort(key=lambda c: min(r["dist_to_interface_ca_A"] for r in c))
+        return clusters
+
+    clusters_a = _cluster(peri_a)
+    clusters_b = _cluster(peri_b)
+
+    # ------------------------------------------------------------------ #
+    # Step 5 — Score each cluster (inline — avoids reloading structure)   #
+    # ------------------------------------------------------------------ #
+    def _score_cluster(cluster: list[dict]) -> dict:
+        if not cluster:
+            return {"suitability_rating": "Poor", "rationale": "Empty cluster"}
+        names = [r["resname"] for r in cluster]
+        ca_arr = np.array([r["ca_coord"] for r in cluster])
+        centroid = ca_arr.mean(axis=0)
+        spread = float(np.sqrt(((ca_arr - centroid) ** 2).sum(axis=1).mean())) if len(cluster) > 1 else 0.0
+        kd_scores = [KD_HYDROPHOBICITY.get(n, 0.0) for n in names]
+        mean_kd = float(np.mean(kd_scores))
+        type_counts: dict[str, int] = {"hydrophobic": 0, "aromatic": 0, "charged": 0, "polar": 0, "other": 0}
+        for n in names:
+            t = _res_type(n)
+            type_counts[t] = type_counts.get(t, 0) + 1
+        hf = (type_counts["hydrophobic"] + type_counts["aromatic"]) / len(names)
+        mean_sasa = float(np.mean([r["sasa_complex_A2"] for r in cluster]))
+
+        if hf >= 0.5 and spread <= 10.0 and len(cluster) >= 3:
+            rating, rationale = "Excellent", "Hydrophobic-rich, compact, well-exposed periinterface patch"
+        elif hf >= 0.3 and spread <= 15.0 and mean_sasa >= 20.0:
+            rating, rationale = "Good", "Moderate hydrophobic character, accessible spread"
+        elif hf >= 0.2 or len(cluster) >= 4:
+            rating, rationale = "Marginal", "Limited hydrophobic character or dispersed patch"
+        else:
+            rating, rationale = "Poor", "Mostly polar/charged, limited binder anchor energy"
+
+        return {
+            "n_residues": len(cluster),
+            "residues": [r["resnum"] for r in cluster],
+            "residue_labels": [f"{r['resname']}{r['resnum']}" for r in cluster],
+            "centroid": [round(float(x), 2) for x in centroid],
+            "spatial_spread_ca_rmsd_A": round(spread, 2),
+            "mean_hydrophobicity_kd": round(mean_kd, 2),
+            "hydrophobic_fraction": round(hf, 2),
+            "mean_sasa_complex_A2": round(mean_sasa, 1),
+            "type_breakdown": type_counts,
+            "suitability_rating": rating,
+            "rationale": rationale,
+        }
+
+    scored_a = [_score_cluster(c) for c in clusters_a]
+    scored_b = [_score_cluster(c) for c in clusters_b]
+
+    # ------------------------------------------------------------------ #
+    # Step 6 — Pair clusters across chains by centroid proximity          #
+    # ------------------------------------------------------------------ #
+    RATING_RANK = {"Excellent": 4, "Good": 3, "Marginal": 2, "Poor": 1}
+
+    pockets: list[dict] = []
+    for ia, sa in enumerate(scored_a):
+        if sa["n_residues"] < 2:
+            continue
+        ca_centroid = np.array(sa["centroid"])
+        for ib, sb in enumerate(scored_b):
+            if sb["n_residues"] < 2:
+                continue
+            cb_centroid = np.array(sb["centroid"])
+            sep = float(np.linalg.norm(ca_centroid - cb_centroid))
+            if sep > max_bridge_span:
+                continue
+            combined_rank = RATING_RANK.get(sa["suitability_rating"], 1) + \
+                            RATING_RANK.get(sb["suitability_rating"], 1)
+            # Penalize separation linearly above 12 Å
+            sep_penalty = max(0.0, (sep - 12.0) / 8.0)
+            sort_key = -(combined_rank - sep_penalty)
+
+            # Per-residue detail rows for the LLM to use in hotspot tables
+            def _detail_rows(cluster: list[dict], chain_id: str) -> list[dict]:
+                return [{
+                    "chain": chain_id,
+                    "resnum": r["resnum"],
+                    "resname": r["resname"],
+                    "one_letter": r["one_letter"],
+                    "type": r["type"],
+                    "kd_hydrophobicity": r["kd_hydrophobicity"],
+                    "sasa_complex_A2": r["sasa_complex_A2"],
+                    "dist_to_interface_ca_A": r["dist_to_interface_ca_A"],
+                } for r in clusters_a[ia]] if chain_id == chain_a else [{
+                    "chain": chain_id,
+                    "resnum": r["resnum"],
+                    "resname": r["resname"],
+                    "one_letter": r["one_letter"],
+                    "type": r["type"],
+                    "kd_hydrophobicity": r["kd_hydrophobicity"],
+                    "sasa_complex_A2": r["sasa_complex_A2"],
+                    "dist_to_interface_ca_A": r["dist_to_interface_ca_A"],
+                } for r in clusters_b[ib]]
+
+            pockets.append({
+                "_sort_key": sort_key,
+                "centroid_separation_A": round(sep, 1),
+                "bridgeable": True,
+                "combined_rating": "Excellent" if combined_rank >= 7 else
+                                   "Good"      if combined_rank >= 5 else
+                                   "Marginal"  if combined_rank >= 3 else "Poor",
+                "chain_a_patch": {
+                    **sa,
+                    "chain": chain_a,
+                    "residue_details": _detail_rows(clusters_a[ia], chain_a),
+                },
+                "chain_b_patch": {
+                    **sb,
+                    "chain": chain_b,
+                    "residue_details": _detail_rows(clusters_b[ib], chain_b),
+                },
+                "design_note": (
+                    f"Mini-protein must contact {chain_a} patch "
+                    f"({sa['residue_labels']}) and {chain_b} patch "
+                    f"({sb['residue_labels']}) simultaneously. "
+                    f"Centroid span {round(sep, 1)} Å — "
+                    f"{'stapled helix or mini-protein' if sep > 15 else 'bicyclic peptide or stapled helix'}."
+                ),
+            })
+
+    pockets.sort(key=lambda p: p["_sort_key"])
+    for i, p in enumerate(pockets):
+        p["rank"] = i + 1
+        del p["_sort_key"]
+
+    # ------------------------------------------------------------------ #
+    # Step 7 — Assemble output                                            #
+    # ------------------------------------------------------------------ #
+    return {
+        "chain_a": chain_a,
+        "chain_b": chain_b,
+        "interface_summary": {
+            "n_interface_residues_a": len(iface_a_resnums),
+            "n_interface_residues_b": len(iface_b_resnums),
+            "interface_resnums_a": sorted(iface_a_resnums),
+            "interface_resnums_b": sorted(iface_b_resnums),
+        },
+        "periinterface_chain_a": peri_a,
+        "periinterface_chain_b": peri_b,
+        "n_clusters_a": len(clusters_a),
+        "n_clusters_b": len(clusters_b),
+        "glue_pockets": pockets[:top_n],
+        "params": {
+            "periinterface_radius_A": periinterface_radius,
+            "max_bridge_span_A": max_bridge_span,
+            "min_periface_sasa_A2": min_periface_sasa,
+            "contact_cutoff_A": CONTACT_CUTOFF,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 

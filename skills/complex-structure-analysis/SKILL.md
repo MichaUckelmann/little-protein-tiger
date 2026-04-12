@@ -2,14 +2,18 @@
 name: complex-structure-analysis
 description: >
   Analyse protein-protein interaction interfaces to identify surface hotspots for
-  disruption by de novo cyclic peptides and mini-proteins. Computes BSA, SASA,
-  H-bonds, and pairwise contacts using the structure-tools MCP server (no ChimeraX
-  required). Accepts local CIF/PDB files or RCSB PDB IDs (download first).
+  disruption OR stabilization by de novo cyclic peptides and mini-proteins. In
+  disrupt mode: identifies single-chain interface hotspots. In stabilize (molecular
+  glue) mode: identifies periinterface patches on BOTH chains for a bridging binder
+  design. Computes BSA, SASA, H-bonds, pairwise contacts, and periinterface geometry
+  using the structure-tools MCP server (no ChimeraX required). Accepts local CIF/PDB
+  files or RCSB PDB IDs (download first).
   Trigger on: "interaction interface", "contact residues", "buried surface",
-  "hydrophobic patch", "hotspot", "disrupt interaction", "PPI analysis", "design a
-  binder", "cyclic peptide target", "mini-protein target", or when a multi-chain
-  structure is provided and the user asks which surface to target. Also trigger for
-  known complexes (YAP-TEAD, PD-1/PD-L1, p53-MDM2). Requires structure-tools MCP.
+  "hydrophobic patch", "hotspot", "disrupt interaction", "stabilize interaction",
+  "molecular glue", "PPI stabilizer", "PPI analysis", "design a binder",
+  "cyclic peptide target", "mini-protein target", or when a multi-chain structure is
+  provided and the user asks which surface to target. Also trigger for known complexes
+  (YAP-TEAD, PD-1/PD-L1, p53-MDM2). Requires structure-tools MCP.
 ---
 
 # PPI Interface Analysis for Peptide / Mini-Protein Design
@@ -18,6 +22,13 @@ Systematic interface analysis using the `structure-tools` MCP server. All geomet
 quantities (BSA, SASA, contacts, H-bonds) are computed directly from atomic
 coordinates — not inferred from residue names. Reasoning is applied on top of
 reliable numerical outputs.
+
+**Two operating modes**, selected by the `design_intent` field in the PIPELINE HANDOFF
+from pathway-expert or wildcard-expert:
+- **`disrupt` mode** (default): identify single-chain interface hotspots; binder
+  competes with the partner chain to break the interaction.
+- **`stabilize` mode (molecular glue)**: identify periinterface patches on *both*
+  chains flanking the interface; binder bridges across and reinforces the complex.
 
 Output: `## PPI ANALYSIS REPORT` with MODEL-READY HOTSPOT formats for BoltzGen and RFD3.
 
@@ -44,6 +55,22 @@ If not present, download on the fly:
 
 ---
 
+## Phase 0: Detect Design Mode
+
+Before any tool calls, read the `design_intent` from the PIPELINE HANDOFF (passed in
+the query from the orchestrator). Set the operating mode for this entire run:
+
+- `design_intent: disrupt` → **DISRUPT mode** — proceed with standard Phase 1–3 below.
+- `design_intent: stabilize` → **STABILIZE mode** — follow the STABILIZE branches in
+  Phases 1–3; skip Phase 2 (surface patch scoring) and use `tool_find_glue_pockets`
+  instead.
+- Not present → default to **DISRUPT mode**.
+
+Record the mode explicitly: write `<!-- MODE: DISRUPT -->` or `<!-- MODE: STABILIZE -->`
+at the top of your scratchpad so it stays visible throughout the analysis.
+
+---
+
 ## Phase 1: Interface Analysis
 
 Call once — this returns everything needed for hotspot reasoning:
@@ -59,7 +86,32 @@ mcp__structure-tools__tool_analyze_interface
 If chain assignments are unclear, check model info from the file and confirm with user
 before proceeding — swapping target and partner changes the entire analysis.
 
-From the result, extract and note:
+**[STABILIZE mode only]** — after `tool_analyze_interface` completes, also call
+`tool_find_glue_pockets`:
+
+```
+mcp__structure-tools__tool_find_glue_pockets
+  file_path            = "<absolute_path>"
+  chain_a              = "<chain_a>"
+  chain_b              = "<chain_b>"
+  periinterface_radius = 10.0
+  max_bridge_span      = 20.0
+  min_periface_sasa    = 5.0
+  top_n                = 3
+```
+
+From the glue pockets result, extract and note:
+- `glue_pockets[]` — ranked list of cross-chain patch pairs; each entry has:
+  - `rank`, `combined_rating`, `centroid_separation_A`, `bridgeable`, `design_note`
+  - `chain_a_patch.residues[]` — residue nums + SASA on chain A
+  - `chain_b_patch.residues[]` — residue nums + SASA on chain B
+- `interface_summary.bsa_total_A2` — from the inner interface analysis
+- Top-1 pocket `centroid_separation_A` → select design modality:
+  - ≤ 12 Å: bicyclic or large cyclic peptide
+  - 13–20 Å: mini-protein recommended (needs structural scaffold to bridge)
+  - > 20 Å (`bridgeable: false`): very long span — note as challenging, flag for user
+
+From the `tool_analyze_interface` result, extract and note:
 - `interface.bsa_total_A2` — total BSA; use to select design modality:
   - < 500 Å²: crystal packing, likely not biological
   - 500–1000 Å²: small — cyclic peptide
@@ -90,7 +142,15 @@ the shorter chain is usually the binder.
 
 ## Phase 2: Hotspot Identification
 
+**[DISRUPT mode]** — follow all steps below.
+
+**[STABILIZE mode]** — `tool_find_glue_pockets` already returned scored periinterface
+patches from Phase 1. **Skip Steps 1–2 entirely.** Go directly to Step 3 (literature
+cross-reference), then proceed to Phase 3 using the glue pocket output.
+
 ### Step 1 — Rank residues by BSA contribution
+
+*[DISRUPT mode only]*
 
 From `interface.bsa_per_residue`, sort the target chain residues by `bsa_A2` descending.
 The top BSA contributors are the most energetically important candidates.
@@ -99,6 +159,8 @@ Identify clusters: residues within ~8 Å Cα-Cα of each other (use contact data
 residues that share contacts with the same partner residues are spatially proximate).
 
 ### Step 2 — Score candidate patches
+
+*[DISRUPT mode only]*
 
 For each cluster of 3–6 candidate hotspot residues, call:
 
@@ -126,12 +188,19 @@ and select the primary design target.
 
 ### Step 3 — Literature cross-reference (web search)
 
-Search for published mutagenesis or inhibitor data:
+**[DISRUPT mode]** — search for published mutagenesis or inhibitor data:
 - `<complex_name> hotspot residues alanine scanning`
 - `<complex_name> peptide inhibitor interface`
 - `<PDB_ID> interface mutagenesis`
 
 Upgrade candidates confirmed by ΔΔG data. Note any prior therapeutic targeting.
+
+**[STABILIZE mode]** — search for published stabilizer/glue data:
+- `<complex_name> stabilizer molecular glue PPI stabilization`
+- `<ProteinA> <ProteinB> periinterface residues cooperative binding`
+- `<complex_name> ternary complex binder bridging`
+
+Note any published precedents for stabilizing this specific complex.
 
 ---
 
@@ -139,12 +208,16 @@ Upgrade candidates confirmed by ΔΔG data. Note any prior therapeutic targeting
 
 ### Get sequence numbering map
 
-Call once per chain — the result persists in context for the rest of the run.
+**[Both modes]** — call for every chain that contributes hotspot residues.
+
+**[DISRUPT mode]**: call once for the target chain.
+**[STABILIZE mode]**: call for **both** `chain_a` and `chain_b` — the binder engages
+residues on both, so both `auth_to_label` maps are required.
 
 ```
 mcp__structure-tools__tool_get_sequence_map
   file_path = "<path>"
-  chain     = "<target_chain>"
+  chain     = "<chain_id>"
 ```
 
 Returns `auth_to_label` map: `{auth_seq_id → label_seq_id}`.
@@ -199,24 +272,33 @@ types from residue names — all of these are now in the tool results.
 ### COMPLEX OVERVIEW
 - Structure: <file path or PDB ID>
 - Structure source: <experimental | af3_boltz | rfdiffusion>
-- Target chain: <id> (<protein name>)
-- Partner chain: <id> (<protein name>)
+- Chain A: <id> (<protein name>)
+- Chain B: <id> (<protein name>)
+- Design mode: <DISRUPT | STABILIZE (molecular glue)>
 - BSA total: <value> Å²
 - H-bonds across interface: <n_hbonds>
-- Interface residues: <n_contacts_chain_a> on target, <n_contacts_chain_b> on partner
+- Interface residues: <n_contacts_chain_a> on chain A, <n_contacts_chain_b> on chain B
 - Design modality: <cyclic_peptide / mini_protein / either> — rationale
 
-### TARGET CHAIN INTERFACE RESIDUES
+### CHAIN A INTERFACE RESIDUES
 Chain <id>: Hydrophobic: <comma-separated list> | Aromatic: <list> | Charged: <list> | Polar: <list>
 
-### PARTNER CHAIN INTERFACE RESIDUES
+### CHAIN B INTERFACE RESIDUES
 Chain <id>: Hydrophobic: <list> | Aromatic: <list> | Charged: <list> | Polar: <list>
 
 ### H-BONDS AT INTERFACE (top 12 by distance)
 | Donor | Donor atom | Acceptor | Acceptor atom | Distance (Å) |
 |---|---|---|---|---|
 | <chain:ResNum> | <atom> | <chain:ResNum> | <atom> | <dist> |
+```
 
+---
+
+### [DISRUPT mode] HOTSPOT REGIONS (top 2, ranked by suitability)
+
+*Write this section only in DISRUPT mode. In STABILIZE mode, replace with GLUE POCKETS section below.*
+
+```
 ### HOTSPOT REGIONS (top 2, ranked by suitability)
 
 #### Region N: <name> — <Excellent/Good/Marginal/Poor>
@@ -230,23 +312,65 @@ Chain <id>: Hydrophobic: <list> | Aromatic: <list> | Charged: <list> | Polar: <l
 - Design note: <what the binder must mimic>
 - Separability: <"Independent — separate design submission required" if Cα-Cα centroid
   distance to other region > 15 Å, otherwise "Combined with Region X feasible">
+```
 
+---
+
+### [STABILIZE mode] GLUE POCKETS
+
+*Write this section only in STABILIZE mode. In DISRUPT mode, replace with HOTSPOT REGIONS above.*
+
+Report the top-N glue pockets from `tool_find_glue_pockets`. Focus on the top-1 pocket
+for design unless top-2 has a meaningfully better combined_rating.
+
+```
+### GLUE POCKETS (top results from periinterface analysis)
+
+#### Glue Pocket <rank>: <combined_rating> — centroid separation <X.X> Å (<bridgeable?>)
+- Design note: <design_note from tool result>
+- Chain A patch (<ProteinA>): residues <list>, hydrophobic fraction <f>, suitability <rating>
+- Chain B patch (<ProteinB>): residues <list>, hydrophobic fraction <f>, suitability <rating>
+- Literature evidence: <stabilizer/glue precedents, or "not found">
+- Design challenge: <any flags — e.g. long span, poor hydrophobicity, shallow patches>
+```
+
+---
+
+### [Both modes] DESIGN RECOMMENDATIONS
+
+```
 ### DESIGN RECOMMENDATIONS
+- Design mode: <DISRUPT | STABILIZE (molecular glue)>
 - Recommended modality: <cyclic_peptide / mini_protein / either>
-- Primary target region: <region name and rating>
-- Key target residues: <list>
-- Partner residues to mimic: <list>
+- Primary target: <[DISRUPT] region name and rating | [STABILIZE] Glue Pocket rank + combined_rating>
+- Key chain A residues: <list with auth_seq_id — interface hotspots [DISRUPT] or periinterface patch [STABILIZE]>
+- Key chain B residues: <[DISRUPT] partner residues to mimic | [STABILIZE] periinterface patch residues>
+- Centroid separation: <[STABILIZE only] Å — design modality rationale based on span>
 - Confidence / B-factors: <"pLDDT not applicable — experimental structure (B-factors in file)" |
   "pLDDT not applicable — RFDiffusion output (B-factors are placeholders)" |
   list of low-pLDDT residues (< 70) if af3_boltz>
-- Caveats: <disorder, deep pockets inaccessible to peptides, missing loops, etc.>
+- Caveats: <disorder, deep pockets, missing loops, ternary complex format caveats, etc.>
+```
+
+**[STABILIZE mode caveat]** — BoltzGen ternary complex support: BoltzGen/RFD3 typically
+model binder-against-one-chain. For a molecular glue targeting both chains simultaneously,
+note: *"Ternary complex (binder + chain A + chain B) design may require BoltzGen v2
+multi-chain binding spec or RFD3 with both chain hotspots. Verify current tool support
+before submitting. Single-chain hotspot submissions per chain are provided as fallback."*
+
+---
 
 ### MODEL-READY HOTSPOTS
+
+**[DISRUPT mode only]** — standard single-chain format:
 
 **If two regions are flagged "Independent" above, repeat this entire section once
 per region, labelled `### MODEL-READY HOTSPOTS — Region 1` and
 `### MODEL-READY HOTSPOTS — Region 2`. Do NOT merge residues across independent
 regions. Protein-design-script generates a separate submission for each.**
+
+```
+### MODEL-READY HOTSPOTS [DISRUPT]
 
 Target chain <id> — Region <N>: <name> — selected <M> residues:
 
@@ -255,21 +379,54 @@ Target chain <id> — Region <N>: <name> — selected <M> residues:
 | <name> | <auth> | <label> | <atom1>,<atom2> |
 
 #### BoltzGen binding
-```yaml
 binding: <label_seq_id_1>,<label_seq_id_2>,...
-```
+
 #### RFD3 select_hotspots
-```yaml
 select_hotspots:
     <chain><auth_resnum>: <atom1>,<atom2>
     <chain><auth_resnum>: <atom1>,<atom2>
 ```
 
+**[STABILIZE mode only]** — dual-chain format for molecular glue:
+
+Both chains contribute to the binding surface. List chain A and chain B residues
+separately. Use `auth_to_label` maps for both chains (both retrieved in Phase 3).
+
+```
+### MODEL-READY HOTSPOTS [STABILIZE — Glue Pocket <rank>]
+
+Chain A (<ProteinA>) periinterface patch — selected <M> residues:
+
+| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |
+|---|---|---|---|
+| <name> | <auth> | <label> | <atom1>,<atom2> |
+
+Chain B (<ProteinB>) periinterface patch — selected <M> residues:
+
+| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |
+|---|---|---|---|
+| <name> | <auth> | <label> | <atom1>,<atom2> |
+
+#### BoltzGen binding (ternary complex — verify tool support)
+Chain A binding: <label_seq_id_a1>,<label_seq_id_a2>,...
+Chain B binding: <label_seq_id_b1>,<label_seq_id_b2>,...
+
+#### BoltzGen binding (fallback — single-chain submissions)
+Chain A only: binding: <label_seq_id_a1>,<label_seq_id_a2>,...
+Chain B only: binding: <label_seq_id_b1>,<label_seq_id_b2>,...
+
+#### RFD3 select_hotspots (combined — verify tool support)
+select_hotspots:
+    <chainA><auth_resnum>: <atom1>,<atom2>
+    <chainB><auth_resnum>: <atom1>,<atom2>
+```
+
 ### PIPELINE HANDOFF
 - pdb_id: <PDB accession used>
-- target_chain: <chain ID>
-- partner_chain: <chain ID>
+- chain_a: <chain ID>
+- chain_b: <chain ID>
 - target_complex: <ProteinA / ProteinB>
+- design_intent: <disrupt | stabilize>
 - modality: <cyclic_peptide | mini_protein | stapled_helix | either>
 - bsa_A2: <integer BSA in Å²>
 - tractability: <Excellent | Good | Marginal | Poor>
@@ -331,3 +488,16 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
 - **Do not re-call `get_sequence_map`**: call it at most once per chain per run.
   The result is already in context — scroll back to find it rather than issuing
   a duplicate tool call. A repeated call adds tokens without new information.
+
+- **[STABILIZE mode] No glue pockets returned**: if `tool_find_glue_pockets` returns
+  an empty `glue_pockets` list, report this clearly. Possible causes: interface is
+  too large / too buried for periinterface exposure, no cross-chain bridgeable patch
+  within 20 Å, or all candidate residues are below the min SASA threshold. Suggest
+  relaxing `periinterface_radius` (try 15 Å) or `max_bridge_span` (try 25 Å) and
+  re-run. Do NOT fall back to DISRUPT mode silently — flag the issue for the user.
+
+- **[STABILIZE mode] Do NOT analyze single-chain interface residues as binder targets**:
+  periinterface patches are surface-exposed residues that flank the interface, not the
+  buried interface residues themselves. Using interface residues as the glue target would
+  produce a competitive binding design, not a stabilizer. The `tool_find_glue_pockets`
+  result already enforces this by filtering for SASA > threshold; trust its output.

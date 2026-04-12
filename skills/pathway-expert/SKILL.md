@@ -203,10 +203,16 @@ in corpus", explicitly reason through the following before writing the report:
    physically engage a specific partner to exert its disease-relevant activity?
    Use `pathway_logic`, `upstream_regulators`, `downstream_effectors`, and
    `key_findings` as evidence sources.
-2. **Consequence of disruption**: Would breaking that interaction predictably attenuate
-   the dysregulated output (e.g. loss of complex formation → loss of downstream
-   signalling, loss of transcriptional co-activation, failure to relay a
-   pathological signal)?
+2. **Therapeutic mechanism — disrupt or stabilize?** Determine which design intent
+   applies to this node:
+   - `disrupt` — breaking the interaction attenuates the disease-relevant output
+     (e.g. loss of complex formation → loss of oncogenic signalling, loss of
+     transcriptional co-activation, failure to relay a pathological signal)
+   - `stabilize` — the disease mechanism is that a normally protective or
+     autoinhibitory interaction is *lost* or *weakened*; reinforcing it restores
+     the healthy state (e.g. restoring an autoinhibitory complex, re-engaging a
+     sequestered OFF-state, protecting a tumour suppressor complex from degradation)
+   Record one `design_intent` per node. Default to `disrupt` if ambiguous.
 3. **Interaction knowability**: Is the specific binding partner named or strongly
    implied in the corpus (e.g. a co-activator, scaffold, receptor partner)?
    Do not infer a generic "this protein must bind something" — name the partner.
@@ -320,6 +326,7 @@ suggest the user run `python scripts/fetch_papers.py` with specific pathway keyw
 ### PIPELINE HANDOFF
 - pdb_id: <PDB accession from corpus (pdb_accessions or suggested_pdb_structures fields only), or NOT_FOUND>
 - target_complex: <ProteinA / ProteinB>
+- design_intent: <disrupt | stabilize — from Phase 4a reasoning for the PRIMARY RECOMMENDATION>
 - structure_query: <one sentence — e.g. "Analyze PDB {pdb_id} at data/structures/{pdb_id}.cif. Target chain {chain} ({ProteinA}). Partner chain {chain} ({ProteinB}). Identify hotspot residues for {modality} design.">
 - choices_json: <compact JSON array — see format below>
 
@@ -336,6 +343,7 @@ Rules for `### PIPELINE HANDOFF`:
   - `pdb_ids`: array of PDB accession strings from corpus only — empty array `[]` if none found
   - `evidence_basis`: one sentence summary of the evidence (no newlines, no quotes inside the string)
   - `key_uncertainty`: one sentence summary of the key uncertainty (no newlines, no quotes inside the string)
+  - `design_intent`: `"disrupt"` or `"stabilize"` from Phase 4a reasoning for this candidate
 
   Example (must be on ONE line, no line breaks inside):
   `- choices_json: [{"tier":"VALIDATED","complex":"YAP1 / TEAD4","pdb_ids":["5GN0","8J9A"],"evidence_basis":"Mesothelioma xenograft regression confirmed upon YAP-TEAD inhibition.","key_uncertainty":"TAZ paralog redundancy may require dual targeting."},{"tier":"BIOLOGICALLY_JUSTIFIED","complex":"NF2 / LATS1","pdb_ids":[],"evidence_basis":"CRISPR dependency confirmed in NF2-null cell lines.","key_uncertainty":"No structural data in corpus."}]`
