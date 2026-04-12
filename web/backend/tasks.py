@@ -154,7 +154,8 @@ def run_pipeline_task(self, run_id: int) -> None:
             extended_thinking_stages={"structure"} if extended_thinking else None,
             pathway_mode=pathway_mode,
         )
-        result = runner.run(query=query, pdb_id=pdb_id, auto_mode=auto_mode)
+        result = runner.run(query=query, pdb_id=pdb_id, auto_mode=auto_mode,
+                            target_complex=run.target_complex if pdb_id else None)
 
         _set_run_fields(
             run_id,
@@ -228,6 +229,7 @@ def resume_pipeline_task(self, run_id: int) -> None:
         user = session.get(User, run.user_id)
         query = run.query
         pdb_id = run.pdb_id
+        target_complex = run.target_complex
         provider = run.provider
         model_id = run.model_id
         stage_models = json.loads(run.stage_models_json) if run.stage_models_json else None
@@ -322,6 +324,10 @@ def resume_pipeline_task(self, run_id: int) -> None:
             context_file=context_file if context_file.exists() else None,
             auto_mode=False,
             structure_next_step=structure_next_step,
+            # Pass the user-selected target_complex explicitly so the pipeline
+            # runner doesn't overwrite it with the primary recommendation's
+            # complex name from the pathway handoff.
+            target_complex=target_complex,
         )
 
         _set_run_fields(
@@ -399,6 +405,7 @@ def retry_run_task(self, run_id: int, start_from: str) -> None:
         user = session.get(User, run.user_id)
         query = run.query
         pdb_id = run.pdb_id
+        target_complex = run.target_complex
         provider = run.provider
         model_id = run.model_id
         stage_models = json.loads(run.stage_models_json) if run.stage_models_json else None
@@ -468,6 +475,7 @@ def retry_run_task(self, run_id: int, start_from: str) -> None:
             context_file=context_file,
             auto_mode=auto_mode,
             structure_next_step=structure_next_step,
+            target_complex=target_complex,
         )
 
         _set_run_fields(

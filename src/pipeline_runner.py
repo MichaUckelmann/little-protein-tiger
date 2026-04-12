@@ -172,6 +172,7 @@ class PipelineRunner:
         context_file: Path | None = None,
         auto_mode: bool = True,
         structure_next_step: str | None = None,
+        target_complex: str | None = None,
     ) -> PipelineResult:
         """
         Run the pipeline from `start_from` onwards.
@@ -196,6 +197,12 @@ class PipelineRunner:
             Injected on resume from a structure_choice pause.
             "literature_and_design" | "design_only" | "stop".
             Ignored when auto_mode=True.
+        target_complex : str | None
+            Explicitly-set target complex from the user's choice (e.g.
+            "EapH2 / Cathepsin-G").  Takes precedence over the target_complex
+            in the pathway handoff, which always contains the primary
+            recommendation and would be wrong when the user picks a different
+            choice.
         """
         if pdb_id and start_from == "pathway":
             start_from = "structure"
@@ -207,10 +214,12 @@ class PipelineRunner:
         run_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Pipeline run dir: {run_dir}")
 
-        result = PipelineResult(run_dir=run_dir, pdb_id=pdb_id)
+        result = PipelineResult(run_dir=run_dir, pdb_id=pdb_id, target_complex=target_complex)
         handoff: dict[str, str] = {}
 
-        # Seed handoff from a pre-existing context file when resuming
+        # Seed handoff from a pre-existing context file when resuming.
+        # Prefer explicitly-passed target_complex (set from user's choice) over
+        # the handoff value, which always reflects the primary recommendation.
         if context_file and context_file.exists():
             handoff = self._parse_handoff(context_file.read_text(encoding="utf-8"))
             result.pdb_id = result.pdb_id or handoff.get("pdb_id")
@@ -386,21 +395,29 @@ class PipelineRunner:
             )
 
         # Use the pathway handoff's structure_query only when its PDB matches the
-        # user-selected PDB. If the user picked a different structure, build a
-        # fresh query so the skill is pointed at the correct file.
+        # user-selected PDB. If the user picked a different structure (non-primary
+        # choice), look the selected choice up in choices_json so we can build a
+        # rich, accurate query — this prevents the structure expert from reasoning
+        # about the wrong complex when the file and the query disagree.
         handoff_pdb = prev_handoff.get("pdb_id", "")
         handoff_query = prev_handoff.get("structure_query")
         if handoff_query and handoff_pdb.upper() == pdb_id.upper():
-            # Replace any ASU path in the pathway-generated query with the analysis path
+            # Primary choice — use the full structure_query from the pathway handoff
             query = handoff_query.replace(str(asu_path), str(analysis_path))
             if str(analysis_path) not in query:
                 query = query + f"\n\nStructure file to use: {analysis_path}"
             query += chain_hint
         else:
-            query = (
-                f"Analyse the {target_complex} interface in PDB {pdb_id}.\n"
-                f"Structure file: {analysis_path}{chain_hint}"
+            # Non-primary choice: look up the matching entry in choices_json to get
+            # the correct complex name, design_intent, and evidence context.
+            query = self._build_structure_query_for_choice(
+                pdb_id=pdb_id,
+                target_complex=target_complex,
+                analysis_path=analysis_path,
+                prev_handoff=prev_handoff,
+                context_files=context_files,
             )
+            query += chain_hint
 
         logger.info("Stage 1: complex-structure-analysis")
         # Don't pass prior stage context: structure_query already contains everything
@@ -704,6 +721,111 @@ class PipelineRunner:
         except Exception as exc:
             logger.warning(f"Could not read chain descriptions from {cif_path}: {exc}")
             return {}
+
+    def _build_structure_query_for_choice(
+        self,
+        pdb_id: str,
+        target_complex: str,
+        analysis_path: Path,
+        prev_handoff: dict,
+        context_files: list[Path],
+    ) -> str:
+        """
+        Build a rich structure_query for a non-primary pathway choice.
+
+        When the user picks a choice other than the primary recommendation the
+        pathway handoff's ``structure_query`` refers to the wrong complex.  This
+        method finds the correct choice entry in ``choices_json``, builds a query
+        that includes the target complex name, design_intent, and evidence context,
+        and optionally appends the relevant TARGET OPPORTUNITY LANDSCAPE section
+        from the pathway report so the structure expert has full biological context.
+        """
+        chosen: dict = {}
+
+        # ── Step 1: find matching entry in choices_json ───────────────────────
+        choices_raw = prev_handoff.get("choices_json", "")
+        if choices_raw:
+            try:
+                choices_list = json.loads(choices_raw)
+                pdb_upper = pdb_id.upper()
+                tc_lower = target_complex.lower() if target_complex else ""
+                for ch in choices_list:
+                    ch_pdbs = [p.upper() for p in ch.get("pdb_ids", [])]
+                    ch_complex_lower = ch.get("complex", "").lower()
+                    if pdb_upper in ch_pdbs or (tc_lower and ch_complex_lower == tc_lower):
+                        chosen = ch
+                        break
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                logger.warning(f"_build_structure_query_for_choice: choices_json parse error: {exc}")
+
+        complex_name = chosen.get("complex") or target_complex or "the target complex"
+        design_intent = chosen.get("design_intent", "disrupt")
+        evidence_basis = chosen.get("evidence_basis", "")
+        key_uncertainty = chosen.get("key_uncertainty", "")
+
+        query = (
+            f"Analyze the {complex_name} interface in PDB {pdb_id}.\n"
+            f"Structure file: {analysis_path}\n"
+            f"Design intent: {design_intent}.\n"
+        )
+        if evidence_basis:
+            query += f"Evidence context from pathway analysis: {evidence_basis}\n"
+        if key_uncertainty:
+            query += f"Key uncertainty: {key_uncertainty}\n"
+
+        # ── Step 2: append the TARGET OPPORTUNITY LANDSCAPE section ───────────
+        # This gives the structure expert the full biological reasoning including
+        # key residues, prior therapeutic strategies, and PDB suggestions.
+        pathway_section = self._extract_landscape_section(
+            context_files, complex_name, chosen.get("tier", "")
+        )
+        if pathway_section:
+            query += (
+                f"\nRelevant section from pathway analysis "
+                f"(use for biological context only — do NOT infer chain IDs from "
+                f"protein names here; confirm chains from the structure file):\n"
+                f"{pathway_section}\n"
+            )
+
+        query += (
+            f"\nIdentify hotspot residues for a {design_intent} strategy "
+            f"against the {complex_name} complex."
+        )
+        return query
+
+    def _extract_landscape_section(
+        self,
+        context_files: list[Path],
+        complex_name: str,
+        tier: str,
+    ) -> str:
+        """
+        Extract the ``#### [TIER] ComplexName`` block for a given complex from
+        the TARGET OPPORTUNITY LANDSCAPE section of any context file.
+        Returns the raw markdown block, or empty string if not found.
+        """
+        if not complex_name:
+            return ""
+
+        # Escape for regex — complex names often contain "/"
+        name_escaped = re.escape(complex_name.strip())
+        # Also build a relaxed variant without tier prefix
+        pattern = re.compile(
+            r"(####\s*\*{0,2}\[[^\]]*\]\s*\*{0,2}\s*" + name_escaped + r".*?)(?=\n####|\Z)",
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        for cf in context_files:
+            if not cf.exists():
+                continue
+            try:
+                text = cf.read_text(encoding="utf-8")
+                m = pattern.search(text)
+                if m:
+                    return m.group(1).strip()
+            except OSError:
+                continue
+        return ""
 
     def _parse_pathway_choices(
         self, report_text: str, primary_handoff: dict
