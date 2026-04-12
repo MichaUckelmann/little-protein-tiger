@@ -34,6 +34,43 @@ Output: `## PPI ANALYSIS REPORT` with MODEL-READY HOTSPOT formats for BoltzGen a
 
 ---
 
+## CITATION POLICY — READ FIRST
+
+**This report has NO access to the literature corpus.** All geometric facts come from
+tool results. All reference facts must come from Step 3 web search results.
+
+### Rules — enforced throughout this entire report:
+
+1. **No author names, journal names, or years** — ever. These are unverifiable in this
+   context and will be hallucinated from training knowledge. The sentence
+   `"Smith et al. 2023 showed..."` or `"Nature 2024"` or `"Ratti et al."` is
+   **always wrong** unless the text was returned verbatim by a web search tool call.
+
+2. **DOI-only citation format.** The only permitted citation is a DOI string, e.g.
+   `10.7554/eLife.77415`. Write this only if a web search tool returned it explicitly.
+   Never construct or guess a DOI from memory.
+
+3. **Biological facts without a DOI: state the fact without any citation.** If you
+   know a residue is a disease hotspot from training knowledge, you may state that
+   biological fact — but omit any reference entirely. A fact with no citation is
+   correct. A fact with a fabricated citation is a data integrity error.
+
+4. **`Literature evidence: not found`** is the correct and acceptable value when Step
+   3 returned nothing. Do not fill this field from training knowledge.
+
+5. **Do not add report sections not present in the template below.** Sections like
+   `### BIOLOGICAL CONTEXT`, `### CLINICAL SIGNIFICANCE`, or similar are not in this
+   skill's report format and must not be added — they are a vector for hallucinated
+   references. All biological context belongs in the designated fields within the
+   template sections.
+
+6. **Structure source classification** comes from the file path or the user's
+   description only — never from a paper attribution. Write `experimental (cryo-EM)`,
+   `experimental (X-ray)`, `af3_boltz`, or `rfdiffusion`. Never add `"; Author et al.
+   Year / Journal"` — you do not have the publication metadata.
+
+---
+
 ## Pre-flight: Obtain a Local Structure File
 
 Before calling any tools, identify the **structure source** from the user's message:
@@ -193,14 +230,19 @@ and select the primary design target.
 - `<complex_name> peptide inhibitor interface`
 - `<PDB_ID> interface mutagenesis`
 
-Upgrade candidates confirmed by ΔΔG data. Note any prior therapeutic targeting.
-
 **[STABILIZE mode]** — search for published stabilizer/glue data:
 - `<complex_name> stabilizer molecular glue PPI stabilization`
 - `<ProteinA> <ProteinB> periinterface residues cooperative binding`
 - `<complex_name> ternary complex binder bridging`
 
-Note any published precedents for stabilizing this specific complex.
+**Citation rules for Step 3 results** (CITATION POLICY §2):
+- Record only DOIs that appear in the search result text, e.g. `10.1038/s41589-024-01234-5`.
+- Do NOT construct DOIs from author/title/year — this always produces hallucinations.
+- If no DOI is visible in the search result, cite the URL instead, or write `Literature: not found`.
+- Never write author names, journal names, or publication years — not even if you
+  recognize the protein/complex from training knowledge.
+- **If the web search returns no result for this complex, write `Literature: not found`
+  and stop.** Do not substitute training-knowledge facts with invented citations.
 
 ---
 
@@ -271,7 +313,8 @@ types from residue names — all of these are now in the tool results.
 
 ### COMPLEX OVERVIEW
 - Structure: <file path or PDB ID>
-- Structure source: <experimental | af3_boltz | rfdiffusion>
+- Structure source: <experimental (X-ray) | experimental (cryo-EM) | experimental (NMR) | af3_boltz | rfdiffusion>
+  — source type only; do NOT add author, journal, or year (see CITATION POLICY §6)
 - Chain A: <id> (<protein name>)
 - Chain B: <id> (<protein name>)
 - Design mode: <DISRUPT | STABILIZE (molecular glue)>
@@ -308,8 +351,8 @@ Chain <id>: Hydrophobic: <list> | Aromatic: <list> | Charged: <list> | Polar: <l
 - Spatial spread (Cα RMSD): <Å>
 - Mean KD hydrophobicity: <score>
 - Partner contacts: <which partner residues engage this region>
-- Literature evidence: <mutagenesis data, inhibitor data, or "not found">
-- Design note: <what the binder must mimic>
+- Literature evidence: <DOI from Step 3 web search only, e.g. "10.1038/..." — or "not found". No author/journal/year.>
+- Design note: <what the binder must mimic — biological rationale without citations>
 - Separability: <"Independent — separate design submission required" if Cα-Cα centroid
   distance to other region > 15 Å, otherwise "Combined with Region X feasible">
 ```
@@ -330,7 +373,7 @@ for design unless top-2 has a meaningfully better combined_rating.
 - Design note: <design_note from tool result>
 - Chain A patch (<ProteinA>): residues <list>, hydrophobic fraction <f>, suitability <rating>
 - Chain B patch (<ProteinB>): residues <list>, hydrophobic fraction <f>, suitability <rating>
-- Literature evidence: <stabilizer/glue precedents, or "not found">
+- Literature evidence: <DOI from Step 3 web search only — or "not found". No author/journal/year.>
 - Design challenge: <any flags — e.g. long span, poor hydrophobicity, shallow patches>
 ```
 
@@ -450,6 +493,18 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
 ---
 
 ## Common Pitfalls
+
+- **Hallucinated citations** — the most common error in this skill. The model recognizes
+  a protein or complex from training knowledge and invents plausible-sounding author names,
+  journal names, and years. These are always wrong. Enforce the CITATION POLICY at the top:
+  DOI-only citations from web search results, or no citation at all. The phrases
+  `"Smith et al."`, `"Nature 2024"`, `"NSMB"`, `"eLife 77415"`, and all similar forms are
+  **forbidden** unless verbatim-copied from a web search tool result.
+
+- **Spontaneous extra sections** — do not add `### BIOLOGICAL CONTEXT`,
+  `### CLINICAL SIGNIFICANCE`, or any other section not in this template. Extra sections
+  are where hallucinated citations appear most often. Biological context belongs inside
+  the `Design note` bullet of the relevant region, without citations.
 
 - **Chain assignment**: confirm target vs partner with the user if not explicit.
   Mis-assignment swaps all downstream hotspot residue numbers.
