@@ -120,7 +120,8 @@ class Binder(SQLModel, table=True):
     design_to_target_iptm: Optional[float] = None
     min_design_to_target_pae: Optional[float] = None
     filter_rmsd: Optional[float] = None
-    cif_path: Optional[str] = None     # relative path: data/binders/{id}.cif
+    cif_path: Optional[str] = None          # relative path: data/binders/{id}.cif
+    binder_chain: Optional[str] = None     # chain ID identified by sequence match on upload
     notes: Optional[str] = None
     optimizer_report_path: Optional[str] = None  # data/binders/optimizer_{id}.md
     created_at: datetime = Field(default_factory=datetime.utcnow)

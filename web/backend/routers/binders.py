@@ -211,13 +211,19 @@ async def upload_csv(
             except ValueError:
                 return None
 
+        pae_raw = _float(pae_col)
+        # Proteina Complexa reports iPAE as a fraction (0–1); multiply by 31 to
+        # convert to the standard Ångström representation used everywhere else.
+        if pae_raw is not None and seq_col == "binder_sequence":
+            pae_raw = pae_raw * 31
+
         binder = Binder(
             campaign_id=campaign_id,
             name=name,
             sequence=seq,
             source="csv_import",
             design_to_target_iptm=_float(iptm_col),
-            min_design_to_target_pae=_float(pae_col),
+            min_design_to_target_pae=pae_raw,
             filter_rmsd=_float(rmsd_col),
         )
         session.add(binder)
@@ -251,9 +257,20 @@ async def upload_cif(
     dest.write_bytes(content)
 
     binder.cif_path = str(dest.relative_to(_ROOT))
+
+    # Identify which chain in the uploaded structure is the designed binder by
+    # sequence-matching against the stored binder sequence.  This prevents the
+    # optimizer from mistakenly treating the target chain as the binder.
+    if binder.sequence:
+        try:
+            from src.structure_tools import identify_binder_chain
+            binder.binder_chain = identify_binder_chain(str(dest), binder.sequence)
+        except Exception:
+            pass  # non-fatal — optimizer falls back to a note in the prompt
+
     session.add(binder)
     session.commit()
-    return {"cif_path": binder.cif_path}
+    return {"cif_path": binder.cif_path, "binder_chain": binder.binder_chain}
 
 
 @router.get("/binders/{binder_id}/cif")

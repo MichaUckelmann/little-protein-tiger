@@ -254,6 +254,24 @@ export const api = {
         method: "POST",
         body: JSON.stringify(payload),
       }),
+    resumeWithUpload: (id: number, chosenTargetIndex: number, file: File): Promise<Run> => {
+      const token = getToken();
+      const fd = new FormData();
+      fd.append("chosen_target_index", String(chosenTargetIndex));
+      fd.append("file", file);
+      return fetch(`${BASE}/runs/${id}/pathway-choice-upload`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      }).then(async (res) => {
+        if (!res.ok) {
+          if (res.status === 401) { clearToken(); window.location.replace("/login"); throw new Error("Session expired"); }
+          const detail = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error(detail.detail ?? res.statusText);
+        }
+        return res.json();
+      });
+    },
     uploadStructure: (id: number, file: File): Promise<Run> => {
       const token = getToken();
       const fd = new FormData();

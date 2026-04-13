@@ -21,7 +21,7 @@ from typing import Optional
 import re
 
 import requests as _requests
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -408,6 +408,64 @@ async def upload_structure(
     dest.write_bytes(await file.read())
 
     run.pdb_id = pdb_id
+    run.status = "QUEUED"
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+
+    from web.backend.tasks import resume_pipeline_task
+    task = resume_pipeline_task.delay(run.id)
+    run.celery_task_id = task.id
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+
+    return _run_dict(run)
+
+
+@router.post("/runs/{run_id}/pathway-choice-upload", status_code=202)
+async def pathway_choice_upload(
+    run_id: int,
+    chosen_target_index: int = Form(...),
+    file: UploadFile = File(...),
+    user_id: int = Depends(get_current_user_id),
+    session: Session = Depends(get_session),
+):
+    """Resume a pathway_choice pause by selecting a candidate and uploading a .cif/.pdb structure file."""
+    run = _get_owned_run(run_id, user_id, session)
+
+    if run.status != "PAUSED" or run.pause_point != "pathway_choice":
+        raise HTTPException(status_code=409, detail="Run is not paused at pathway_choice")
+
+    if not run.pathway_choices_json:
+        raise HTTPException(status_code=409, detail="No pathway choices available on this run")
+
+    choices = json.loads(run.pathway_choices_json)
+    idx = chosen_target_index
+    if idx < 0 or idx >= len(choices):
+        raise HTTPException(
+            status_code=422,
+            detail=f"chosen_target_index {idx} out of range (0–{len(choices) - 1})",
+        )
+
+    filename = file.filename or f"upload_{run_id}.cif"
+    # Derive a clean ID from the filename (strip extension, uppercase, max 8 chars)
+    pdb_id = re.sub(r"[^A-Z0-9]", "", Path(filename).stem.upper())[:8] or f"U{run_id}"
+
+    structures_dir = _ROOT / "data" / "structures"
+    structures_dir.mkdir(parents=True, exist_ok=True)
+    dest = structures_dir / f"{pdb_id}.cif"
+    dest.write_bytes(await file.read())
+
+    # Inject the uploaded PDB ID into the chosen target's pdb_ids so the
+    # pipeline can find it like any corpus-sourced structure.
+    chosen = choices[idx]
+    if pdb_id not in chosen.get("pdb_ids", []):
+        chosen.setdefault("pdb_ids", []).insert(0, pdb_id)
+    run.pathway_choices_json = json.dumps(choices)
+
+    run.pdb_id = pdb_id
+    run.target_complex = chosen.get("complex")
     run.status = "QUEUED"
     session.add(run)
     session.commit()

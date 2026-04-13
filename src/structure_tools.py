@@ -67,25 +67,107 @@ SIDECHAIN_REACH: dict[str, float] = {
     "PHE": 4.5, "TYR": 5.0, "TRP": 5.5,
 }
 
+# ---------------------------------------------------------------------------
+# Empirical ΔΔG coefficients for interface hotspot estimation (kcal/mol)
+#
+# Sources:
+#   Hydrophobic burial  — Eisenberg & McLachlan (1986) Proteins 1:16-25
+#   H-bond average      — Nooren & Thornton (2003) EMBO J 22:3486
+#                         ~1.5 kcal/mol backbone, ~0.5 sidechain → 1.0 average
+#   Salt bridge         — conservative estimate for solvent-exposed interfaces;
+#                         buried salt bridges contribute 2–3 kcal/mol but
+#                         surface ones are near-neutral — 0.5 is appropriate
+#   Hotspot threshold   — Bogan & Thorn (1998) J Mol Biol 280:1-9
+#                         hot-spot = ΔΔG(mut→Ala) > 2.0 kcal/mol
+# ---------------------------------------------------------------------------
+_DDG_HYDROPHOBIC_PER_A2 = -0.028  # kcal/mol per Å² BSA (hydrophobic/aromatic only)
+_DDG_HBOND              = -1.0    # kcal/mol per H-bond to partner chain
+_DDG_SALT_BRIDGE        = -0.5    # kcal/mol per salt bridge to partner chain
+_DDG_HOTSPOT_THRESHOLD  = -2.0    # kcal/mol — below this = strong hotspot candidate
+
 
 # ---------------------------------------------------------------------------
 # Structure loading helpers
 # ---------------------------------------------------------------------------
 
+_PDB_RECORD_PREFIXES = (
+    "ATOM", "HETATM", "MODEL", "REMARK", "HEADER", "TITLE", "COMPND", "SEQRES",
+)
+
+def _is_pdb_content(path: str) -> bool:
+    """Return True if the file content looks like PDB format, regardless of extension."""
+    try:
+        with open(path, "r", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                return line.startswith(_PDB_RECORD_PREFIXES)
+    except OSError:
+        pass
+    return False
+
+
 def _load_biopython(path: str):
-    """Load structure via biopython; returns (structure, format)."""
-    p = Path(path)
-    suffix = p.suffix.lower()
-    if suffix in (".cif", ".mmcif"):
-        parser = MMCIFParser(QUIET=True)
-    else:
+    """Load structure via biopython.  Format is detected by content, not extension."""
+    if _is_pdb_content(path):
         parser = PDBParser(QUIET=True)
-    structure = parser.get_structure("mol", str(p))
-    return structure
+    else:
+        parser = MMCIFParser(QUIET=True)
+    return parser.get_structure("mol", str(path))
 
 
 def _load_gemmi(path: str) -> gemmi.Structure:
+    """Load structure via gemmi.  Format is detected by content, not extension."""
+    if _is_pdb_content(path):
+        return gemmi.read_pdb(path)
     return gemmi.read_structure(path)
+
+
+def identify_binder_chain(structure_path: str, binder_sequence: str) -> str | None:
+    """Return the chain ID whose sequence best matches *binder_sequence*.
+
+    Uses a simple positional identity score after extracting the one-letter
+    sequence of every polymer chain via BioPython.  Returns None when no chain
+    exceeds a 70 % identity threshold (e.g. the file has no matching chain).
+
+    This is intentionally cheap — no gap penalties, no rotamer libraries.
+    Designed binders differ from the structure file only by at most a few
+    residues (trimming artefacts from AF3/Boltz/RFDiffusion), so positional
+    identity is sufficient.
+    """
+    from Bio.PDB import is_aa
+    from Bio.SeqUtils import seq1 as _seq1
+
+    binder_sequence = binder_sequence.upper().strip()
+    if not binder_sequence:
+        return None
+
+    structure = _load_biopython(structure_path)
+    best_chain: str | None = None
+    best_score: float = 0.0
+
+    for model in structure:
+        for chain in model:
+            residues = [r for r in chain if is_aa(r, standard=True)]
+            if not residues:
+                continue
+            chain_seq = "".join(_seq1(r.resname) for r in residues)
+
+            # Try exact substring match first (handles N/C-terminal trimming)
+            shorter, longer = sorted([binder_sequence, chain_seq], key=len)
+            if shorter in longer:
+                score = len(shorter) / len(longer)
+            else:
+                # Positional identity over the shorter sequence
+                matches = sum(a == b for a, b in zip(binder_sequence, chain_seq))
+                score = matches / max(len(binder_sequence), len(chain_seq))
+
+            if score > best_score:
+                best_score = score
+                best_chain = chain.id
+
+    return best_chain if best_score >= 0.70 else None
 
 
 def _get_biopython_chain(structure, chain_id: str):
@@ -165,12 +247,28 @@ def _compute_sasa_per_residue(structure, chain_ids: list[str]) -> dict[str, floa
 HBOND_DONORS = {"N", "O", "S"}
 HBOND_ACCEPTORS = {"N", "O", "S", "F"}
 
-def _detect_hbonds(chain_a, chain_b, dist_cutoff: float = 3.5,
-                   angle_cutoff: float = 120.0) -> list[dict]:
+def _detect_hbonds(chain_a, chain_b, dist_cutoff: float = 3.2,
+                   angle_cutoff: float = 90.0) -> list[dict]:
     """
     Geometric H-bond detection between two chains.
-    Criteria: donor-acceptor distance ≤ dist_cutoff Å, angle ≥ angle_cutoff°.
-    Returns list of dicts with donor/acceptor residue info and geometry.
+
+    Two criteria are applied in order:
+
+    1. Donor–acceptor heavy-atom distance ≤ dist_cutoff (default 3.2 Å).
+       Real H-bond D…A distances cluster at 2.7–3.2 Å; the wider 3.5 Å range
+       contains ~70% false positives at the boundary.
+
+    2. Cone criterion — angle proxy used in place of the D–H–A angle (which
+       would require explicit H positions).  For each candidate pair, the
+       nearest covalent heavy-atom neighbour X of the acceptor (within 1.8 Å,
+       same residue) is located and the angle ∠(D–A–X) is computed.  A donor
+       approaching from *behind* the lone pair yields a small angle; pairs with
+       ∠(D–A–X) < angle_cutoff (default 90°) are rejected.  If no covalent
+       neighbour can be found the angle check is skipped for that pair.
+
+    Returns a list of dicts with donor/acceptor residue info, distance, and
+    the D–A–X angle (None if the angle check was skipped) so callers can
+    inspect geometry quality.
     """
     # Collect donor and acceptor atoms from both chains
     def _atoms(chain, role_set):
@@ -185,6 +283,19 @@ def _detect_hbonds(chain_a, chain_b, dist_cutoff: float = 3.5,
     acceptors_b = _atoms(chain_b, HBOND_ACCEPTORS)
     donors_b = _atoms(chain_b, HBOND_DONORS)
     acceptors_a = _atoms(chain_a, HBOND_ACCEPTORS)
+
+    def _cov_neighbour_coord(a_res, a_atom):
+        """Return coords of the nearest covalently bonded heavy atom in a_res, or None."""
+        a_coord = a_atom.get_vector().get_array()
+        best_d, best_coord = 1e9, None
+        for other in a_res.get_atoms():
+            if other is a_atom or other.element == "H":
+                continue
+            oc = other.get_vector().get_array()
+            d = float(np.linalg.norm(a_coord - oc))
+            if d < 1.8 and d < best_d:
+                best_d, best_coord = d, oc
+        return best_coord  # None if no covalent neighbour found
 
     pairs = [(donors_a, acceptors_b), (donors_b, acceptors_a)]
     hbonds = []
@@ -209,6 +320,23 @@ def _detect_hbonds(chain_a, chain_b, dist_cutoff: float = 3.5,
                 ]))
                 if key in seen:
                     continue
+
+                # Cone criterion: ∠(D–A–X) must be ≥ angle_cutoff
+                a_coord = acc_coords[i]
+                x_coord = _cov_neighbour_coord(a_res, a_atom)
+                angle_dax: float | None = None
+                if x_coord is not None:
+                    vec_ad = d_coord - a_coord
+                    vec_ax = x_coord - a_coord
+                    norm_ad = float(np.linalg.norm(vec_ad))
+                    norm_ax = float(np.linalg.norm(vec_ax))
+                    if norm_ad > 1e-6 and norm_ax > 1e-6:
+                        cos_theta = np.dot(vec_ad, vec_ax) / (norm_ad * norm_ax)
+                        cos_theta = float(np.clip(cos_theta, -1.0, 1.0))
+                        angle_dax = round(math.degrees(math.acos(cos_theta)), 1)
+                        if angle_dax < angle_cutoff:
+                            continue  # donor approaching from wrong side — reject
+
                 seen.add(key)
                 hbonds.append({
                     "donor_chain":    d_res.full_id[2],
@@ -220,6 +348,7 @@ def _detect_hbonds(chain_a, chain_b, dist_cutoff: float = 3.5,
                     "acceptor_resnum": a_res.get_id()[1],
                     "acceptor_atom":  a_atom.name,
                     "distance_A":     round(dist, 2),
+                    "angle_A_deg":    angle_dax,  # ∠(D–A–X); None if no cov. neighbour
                 })
     return hbonds
 
@@ -323,6 +452,17 @@ def analyze_interface(
                 b_atom_coords.append(atom.get_vector().get_array())
     tree_b_atoms = KDTree(np.array(b_atom_coords)) if b_atom_coords else None
 
+    # Build all chain_a heavy atom coords once (mirror of above; used for the
+    # symmetric chain_b contact pass so both chains get identical ΔΔG data)
+    a_atoms: list[tuple] = []  # (residue_index, atom_coord)
+    a_atom_coords: list[np.ndarray] = []
+    for ai, ra in enumerate(res_a):
+        for atom in ra.get_atoms():
+            if atom.element != "H":
+                a_atoms.append((ai, atom))
+                a_atom_coords.append(atom.get_vector().get_array())
+    tree_a_atoms = KDTree(np.array(a_atom_coords)) if a_atom_coords else None
+
     # Collect H-bonds
     hbonds = _detect_hbonds(ch_a, ch_b)
     hbond_pairs: set[tuple] = set()
@@ -385,18 +525,50 @@ def analyze_interface(
             "gap_flag":      gap_flag,
         })
 
-    # Chain B interface residue list
+    # Chain B interface residue list — symmetric contact pass so chain_b gets
+    # the same contact list, gap_flag, and full ΔΔG data as chain_a.
     interface_b: list[dict] = []
     for bi in sorted(interface_b_ids):
         rb = res_b[bi]
         rb_name = rb.get_resname()
+        rb_num = rb.get_id()[1]
+
+        contacts_for_rb: list[dict] = []
+        if tree_a_atoms is not None:
+            rb_coords = _res_heavy_coords(rb)
+            contact_a_idxs: set[int] = set()
+            min_dists_a: dict[int, float] = {}
+            for bc in rb_coords:
+                for h in tree_a_atoms.query_ball_point(bc, cutoff):
+                    ai_idx, _ = a_atoms[h]
+                    d = float(np.linalg.norm(bc - a_atom_coords[h]))
+                    if ai_idx not in min_dists_a or d < min_dists_a[ai_idx]:
+                        min_dists_a[ai_idx] = d
+                    contact_a_idxs.add(ai_idx)
+            for ai_idx in contact_a_idxs:
+                ra = res_a[ai_idx]
+                ra_name = ra.get_resname()
+                ra_num = ra.get_id()[1]
+                has_hb = (rb_num, ra_num) in hbond_pairs
+                dist = round(min_dists_a[ai_idx], 2)
+                contacts_for_rb.append({
+                    "target_res":    ra_name,
+                    "target_chain":  chain_a,
+                    "target_resnum": ra_num,
+                    "min_dist_A":    dist,
+                    "interaction":   _classify_interaction(rb_name, ra_name, has_hb, dist),
+                })
+
         interface_b.append({
-            "residue":       rb_name,
-            "chain":         chain_b,
-            "resnum":        rb.get_id()[1],
-            "one_letter":    AA3_TO_1.get(rb_name, "X"),
-            "type":          _res_type(rb_name),
+            "residue":        rb_name,
+            "chain":          chain_b,
+            "resnum":         rb_num,
+            "one_letter":     AA3_TO_1.get(rb_name, "X"),
+            "type":           _res_type(rb_name),
             "hydrophobicity": KD_HYDROPHOBICITY.get(rb_name, 0.0),
+            "contacts":       sorted(contacts_for_rb, key=lambda x: x["min_dist_A"]),
+            "n_contacts":     len(contacts_for_rb),
+            "gap_flag":       len(contacts_for_rb) < 2,
         })
 
     # --- BSA via Shrake-Rupley ---
@@ -405,6 +577,54 @@ def analyze_interface(
 
     # --- pLDDT (B-factor) at interface ---
     plddt = _extract_plddt(ch_a, {r["resnum"] for r in interface_a})
+
+    # --- Empirical ΔΔG estimates ---
+    # Build BSA lookup: {(chain_id, resnum) → bsa_A2}
+    bsa_lookup: dict[tuple, float] = {
+        (e["chain"], e["resnum"]): e["bsa_A2"]
+        for e in bsa_data["per_residue"]
+    }
+    _charged_any = CHARGED_POS | CHARGED_NEG
+    _hydrophobic_aromatic = HYDROPHOBIC | AROMATIC
+
+    # Chain A: full estimate — hydrophobic burial + H-bonds + salt bridges.
+    # H-bond and salt-bridge counts are read from the already-computed contacts.
+    for res in interface_a:
+        bsa     = bsa_lookup.get((chain_a, res["resnum"]), 0.0)
+        ddg_hydr = (_DDG_HYDROPHOBIC_PER_A2 * bsa
+                    if res["residue"] in _hydrophobic_aromatic else 0.0)
+        n_hb    = sum(1 for c in res["contacts"] if c["interaction"] == "h_bond")
+        n_sb    = sum(1 for c in res["contacts"]
+                      if c["interaction"] == "electrostatic_attractive"
+                      and res["residue"] in _charged_any
+                      and c["target_res"] in _charged_any)
+        res["ddg_estimate_kcal_mol"] = round(
+            ddg_hydr + _DDG_HBOND * n_hb + _DDG_SALT_BRIDGE * n_sb, 2
+        )
+
+    # Chain B: full estimate — same formula as chain A now that we have contacts.
+    for res in interface_b:
+        bsa      = bsa_lookup.get((chain_b, res["resnum"]), 0.0)
+        ddg_hydr = (_DDG_HYDROPHOBIC_PER_A2 * bsa
+                    if res["residue"] in _hydrophobic_aromatic else 0.0)
+        n_hb     = sum(1 for c in res["contacts"] if c["interaction"] == "h_bond")
+        n_sb     = sum(1 for c in res["contacts"]
+                       if c["interaction"] == "electrostatic_attractive"
+                       and res["residue"] in _charged_any
+                       and c["target_res"] in _charged_any)
+        res["ddg_estimate_kcal_mol"] = round(
+            ddg_hydr + _DDG_HBOND * n_hb + _DDG_SALT_BRIDGE * n_sb, 2
+        )
+
+    # Top-5 hotspot candidates across both chains, sorted by ΔΔG ascending
+    # (most negative = strongest contributor).  Residues below
+    # _DDG_HOTSPOT_THRESHOLD (−2.0 kcal/mol) are strong hotspot candidates.
+    all_ddg = [
+        {"chain": r["chain"], "residue": r["residue"], "resnum": r["resnum"],
+         "ddg_estimate_kcal_mol": r["ddg_estimate_kcal_mol"]}
+        for r in interface_a + interface_b
+    ]
+    top_hotspots = sorted(all_ddg, key=lambda x: x["ddg_estimate_kcal_mol"])[:5]
 
     # --- Summary categorisation ---
     def _categorise(residues):
@@ -429,6 +649,8 @@ def analyze_interface(
             "hbonds":          hbonds,
             "n_contacts_chain_a": len(interface_a),
             "n_contacts_chain_b": len(interface_b),
+            "top_hotspots_by_ddg": top_hotspots,
+            "ddg_hotspot_threshold_kcal_mol": _DDG_HOTSPOT_THRESHOLD,
         },
         "chain_a_interface_residues": interface_a,
         "chain_a_categories":         _categorise(interface_a),

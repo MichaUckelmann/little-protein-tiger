@@ -620,6 +620,7 @@ def run_binder_optimizer_task(self, binder_id: int, user_id: int, cif_abs_path: 
         sequence = binder.sequence
         binder_name = binder.name
         campaign_id = binder.campaign_id
+        binder_chain = binder.binder_chain  # may be None for older rows
 
     if user and user.anthropic_key_enc:
         from web.backend.crypto import decrypt_key
@@ -633,9 +634,24 @@ def run_binder_optimizer_task(self, binder_id: int, user_id: int, cif_abs_path: 
     _BINDER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     report_path = _BINDER_DATA_DIR / f"optimizer_{binder_id}.md"
 
+    # Build chain assignment clause from the sequence-matched chain stored at
+    # upload time.  If unavailable (older rows), fall back to a warning so the
+    # skill knows to confirm before proceeding rather than assuming chain A.
+    if binder_chain:
+        chain_clause = (
+            f"Chain {binder_chain} is the designed binder (identified by sequence match). "
+            f"All other chains are target — do NOT mutate them."
+        )
+    else:
+        chain_clause = (
+            "WARNING: binder chain could not be determined automatically. "
+            "Inspect the sequence map to confirm which chain is the designed binder "
+            "before proposing mutations — do not assume chain A."
+        )
+
     prompt = (
-        f"Optimize binder at {cif_abs_path}, binder chain A, target chain B "
-        f"(Boltz output). Binder sequence: {sequence}"
+        f"Optimize binder at {cif_abs_path}. {chain_clause} "
+        f"Binder sequence: {sequence}"
     )
 
     try:

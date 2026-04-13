@@ -155,14 +155,40 @@ From the `tool_analyze_interface` result, extract and note:
   - 1000–2000 Å²: typical PPI — cyclic peptide or mini-protein
   - > 2000 Å²: large — mini-protein recommended
 - `interface.n_hbonds` and `interface.hbonds[]` — H-bond list with donor/acceptor/distance
-- `chain_a_interface_residues[]` — per-residue: type, hydrophobicity, contacts, gap_flag, BSA
-- `chain_a_categories` — pre-computed hydrophobic/aromatic/charged/polar breakdown
+- `chain_a_interface_residues[]` — per-residue: type, hydrophobicity, contacts, n_contacts, gap_flag, BSA, ddg_estimate_kcal_mol
+- `chain_b_interface_residues[]` — same schema as chain_a; both chains now receive full ΔΔG scoring
+- `chain_a_categories`, `chain_b_categories` — pre-computed hydrophobic/aromatic/charged/polar breakdown
 - `interface.bsa_per_residue[]` — BSA contribution per residue (key for hotspot ranking)
 - `plddt_at_interface` — B-factor column values. Interpret as pLDDT **only** if
   `structure_source` is `af3_boltz`. For `experimental` structures these are
   crystallographic B-factors — do not flag, threshold, or reason over them as
   confidence scores. For `rfdiffusion` they are placeholders — ignore entirely.
 - `low_confidence_residues` — pre-flagged list; relevant only for `af3_boltz` sources.
+
+### Validate chain assignment: receptor groove vs. ligand surface
+
+**[DISRUPT mode — do this before Phase 2]**
+
+Before ranking hotspots, confirm that chain_a is the *design target* — the chain
+whose surface the designed binder will engage. In a helix-on-groove interaction one
+chain provides a concave hydrophobic receptor groove (the better design target) and
+the other contributes a single helix or short loop.
+
+Compare the two chains using the tool result:
+
+| Signal | Receptor groove (→ should be chain_a) | Ligand helix/loop |
+|---|---|---|
+| `n_contacts` | More interface residues (6–12+) | Fewer (3–7) |
+| BSA distribution | Many residues with moderate BSA (50–150 Å²) | Few residues with concentrated BSA |
+| Per-residue ΔΔG | Moderate (−1 to −3 kcal/mol), spread broadly | Concentrated hotspots (−3 to −6 kcal/mol) at 2–5 positions |
+| Secondary structure | Groove/sheet/loop surface | Often a single α-helix |
+
+**If chain_b matches the receptor groove profile** (more contacts, distributed BSA,
+broadly spread ΔΔG), the chains are assigned backwards for design purposes.
+Re-call `tool_analyze_interface` with chain_a and chain_b swapped, then proceed.
+This matters because both chains now receive full ΔΔG scoring, so the analysis is
+equally valid regardless of which chain you call chain_a — but the hotspot workflow
+in Phase 2 focuses on chain_a, so the groove must be chain_a.
 
 ### If chain IDs are unknown
 
@@ -185,12 +211,37 @@ the shorter chain is usually the binder.
 patches from Phase 1. **Skip Steps 1–2 entirely.** Go directly to Step 3 (literature
 cross-reference), then proceed to Phase 3 using the glue pocket output.
 
-### Step 1 — Rank residues by BSA contribution
+### Step 1 — Rank residues by ΔΔG estimate
 
 *[DISRUPT mode only]*
 
-From `interface.bsa_per_residue`, sort the target chain residues by `bsa_A2` descending.
-The top BSA contributors are the most energetically important candidates.
+`tool_analyze_interface` now returns `ddg_estimate_kcal_mol` on every residue in
+`chain_a_interface_residues`. Use this as the **primary ranking criterion** — it is
+a physically-grounded empirical estimate of the free-energy contribution of each
+residue to binding affinity, combining three terms:
+
+| Term | Coefficient | Applied when |
+|---|---|---|
+| Hydrophobic burial | −0.028 kcal/mol per Å² BSA | Residue is hydrophobic or aromatic |
+| H-bond to partner | −1.0 kcal/mol per H-bond | Residue is donor or acceptor |
+| Salt bridge to partner | −0.5 kcal/mol per contact | Both residues are charged, attractive |
+
+**Interpretation:**
+- `ddg_estimate_kcal_mol` < −2.0 → **strong hotspot candidate** (see `ddg_hotspot_threshold_kcal_mol`)
+- −2.0 to −1.0 → moderate contributor
+- > −1.0 → minor contributor; deprioritise unless spatially central
+
+The field `interface.top_hotspots_by_ddg` lists the five strongest candidates
+across both chains. By this point chain_a is the confirmed design target (validated
+in Phase 1), so focus on the chain_a entries. Chain_b entries are useful context
+(they show which partner residues anchor the interaction) but are not design targets
+in DISRUPT mode.
+
+Use `bsa_A2` from `interface.bsa_per_residue` as a **co-equal criterion alongside
+ΔΔG**: when two residues have similar ΔΔG, prefer the one with larger BSA.
+High total chain_a BSA distributed across many residues — even when individual
+per-residue ΔΔG values are moderate — is a strong indicator that you are targeting
+a druggable groove surface.
 
 Identify clusters: residues within ~8 Å Cα-Cα of each other (use contact data —
 residues that share contacts with the same partner residues are spatially proximate).
@@ -209,18 +260,19 @@ mcp__structure-tools__tool_score_surface_patch
 ```
 
 Returns: hydrophobic fraction, mean KD score, spatial spread (Cα RMSD), and a
-qualitative rating (Excellent / Good / Marginal / Poor). Use this to rank patches
-and select the primary design target.
+qualitative rating (Excellent / Good / Marginal / Poor). Use this to evaluate
+patch **geometry and druggability** — it is complementary to the ΔΔG ranking,
+not a replacement for it.
 
 **Good patch characteristics for peptide/mini-protein:**
 - Hydrophobic fraction ≥ 0.4
 - Spatial spread ≤ 12 Å (compact, not dispersed)
 - Mean KD score > 1.0
-- Several residues with high individual BSA (> 30 Å² each)
+- Prefer patches where multiple residues have `ddg_estimate_kcal_mol` < −1.0
 
 **Poor patch flags:**
 - Mostly charged/polar with no hydrophobic core → limited anchor energy
-- Very deep, narrow geometry (high BSA but few residues with many contacts) → 
+- Very deep, narrow geometry (high BSA but few residues with many contacts) →
   small molecule territory, not peptide-accessible
 
 ### Step 3 — Literature cross-reference (web search)
@@ -468,6 +520,8 @@ select_hotspots:
 - pdb_id: <PDB accession used>
 - chain_a: <chain ID>
 - chain_b: <chain ID>
+- target_chain: <chain ID of the design target — the groove/pocket chain confirmed in Phase 1>
+- partner_chain: <chain ID of the binding partner — the helix/loop chain>
 - target_complex: <ProteinA / ProteinB>
 - design_intent: <disrupt | stabilize>
 - modality: <cyclic_peptide | mini_protein | stapled_helix | either>

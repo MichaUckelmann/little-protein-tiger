@@ -270,38 +270,50 @@ function AddMutationModal({
   );
 }
 
-function OptimizerReportModal({ binderId, name, onClose }: { binderId: number; name: string; onClose: () => void }) {
-  const [text, setText] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const token = localStorage.getItem("token");
-    fetch(api.binders.optimizerReportUrl(binderId), {
+async function openReportInNewTab(binderId: number, name: string) {
+  const token = localStorage.getItem("token");
+  let markdown: string;
+  try {
+    const res = await fetch(api.binders.optimizerReportUrl(binderId), {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error(r.statusText);
-        return r.text();
-      })
-      .then(setText)
-      .catch((e) => setError(e.message));
-  }, [binderId]);
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    markdown = await res.text();
+  } catch (e: any) {
+    alert("Failed to load report: " + e.message);
+    return;
+  }
 
-  return (
-    <div style={S.overlay}>
-      <div style={{ ...S.modal, width: 700, maxWidth: "95vw", maxHeight: "80vh", display: "flex", flexDirection: "column" }}>
-        <h3 style={S.modalTitle}>Optimizer Report — {name}</h3>
-        {error && <p style={S.err}>{error}</p>}
-        {!text && !error && <p style={S.hint}>Loading…</p>}
-        {text && (
-          <pre style={{ flex: 1, overflow: "auto", fontSize: 12, lineHeight: 1.6, background: "#f9fafb", padding: 12, borderRadius: 6, margin: 0 }}>
-            {text}
-          </pre>
-        )}
-        <button style={{ ...S.btnSec, marginTop: 12 }} onClick={onClose}>Close</button>
-      </div>
-    </div>
-  );
+  const title = `Optimizer Report — ${name}`.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${title}</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+    h1, h2, h3 { color: #111; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f3f4f6; padding: 16px; border-radius: 6px; overflow-x: auto; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+    th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+    th { background: #f3f4f6; font-weight: 600; }
+    blockquote { border-left: 4px solid #ddd; margin: 0; padding-left: 16px; color: #555; }
+  </style>
+</head>
+<body>
+  <div id="content"></div>
+  <script>
+    document.getElementById('content').innerHTML = marked.parse(${JSON.stringify(markdown)});
+  <\/script>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: "text/html" });
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank");
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +325,6 @@ type Modal =
   | { type: "cif"; binder: Binder }
   | { type: "measure"; binder: Binder }
   | { type: "mutate"; binder: Binder }
-  | { type: "report"; binder: Binder }
   | null;
 
 function BinderRow({
@@ -433,7 +444,7 @@ function BinderRow({
               + Mutation
             </button>
             {binder.optimizer_report_path && (
-              <button style={S.actionBtn} onClick={() => openModal({ type: "report", binder })}>
+              <button style={S.actionBtn} onClick={() => openReportInNewTab(binder.id, binder.name)}>
                 View Report
               </button>
             )}
@@ -597,7 +608,7 @@ export default function BinderCampaign() {
           <table style={S.table}>
             <thead>
               <tr>
-                {["Name", "Sequence", "iPTM", "PAE", "RMSD", "Best Kd", "Actions"].map((h) => (
+                {["Name", "Sequence", "iPTM", "iPAE", "RMSD", "Best Kd", "Actions"].map((h) => (
                   <th key={h} style={S.th}>{h}</th>
                 ))}
               </tr>
@@ -630,13 +641,7 @@ export default function BinderCampaign() {
       {modal?.type === "mutate" && modal.binder && (
         <AddMutationModal binder={modal.binder} onClose={() => setModal(null)} />
       )}
-      {modal?.type === "report" && modal.binder && (
-        <OptimizerReportModal
-          binderId={modal.binder.id}
-          name={modal.binder.name}
-          onClose={() => setModal(null)}
-        />
-      )}
+
     </div>
   );
 }

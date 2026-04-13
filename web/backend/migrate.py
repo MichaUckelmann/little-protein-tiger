@@ -32,6 +32,7 @@ def main() -> None:
     _add_column_if_missing(cur, "run", "pause_point",           "TEXT")
     _add_column_if_missing(cur, "run", "pathway_choices_json",  "TEXT")
     _add_column_if_missing(cur, "run", "structure_next_step",   "TEXT")
+    _add_column_if_missing(cur, "binder", "binder_chain",       "TEXT")
     con.commit()
     con.close()
     print("Done.")

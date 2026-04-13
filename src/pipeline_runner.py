@@ -36,6 +36,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_ROOT / ".env")
 sys.path.insert(0, str(_ROOT))
 
+from src.fingerprint_store import load_fingerprint
 from src.skill_runner import SkillRunner
 
 _DEFAULT_MODELS = {
@@ -560,6 +561,13 @@ class PipelineRunner:
         logger.info(f"  [{skill_name}] {query[:100]}{'...' if len(query) > 100 else ''}")
         output_text = runner.run(query, context_text=context_text)
 
+        # Verify corpus citations and append a summary section to the output.
+        # This runs after every stage so hallucinated DOIs are flagged before
+        # the file is written to disk and before the next stage reads it.
+        citation_note = self._verify_citations(output_text, skill_name)
+        if citation_note:
+            output_text = output_text + citation_note
+
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(output_text, encoding="utf-8")
         logger.info(f"  [{skill_name}] → {output_file} ({len(output_text):,} chars)")
@@ -573,6 +581,60 @@ class PipelineRunner:
                 "next stage will use a fallback query"
             )
         return handoff
+
+    def _verify_citations(self, output_text: str, skill_name: str) -> str:
+        """
+        Extract DOI citations from a stage output and verify each against the
+        fingerprint store.
+
+        Logs a warning for every DOI not found in the corpus and returns a
+        ``## CITATION VERIFICATION`` section (placed after the PIPELINE HANDOFF
+        block so it never interferes with handoff parsing) suitable for
+        appending to the output file.
+
+        Returns an empty string when no DOIs are present in the text.
+        """
+        # Standard DOI prefix: 10.XXXX/... — match the identifier up to the
+        # first whitespace or common punctuation that would follow a citation.
+        doi_pattern = re.compile(r'\b(10\.\d{4,9}/[^\s,;:\)\]\}]+)')
+        raw_matches = doi_pattern.findall(output_text)
+        # Deduplicate while preserving order; strip trailing punctuation that
+        # the regex may have captured (e.g. trailing period in a sentence).
+        seen: set[str] = set()
+        dois: list[str] = []
+        for m in raw_matches:
+            # Strip trailing punctuation that commonly follows a DOI in markdown:
+            # backticks (inline code), closing brackets/parens, periods, commas.
+            doi = m.rstrip("`.,'\")")
+            if doi not in seen:
+                seen.add(doi)
+                dois.append(doi)
+
+        if not dois:
+            return ""
+
+        fp_dir_str = self.config.get("paths", {}).get("fingerprint_dir", "data/fingerprints")
+        fp_dir = Path(fp_dir_str) if Path(fp_dir_str).is_absolute() else _ROOT / fp_dir_str
+
+        verified: list[str] = []
+        hallucinated: list[str] = []
+        for doi in dois:
+            fp = load_fingerprint(f"doi:{doi}", fp_dir)
+            if fp is None:
+                hallucinated.append(doi)
+                logger.warning(f"  [{skill_name}] citation not in corpus: {doi}")
+            else:
+                verified.append(doi)
+
+        lines = ["\n\n## CITATION VERIFICATION"]
+        lines.append(f"- Citations checked: {len(dois)}")
+        lines.append(f"- Verified in corpus: {len(verified)}")
+        if hallucinated:
+            lines.append(f"- **NOT IN CORPUS ({len(hallucinated)}):** "
+                         + ", ".join(hallucinated))
+        else:
+            lines.append("- All cited DOIs verified against fingerprint store.")
+        return "\n".join(lines)
 
     def _parse_handoff(self, text: str) -> dict[str, str]:
         """
@@ -614,8 +676,11 @@ class PipelineRunner:
 
         Returns None if the section is absent (non-fatal).
         """
-        target_chain = handoff.get("target_chain", "")
-        partner_chain = handoff.get("partner_chain", "")
+        # target_chain / partner_chain were added to the PIPELINE HANDOFF
+        # template after some runs were created.  Fall back to chain_a / chain_b
+        # for older runs that only emitted those fields.
+        target_chain = handoff.get("target_chain", "") or handoff.get("chain_a", "")
+        partner_chain = handoff.get("partner_chain", "") or handoff.get("chain_b", "")
 
         sections = re.findall(
             r"###\s+MODEL.READY HOTSPOTS.*?(?=\n###|\Z)",
