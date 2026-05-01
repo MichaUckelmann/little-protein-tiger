@@ -29,11 +29,25 @@ and PDB ID(s) ready to pass directly into complex-structure-analysis.
 ## Phase 1: Extract Context from User Input
 
 Identify:
-- `disease_or_cancer` — e.g. "mesothelioma", "PDAC", "NSCLC", "HCC", "AML"
+- `disease_or_cancer` — e.g. "mesothelioma", "PDAC", "NSCLC", "HCC", "AML", "Alzheimer's", "rheumatoid arthritis"
 - `pathway_hint` — optional; e.g. "Hippo", "KRAS signaling", "cGAS-STING", "SCAP-SREBP"
 - `constraint` — optional; e.g. "focus on extracellular PPIs", "cyclic peptide accessible"
+- `disease_category` — classify the disease into one of the categories below and resolve the three
+  query term variables used in Phase 2. If the disease spans multiple categories, pick the most
+  specific match; default to `other` if none fits.
 
-If disease is ambiguous (e.g. "lung cancer" without subtype), proceed with the broad
+| `disease_category` | `<disease_mechanism_term>` | `<dysregulation_term>` | `<protective_regulator_term>` |
+|---|---|---|---|
+| `oncology` | `cancer mechanism` | `oncogenic` | `tumor suppressor` |
+| `neurodegeneration` | `neurodegeneration mechanism` | `pathological aggregation` | `neuroprotective regulator` |
+| `autoimmune` | `autoimmune inflammation mechanism` | `pro-inflammatory` | `immunosuppressive regulator` |
+| `metabolic` | `metabolic disease mechanism` | `pathological activation` | `metabolic regulator` |
+| `infectious` | `infection pathogenesis mechanism` | `pathogenic` | `host defense regulator` |
+| `cardiovascular` | `cardiovascular disease mechanism` | `pathological remodeling` | `cardioprotective regulator` |
+| `fibrosis` | `fibrosis mechanism` | `pro-fibrotic` | `anti-fibrotic regulator` |
+| `other` | `disease mechanism` | `pathological` | `disease-suppressing regulator` |
+
+If disease is ambiguous (e.g. "lung disease" without subtype), proceed with the broad
 term — do not block on ambiguity.
 
 ---
@@ -43,10 +57,13 @@ term — do not block on ambiguity.
 Run 3–4 `search_corpus` calls with `study_category="pathway_biology"`. Vary the query
 angle to capture different aspects of the evidence:
 
+Substitute `<disease_mechanism_term>`, `<dysregulation_term>`, and `<protective_regulator_term>`
+with the values resolved from the `disease_category` mapping in Phase 1 before issuing any query.
+
 **Query 1 — Disease-pathway mechanism** (top_k=8):
 ```
 search_corpus
-  query="<pathway_hint OR disease> signaling dysregulation cancer mechanism"
+  query="<pathway_hint OR disease> signaling dysregulation <disease_mechanism_term>"
   study_category="pathway_biology"
   top_k=8
 ```
@@ -62,7 +79,7 @@ search_corpus
 **Query 3 — Target node identification** (top_k=6):
 ```
 search_corpus
-  query="<pathway_hint> effector transcription factor oncogenic <disease>"
+  query="<pathway_hint> effector transcription factor <dysregulation_term> <disease>"
   study_category="pathway_biology"
   top_k=6
 ```
@@ -70,7 +87,7 @@ search_corpus
 **Query 4 — Upstream regulators** (optional, run if pathway_hint is known, top_k=5):
 ```
 search_corpus
-  query="<pathway_hint> upstream regulator mutation inactivation tumor suppressor <disease>"
+  query="<pathway_hint> upstream regulator mutation inactivation <protective_regulator_term> <disease>"
   study_category="pathway_biology"
   top_k=5
 ```

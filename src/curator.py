@@ -128,7 +128,7 @@ def _call_claude(
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        system=system_prompt,
+        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
         messages=messages,
     )
     return (

@@ -110,6 +110,15 @@ def main() -> None:
             "(default: 100,000). Prevents runaway cost on long conversations."
         ),
     )
+    parser.add_argument(
+        "--trace",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Write a conversation trace to this directory after the run. "
+            "Produces trace_raw.json (full history) and trace_rendered.md (annotated markdown)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -150,7 +159,7 @@ def main() -> None:
         max_input_tokens=args.max_tokens,
     )
 
-    result = runner.run(query, context_text=context_text)
+    result = runner.run(query, context_text=context_text, trace_path=args.trace)
 
     if args.output:
         output_path = Path(args.output)

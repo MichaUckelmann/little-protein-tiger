@@ -27,7 +27,6 @@ quality:
 # Search keywords
 # ---------------------------------------------------------------------------
 keywords:
-  - "HOCM[Title/Abstract] OR HCM[Title/Abstract])"
   - "HOCM[Title/Abstract] AND protein interaction[Title/Abstract]"
   - "hypertrophic cardiomyopathy[Title/Abstract] AND protein interaction[Title/Abstract]"
   - "hypertrophic cardiomyopathy[Title/Abstract] AND molecular[Title/Abstract]"

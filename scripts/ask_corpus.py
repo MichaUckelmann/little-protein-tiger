@@ -75,7 +75,7 @@ def run_agentic_loop(
         response = client.messages.create(
             model=model,
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=messages,
             tools=tools,
         )

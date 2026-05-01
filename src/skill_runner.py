@@ -559,10 +559,13 @@ def _find_pdb_structures(proteins: list[str], fingerprint_dir: Path) -> dict:
 
 
 def _to_claude_tools(defs: list[dict]) -> list[dict]:
-    return [
+    tools = [
         {"name": d["name"], "description": d["description"], "input_schema": d["parameters"]}
         for d in defs
     ]
+    if tools:
+        tools[-1]["cache_control"] = {"type": "ephemeral"}
+    return tools
 
 
 def _to_gemini_tools(defs: list[dict]) -> list[dict]:
@@ -643,6 +646,9 @@ class SkillRunner:
         )
 
         self._store = None  # lazy — sentence-transformers is slow to import
+
+        # Populated after run() completes — full conversation history for tracing.
+        self._messages: list[dict] | None = None
 
         self.system_prompt = self._load_system_prompt()
         logger.info(
@@ -806,7 +812,12 @@ class SkillRunner:
     # Main entry point
     # ------------------------------------------------------------------
 
-    def run(self, query: str, context_text: str | None = None) -> str:
+    def run(
+        self,
+        query: str,
+        context_text: str | None = None,
+        trace_path: str | Path | None = None,
+    ) -> str:
         """
         Run the agentic loop and return the final report text.
 
@@ -816,6 +827,11 @@ class SkillRunner:
             User query.
         context_text : str | None
             Optional prior report to include as context (prepended to query).
+        trace_path : str | Path | None
+            If provided, write a conversation trace to this directory after the
+            run completes.  Two files are written:
+              <trace_path>/trace_raw.json      — full message history as JSON
+              <trace_path>/trace_rendered.md   — human-readable markdown trace
         """
         user_content = query
         if context_text:
@@ -825,10 +841,215 @@ class SkillRunner:
 
         if self.provider == "claude":
             messages: list[dict] = [{"role": "user", "content": user_content}]
-            return self._run_claude(messages)
+            result = self._run_claude(messages)
         else:
             messages = [{"role": "user", "parts": [{"text": user_content}]}]
-            return self._run_gemini(messages)
+            result = self._run_gemini(messages)
+
+        if trace_path is not None:
+            self.write_trace(Path(trace_path))
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Trace output
+    # ------------------------------------------------------------------
+
+    def write_trace(self, dest: Path) -> None:
+        """
+        Write the conversation history from the last run() to *dest*.
+
+        Creates two files:
+          dest/trace_raw.json     — raw message list (machine-readable)
+          dest/trace_rendered.md  — annotated markdown (human-readable)
+
+        Must be called after run().  Raises RuntimeError if no run has completed.
+        """
+        if self._messages is None:
+            raise RuntimeError("No trace available — call run() first.")
+
+        dest.mkdir(parents=True, exist_ok=True)
+
+        # --- raw JSON ---
+        raw_path = dest / "trace_raw.json"
+        raw_path.write_text(
+            json.dumps(self._messages, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        logger.info(f"Trace raw JSON → {raw_path}")
+
+        # --- rendered markdown ---
+        md_path = dest / "trace_rendered.md"
+        md_path.write_text(
+            self._render_trace(), encoding="utf-8"
+        )
+        logger.info(f"Trace markdown → {md_path}")
+
+    def _render_trace(self) -> str:
+        """Render self._messages as an annotated markdown document."""
+        assert self._messages is not None
+
+        lines: list[str] = [
+            f"# Conversation Trace — `{self.skill_name}`",
+            f"",
+            f"**Model:** `{self.model_id}`  ",
+            f"**Provider:** {self.provider}  ",
+            f"**Total LLM calls:** {self._count_assistant_turns()}  ",
+            f"**Tokens:** {self._total_input_tokens:,} in / {self._total_output_tokens:,} out",
+            f"",
+            "---",
+            "",
+            "## System Prompt (SKILL.md)",
+            "",
+            self.system_prompt,
+            "",
+            "---",
+            "",
+        ]
+
+        user_turn = 0
+        assistant_turn = 0
+
+        for msg in self._messages:
+            role = msg.get("role", "")
+
+            # ----------------------------------------------------------
+            # Claude format
+            # ----------------------------------------------------------
+            if role == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    # Initial query (plain string)
+                    user_turn += 1
+                    lines += [
+                        f"## Turn {user_turn} — User Query",
+                        "",
+                        content,
+                        "",
+                        "---",
+                        "",
+                    ]
+                elif isinstance(content, list):
+                    # Tool results turn
+                    user_turn += 1
+                    lines += [f"## Turn {user_turn} — Tool Results", ""]
+                    for block in content:
+                        if block.get("type") == "tool_result":
+                            result_text = block.get("content", "")
+                            # Pretty-print JSON results; fall back to raw text
+                            try:
+                                parsed = json.loads(result_text)
+                                formatted = json.dumps(parsed, indent=2, ensure_ascii=False)
+                            except (json.JSONDecodeError, TypeError):
+                                formatted = result_text
+                            # Truncate very large results for readability
+                            if len(formatted) > 3000:
+                                formatted = formatted[:3000] + "\n… [truncated]"
+                            lines += [
+                                f"**Tool use ID:** `{block.get('tool_use_id', '')}`",
+                                "",
+                                "```json",
+                                formatted,
+                                "```",
+                                "",
+                            ]
+                    lines += ["---", ""]
+
+            elif role == "assistant":
+                assistant_turn += 1
+                content = msg.get("content", [])
+                lines += [f"## Turn {assistant_turn} — Assistant", ""]
+
+                for block in content:
+                    btype = block.get("type", "")
+
+                    if btype == "thinking":
+                        thinking_text = block.get("thinking", "")
+                        lines += [
+                            "### Thinking",
+                            "",
+                            "> " + thinking_text.replace("\n", "\n> "),
+                            "",
+                        ]
+
+                    elif btype == "text":
+                        lines += [
+                            "### Response Text",
+                            "",
+                            block.get("text", ""),
+                            "",
+                        ]
+
+                    elif btype == "tool_use":
+                        tool_inputs = json.dumps(
+                            block.get("input", {}), indent=2, ensure_ascii=False
+                        )
+                        lines += [
+                            f"### Tool Call — `{block.get('name', '')}`",
+                            "",
+                            f"**ID:** `{block.get('id', '')}`",
+                            "",
+                            "```json",
+                            tool_inputs,
+                            "```",
+                            "",
+                        ]
+
+                lines += ["---", ""]
+
+            # ----------------------------------------------------------
+            # Gemini format (parts-based)
+            # ----------------------------------------------------------
+            elif role == "model":
+                assistant_turn += 1
+                lines += [f"## Turn {assistant_turn} — Assistant (Gemini)", ""]
+                for part in msg.get("parts", []):
+                    if "text" in part:
+                        lines += ["### Response Text", "", part["text"], ""]
+                    elif "functionCall" in part:
+                        fc = part["functionCall"]
+                        lines += [
+                            f"### Tool Call — `{fc.get('name', '')}`",
+                            "",
+                            "```json",
+                            json.dumps(fc.get("args", {}), indent=2, ensure_ascii=False),
+                            "```",
+                            "",
+                        ]
+                lines += ["---", ""]
+
+            elif role == "user" and msg.get("parts"):
+                # Gemini tool result turn
+                user_turn += 1
+                lines += [f"## Turn {user_turn} — Tool Results (Gemini)", ""]
+                for part in msg.get("parts", []):
+                    if "functionResponse" in part:
+                        fr = part["functionResponse"]
+                        result_str = json.dumps(
+                            fr.get("response", {}).get("result", ""),
+                            indent=2, ensure_ascii=False,
+                        )
+                        if len(result_str) > 3000:
+                            result_str = result_str[:3000] + "\n… [truncated]"
+                        lines += [
+                            f"**Function:** `{fr.get('name', '')}`",
+                            "",
+                            "```json",
+                            result_str,
+                            "```",
+                            "",
+                        ]
+                lines += ["---", ""]
+
+        return "\n".join(lines)
+
+    def _count_assistant_turns(self) -> int:
+        if not self._messages:
+            return 0
+        return sum(
+            1 for m in self._messages
+            if m.get("role") in ("assistant", "model")
+        )
 
     # ------------------------------------------------------------------
     # Claude agentic loop
@@ -857,7 +1078,7 @@ class SkillRunner:
                     with client.messages.stream(
                         model=self.model_id,
                         max_tokens=24000,
-                        system=self.system_prompt,
+                        system=[{"type": "text", "text": self.system_prompt, "cache_control": {"type": "ephemeral"}}],
                         tools=claude_tools,
                         messages=messages,
                         **thinking_param,
@@ -909,10 +1130,13 @@ class SkillRunner:
 
             in_tok = response.usage.input_tokens
             out_tok = response.usage.output_tokens
+            cache_created = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
             self._total_input_tokens += in_tok
             self._total_output_tokens += out_tok
+            cache_info = f" | cache_created={cache_created:,} / cache_read={cache_read:,}" if (cache_created or cache_read) else ""
             logger.info(
-                f"  tokens: {in_tok:,} in / {out_tok:,} out "
+                f"  tokens: {in_tok:,} in / {out_tok:,} out{cache_info} "
                 f"(run cumulative: {self._total_input_tokens:,} in / "
                 f"{self._total_output_tokens:,} out)"
             )
@@ -940,6 +1164,7 @@ class SkillRunner:
                     f"Run complete — total tokens: {self._total_input_tokens:,} in / "
                     f"{self._total_output_tokens:,} out across {iteration + 1} LLM calls"
                 )
+                self._messages = messages
                 return "\n".join(text_parts)
 
             # Execute all tool calls and batch results
@@ -1037,6 +1262,7 @@ class SkillRunner:
                     f"Run complete — total tokens: {self._total_input_tokens:,} in / "
                     f"{self._total_output_tokens:,} out across {iteration + 1} LLM calls"
                 )
+                self._messages = messages
                 text_parts = [p.get("text", "") for p in parts if "text" in p]
                 return "\n".join(text_parts)
 
