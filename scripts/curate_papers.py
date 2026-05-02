@@ -207,6 +207,20 @@ def main():
             time.sleep(delay_s)
             continue
 
+        # Backfill canonical metadata from the DB record. The LLM is asked to
+        # extract DOI / PMCID / title from the paper text and frequently fails
+        # — older papers often don't carry the DOI in the parsable text. We
+        # already have the canonical values in the Paper record; trust those
+        # over the LLM extraction. Only fills in missing fields, never overwrites.
+        fingerprint.setdefault("paper_metadata", {})
+        pm = fingerprint["paper_metadata"]
+        if paper.doi and not pm.get("doi"):
+            pm["doi"] = paper.doi
+        if paper.pmcid and not pm.get("pmcid"):
+            pm["pmcid"] = paper.pmcid
+        if paper.title and not pm.get("title"):
+            pm["title"] = paper.title
+
         # Merge RCSB-authoritative PDB accessions with whatever the curator extracted.
         # This catches structures deposited by the paper that the model missed.
         _merge_pdb_accessions(fingerprint, paper.doi)
