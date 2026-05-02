@@ -307,6 +307,71 @@ _TOOL_DEFS: list[dict[str, Any]] = [
             "required": ["path", "content"],
         },
     },
+    {
+        "name": "get_interactions_for",
+        "description": (
+            "Aggregate the interaction partners of a protein across the entire corpus. "
+            "Walks key_findings[].protein_pair in every fingerprint and returns a "
+            "deduplicated partner list with mention counts, supporting DOIs, and any "
+            "quantitative anchors (Kd / Ki) from the same key_findings entry. "
+            "Reach for this tool early on 'which proteins interact with X?' questions — "
+            "search_corpus misses the long tail because top-k is small. Aliases are "
+            "normalised (YAP matches YAP1 / hYAP); paralogs stay distinct."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "protein": {
+                    "type": "string",
+                    "description": "Protein name (gene symbol or common name).",
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": (
+                        "1 (default) for direct partners only; 2 to also return "
+                        "partners-of-partners (capped at 50)."
+                    ),
+                },
+                "min_mentions": {
+                    "type": "integer",
+                    "description": (
+                        "Drop partners mentioned fewer than this many times across "
+                        "the corpus. Default 1."
+                    ),
+                },
+            },
+            "required": ["protein"],
+        },
+    },
+    {
+        "name": "find_quantitative_evidence",
+        "description": (
+            "Pull every key_findings entry with a measured Kd or Ki for a specific "
+            "protein pair, sorted tightest-binder first. Use when the user asks for "
+            "the affinity of a specific pair or wants to know what's been measured "
+            "experimentally. Pair matching is order-insensitive. ΔΔG is not currently "
+            "captured by the schema and cannot be queried."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "protein_pair": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Exactly two protein names. Order-insensitive — "
+                        "['KRAS','RAF1'] matches stored ['RAF1','KRAS']."
+                    ),
+                },
+                "metric": {
+                    "type": "string",
+                    "description": "Which metric to require non-null. Default 'Kd'.",
+                    "enum": ["Kd", "Ki", "both"],
+                },
+            },
+            "required": ["protein_pair"],
+        },
+    },
 ]
 
 
@@ -629,6 +694,8 @@ class SkillRunner:
         # Token usage tracking — populated during run()
         self._total_input_tokens: int = 0
         self._total_output_tokens: int = 0
+        # Most recent call's input-token count, for interactive-mode warnings.
+        self._last_input_tokens: int = 0
 
         # Resolve data paths (relative → absolute from project root)
         fp_dir = config.get("paths", {}).get("fingerprint_dir", "data/fingerprints")
@@ -802,6 +869,25 @@ class SkillRunner:
                 logger.info(f"write_file → {dest}")
                 return json.dumps({"written": str(dest)})
 
+            if name == "get_interactions_for":
+                from src._corpus_graph import get_interactions_for
+                result = get_interactions_for(
+                    protein=input_dict.get("protein", ""),
+                    fingerprint_dir=self._fingerprint_dir,
+                    depth=int(input_dict.get("depth", 1)),
+                    min_mentions=int(input_dict.get("min_mentions", 1)),
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "find_quantitative_evidence":
+                from src._corpus_graph import find_quantitative_evidence
+                result = find_quantitative_evidence(
+                    protein_pair=list(input_dict.get("protein_pair") or []),
+                    fingerprint_dir=self._fingerprint_dir,
+                    metric=input_dict.get("metric", "Kd"),
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
             return json.dumps({"error": f"Unknown tool: {name}"})
 
         except Exception as exc:
@@ -819,37 +905,57 @@ class SkillRunner:
         trace_path: str | Path | None = None,
     ) -> str:
         """
-        Run the agentic loop and return the final report text.
+        Run the agentic loop and return the final assistant text.
+
+        If a previous ``run()`` already populated ``self._messages``, this
+        call resumes the conversation: the new user message is appended to
+        the prior history and the agentic loop continues from there. Use
+        ``reset()`` to start a fresh conversation while keeping the same
+        runner instance (and its loaded system prompt + cached tools).
 
         Parameters
         ----------
         query : str
-            User query.
+            User query for this turn.
         context_text : str | None
-            Optional prior report to include as context (prepended to query).
+            Optional prior report prepended to the query. Only injected on
+            the first turn — ignored on follow-ups so it isn't duplicated.
         trace_path : str | Path | None
-            If provided, write a conversation trace to this directory after the
-            run completes.  Two files are written:
-              <trace_path>/trace_raw.json      — full message history as JSON
-              <trace_path>/trace_rendered.md   — human-readable markdown trace
+            If provided, write a conversation trace after the call. Each
+            call rewrites the trace with the cumulative history.
         """
+        is_continuation = bool(self._messages)
+
         user_content = query
-        if context_text:
+        if context_text and not is_continuation:
             user_content = (
                 f"## Context from prior report\n\n{context_text}\n\n---\n\n{query}"
             )
 
         if self.provider == "claude":
-            messages: list[dict] = [{"role": "user", "content": user_content}]
+            if is_continuation:
+                messages: list[dict] = list(self._messages)  # type: ignore[arg-type]
+                messages.append({"role": "user", "content": user_content})
+            else:
+                messages = [{"role": "user", "content": user_content}]
             result = self._run_claude(messages)
         else:
-            messages = [{"role": "user", "parts": [{"text": user_content}]}]
+            if is_continuation:
+                messages = list(self._messages)  # type: ignore[arg-type]
+                messages.append({"role": "user", "parts": [{"text": user_content}]})
+            else:
+                messages = [{"role": "user", "parts": [{"text": user_content}]}]
             result = self._run_gemini(messages)
 
         if trace_path is not None:
             self.write_trace(Path(trace_path))
 
         return result
+
+    def reset(self) -> None:
+        """Clear conversation history; keeps the loaded system prompt and tool list."""
+        self._messages = None
+        self._last_input_tokens = 0
 
     # ------------------------------------------------------------------
     # Trace output
@@ -1134,6 +1240,7 @@ class SkillRunner:
             cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
             self._total_input_tokens += in_tok
             self._total_output_tokens += out_tok
+            self._last_input_tokens = in_tok
             cache_info = f" | cache_created={cache_created:,} / cache_read={cache_read:,}" if (cache_created or cache_read) else ""
             logger.info(
                 f"  tokens: {in_tok:,} in / {out_tok:,} out{cache_info} "
@@ -1236,6 +1343,7 @@ class SkillRunner:
             out_tok = usage.get("candidatesTokenCount", 0)
             self._total_input_tokens += in_tok
             self._total_output_tokens += out_tok
+            self._last_input_tokens = in_tok
             logger.info(
                 f"  tokens: {in_tok:,} in / {out_tok:,} out "
                 f"(run cumulative: {self._total_input_tokens:,} in / "

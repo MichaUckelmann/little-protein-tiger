@@ -63,8 +63,21 @@ def main() -> None:
     )
     parser.add_argument(
         "--query",
-        required=True,
-        help="Query string, or @/path/to/file.txt to read from a file",
+        required=False,
+        default=None,
+        help=(
+            "Query string, or @/path/to/file.txt to read from a file. "
+            "Optional when --interactive is set."
+        ),
+    )
+    parser.add_argument(
+        "--interactive", "-i",
+        action="store_true",
+        help=(
+            "After the initial query (or with no --query at all), drop into "
+            "a REPL for follow-up turns. Commands: /exit, /quit, /reset, "
+            "/tokens, /save <path>. Use @file.txt to load a query from a file."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -122,6 +135,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if not args.interactive and not args.query:
+        parser.error("--query is required (or pass --interactive to start a REPL)")
+
     # Load config
     config_path = _ROOT / "config.yaml"
     config: dict = {}
@@ -131,14 +147,8 @@ def main() -> None:
     # Resolve model ID
     model_id = args.model_id or _DEFAULT_MODELS[args.model]
 
-    # Resolve query (file redirect with @)
-    query = args.query
-    if query.startswith("@"):
-        query_file = Path(query[1:])
-        if not query_file.exists():
-            print(f"ERROR: query file not found: {query_file}", file=sys.stderr)
-            sys.exit(1)
-        query = query_file.read_text(encoding="utf-8").strip()
+    # Resolve initial query (file redirect with @), if any
+    query = _resolve_query(args.query) if args.query else None
 
     # Resolve context
     context_text: str | None = None
@@ -149,7 +159,7 @@ def main() -> None:
             sys.exit(1)
         context_text = context_path.read_text(encoding="utf-8")
 
-    # Run
+    # Build the runner
     runner = SkillRunner(
         skill_name=args.skill,
         provider=args.model,
@@ -159,15 +169,134 @@ def main() -> None:
         max_input_tokens=args.max_tokens,
     )
 
-    result = runner.run(query, context_text=context_text, trace_path=args.trace)
+    # In interactive mode, defer trace writing until session end so we don't
+    # rewrite it after every turn.
+    initial_trace = None if args.interactive else args.trace
 
-    if args.output:
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(result, encoding="utf-8")
-        print(f"Report written to {output_path}", file=sys.stderr)
+    # Initial turn (if --query was provided)
+    if query is not None:
+        result = runner.run(query, context_text=context_text, trace_path=initial_trace)
+        _emit(result, args.output)
+
+    if args.interactive:
+        _interactive_loop(runner, args)
+
+    # Session-end trace write for interactive runs
+    if args.interactive and args.trace:
+        runner.write_trace(Path(args.trace))
+
+
+def _resolve_query(raw: str) -> str:
+    """Expand @path-style query redirection to file contents."""
+    if raw.startswith("@"):
+        query_file = Path(raw[1:])
+        if not query_file.exists():
+            print(f"ERROR: query file not found: {query_file}", file=sys.stderr)
+            sys.exit(1)
+        return query_file.read_text(encoding="utf-8").strip()
+    return raw
+
+
+def _emit(result: str, output_path: str | None) -> None:
+    """Print to stdout, and also write/append to output_path if given."""
+    if output_path:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(result, encoding="utf-8")
+        print(f"Report written to {path}", file=sys.stderr)
     else:
         print(result)
+
+
+def _interactive_loop(runner, args) -> None:
+    """REPL for follow-up turns.
+
+    Commands:
+      /exit, /quit       — leave the loop
+      /reset             — clear conversation history (keeps system prompt)
+      /tokens            — show cumulative token usage
+      /save <path>       — write trace (raw JSON + rendered MD) to <path>
+      @path/to/file.txt  — load the next query from a file
+    """
+    print(
+        "\n[interactive mode — Ctrl+D / Ctrl+Z to exit, "
+        "/exit /reset /tokens /save <dir> available, "
+        "@file.txt to load a query]\n",
+        file=sys.stderr,
+    )
+
+    # Heuristic: warn when the most recent call's input tokens used a large
+    # fraction of --max-tokens, since the next turn's input will be at least
+    # that big plus the new follow-up.
+    warn_threshold = 0.7 * args.max_tokens
+
+    while True:
+        try:
+            line = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            break
+
+        if not line:
+            continue
+
+        if line in ("/exit", "/quit"):
+            break
+
+        if line == "/reset":
+            runner.reset()
+            print("[history cleared]", file=sys.stderr)
+            continue
+
+        if line == "/tokens":
+            print(
+                f"[tokens: {runner._total_input_tokens:,} in / "
+                f"{runner._total_output_tokens:,} out — "
+                f"last call: {runner._last_input_tokens:,} in]",
+                file=sys.stderr,
+            )
+            continue
+
+        if line.startswith("/save"):
+            rest = line[len("/save"):].strip()
+            if not rest:
+                print("[usage: /save <path>]", file=sys.stderr)
+                continue
+            try:
+                runner.write_trace(Path(rest))
+                print(f"[trace written under {rest}]", file=sys.stderr)
+            except Exception as exc:
+                print(f"[save failed: {exc}]", file=sys.stderr)
+            continue
+
+        if line.startswith("@"):
+            try:
+                line = _resolve_query(line)
+            except SystemExit:
+                # _resolve_query exits on missing file; in REPL we'd rather
+                # just report and continue.
+                continue
+
+        try:
+            result = runner.run(line)
+        except KeyboardInterrupt:
+            print("\n[interrupted — partial turn discarded]", file=sys.stderr)
+            continue
+        except Exception as exc:
+            print(f"[error: {type(exc).__name__}: {exc}]", file=sys.stderr)
+            continue
+
+        print()
+        _emit(result, args.output)
+        print()
+
+        if runner._last_input_tokens > warn_threshold:
+            print(
+                f"[warn: last call used {runner._last_input_tokens:,} input tokens "
+                f"({runner._last_input_tokens / args.max_tokens * 100:.0f}% of "
+                f"--max-tokens={args.max_tokens:,}) — consider /reset]",
+                file=sys.stderr,
+            )
 
 
 if __name__ == "__main__":

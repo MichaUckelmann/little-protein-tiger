@@ -176,6 +176,7 @@ usage: run_skill.py --skill SKILL --query QUERY
 
 | Skill | What it does |
 |---|---|
+| `corpus-explorer` | **Conversational** research assistant for free-form corpus exploration: relational queries ("which proteins interact with X?"), pathway construction with affinities, and competing-hypothesis generation. Inline DOI citations, no pipeline handoff. Pairs with `--interactive` for multi-turn sessions |
 | `pathway-expert` | Searches the literature corpus to characterise a signalling pathway in a disease context and recommend the best PPI target node |
 | `complex-structure-analysis` | Analyses a PDB/CIF structure, computes BSA + hotspot patches, and outputs BoltzGen/RFD3-ready residue specs |
 | `binder-optimizer` | Takes a predicted binder-target complex, proposes 4 single-point mutations, validates clashes, and emits AF3 submission JSONs |
@@ -232,10 +233,89 @@ python scripts/run_skill.py \
 | `--output` | stdout | Write final report to this file |
 | `--max-iter` | 30 | Max LLM calls per run |
 | `--max-tokens` | 100,000 | Abort if any single call exceeds N input tokens |
+| `--interactive`, `-i` | off | After the initial query (or with no `--query`), drop into a REPL for multi-turn follow-ups |
+| `--trace` | — | Write a conversation trace (raw JSON + rendered Markdown) to this directory |
 
 Default models: `claude-sonnet-4-6` for Claude, `gemini-3.1-flash-lite-preview` for Gemini.
 
 Token usage is logged after every LLM call. If the per-call input token count exceeds `--max-tokens`, the run is aborted with a clear error showing cumulative usage.
+
+### 6. Corpus explorer (conversational)
+
+`corpus-explorer` is the skill to reach for when you want to *think out loud* against the corpus rather than produce a structured pipeline report. It uses inline DOI citations, three loose output modes (relational table, annotated cascade, ranked competing hypotheses), and a required "What the corpus does NOT say" closing. It does **not** emit a `PIPELINE HANDOFF` — output is for the human.
+
+Beyond `search_corpus` and `get_fingerprint`, it has access to two corpus-aware tools that semantic search misses:
+
+- **`get_interactions_for(protein, depth)`** — walks `key_findings[].protein_pair` across every fingerprint and returns ranked partners with mention counts, supporting DOIs, and Kd/Ki anchors. Aliases are normalised (`YAP` matches `YAP1`/`hYAP`); paralogs stay distinct (`TEAD1` ≠ `TEAD2`, but `TEAD` matches all four).
+- **`find_quantitative_evidence(protein_pair, metric)`** — pulls every `key_findings` entry with a measured `Kd` or `Ki` for a specific pair, sorted tightest-binder first.
+
+Both tools live in `src/_corpus_graph.py` and are auto-registered by the `literature-db` MCP server, so they're also available inside Claude Desktop without further configuration.
+
+**One-shot usage:**
+
+```bash
+# Relational query
+python scripts/run_skill.py --skill corpus-explorer \
+    --query "Which proteins interact directly with KRAS, and which interactions have measured Kd values?"
+
+# Pathway / cascade
+python scripts/run_skill.py --skill corpus-explorer \
+    --query "Draw the LPA → LPAR1 signalling pathway with affinity values for each step."
+
+# Hypothesis generation
+python scripts/run_skill.py --skill corpus-explorer \
+    --query "Knockout of NF1 leads to overactivation of the MAPK pathway. Generate competing hypotheses with discriminating experiments."
+```
+
+**Interactive (multi-turn) usage:**
+
+```bash
+# Start a REPL with no initial query
+python scripts/run_skill.py --skill corpus-explorer -i
+
+# Or: seed it with a first question and continue
+python scripts/run_skill.py --skill corpus-explorer -i \
+    --query "What's known about KRAS-RAF1 binding?" \
+    --trace runs/kras_session
+```
+
+Inside the REPL:
+
+| Command | Action |
+|---|---|
+| `<text>` | Send as a follow-up turn |
+| `@path/to/file.txt` | Load a long query from a file |
+| `/exit`, `/quit`, Ctrl+D / Ctrl+Z | Leave the loop |
+| `/reset` | Clear conversation history (keeps the loaded skill + tools) |
+| `/tokens` | Show cumulative + last-call input tokens |
+| `/save <dir>` | Dump trace (raw JSON + rendered Markdown) to `<dir>` |
+
+After each turn, if the most recent call's input tokens exceed 70 % of `--max-tokens`, you'll see an auto-warning suggesting `/reset` — that's the cue that the next follow-up will likely trip the per-call limit.
+
+**Extending the corpus from a conversation:**
+
+When the skill flags gaps in the "What the corpus does NOT say" closing, you can ask it directly:
+
+> propose search keywords for those gaps
+
+It responds with a YAML block in `config.yaml`'s NCBI Title/Abstract format, each keyword annotated with the gap it targets:
+
+```yaml
+keywords:
+  # Gap: no Kd captured for KRAS / PIK3CG or KRAS / RALGDS effector binding
+  - "KRAS[Title/Abstract] AND PIK3CG[Title/Abstract] AND binding[Title/Abstract]"
+  - "KRAS[Title/Abstract] AND RALGDS[Title/Abstract] AND affinity[Title/Abstract]"
+```
+
+Save those into a fresh `config_search_expansion.yaml` (or any sibling config) and run the standard fetch → curate → ingest cycle:
+
+```bash
+python scripts/fetch_papers.py --config config_search_expansion.yaml
+python scripts/curate_papers.py --limit 100
+python scripts/ingest_vectors.py
+```
+
+Restart Claude Desktop to pick up the new fingerprints via MCP.
 
 ---
 

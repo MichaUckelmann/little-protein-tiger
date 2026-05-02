@@ -908,3 +908,60 @@ After creating a campaign and clicking through to its page, the BinderCampaign c
 #### Commit
 
 `dfa4192` — 1,461 insertions across 11 files, 2 new files. Pushed to `main`.
+
+---
+
+## 2026-05-02 — `corpus-explorer` skill + interactive CLI
+
+### Motivation
+
+`pathway-expert` and `molecular-biology-expert` are tuned for the binder-design pipeline — they emit `PIPELINE HANDOFF` blocks, run fixed query plans, and converge on a single go/no-go. Open-ended exploratory questions ("which proteins interact with KRAS?", "draw the LPA→LPAR1 cascade with affinities", "explain why knockout of A overactivates pathway B and propose discriminating experiments") were a poor fit for those rigid templates and the conversation always terminated after one answer.
+
+### What was added
+
+**`skills/corpus-explorer/SKILL.md`** — a conversational research-collaborator skill. Three loose output modes (relational, pathway/cascade, competing-hypothesis), inline DOI citation contract with `[uncited]` tag for training-knowledge claims, required "What the corpus does NOT say" closing, opt-in keyword-proposal mode that emits NCBI Title/Abstract YAML for corpus extension. Explicitly does not emit `PIPELINE HANDOFF` — the skill is a dead end for the orchestrator.
+
+**`src/_corpus_graph.py`** — two corpus-wide retrieval helpers that semantic search misses:
+- `get_interactions_for(protein, depth, min_mentions)` walks `key_findings[].protein_pair` across all fingerprints and returns ranked partners with DOIs and Kd/Ki anchors. Light alias normalisation (strip species prefix, drop letter-digit hyphens) plus substring/prefix containment so `YAP` matches `YAP1` / `hYAP`. Paralogs stay distinct (`TEAD1` ≠ `TEAD2`); query `TEAD` hits all four. Self-matches filtered (`["KRAS-G12C","KRAS"]` doesn't show KRAS as a partner of KRAS).
+- `find_quantitative_evidence(protein_pair, metric)` returns all `key_findings` with non-null `Kd` / `Ki` for a pair, order-insensitive match, sorted tightest-binder first. Schema doesn't capture ΔΔG, so the metric enum is `Kd | Ki | both`.
+
+Both helpers wired through `src/mcp_server.py` (auto-registered by the literature-db MCP server) and `src/skill_runner.py` `_TOOL_DEFS` + `_execute_tool`. Single source of truth — no logic duplicated between transports.
+
+**`scripts/run_skill.py` `--interactive`** — REPL for multi-turn sessions. `SkillRunner.run()` is now resumable: if `self._messages` is populated the new query is appended to prior history; otherwise it starts fresh. `context_text` is only injected on the first turn so it doesn't duplicate. New `reset()` method clears history without reloading the SKILL.md or tool list. Per-turn auto-warning when the last call's input tokens exceed 70 % of `--max-tokens`. REPL commands: `/exit`, `/reset`, `/tokens`, `/save <dir>`, `@file.txt`.
+
+### Smoke-tested against the live corpus
+
+- `get_interactions_for("KRAS")` returns BRAF, RAF1, SOS1, EGFR — biologically correct top hits.
+- `get_interactions_for("YAP")` returns TEAD/TEAD1/TEAD4, TAZ, LATS1/2.
+- `find_quantitative_evidence(["YAP","TEAD1"], "Kd")` returns 4 hits sorted 60 nM → 48 µM.
+- Empty case (`MYBPC3` / `titin`) returns 0 with caveats explaining the absence.
+- Resumable `run()` invariants verified end-to-end: continuation preserves prior history, context is skipped on follow-ups, `reset()` clears state, post-reset run injects context again.
+
+### Why no schema changes
+
+ΔΔG values aren't currently captured by `extraction_schema.json`. Adding them would touch the schema, the curation prompt, the Pydantic model, and force re-curation of affected papers. Out of scope for this batch — flagged in the tool's caveats so the LLM can tell the user when ΔΔG would be the right metric and isn't available.
+
+### Why one skill, three output modes
+
+A single skill that branches internally is easier to maintain than three near-duplicate skills, and it lets the model fluidly switch between modes mid-conversation ("draw that as a cascade" → "now generate hypotheses for X"). If the prompt drifts and starts to do all three modes badly, splitting is straightforward — the SKILL.md sections are already siloed.
+
+### Token-cost discipline
+
+The keyword-proposal feature is opt-in (trigger on user request), not automatic, so it costs zero passive tokens. The "What the corpus does NOT say" closing is required but capped at one short paragraph. The new tools' caveat strings are part of the JSON return payload deliberately — they keep the LLM honest about negative results without adding system-prompt overhead.
+
+### Files touched
+
+- `skills/corpus-explorer/SKILL.md` (new)
+- `src/_corpus_graph.py` (new)
+- `src/mcp_server.py` — two new `@mcp.tool()` wrappers
+- `src/skill_runner.py` — two new `_TOOL_DEFS` entries, two new `_execute_tool` branches, resumable `run()`, `reset()` method, `_last_input_tokens` field
+- `scripts/run_skill.py` — `--interactive` flag, `_resolve_query` / `_emit` / `_interactive_loop` helpers
+- `README.md` — corpus-explorer section, options table updates
+- `CLAUDE.md` — restored / refreshed
+
+### Out of scope (future work)
+
+- ΔΔG capture in the curation schema.
+- A `propose_search_keywords` MCP tool that writes config-fragment YAML to disk (current opt-in instruction is cheaper; defer until friction is real).
+- `cache_control: ephemeral` markers on message blocks for very long REPL sessions.
+- A canonical UniProt-backed protein-name resolver (current normalisation handles common cases).
