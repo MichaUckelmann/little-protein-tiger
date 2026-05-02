@@ -1041,3 +1041,97 @@ Side benefit: the YAP subgraph went from 180 nodes (with junk) to 98 nodes (clea
 - Edge type labels (`binds`, `phosphorylates`, `ubiquitinates`, `transcriptionally_regulates`). Same dependencies.
 - Persistence layer (Neo4j, on-disk graph). Not needed at 5k-fingerprint scale; rebuild-at-startup is fast enough.
 - Folding the existing `get_interactions_for` / `find_quantitative_evidence` onto the cached graph. Defer until measured speed actually matters.
+
+---
+
+## 2026-05-02 (later still) — silent metadata-loss bug: 37 % of corpus invisible to graph tools
+
+### How it surfaced
+
+Claude Desktop, while pulling a fingerprint by paper_key, noticed that the DOI field inside `paper_metadata` was null for the paper it had just retrieved (`doi_10.1126_science.abf8705.json` — Final-form mSWI/SNF complexes, *Science* 2021). The user flagged it. An audit confirmed the scope: **2,031 of 5,547 fingerprints (37 %) had `paper_metadata.doi = null`**.
+
+### Why it mattered (and was easy to miss)
+
+Every cross-fingerprint helper in `src/_corpus_graph.py` and `src/skill_runner.py` short-circuits on a missing DOI:
+
+```python
+doi = (fp.get("paper_metadata") or {}).get("doi")
+if not doi:
+    continue
+```
+
+That guard is correct in spirit — a finding without a DOI can't be cited — but it meant 2,031 fingerprints were silently excluded from `get_interactions_for`, `find_quantitative_evidence`, `_build_graph`, `_find_pdb_structures`, and the three new graph tools. `get_fingerprint` worked fine because it loads by paper_key (filename), so the bug only manifested in *cross-fingerprint* aggregation. That's why it had hidden for so long: the per-paper view was always correct.
+
+### Root cause
+
+`scripts/curate_papers.py` lets the LLM extract `paper_metadata.doi`, `pmcid`, and `title` from the parsable paper text per `extraction_schema.json`. For older papers, paywalled HTML, and many bioRxiv preprints the DOI simply isn't in the body the LLM sees — the model returns `null`. Crucially, the curator already had `paper.doi` from the database (it's used at `curate_papers.py:212` for `_merge_pdb_accessions`), but never wrote it back into `paper_metadata`. The fix is one block of three `if`-checks before saving.
+
+### The two-part fix
+
+**Part 1 — prevent recurrence** (in `curate_papers.py`, before `_merge_pdb_accessions`):
+
+```python
+fingerprint.setdefault("paper_metadata", {})
+pm = fingerprint["paper_metadata"]
+if paper.doi and not pm.get("doi"):
+    pm["doi"] = paper.doi
+if paper.pmcid and not pm.get("pmcid"):
+    pm["pmcid"] = paper.pmcid
+if paper.title and not pm.get("title"):
+    pm["title"] = paper.title
+```
+
+Only fills nulls — never overwrites a non-null LLM-extracted value (in case the curator legitimately corrected something).
+
+**Part 2 — backfill existing fingerprints** (`scripts/backfill_fingerprint_metadata.py`, new): walks `data/fingerprints/`, builds a `{sanitised_filename → Paper}` index from the DB (28,570 records loaded in ~0.4 s), and fills missing metadata in each fingerprint. Idempotent; supports `--dry-run`.
+
+### Impact (verified live)
+
+Dry-run vs. apply:
+
+| Stat | Count |
+|---|---|
+| Fingerprints checked | 5,547 |
+| Updates applied | 5,531 |
+| Already complete | 16 |
+| Missing DB record | 0 |
+| Unparseable | 0 |
+
+The 5,531 includes both the 2,031 null-DOI cases AND ~3,500 fingerprints where the DOI was present but PMCID was missing (LLM extracted DOI but missed PMCID). PMCID isn't currently used by tools but worth backfilling for completeness.
+
+Graph rebuild post-backfill:
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Nodes | 7,927 | 11,903 | +50 % |
+| Edges | 8,166 | 12,943 | +58 % |
+| Top hub: BRD4 degree | 10 | 24 | +140 % |
+| Top hub: DNA degree | 17 | 29 | +71 % |
+| Null-DOI fingerprints | 2,031 | 0 | — |
+
+The hub shift confirms the bias of the previously-excluded fingerprints — they were heavily chromatin / transcription papers (BRD4, DNA, Nucleosome jumped most), which lines up with the chromatin-modifier keyword expansion the user added to `config.yaml` earlier in the session. Without the backfill, much of the new chromatin curation work would have stayed invisible to graph queries.
+
+### Idempotence verified
+
+Second run of `backfill_fingerprint_metadata.py --dry-run` reports `would_update: 0`, all 5,547 fingerprints in `no_changes_needed`. Safe to leave the script in `scripts/` and re-run periodically as a sanity check.
+
+### Why this lurked
+
+Two reinforcing reasons:
+
+1. **Per-paper queries always worked.** `get_fingerprint(doi:10.1126/science.abf8705)` returns the full payload because it loads by paper_key (filename), not by DOI lookup. The bug was only visible in *aggregation* queries — and aggregations don't loudly tell you what they skipped.
+2. **The curator schema treats DOI as LLM-extractable.** It feels right ("the DOI is in the paper, the LLM should find it") but in practice the parsable PDF text often lacks the DOI in machine-recognisable form, and the schema didn't have a "trust the DB if the LLM fails" fallback.
+
+The class of bug is "silent partial coverage" — the system returns plausible-looking results that are actually computed over a strict subset of the corpus. Worth keeping in mind for any future tool that aggregates across fingerprints: every short-circuit-on-null check is a potential silent-exclusion source. A periodic audit of "what fraction of fingerprints does this tool actually touch?" would catch this class of regression early.
+
+### Files touched
+
+- `scripts/curate_papers.py` — 11-line guard before `save_fingerprint`.
+- `scripts/backfill_fingerprint_metadata.py` (new) — backfill script.
+- `data/fingerprints/*.json` — 5,531 files updated by the backfill (gitignored, not in the commit diff).
+
+### Out of scope (potential future work)
+
+- Periodic audit job that reports per-tool corpus coverage (`get_interactions_for` touched X fingerprints, `find_quantitative_evidence` touched Y fingerprints). Would catch silent-exclusion regressions early.
+- A `key_findings`-level provenance check — are there findings with non-null `protein_pair` but null `claim` or `source_span`? Same class of bug, different field.
+- Schema-level validation at curation time that flags fingerprints where the LLM dropped fields the DB record could supply.
