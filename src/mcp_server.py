@@ -18,8 +18,11 @@ logger.remove()
 logger.add(_log_file, level="DEBUG", rotation="5 MB", enqueue=True)
 
 from src._corpus_graph import (
+    export_subgraph as _export_subgraph,
     find_quantitative_evidence as _find_quantitative_evidence,
     get_interactions_for as _get_interactions_for,
+    interaction_hubs as _interaction_hubs,
+    shortest_interaction_path as _shortest_interaction_path,
 )
 from src.fingerprint_store import load_fingerprint
 from src.vector_store import VectorStore
@@ -159,6 +162,96 @@ def find_quantitative_evidence(protein_pair: list[str], metric: str = "Kd") -> s
         protein_pair=list(protein_pair or []),
         fingerprint_dir=Path(_FINGERPRINT_DIR),
         metric=metric,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def shortest_interaction_path(
+    protein_a: str, protein_b: str, max_hops: int = 4, k: int = 1
+) -> str:
+    """
+    Top k shortest interaction paths between two proteins in the corpus graph.
+
+    Walks an undirected weighted graph built once from key_findings.protein_pair
+    entries across all fingerprints. Each edge carries mention count, supporting
+    DOIs, and tightest measured Kd/Ki. Returns paths up to max_hops long with
+    min_mentions_along_path and weak_links_count so you can flag low-confidence
+    steps when reporting to the user.
+
+    Use this for "is X connected to Y?" / "draw the cascade from X to Y"
+    questions. Use get_interactions_for instead for "what does X bind?".
+
+    Args:
+        protein_a:  Source protein. Aliases are normalised (YAP matches YAP1).
+        protein_b:  Target protein.
+        max_hops:   Maximum path length in edges. Default 4.
+        k:          Number of distinct shortest paths to return. Default 1.
+    """
+    result = _shortest_interaction_path(
+        protein_a=protein_a,
+        protein_b=protein_b,
+        fingerprint_dir=Path(_FINGERPRINT_DIR),
+        max_hops=int(max_hops),
+        k=int(k),
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def interaction_hubs(top_n: int = 20, min_mentions: int = 3) -> str:
+    """
+    Highest-degree proteins in the corpus interaction graph.
+
+    Computes degree centrality after filtering edges with fewer than
+    min_mentions supporting fingerprints — keeps single-paper noise from
+    inflating hub rank. Returns top_n proteins with sample partners and DOIs
+    per node.
+
+    Caveat: hub rank reflects literature attention, not biological importance.
+    KRAS, p53, EGFR will dominate any literature-derived hub list. Surface this
+    to the user when interpreting results.
+
+    Args:
+        top_n:        Number of hubs to return. Default 20.
+        min_mentions: Drop edges with fewer than this many supporting DOIs
+                      before computing degree. Default 3.
+    """
+    result = _interaction_hubs(
+        fingerprint_dir=Path(_FINGERPRINT_DIR),
+        top_n=int(top_n),
+        min_mentions=int(min_mentions),
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def export_subgraph(
+    seeds: list[str], output_path: str, depth: int = 1, max_nodes: int = 200
+) -> str:
+    """
+    Export a depth-bounded neighbourhood around seed proteins as Cytoscape.js JSON.
+
+    Each seed expands to all matching nodes (so a seed of 'TEAD' pulls in
+    TEAD1/2/3/4). BFS up to `depth`; capped at `max_nodes` (BFS-order). The
+    output file opens in Cytoscape Desktop or any Cytoscape.js viewer.
+
+    Use when the user asks for a visual exploration of an interaction
+    neighbourhood. Returns a small confirmation dict (the graph itself goes
+    to disk, not into the conversation) so it doesn't burn output tokens.
+
+    Args:
+        seeds:       List of protein names to seed the BFS from.
+        output_path: Destination .cyjs file. Relative paths resolve to project root.
+        depth:       BFS depth in edges. Default 1.
+        max_nodes:   Hard cap on nodes in the export. Default 200.
+    """
+    result = _export_subgraph(
+        seeds=list(seeds or []),
+        fingerprint_dir=Path(_FINGERPRINT_DIR),
+        output_path=output_path,
+        depth=int(depth),
+        max_nodes=int(max_nodes),
     )
     return json.dumps(result, ensure_ascii=False, indent=2)
 

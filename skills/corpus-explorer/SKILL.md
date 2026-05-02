@@ -31,6 +31,8 @@ human.
 
 ## Tools
 
+### Retrieval
+
 - `search_corpus` — semantic top-k search. Good for entering a topic.
 - `get_fingerprint` — pull a specific paper's full structured data when you
   want details (residues, source spans, methodology).
@@ -39,6 +41,36 @@ human.
   semantic search misses the long tail.
 - `find_quantitative_evidence` — every Kd or Ki measured for a specific
   protein pair, sorted tightest first. Use for "what's the affinity of A/B?".
+
+### Graph (corpus-wide interaction network)
+
+These query a NetworkX graph built once from `key_findings[].protein_pair`
+across the entire corpus. Edges are weighted by mention count and carry
+supporting DOIs + tightest Kd/Ki.
+
+- `shortest_interaction_path(a, b, max_hops, k)` — top k shortest paths
+  between two proteins. Use for "is X connected to Y?" / "draw the cascade
+  from X to Y". Returns `min_mentions_along_path` and `weak_links_count` —
+  flag low-confidence edges to the user.
+- `interaction_hubs(top_n, min_mentions)` — highest-degree nodes after
+  filtering single-paper edges. Use for "what are the central nodes in this
+  area?". **Always surface the caveat** that hub rank reflects research
+  attention, not biological importance — KRAS / p53 / EGFR will dominate.
+- `export_subgraph(seeds, output_path, depth)` — write a Cytoscape.js JSON
+  neighbourhood to disk for visual exploration. The graph goes to disk, not
+  the conversation, so this is cheap to use. Use when the user asks for a
+  visual or external view.
+
+### Tool-choice cheat sheet
+
+| User asks | Reach for |
+|---|---|
+| "What does X bind?" / "partners of X" | `get_interactions_for` |
+| "Affinity of A and B?" / "Kd of A/B?" | `find_quantitative_evidence` |
+| "Shortest path X → Y?" / "is X connected to Y?" | `shortest_interaction_path` |
+| "Central hubs in this network?" | `interaction_hubs` |
+| "Show me the network around X" / "export to Cytoscape" | `export_subgraph` |
+| "What does the literature say about X?" | `search_corpus` then `get_fingerprint` |
 
 ## Citation contract — the load-bearing rule
 
@@ -201,6 +233,12 @@ End the keyword block with a one-line action hint:
 
 ## Common pitfalls
 
+- **Mention counts are research-attention, not biological importance.** When
+  reporting `interaction_hubs` or path-edge weights, surface this caveat to
+  the user. KRAS / p53 / EGFR being top hubs is a citation pattern, not a
+  ranking of how essential they are. The same applies to "weak links" in a
+  shortest path — a single-paper edge isn't necessarily a weak interaction,
+  it's just under-studied in the corpus.
 - **Don't fabricate DOIs.** This is the single biggest failure mode.
   `[uncited]` always wins over a guessed reference.
 - **Corpus is biochemistry-biased.** In vivo, clinical, ADMET, and

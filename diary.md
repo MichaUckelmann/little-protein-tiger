@@ -965,3 +965,79 @@ The keyword-proposal feature is opt-in (trigger on user request), not automatic,
 - A `propose_search_keywords` MCP tool that writes config-fragment YAML to disk (current opt-in instruction is cheaper; defer until friction is real).
 - `cache_control: ephemeral` markers on message blocks for very long REPL sessions.
 - A canonical UniProt-backed protein-name resolver (current normalisation handles common cases).
+
+---
+
+## 2026-05-02 (later) — NetworkX graph layer + three new tools
+
+### Motivation
+
+`get_interactions_for` and `find_quantitative_evidence` answered "what binds X?" and "what's the affinity of A/B?" well, but the corpus has an interaction *graph* implicit in `key_findings[].protein_pair` that wasn't queryable. Three capabilities were missing:
+
+1. **Path queries** — "is X connected to Y in the corpus, and how?" Without a graph, the LLM had to chain ~5 `get_interactions_for` calls (~10k tokens of output) to trace a path manually.
+2. **Hub identification** — "what are the central nodes in this area?" Required calling `get_interactions_for` for many seed proteins.
+3. **Visual export** — no way to hand off a neighbourhood to Cytoscape for visual exploration.
+
+### Lightweight design — what was built and what was deferred
+
+A NetworkX-backed in-memory undirected weighted graph, built once on first access from the same fingerprint set the existing tools scan. Single edge type, no directionality, no enzyme-substrate or kinase-substrate semantics — those would require schema extension and re-curation. The "build the simple version, learn what's missing, then justify the heavier schema work" path.
+
+Edge attributes: `mentions`, `dois`, `kd_anchors[]`, `ki_anchors[]`, `tightest_kd_M`, `tightest_ki_M`. Nodes: `display_name` (longest variant seen) and `total_mentions`.
+
+### Three new tools
+
+- **`shortest_interaction_path(a, b, max_hops, k)`** — uses `nx.shortest_simple_paths` to yield up to `k` paths in length order, capped at `max_hops`. Returns each path with full edge details, plus `min_mentions_along_path` and `weak_links_count` so the LLM can flag single-paper edges to the user.
+- **`interaction_hubs(top_n, min_mentions)`** — degree centrality after filtering edges below `min_mentions`. Returns sample partners + sample DOIs per hub. Caveat baked into every response: hub rank reflects literature attention, not biological importance.
+- **`export_subgraph(seeds, output_path, depth, max_nodes)`** — BFS-bounded neighbourhood, written as Cytoscape.js JSON. Each seed expands to all matching nodes (a seed of `"TEAD"` pulls in TEAD1/2/3/4). The graph goes to disk, not into the conversation, so this is cheap to use.
+
+### Token-cost analysis (the user's specific concern before approval)
+
+Permanent system-prompt overhead from the three new tool definitions: ~440 tokens. With Anthropic's prompt caching (5-min TTL, 10× discount on reads), a 10-turn corpus-explorer session pays ~950 tokens of overhead from these tools — roughly $0.003 at Sonnet 4.6 input rates. Skills that don't get the tools (gated via `_filter_tools`) pay zero.
+
+When the tools' use cases come up, they're token-*negative*: a path-query that would cost ~10k output tokens of chained `get_interactions_for` calls runs in ~250 tokens via `shortest_interaction_path`. Net effect across realistic usage: cheaper, not more expensive.
+
+### Tool gating
+
+New `_GRAPH_TOOL_SKILLS = {"corpus-explorer", "pathway-expert"}` set in `skill_runner.py`. The three graph tools only appear in those skills' tool lists; design / optimizer / structure-analysis skills are unaffected. Verified end-to-end:
+
+| Skill | Has graph tools? | Total tools |
+|---|---|---|
+| corpus-explorer | yes | 12 |
+| pathway-expert | yes | 14 |
+| binder-optimizer | no | 10 |
+| complex-structure-analysis | no | 9 |
+
+### Smoke test against the live corpus
+
+Real numbers (5,800-fingerprint corpus):
+- Build: 7,927 nodes / 8,166 edges in 0.50 s. Cache hit thereafter is sub-millisecond.
+- `KRAS → ERK1` (max_hops=4, k=3): finds `KRAS → BRAF → MEK1 → MEK2 → ERK1` and the mTOR-routed alternative.
+- `LPAR1 → YAP` (max_hops=5, k=2): finds direct `LPAR1 → LPA → YAP` and the canonical `LPAR1 → RhoA → YAP` chain.
+- `interaction_hubs(top_n=10, min_mentions=3)`: returns STING / DNA / Nucleosome / YAP / EGFR / KRAS / BRD4 / cGAS / SCAP — the corpus's actual top areas (Hippo, MAPK, cGAS-STING, chromatin-modifier work added recently).
+- `export_subgraph(['YAP'], depth=1)`: 98 nodes / 139 edges, valid Cytoscape.js JSON.
+
+### Two bugs found during smoke testing (and fixed)
+
+1. **`"N/A"` appearing as a top hub** — some fingerprints carry placeholder strings in `protein_pair`. Fixed by filtering a `_PLACEHOLDERS` set (`""`, `"N/A"`, `"NONE"`, `"UNKNOWN"`, `"?"`, `"-"`, `"TBD"`, …) at normalisation time.
+2. **Bogus seed name returned 23 spurious nodes** — single-letter "node" keys from curation noise (e.g. `"P"`) were matching long missing-seed strings via reverse substring containment (`"P" in "NOTAREALPROTEINXYZ"`). Fixed by:
+   - Skipping nodes with normalised key length < 2 in `_build_graph`.
+   - Tightening `_resolve_seeds` to use one-directional substring (`target in node_key`) only, with min length 3 on both sides.
+   - Same min-length 3 for substring fallback in `_resolve_node`.
+
+Side benefit: the YAP subgraph went from 180 nodes (with junk) to 98 nodes (clean); `resolved_seeds` now correctly returns `['YAP']` instead of fragment matches like `['HDAC6/YAP', 'P', 'TGF-β/YAP', ...]`.
+
+### Files touched
+
+- `src/_corpus_graph.py` — `_build_graph`, `_get_graph` (lazy module-level cache keyed by fingerprint dir), `_resolve_node`, `_resolve_seeds`, three new public functions, `_PLACEHOLDERS` set, min-length guards.
+- `src/mcp_server.py` — three `@mcp.tool()` wrappers.
+- `src/skill_runner.py` — three `_TOOL_DEFS` entries, three `_execute_tool` branches, new `_GRAPH_TOOL_SKILLS` set, `_filter_tools` extension.
+- `skills/corpus-explorer/SKILL.md` — Tools section split into Retrieval / Graph subsections; tool-choice cheat sheet table; mention-count caveat in Common pitfalls.
+- `requirements.txt` — `networkx>=3.0` pinned (was already installed transitively at 3.6.1).
+- `README.md` — corpus-explorer section updated with graph tool descriptions and three new example queries.
+
+### Out of scope (future work)
+
+- Edge directionality (kinase → substrate, regulator → target). Requires schema extension, curator-prompt update, re-curation.
+- Edge type labels (`binds`, `phosphorylates`, `ubiquitinates`, `transcriptionally_regulates`). Same dependencies.
+- Persistence layer (Neo4j, on-disk graph). Not needed at 5k-fingerprint scale; rebuild-at-startup is fast enough.
+- Folding the existing `get_interactions_for` / `find_quantitative_evidence` onto the cached graph. Defer until measured speed actually matters.

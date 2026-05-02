@@ -11,3 +11,4 @@ lxml>=5.0
 lancedb>=0.20
 sentence-transformers>=3.0
 fastmcp>=2.0
+networkx>=3.0

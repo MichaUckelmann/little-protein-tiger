@@ -372,6 +372,72 @@ _TOOL_DEFS: list[dict[str, Any]] = [
             "required": ["protein_pair"],
         },
     },
+    {
+        "name": "shortest_interaction_path",
+        "description": (
+            "Top k shortest paths between two proteins in the corpus interaction "
+            "graph. Each edge carries mention count, supporting DOIs, and tightest "
+            "measured Kd/Ki. Returns min_mentions_along_path and weak_links_count "
+            "so you can flag low-confidence steps. Use for 'is X connected to Y?' "
+            "or 'draw the cascade from X to Y' questions. Use get_interactions_for "
+            "instead for 'what does X bind?'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "protein_a": {"type": "string", "description": "Source protein."},
+                "protein_b": {"type": "string", "description": "Target protein."},
+                "max_hops":  {"type": "integer", "description": "Maximum path length in edges. Default 4."},
+                "k":         {"type": "integer", "description": "Number of distinct shortest paths to return. Default 1."},
+            },
+            "required": ["protein_a", "protein_b"],
+        },
+    },
+    {
+        "name": "interaction_hubs",
+        "description": (
+            "Highest-degree proteins in the corpus interaction graph (degree "
+            "filtered by min_mentions per edge so single-paper noise doesn't "
+            "inflate rank). Returns sample partners and DOIs per hub. Caveat: "
+            "hub rank is a research-attention proxy, not biological importance — "
+            "well-studied proteins (KRAS, p53, EGFR) dominate."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "top_n":        {"type": "integer", "description": "Number of hubs to return. Default 20."},
+                "min_mentions": {"type": "integer", "description": "Edge mention threshold. Default 3."},
+            },
+        },
+    },
+    {
+        "name": "export_subgraph",
+        "description": (
+            "Write a depth-bounded interaction neighbourhood around seed proteins "
+            "to disk as Cytoscape.js JSON for visual exploration. Each seed expands "
+            "to all matching nodes (seed 'TEAD' pulls TEAD1/2/3/4). The graph goes "
+            "to disk, not the conversation — only a small confirmation dict is "
+            "returned. Use when the user asks for a visual / external view of an "
+            "interaction neighbourhood."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "seeds": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Protein names to seed the BFS from.",
+                },
+                "output_path": {
+                    "type": "string",
+                    "description": "Destination .cyjs file. Relative paths resolve to project root.",
+                },
+                "depth":     {"type": "integer", "description": "BFS depth in edges. Default 1."},
+                "max_nodes": {"type": "integer", "description": "Hard cap on nodes. Default 200."},
+            },
+            "required": ["seeds", "output_path"],
+        },
+    },
 ]
 
 
@@ -385,6 +451,11 @@ _NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer", "complex-struc
 
 # Skills that have access to the corpus-wide PDB lookup tool
 _PDB_LOOKUP_SKILLS = {"pathway-expert", "complex-expert", "orchestrator"}
+
+# Skills that have access to the NetworkX-backed graph tools (path, hubs, export).
+# Other skills don't need them and shouldn't pay the system-prompt overhead.
+_GRAPH_TOOL_SKILLS = {"corpus-explorer", "pathway-expert"}
+_GRAPH_TOOLS = {"shortest_interaction_path", "interaction_hubs", "export_subgraph"}
 
 _RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 _RCSB_GRAPHQL_URL = "https://data.rcsb.org/graphql"
@@ -518,6 +589,8 @@ def _filter_tools(defs: list[dict], skill_name: str) -> list[dict]:
     if skill_name not in _PDB_LOOKUP_SKILLS:
         defs = [d for d in defs if d["name"] != "find_pdb_structures"]
         defs = [d for d in defs if d["name"] != "search_rcsb_pdb"]
+    if skill_name not in _GRAPH_TOOL_SKILLS:
+        defs = [d for d in defs if d["name"] not in _GRAPH_TOOLS]
     return defs
 
 
@@ -885,6 +958,37 @@ class SkillRunner:
                     protein_pair=list(input_dict.get("protein_pair") or []),
                     fingerprint_dir=self._fingerprint_dir,
                     metric=input_dict.get("metric", "Kd"),
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "shortest_interaction_path":
+                from src._corpus_graph import shortest_interaction_path
+                result = shortest_interaction_path(
+                    protein_a=input_dict.get("protein_a", ""),
+                    protein_b=input_dict.get("protein_b", ""),
+                    fingerprint_dir=self._fingerprint_dir,
+                    max_hops=int(input_dict.get("max_hops", 4)),
+                    k=int(input_dict.get("k", 1)),
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "interaction_hubs":
+                from src._corpus_graph import interaction_hubs
+                result = interaction_hubs(
+                    fingerprint_dir=self._fingerprint_dir,
+                    top_n=int(input_dict.get("top_n", 20)),
+                    min_mentions=int(input_dict.get("min_mentions", 3)),
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "export_subgraph":
+                from src._corpus_graph import export_subgraph
+                result = export_subgraph(
+                    seeds=list(input_dict.get("seeds") or []),
+                    fingerprint_dir=self._fingerprint_dir,
+                    output_path=_resolve(input_dict.get("output_path", "")),
+                    depth=int(input_dict.get("depth", 1)),
+                    max_nodes=int(input_dict.get("max_nodes", 200)),
                 )
                 return json.dumps(result, ensure_ascii=False, indent=2)
 

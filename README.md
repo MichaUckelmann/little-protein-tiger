@@ -244,12 +244,20 @@ Token usage is logged after every LLM call. If the per-call input token count ex
 
 `corpus-explorer` is the skill to reach for when you want to *think out loud* against the corpus rather than produce a structured pipeline report. It uses inline DOI citations, three loose output modes (relational table, annotated cascade, ranked competing hypotheses), and a required "What the corpus does NOT say" closing. It does **not** emit a `PIPELINE HANDOFF` — output is for the human.
 
-Beyond `search_corpus` and `get_fingerprint`, it has access to two corpus-aware tools that semantic search misses:
+Beyond `search_corpus` and `get_fingerprint`, it has access to a set of corpus-aware tools that semantic search misses:
+
+**Direct retrieval over the fingerprint set:**
 
 - **`get_interactions_for(protein, depth)`** — walks `key_findings[].protein_pair` across every fingerprint and returns ranked partners with mention counts, supporting DOIs, and Kd/Ki anchors. Aliases are normalised (`YAP` matches `YAP1`/`hYAP`); paralogs stay distinct (`TEAD1` ≠ `TEAD2`, but `TEAD` matches all four).
 - **`find_quantitative_evidence(protein_pair, metric)`** — pulls every `key_findings` entry with a measured `Kd` or `Ki` for a specific pair, sorted tightest-binder first.
 
-Both tools live in `src/_corpus_graph.py` and are auto-registered by the `literature-db` MCP server, so they're also available inside Claude Desktop without further configuration.
+**Graph queries** (NetworkX-backed undirected weighted graph, built once per MCP server lifetime from the same `protein_pair` data; ~0.5 s for 5k fingerprints):
+
+- **`shortest_interaction_path(a, b, max_hops, k)`** — top-k shortest paths between two proteins. Each edge carries mention count, supporting DOIs, and tightest measured Kd/Ki. Returns `min_mentions_along_path` and `weak_links_count` so the model can flag low-confidence edges. Use for "is X connected to Y?" / "draw the cascade from X to Y".
+- **`interaction_hubs(top_n, min_mentions)`** — highest-degree nodes after filtering single-paper edges. Caveat surfaced in every response: hub rank reflects literature attention, not biological importance.
+- **`export_subgraph(seeds, output_path, depth)`** — writes a Cytoscape.js JSON neighbourhood (`.cyjs`) to disk for visual exploration. Each seed expands to all matching nodes (seed `'TEAD'` pulls in TEAD1/2/3/4). The graph goes to disk, not into the conversation.
+
+The graph tools are gated to `corpus-explorer` and `pathway-expert` only; design and structure-analysis skills don't see them. All five tools live in `src/_corpus_graph.py`.
 
 **One-shot usage:**
 
@@ -265,6 +273,18 @@ python scripts/run_skill.py --skill corpus-explorer \
 # Hypothesis generation
 python scripts/run_skill.py --skill corpus-explorer \
     --query "Knockout of NF1 leads to overactivation of the MAPK pathway. Generate competing hypotheses with discriminating experiments."
+
+# Graph: shortest path
+python scripts/run_skill.py --skill corpus-explorer \
+    --query "What is the shortest interaction path from LPAR1 to YAP in the corpus? Flag any weak links."
+
+# Graph: hubs
+python scripts/run_skill.py --skill corpus-explorer \
+    --query "Which proteins are the top hubs in the chromatin-modifier corpus? Filter to edges with at least 5 supporting papers."
+
+# Graph: visual export
+python scripts/run_skill.py --skill corpus-explorer \
+    --query "Export a depth-2 subgraph around STING to data/graph_exports/sting.cyjs."
 ```
 
 **Interactive (multi-turn) usage:**
