@@ -27,20 +27,40 @@ quality:
 # Search keywords
 # ---------------------------------------------------------------------------
 keywords:
-  - "HOCM[Title/Abstract] AND protein interaction[Title/Abstract]"
-  - "hypertrophic cardiomyopathy[Title/Abstract] AND protein interaction[Title/Abstract]"
-  - "hypertrophic cardiomyopathy[Title/Abstract] AND molecular[Title/Abstract]"
-  - "hypertrophic cardiomyopathy[Title/Abstract] AND signal transduction[Title/Abstract]" 
-  - "hypertrophic cardiomyopathy[Title/Abstract] AND molecular pathway[Title/Abstract]"
-  - "hypertrophic cardiomyopathy[Title/Abstract] AND inhibitor[Title/Abstract]"
-  - "hypertrophic cardiomyopathy[Title/Abstract] AND peptide therapeutics[Title/Abstract]"
-  - "hypertrophic cardiomyopathy[Title/Abstract] AND protein-protein interaction[Title/Abstract]"
-  - "hypertrophic cardiomyopathy[Title/Abstract] AND crystal structure[Title/Abstract]"
-  - "HCM[Title/Abstract] AND MYBPC3[Title/Abstract]"
-  - "cardiac [Title/Abstract] AND sarcomere[Title/Abstract] AND structure[Title/Abstract]"
-  - "cardiac [Title/Abstract] AND myosin[Title/Abstract]"
-  - "cardiac [Title/Abstract] AND myosin[Title/Abstract] AND inhibitor[Title/Abstract]"
-  - "cardiac [Title/Abstract] AND myosin[Title/Abstract] AND structure[Title/Abstract]"
+  # Gap: developmental biology
+  - "Chromatin[Title/Abstract] AND synthetic[Title/Abstract]"
+  - "synthetic developmental biology[Title/Abstract]"
+  - "Chromatin[Title/Abstract] AND development[Title/Abstract]"
+  - "epigenetic modifiers[Title/Abstract] AND synthetic[Title/Abstract]"
+  - "inner ear development[Title/Abstract]"
+  - "yamanaka factors[Title/Abstract] AND development[Title/Abstract]"
+  - "yamanaka factors[Title/Abstract] AND ipsc reprogramming[Title/Abstract]"
+  - "yamanaka factors[Title/Abstract] AND reprogramming[Title/Abstract]"
+  - "pioneer transcription factors[Title/Abstract] AND development[Title/Abstract]"
+  - "molecular mechanism[Title/Abstract] AND development[Title/Abstract]"
+  - "embryonic stem cell[Title/Abstract] AND differentiation[Title/Abstract]"
+  - "stem cell[Title/Abstract] AND differentiation[Title/Abstract]"
+  - "stem cell[Title/Abstract] AND differentiation[Title/Abstract] AND molecular mechanism[Title/Abstract]"
+  - "stem cell[Title/Abstract] AND epigenetic[Title/Abstract]"
+  - "stem cell[Title/Abstract] AND differentiation[Title/Abstract]"
+  - "cardiac[Title/Abstract] AND development[Title/Abstract]"
+  - "molecular mechanism[Title/Abstract] AND cardiac development[Title/Abstract]"
+  - "enhancer activity[Title/Abstract] AND development[Title/Abstract]"
+  - "protein-tyrosine phosphatases[Title/Abstract] AND development[Title/Abstract]"
+  - "protein-tyrosine phosphatases[Title/Abstract] AND mechanism[Title/Abstract]"
+  - "protein-tyrosine phosphatases[Title/Abstract] AND structure[Title/Abstract]"
+  - "PTK[Title/Abstract] AND development[Title/Abstract]"
+  - "protein-tyrosine kinase[Title/Abstract] AND development[Title/Abstract]"
+  - "protein-tyrosine kinase[Title/Abstract] AND mechanism[Title/Abstract]"
+  - "embryonic patterning[Title/Abstract] AND mechanism[Title/Abstract]"
+  - "embryonic patterning[Title/Abstract] AND gradients[Title/Abstract]"
+  - "embryonic patterning[Title/Abstract] AND gene regulatory networks[Title/Abstract]"
+  - "embryonic patterning[Title/Abstract] AND transcription factors[Title/Abstract]"
+
+  
+
+
+ 
 search:
   max_results_per_query: 200
   # NCBI eSearch covers PMC full-text articles (including those indexed as

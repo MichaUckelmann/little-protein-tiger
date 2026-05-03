@@ -48,6 +48,26 @@ These query a NetworkX graph built once from `key_findings[].protein_pair`
 across the entire corpus. Edges are weighted by mention count and carry
 supporting DOIs + tightest Kd/Ki.
 
+**Human-only filter (default ON)**: All four graph tools (`get_interactions_for`,
+`shortest_interaction_path`, `interaction_hubs`, `export_subgraph`) take
+`human_only: bool = True` and `taxa: list[int] | None = None`. The default
+is correct for ~90% of queries — it restricts results to proteins that
+sprint 2 resolved to a human gene symbol (covers human-native AND
+ortholog-mapped, e.g. mouse Yap1 → YAP1). Yeast / bacterial / Drosophila
+proteins are excluded.
+
+When to override:
+
+- **Pass `human_only=False`** for host-pathogen, comparative biology,
+  yeast / bacterial / Drosophila exploration, or when a query mentions a
+  non-mammalian species explicitly. Example: "what are the central nodes
+  in Yersinia type-III secretion?" needs `human_only=False`.
+- **Pass `taxa=[9606, 10090]`** for explicit human + mouse comparative
+  work. `taxa` overrides `human_only` when set.
+- The query/seed protein itself is **never** filtered — the user asked
+  for it explicitly. Only partners / intermediates / BFS expansion are
+  filter-checked.
+
 - `shortest_interaction_path(a, b, max_hops, k)` — top k shortest paths
   between two proteins. Use for "is X connected to Y?" / "draw the cascade
   from X to Y". Returns `min_mentions_along_path` and `weak_links_count` —
@@ -56,10 +76,87 @@ supporting DOIs + tightest Kd/Ki.
   filtering single-paper edges. Use for "what are the central nodes in this
   area?". **Always surface the caveat** that hub rank reflects research
   attention, not biological importance — KRAS / p53 / EGFR will dominate.
-- `export_subgraph(seeds, output_path, depth)` — write a Cytoscape.js JSON
-  neighbourhood to disk for visual exploration. The graph goes to disk, not
-  the conversation, so this is cheap to use. Use when the user asks for a
-  visual or external view.
+- `export_subgraph(seeds, output_path, depth, with_depmap=False)` — write a
+  Cytoscape.js JSON neighbourhood to disk for visual exploration. The graph
+  goes to disk, not the conversation, so this is cheap to use. Pass
+  `with_depmap=True` to attach DepMap co-essentiality (Pearson r) to every
+  edge in the export. Use when the user asks for a visual or external view.
+
+### Co-functional clusters (literature + DepMap modules)
+
+Louvain communities over the literature graph weighted by
+`mentions × |DepMap r|`. Clusters are persisted offline by
+`scripts/cluster_corpus.py` and lazy-loaded on first query. Edges with
+|r| < 0.15 are excluded (DepMap actively rejects them); literature-only
+edges keep a small default weight so unmeasured pairs still anchor
+modules. Cluster size is capped at 50 — oversized communities are
+recursively re-clustered at higher resolution.
+
+- `cluster_for_protein(protein)` — returns the cluster containing a gene,
+  with hub member, internal/external edge counts, and max internal
+  correlation. Use for "what pathway is X part of?" or "co-essential
+  module around X" queries. Complements `find_cocorrelated_genes`
+  (top-K pairwise) by giving the consensus module.
+- `cluster_members(cluster_id)` — full record for one cluster by ID.
+  Pair with `cluster_for_protein` when enumerating members.
+- `find_clusters_by_keyword(query, max_results)` — substring search on
+  member gene symbols. Useful for hypothesis navigation: `query="CDK"`
+  surfaces cell-cycle and transcription clusters; `query="HDAC"` finds
+  chromatin clusters.
+
+**When to use clusters vs. pairwise tools:**
+
+| Question | Reach for |
+|---|---|
+| "What's co-essential with X?" (top-K neighbours) | `find_cocorrelated_genes` |
+| "Is the X / Y interaction confirmed genetically?" | `get_genetic_codependency` |
+| "What pathway / module is X in?" | `cluster_for_protein` |
+| "Show me the kinase / phosphatase / HDAC clusters" | `find_clusters_by_keyword` |
+
+**Caveats to surface:**
+
+- Clusters reflect **functional co-essentiality + literature co-mention**,
+  not pathway topology. Components with mutation-conditional essentiality
+  (KRAS, BRAF — see DepMap section below) can land in different clusters
+  even though they're in the same canonical pathway.
+- A protein with no qualifying edges (all |DepMap r| < 0.15 AND no
+  literature partners passing threshold) won't appear in any cluster —
+  the tool returns `available=False, reason="not_clustered"`. Often true
+  for Tau-style aggregation-driven genes where DepMap r is low for all
+  its literature partners.
+
+### DepMap (CRISPR co-essentiality, orthogonal to literature)
+
+These tools join the literature graph to DepMap's CRISPR gene-effect data
+(Chronos scores across ~1,200 cancer cell lines). They give an independent
+read on whether a literature-claimed interaction also shows up as a
+genetic co-dependency. Lazy-loaded — first call costs ~10 s; sub-second
+thereafter.
+
+- `get_genetic_codependency(a, b, min_n=100)` — Pearson r between two
+  proteins' essentiality profiles. Family-head names ('AKT', 'RPA') expand
+  to all paralogs and the tightest |r| is reported. Returns `available=False`
+  with a `reason` when input doesn't resolve, gene isn't in DepMap, or
+  cell-line overlap is below `min_n`.
+- `find_cocorrelated_genes(protein, top_k=25, min_abs_r=0.2)` — top-k
+  most-correlated (or anti-correlated) DepMap genes for one target. Useful
+  for hypothesis generation: "which genes are most co-essential with KRAS?"
+  surfaces same-pathway candidates AND compensatory / synthetic-lethal
+  candidates in one call.
+
+**Sign convention — non-obvious, must be framed correctly:**
+
+- Chronos score: more-negative = gene is more essential in that cell line
+  (knockout reduces fitness).
+- **Two genes co-essential across cell lines correlate POSITIVELY.**
+- Negative correlation often signals compensatory or synthetic-lethal-style
+  relationships (one gene buffers the loss of the other) — NOT absence of
+  interaction.
+- **Magnitude is the signal**; sign carries different biological meanings.
+- High |r| corroborates a functional relationship but does NOT prove
+  physical binding. A KRAS/BRAF |r| ≈ 0.02 is biologically interpretable
+  (mutation-conditional essentiality), not a contradiction of the
+  pathway-level interaction.
 
 ### Tool-choice cheat sheet
 
@@ -70,6 +167,13 @@ supporting DOIs + tightest Kd/Ki.
 | "Shortest path X → Y?" / "is X connected to Y?" | `shortest_interaction_path` |
 | "Central hubs in this network?" | `interaction_hubs` |
 | "Show me the network around X" / "export to Cytoscape" | `export_subgraph` |
+| "Is the X/Y interaction confirmed by genetic data?" | `get_genetic_codependency` |
+| "What's most co-essential with X?" / "synthetic-lethal candidates for X" | `find_cocorrelated_genes` |
+| "What module / pathway is X part of?" | `cluster_for_protein` |
+| "Show me the kinase / HDAC / CDK clusters" | `find_clusters_by_keyword` |
+| "Show the network with co-essentiality overlay" | `export_subgraph` with `with_depmap=True` |
+| "Host-pathogen interactions in X" / "yeast / bacterial network" | any graph tool with `human_only=False` |
+| "Comparative human-mouse network around X" | any graph tool with `taxa=[9606, 10090]` |
 | "What does the literature say about X?" | `search_corpus` then `get_fingerprint` |
 
 ## Citation contract — the load-bearing rule
@@ -233,6 +337,18 @@ End the keyword block with a one-line action hint:
 
 ## Common pitfalls
 
+- **DepMap co-essentiality is NOT physical binding.** Tools like
+  `get_genetic_codependency` measure whether two genes are required in the
+  same cell lines, which is a same-pathway / heterodimer / co-functional
+  signal, not an interaction-strength readout. When citing a DepMap r in
+  conversation, frame it as "co-essential" or "co-dependent", never as
+  "they bind tightly". Combine with `find_quantitative_evidence` if the
+  user wants binding affinity.
+- **DepMap negative correlation is informative, not a contradiction.** If
+  literature says X interacts with Y and DepMap r is negative, the most
+  likely interpretation is compensatory / synthetic-lethal-style dynamics
+  (loss of one is buffered by the other), not that the interaction is
+  fake. Surface this framing to the user instead of dismissing the edge.
 - **Mention counts are research-attention, not biological importance.** When
   reporting `interaction_hubs` or path-edge weights, surface this caveat to
   the user. KRAS / p53 / EGFR being top hubs is a citation pattern, not a

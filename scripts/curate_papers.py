@@ -111,6 +111,20 @@ def main():
     parser.add_argument("--paper-key", dest="paper_key", default=None, help="Process a single paper by key")
     parser.add_argument("--provider", default=None, choices=["claude", "gemini", "local"],
                         help="Override curation provider from config (claude, gemini, or local)")
+    parser.add_argument("--skip-normalize", action="store_true",
+                        help="Skip the post-curation identifier-normalization backfill. "
+                             "Use only for debugging — leaving it skipped means new "
+                             "fingerprints lack the protein_identifiers block and graph / "
+                             "DepMap tools won't see them.")
+    parser.add_argument("--skip-graph-rebuild", action="store_true",
+                        help="Skip the post-curation edge-index + cluster rebuild. "
+                             "Graph and pairwise tools still see new fingerprints "
+                             "via mtime-based cache invalidation, but the cluster "
+                             "registry stays stale until rebuilt manually.")
+    parser.add_argument("--skip-vector-ingest", action="store_true",
+                        help="Skip embedding new fingerprints into the LanceDB "
+                             "vector store. Semantic search via search_corpus "
+                             "won't find new papers until ingest_vectors.py runs.")
     args = parser.parse_args()
 
     config = load_config()
@@ -244,6 +258,72 @@ def main():
     print(f"  Skipped : {stats['skipped']}  (irrelevant papers)")
     print(f"  Failed  : {stats['failed']}")
     print(f"  Tokens  : {stats['tokens']:,}")
+
+    # ----- Post-curation pipeline -----
+    # Three independent stages run after a successful curation batch:
+    #
+    #   1. Identifier normalization (run_backfill)        — sprint 2
+    #   2. Edge index + cluster rebuild (build_and_cluster) — sprint 5
+    #   3. Vector ingestion (run_ingest)                   — semantic search
+    #
+    # Each stage skips when:
+    #   - --dry-run was used (no fingerprints written)
+    #   - stats["curated"] == 0 (everything failed/skipped)
+    #   - the corresponding --skip-* flag is set
+    #
+    # All stages are idempotent. The cost ordering is:
+    #   normalize: ~2 s, graph rebuild: 30 s – 2 min, vector ingest: scales
+    #   with N new papers (~0.2 s each after model load).
+    no_changes = args.dry_run or stats["curated"] == 0
+    if args.dry_run:
+        logger.info("Dry run: skipping post-curation hooks (no fingerprints written).")
+    elif stats["curated"] == 0:
+        logger.info("No new fingerprints written; skipping post-curation hooks.")
+
+    # Stage 1: identifier normalization
+    if not no_changes:
+        if args.skip_normalize:
+            logger.info("Skipping identifier normalization (--skip-normalize set).")
+        else:
+            logger.info(f"Normalising identifiers on {stats['curated']:,} new fingerprint(s)...")
+            from scripts.normalize_identifiers import run_backfill
+            result = run_backfill(fingerprint_dir, log_full_summary=False)
+            fs = result["file_stats"]
+            print(
+                f"  Normalised: {fs.get('updated', 0):,} updated, "
+                f"{fs.get('already_current', 0):,} already current"
+            )
+
+    # Stage 2: edge index + clustering
+    if not no_changes:
+        if args.skip_graph_rebuild:
+            logger.info("Skipping graph rebuild (--skip-graph-rebuild set).")
+        else:
+            logger.info("Rebuilding edge index + clustering ...")
+            from src.clustering import build_and_cluster
+            result = build_and_cluster(fingerprint_dir)
+            print(
+                f"  Graph: edges_rebuilt={result['edges_rebuilt']}, "
+                f"clusters={result['cluster_count']:,}"
+            )
+
+    # Stage 3: vector ingestion (LanceDB)
+    if not no_changes:
+        if args.skip_vector_ingest:
+            logger.info("Skipping vector ingestion (--skip-vector-ingest set).")
+        else:
+            logger.info("Embedding new fingerprints into vector store ...")
+            from scripts.ingest_vectors import run_ingest
+            vs_cfg = config.get("vector_store", {})
+            db_path = ROOT / vs_cfg.get("db_path", "data/vectors")
+            embedding_model = vs_cfg.get("embedding_model", "NeuML/pubmedbert-base-embeddings")
+            ingest = run_ingest(
+                fingerprint_dir=fingerprint_dir,
+                db_path=db_path,
+                embedding_model=embedding_model,
+                rebuild=False,
+            )
+            print(f"  Vectors: {ingest['new_records']:,} new records embedded")
 
 
 if __name__ == "__main__":

@@ -339,6 +339,23 @@ _TOOL_DEFS: list[dict[str, Any]] = [
                         "the corpus. Default 1."
                     ),
                 },
+                "human_only": {
+                    "type": "boolean",
+                    "description": (
+                        "Default true — partner list is restricted to human-"
+                        "resolvable proteins (covers human-native and ortholog-"
+                        "mapped). Pass false for host-pathogen, yeast, bacterial, "
+                        "or comparative biology queries."
+                    ),
+                },
+                "taxa": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": (
+                        "Optional NCBI taxon allow-list, e.g. [9606, 10090] for "
+                        "human + mouse comparative work. Overrides human_only."
+                    ),
+                },
             },
             "required": ["protein"],
         },
@@ -387,8 +404,10 @@ _TOOL_DEFS: list[dict[str, Any]] = [
             "properties": {
                 "protein_a": {"type": "string", "description": "Source protein."},
                 "protein_b": {"type": "string", "description": "Target protein."},
-                "max_hops":  {"type": "integer", "description": "Maximum path length in edges. Default 4."},
-                "k":         {"type": "integer", "description": "Number of distinct shortest paths to return. Default 1."},
+                "max_hops":   {"type": "integer", "description": "Maximum path length in edges. Default 4."},
+                "k":          {"type": "integer", "description": "Number of distinct shortest paths to return. Default 1."},
+                "human_only": {"type": "boolean", "description": "Default true — restrict path intermediates to human-resolvable proteins. Source/target are exempt."},
+                "taxa":       {"type": "array", "items": {"type": "integer"}, "description": "Optional NCBI taxon allow-list for intermediates. Overrides human_only."},
             },
             "required": ["protein_a", "protein_b"],
         },
@@ -407,6 +426,8 @@ _TOOL_DEFS: list[dict[str, Any]] = [
             "properties": {
                 "top_n":        {"type": "integer", "description": "Number of hubs to return. Default 20."},
                 "min_mentions": {"type": "integer", "description": "Edge mention threshold. Default 3."},
+                "human_only":   {"type": "boolean", "description": "Default true — only human-resolvable nodes are eligible hubs. Set false for non-mammalian."},
+                "taxa":         {"type": "array", "items": {"type": "integer"}, "description": "Optional NCBI taxon allow-list (overrides human_only)."},
             },
         },
     },
@@ -418,7 +439,8 @@ _TOOL_DEFS: list[dict[str, Any]] = [
             "to all matching nodes (seed 'TEAD' pulls TEAD1/2/3/4). The graph goes "
             "to disk, not the conversation — only a small confirmation dict is "
             "returned. Use when the user asks for a visual / external view of an "
-            "interaction neighbourhood."
+            "interaction neighbourhood. Optional `with_depmap=True` attaches "
+            "DepMap co-essentiality (Pearson r) to every edge."
         ),
         "parameters": {
             "type": "object",
@@ -432,10 +454,113 @@ _TOOL_DEFS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Destination .cyjs file. Relative paths resolve to project root.",
                 },
-                "depth":     {"type": "integer", "description": "BFS depth in edges. Default 1."},
-                "max_nodes": {"type": "integer", "description": "Hard cap on nodes. Default 200."},
+                "depth":        {"type": "integer", "description": "BFS depth in edges. Default 1."},
+                "max_nodes":    {"type": "integer", "description": "Hard cap on nodes. Default 200."},
+                "with_depmap":  {"type": "boolean", "description": "Attach DepMap r/n to each edge. Default False."},
+                "depmap_min_n": {"type": "integer", "description": "Minimum overlapping cell lines per correlation. Default 100."},
+                "human_only":   {"type": "boolean", "description": "Default true — BFS only steps into human-resolvable partners. Set false for host-pathogen exploration."},
+                "taxa":         {"type": "array", "items": {"type": "integer"}, "description": "Optional NCBI taxon allow-list (overrides human_only)."},
             },
             "required": ["seeds", "output_path"],
+        },
+    },
+    {
+        "name": "get_genetic_codependency",
+        "description": (
+            "Pearson correlation of CRISPR essentiality between two proteins "
+            "(DepMap Chronos scores). Use this on top of literature-graph "
+            "queries to corroborate functional relationships: high |r| "
+            "supports a real pathway link, near-zero r suggests the "
+            "interaction is mutation-conditional or not a fitness-shared "
+            "module. Sign carries meaning — positive r = co-essential "
+            "(same pathway / heterodimer); negative r often = compensatory "
+            "or synthetic-lethal-style. Family-head names (AKT, RPA) "
+            "expand to all paralogs; tightest |r| is reported."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "protein_a": {"type": "string", "description": "First protein. Order-insensitive."},
+                "protein_b": {"type": "string", "description": "Second protein."},
+                "min_n":     {"type": "integer", "description": "Minimum overlapping cell lines. Default 100."},
+            },
+            "required": ["protein_a", "protein_b"],
+        },
+    },
+    {
+        "name": "cluster_for_protein",
+        "description": (
+            "Return the co-functional cluster that contains a protein. "
+            "Clusters are Louvain communities on the literature graph "
+            "weighted by mentions * |DepMap r| — they reflect functional "
+            "co-essentiality plus literature co-mention. Use for "
+            "'what pathway / module is X in?' or 'show me the co-essential "
+            "neighbourhood of X' queries. Complements find_cocorrelated_genes "
+            "(top-K pairwise) by giving the consensus module."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "protein": {"type": "string", "description": "Protein name / gene symbol / alias."},
+            },
+            "required": ["protein"],
+        },
+    },
+    {
+        "name": "cluster_members",
+        "description": (
+            "Full record for one cluster by numeric ID — members, hub, "
+            "internal/external edge counts, max internal r. Pair with "
+            "cluster_for_protein when you have a cluster ID and want "
+            "the full member list."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cluster_id": {"type": "integer", "description": "Numeric cluster ID."},
+            },
+            "required": ["cluster_id"],
+        },
+    },
+    {
+        "name": "find_clusters_by_keyword",
+        "description": (
+            "List clusters whose member gene symbols contain a substring "
+            "(case-insensitive). Useful for hypothesis-led navigation — "
+            "'show me kinase clusters' (query='kinase' won't work; query='CDK' "
+            "or query='MAP' will), 'clusters containing HDAC genes', etc. "
+            "Sorted by cluster size descending."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query":       {"type": "string", "description": "Substring to match in member gene symbols."},
+                "max_results": {"type": "integer", "description": "Maximum clusters to return. Default 20."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "find_cocorrelated_genes",
+        "description": (
+            "Top-k DepMap co-essential / anti-correlated genes for a target "
+            "protein. Vectorised scan across 18k+ DepMap genes. Surfaces "
+            "candidate same-pathway partners (positive r) AND compensatory / "
+            "synthetic-lethal candidates (negative r) in one call. Use for "
+            "hypothesis generation: 'which genes are most co-essential with "
+            "KRAS?' is a single tool call away. Family-head inputs only "
+            "query the dominant resolution; call again with paralogs to "
+            "explore each separately."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "protein":   {"type": "string", "description": "Target protein. Resolved via HGNC + curated aliases."},
+                "top_k":     {"type": "integer", "description": "Maximum partners to return. Default 25."},
+                "min_abs_r": {"type": "number",  "description": "Minimum |Pearson r| to include. Default 0.2."},
+                "min_n":     {"type": "integer", "description": "Minimum overlapping cell lines. Default 100."},
+            },
+            "required": ["protein"],
         },
     },
 ]
@@ -455,7 +580,11 @@ _PDB_LOOKUP_SKILLS = {"pathway-expert", "complex-expert", "orchestrator"}
 # Skills that have access to the NetworkX-backed graph tools (path, hubs, export).
 # Other skills don't need them and shouldn't pay the system-prompt overhead.
 _GRAPH_TOOL_SKILLS = {"corpus-explorer", "pathway-expert"}
-_GRAPH_TOOLS = {"shortest_interaction_path", "interaction_hubs", "export_subgraph"}
+_GRAPH_TOOLS = {
+    "shortest_interaction_path", "interaction_hubs", "export_subgraph",
+    "get_genetic_codependency", "find_cocorrelated_genes",
+    "cluster_for_protein", "cluster_members", "find_clusters_by_keyword",
+}
 
 _RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 _RCSB_GRAPHQL_URL = "https://data.rcsb.org/graphql"
@@ -942,6 +1071,11 @@ class SkillRunner:
                 logger.info(f"write_file → {dest}")
                 return json.dumps({"written": str(dest)})
 
+            def _coerce_taxa(v):
+                if v is None or (isinstance(v, list) and not v):
+                    return None
+                return [int(t) for t in v]
+
             if name == "get_interactions_for":
                 from src._corpus_graph import get_interactions_for
                 result = get_interactions_for(
@@ -949,6 +1083,8 @@ class SkillRunner:
                     fingerprint_dir=self._fingerprint_dir,
                     depth=int(input_dict.get("depth", 1)),
                     min_mentions=int(input_dict.get("min_mentions", 1)),
+                    human_only=bool(input_dict.get("human_only", True)),
+                    taxa=_coerce_taxa(input_dict.get("taxa")),
                 )
                 return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -969,6 +1105,8 @@ class SkillRunner:
                     fingerprint_dir=self._fingerprint_dir,
                     max_hops=int(input_dict.get("max_hops", 4)),
                     k=int(input_dict.get("k", 1)),
+                    human_only=bool(input_dict.get("human_only", True)),
+                    taxa=_coerce_taxa(input_dict.get("taxa")),
                 )
                 return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -978,6 +1116,8 @@ class SkillRunner:
                     fingerprint_dir=self._fingerprint_dir,
                     top_n=int(input_dict.get("top_n", 20)),
                     min_mentions=int(input_dict.get("min_mentions", 3)),
+                    human_only=bool(input_dict.get("human_only", True)),
+                    taxa=_coerce_taxa(input_dict.get("taxa")),
                 )
                 return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -989,6 +1129,48 @@ class SkillRunner:
                     output_path=_resolve(input_dict.get("output_path", "")),
                     depth=int(input_dict.get("depth", 1)),
                     max_nodes=int(input_dict.get("max_nodes", 200)),
+                    with_depmap=bool(input_dict.get("with_depmap", False)),
+                    depmap_min_n=int(input_dict.get("depmap_min_n", 100)),
+                    human_only=bool(input_dict.get("human_only", True)),
+                    taxa=_coerce_taxa(input_dict.get("taxa")),
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "get_genetic_codependency":
+                from src._corpus_graph import get_genetic_codependency
+                result = get_genetic_codependency(
+                    protein_a=input_dict.get("protein_a", ""),
+                    protein_b=input_dict.get("protein_b", ""),
+                    fingerprint_dir=self._fingerprint_dir,
+                    min_n=int(input_dict.get("min_n", 100)),
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "cluster_for_protein":
+                from src._corpus_graph import cluster_for_protein
+                result = cluster_for_protein(protein=input_dict.get("protein", ""))
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "cluster_members":
+                from src._corpus_graph import cluster_members
+                result = cluster_members(cluster_id=int(input_dict.get("cluster_id", -1)))
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "find_clusters_by_keyword":
+                from src._corpus_graph import find_clusters_by_keyword
+                result = find_clusters_by_keyword(
+                    query=input_dict.get("query", ""),
+                    max_results=int(input_dict.get("max_results", 20)),
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "find_cocorrelated_genes":
+                from src._corpus_graph import find_cocorrelated_genes
+                result = find_cocorrelated_genes(
+                    protein=input_dict.get("protein", ""),
+                    top_k=int(input_dict.get("top_k", 25)),
+                    min_abs_r=float(input_dict.get("min_abs_r", 0.2)),
+                    min_n=int(input_dict.get("min_n", 100)),
                 )
                 return json.dumps(result, ensure_ascii=False, indent=2)
 
