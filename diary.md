@@ -1135,3 +1135,349 @@ The class of bug is "silent partial coverage" — the system returns plausible-l
 - Periodic audit job that reports per-tool corpus coverage (`get_interactions_for` touched X fingerprints, `find_quantitative_evidence` touched Y fingerprints). Would catch silent-exclusion regressions early.
 - A `key_findings`-level provenance check — are there findings with non-null `protein_pair` but null `claim` or `source_span`? Same class of bug, different field.
 - Schema-level validation at curation time that flags fingerprints where the LLM dropped fields the DB record could supply.
+
+---
+
+## 2026-05-03 — DepMap integration sprint 1+2: identifier normalization
+
+Setup work for an upcoming pipeline that joins the corpus interaction graph (`src/_corpus_graph.py`) with DepMap CRISPR co-essentiality correlations. Naming was identified up-front as the dominant engineering risk — the corpus is loose with protein nomenclature, DepMap uses gene names. The full multi-sprint plan lives in `DEPMAP_INTEGRATION_PLAN.md`; this entry covers sprints 1 and 2 only.
+
+### Sprint 1 — coverage spike (read-only)
+
+`scripts/spike_normalize_identifiers.py` (kept in repo; useful as a reusable diagnostic) walked all 5,547 fingerprints, extracted protein names from every site they appear (`key_findings.protein_pair`, `target_nodes`, `upstream_regulators`/`downstream_effectors`, `entities.proteins`), and ran a tiered resolver against UniProt's `HUMAN_9606_idmapping.dat.gz` only. Baseline numbers: **103,373 protein-name occurrences across 24,777 unique raw names**. Resolution coverage:
+
+| Tier (UniProt-only) | Unique names | Mention-weighted |
+| --- | --- | --- |
+| Exact gene_symbol | 30.0 % | 49.9 % |
+| UniProt synonym | 5.6 % | 6.8 % |
+| KB-ID stem / fuzzy | 2.9 % | 3.0 % |
+| Stripped mutant | 0.4 % | 0.3 % |
+| **HIGH-CONF (sum)** | **36.0 %** | **56.9 %** |
+| Unmatched | 61.1 % | 40.1 % |
+
+Below the 85 % target. The unmatched 40 % broke into four buckets:
+
+1. **Junk / non-proteins** (~3.4 % of mentions): `N/A` (1,518), `null`, `None`, `DNA` (409), `Cas9` (221), `GFP`, `Nucleosome`, `H3K9me3` etc. Curator placeholders + research tools + PTM strings.
+2. **Common-name aliases HGNC would catch** (~1.5 %): `PD-L1` (255) → CD274, `53BP1` (122) → TP53BP1, `LC3` → MAP1LC3A, `p62` → SQSTM1, `Tau` → MAPT, `Chk1` → CHEK1, `Pol II` → POLR2A, `E-cadherin` → CDH1, `Caspase-3` → CASP3.
+3. **Greek letters** (~0.4 %): `NF-κB`, `β-catenin`, `ERα`, `IL-1β`, `IFN-γ`. Pure tokenisation issue.
+4. **Family heads / paralog ambiguity** (~1.5 %): `YAP` → YAP1, `AKT` → AKT1/2/3, `MEK` → MAP2K1, `RPA` → RPA1/2/3, `TEAD` → TEAD1-4, `Hsp90` → HSP90AA1/AB1.
+
+Bonus finding from the spike: **bad curated taxa** in `methodology.protein_origin_organism` — values of `0` and `1000000000` appear in the corpus. Not blocking sprint 2 but worth noting as a curator data-quality issue.
+
+### Sprint 2 — production normalization backfill
+
+Decisions taken (all per user):
+1. **Storage**: sidecar block `protein_identifiers` written into existing fingerprint JSONs by an idempotent script. Curator never writes this key. Same pattern as the `297be83` canonical-DOI backfill.
+2. **Family-head policy**: paralog-ambiguous resolutions return all candidates with `is_family_head: true`; downstream consumers decide whether to expand.
+3. **Audit list**: filtered names go into a separate `filtered_out` array on the block with a `reason` tag (placeholder / non_specific_histone / complex / viral / research_tool) so the rejection trail is inspectable.
+4. **HGNC alias table**: downloaded one-time from `genenames.org` (`hgnc_complete_set.tsv`, 17 MB, 20,288 approved symbols, 50,792 alias keys, 16,502 prev_symbol entries).
+
+Architecture:
+- `src/identifier_normalizer.py` — `IdentifierNormalizer` class with the resolver + `Resolution` dataclass + `extract_protein_occurrences()` walker. Reusable by future tools.
+- `scripts/normalize_identifiers.py` — idempotent CLI driver with `--dry-run`, `--sample`, `--force`, `--dump-unresolved` flags.
+
+Resolver tier order:
+1. HGNC approved symbol exact
+2. Curated biology aliases (~150 manually-vetted entries — Pol II, Caspase-N, cyclins, G-protein subunits, Greek-letter spellings, etc.)
+3. Paralog-default — if `<NAME>1` is HGNC-approved, prefer that over alias hits (catches YAP→YAP1 even though HGNC has YAP→YY1AP1 in alias)
+4. HGNC alias / HGNC prev
+5. UniProt KB-ID exact
+6. Stripped point-mutation suffix (`KRAS-G12C` → KRAS)
+7. UniProt gene_symbol (lower-confidence — TrEMBL leak risk)
+8. UniProt synonym
+9. Family-head fuzzy (prefix + paralog suffix `1-9` or `A-D`)
+
+Greek transliteration uses **spelled-out** forms (`α → ALPHA`, `β → BETA`) — this is how HGNC and UniProt write aliases (`"ER-alpha"`, `"beta-catenin"`, `"IL-1beta"`), not single-letter (which would only match formula-style usage).
+
+Final coverage on 5,547 fingerprints / 103,373 occurrences (mention-weighted):
+
+| Tier | % |
+| --- | --- |
+| `exact_gene` | 46.5 |
+| `hgnc_alias` | 13.1 |
+| `hgnc_prev` | 1.7 |
+| `curated_alias` | 3.1 |
+| `paralog_default` | 1.7 |
+| `family_head` (lower conf) | 2.2 |
+| `kb_id` + `stripped_mutant` | 0.2 |
+| `uniprot_gene` + `uniprot_synonym` | 0.7 |
+| **HIGH-CONF total** | **66.4** |
+| **Resolved (high+low)** | **69.3** |
+| `placeholder` filtered | 1.9 |
+| `non_specific_histone` filtered | 0.8 |
+| `complex` filtered | 0.5 |
+| `viral` filtered | 0.4 |
+| `research_tool` filtered | 2.8 |
+| **Filtered total** | **6.4** |
+| Unresolved | 24.3 |
+
+**Below the 85 % HIGH-CONF target initially projected from spike data.** The shortfall is structural, not solvable with more aliases:
+
+- The unresolved 24.3 % is dominated by **non-mammalian gene names** (yeast: `Cdc13`, `Sgs1`, `Sth1`, `Doa10`, `Clr4`, `Isw1/2`, `Reb1`, `Yen1`, `Rad6`; bacterial: `BamA`, `TnsB/C`, `TnpB`, `AgrC`, `IpaH7.8`, `SidJ`, `SdeA`, `LetB`, `LptD`, `NusG`, `AraC`, `PqsE`, `RhlR`; Drosophila: `Yki`, `Sd`; viral oligomers and ORFs). These have no DepMap relevance — DepMap is human cell-line CRISPR — so failure to resolve them costs nothing for the downstream pipeline.
+- Long tail of typos, idiosyncratic compound forms (`H3-H4`, `MCM2-7`, `gamma-H2AX`), and PTM strings.
+
+What matters for the DepMap join is the count of occurrences with a usable `human_uniprot` field set. That is the **69.3 %** number, and it represents almost all *meaningfully resolvable human protein mentions* in the corpus. Sprint 3 (DepMap edge enrichment) can proceed.
+
+### Side-effects called out for future work
+
+- **Family-head ambiguity is now first-class**: every multi-paralog resolution carries `is_family_head: true` + the full `candidate_uniprots` list. The graph-enrichment skill prompt in sprint 4 will need explicit instructions on how to surface family ambiguity to the user (best practice: report tightest correlation across the set, with the family member tagged).
+- **COX2 ambiguity is the canonical hard case**: HGNC alias resolves to MT-CO2 (mitochondrial), but in literature COX2 almost always means PTGS2 (cyclooxygenase-2). Currently flagged as `is_family_head: true` with both candidates. Cleanest fix is contextual disambiguation from `experimental_context` text — out of scope here.
+- **HGNC alias for `YAP` points to YY1AP1, not YAP1.** This is HGNC-correct (YAP1 doesn't list "YAP" as alias) but biologically misleading. The `paralog_default` tier (insert `<NAME>1` if approved) was added specifically to override this; equivalent overrides may surface for other shorthand names.
+- **The `identifier_normalizer` module is HGNC-loadable but does not yet do strict-taxon disambiguation.** `native_taxon` is preserved on every entry but resolution is human-only. When sprint 2 results show ambiguous gene_symbol hits across species, sprint 3 onward should decide whether to use it.
+
+### Files touched
+
+- `data/depmap/hgnc_complete_set.tsv` (downloaded, 17 MB, gitignored)
+- `src/identifier_normalizer.py` (new) — resolver library
+- `scripts/normalize_identifiers.py` (new) — idempotent backfill driver
+- `scripts/spike_normalize_identifiers.py` (kept) — reusable coverage diagnostic
+- `data/fingerprints/*.json` — 5,547 files now carry a `protein_identifiers` block
+- `DEPMAP_INTEGRATION_PLAN.md` (new at repo root) — full multi-sprint plan
+- `data/depmap/sprint2_unresolved.tsv` — audit dump of names that failed resolution
+
+### Next sprint
+
+Sprint 3: `src/depmap.py` lazy DataFrame loader + on-demand `correlation_for_pair`. One-shot enrichment pass that walks the literature graph, joins each edge to DepMap by `human_uniprot → gene_symbol`, and attaches `depmap_pearson_r` + sample-size metadata to each edge.
+
+---
+
+## 2026-05-03 — DepMap integration sprint 3: loader, enrichment, tools
+
+End-to-end pipeline from literature names → resolved gene symbols → DepMap CRISPR co-essentiality (Pearson r). Three new tools wired into both transports (MCP + skill-runner) and documented in the corpus-explorer skill prompt.
+
+### Architecture in place
+
+**`src/depmap.py`** — pyarrow + numpy CSV loader, deliberately no pandas dependency (lean-deps style of this project; pyarrow was already in the venv via lancedb). Lazy module-level singleton: first call to any helper triggers the full read.
+
+- Load time: **13 s** for the 440 MB CSV → 18,531 genes × 1,208 cell lines (90 MB float32 in memory).
+- `correlation_for_pair(a, b, min_n=100)` — Pearson on the pair-wise non-NaN intersection. Sub-millisecond after warm.
+- `correlation_for_pair_family(candidates_a, candidates_b, min_n=100)` — cross-product over candidate gene-symbol lists; reports tightest |r| with `family_ambiguity` flag and full `all_results` for transparency. Detects degenerate `same_gene_alias` case (e.g. PD-L1 vs CD274 are the same gene) and returns a clean reason instead of misleading `all_missing`.
+- `correlations_for_gene(gene, top_k, min_abs_r, min_n)` — column-wise scan against all 18k genes. Per-gene NaN masks make full vectorisation awkward; explicit loop with vectorised inner ops runs in ~0.5–1 s.
+
+**`src/_corpus_graph.py`** — `_build_graph` extended:
+
+- Reads each fingerprint's `protein_identifiers.entries` and `filtered_out` to attach resolved-identifier annotations onto graph nodes (`human_gene_symbol`, `human_uniprot`, `candidate_uniprots`, `is_family_head`).
+- Skips edges whose endpoints are in the sprint-2 `filtered_out` list — no more `DNA`, `Cas9`, `PRC2`, `Nucleosome` as graph nodes.
+- Cache key bumped to `(path, "v2-with-resolved-identifiers")` so existing in-process caches automatically rebuild on first sprint-3 query.
+
+Three new tool functions:
+
+- `get_genetic_codependency(a, b, min_n=100)` — resolves both names, calls `correlation_for_pair_family` with the gene-symbol candidate lists. Family-head policy per design discussion: tightest |r| + `family_ambiguity=True` + `evaluated_pairs` count + full `all_results`.
+- `find_cocorrelated_genes(protein, top_k, min_abs_r, min_n)` — top-k DepMap neighbours for hypothesis generation. Family-head input only queries the dominant resolution; surfaced as `family_head_warning` so callers know to drill into specific paralogs.
+- `export_subgraph` extended with `with_depmap=True`. Each edge gets `depmap_r`, `depmap_n`, `depmap_best_pair`, `depmap_family_ambiguity`. Returned summary includes per-call `depmap_enrichment` stats (`available` / `missing` / `low_overlap`).
+
+**Identifier-resolver singleton.** `src/identifier_normalizer.get_normalizer()` is a module-level lazy singleton so graph and DepMap tools share one HGNC/UniProt-loaded resolver instance instead of each tool rebuilding it.
+
+### Validation on known biology
+
+| Pair | r | n | Interpretation |
+| --- | --- | --- | --- |
+| TP53 / MDM2 | -0.72 | 1208 | Strong negative — MDM2 is TP53's negative regulator. Sign-convention check passes. |
+| BRCA1 / BARD1 | +0.56 | 1208 | Strong positive — heterodimer, co-essential. |
+| MTOR / RPTOR | +0.38 | 1208 | Moderate positive — RPTOR is a defining mTORC1 component. |
+| MYC / MAX | +0.34 | 1208 | Moderate positive — heterodimer required for MYC-driven transcription. |
+| YAP1 / TEAD4 | +0.12 | 1208 | Weak — Hippo is mutation-conditional in cell lines, not all lines depend on YAP1. |
+| KRAS / BRAF | +0.02 | 1208 | Near-zero — BRAF-mutant lines depend on BRAF, KRAS-mutant lines depend on KRAS, hence orthogonal essentiality despite linear-pathway topology. **Worth surfacing as a teaching example in the skill prompt** — it shows that DepMap captures fitness landscape, not pathway topology directly. |
+
+Family-head test: `AKT` vs `MTOR` correctly expanded to AKT1/2/3 × MTOR, AKT1/MTOR (r=+0.23) selected as tightest, `family_ambiguity=True`, `evaluated_pairs=3`, full landscape returned.
+
+Mouse names test: `Yap1` (taxon=10090) vs `Tead4` (taxon=10090) correctly orthologue-mapped to YAP1/TEAD4, r=+0.12.
+
+`find_cocorrelated_genes('TP53', top 5)` returns MDM2 (-0.72), CDKN1A (+0.70), TP53BP1 (+0.69), USP28 (+0.66), CHEK2 (+0.63) — all canonical p53 pathway members. Negative + positive correlations both biologically sensible.
+
+### DepMap coverage on the literature graph
+
+Numbers are post-rebuild (with resolved-identifier annotations and filtered-name exclusion):
+
+| Metric | Count | % of total |
+| --- | --- | --- |
+| Graph nodes | 11,206 | — |
+| Graph edges | 11,312 | — |
+| Nodes with resolved gene_symbol | 4,360 | 38.9 % |
+| Nodes whose gene_symbol is in DepMap | 4,261 | 38.0 % |
+| **Edges with both endpoints in DepMap** | **4,485** | **39.6 %** |
+
+Per-node coverage is much lower than the per-occurrence 69.3 % from sprint 2 — this is the long-tail effect: well-studied proteins (KRAS, p53, EGFR, YAP1, ...) account for many occurrences each, but the 6,500+ unresolvable nodes are mostly singletons (yeast / bacterial / typo names).
+
+**Conditional coverage** is the more useful number: of edges whose both endpoints resolved to a gene_symbol, **96.8 %** are in DepMap (4,485 / 4,631). Resolution is the bottleneck, not DepMap coverage. Going forward, a smarter resolver (cross-species gene-symbol lookup for yeast / Drosophila orthologs) would lift coverage materially; sprint 5+ work, not blocking.
+
+In practice the user-facing experience is much better than 40 %: the KRAS depth-1 subgraph (50 nodes, 68 edges) had **76 % of its edges** with available DepMap correlations (52 / 68). Popular nodes are densely covered; the long tail is the rare, niche stuff.
+
+### Decisions taken (per user direction)
+
+1. Family-head policy: tightest |r| + `evaluated_pairs` + `family_ambiguity=True` + full `all_results`.
+2. Default `min_n` = 100 overlapping cell lines.
+3. Tool surface: A (`get_genetic_codependency`) + B (`export_subgraph` with `with_depmap`) + C (`find_cocorrelated_genes`).
+4. Skill prompt updates included so end-to-end is testable now (sprint 4 territory but cheap to roll forward).
+
+### Risks called out at planning time — re-checked
+
+1. **Graph cache invalidation** — handled. Cache key bumped, in-process caches rebuild automatically. MCP-server first query after this sprint will be slow (~5 s graph rebuild + ~13 s DepMap load); subsequent calls are fast.
+2. **DepMap sign convention misreading** — handled in skill prompt with explicit "Sign convention" block plus a "Common pitfalls" entry. KRAS/BRAF (r ≈ 0) explicitly framed as biologically interpretable, not a contradiction.
+3. **Gene-symbol drift** — non-issue in practice. Of resolved gene symbols, 96.8 % hit DepMap directly.
+4. **COX2 ambiguity** — sprint-2 carryover. Family-aware reporting partially mitigates: `get_genetic_codependency('COX2', 'KRAS')` would return the tightest correlation across MT-CO2 and PTGS2 candidates, with `family_ambiguity=True`. Still no contextual disambiguation from `experimental_context` text — sprint 5+ work.
+
+### Files touched
+
+- `src/depmap.py` (new) — pyarrow loader + correlation helpers
+- `src/_corpus_graph.py` — extended `_build_graph` with resolved-identifier annotations + filter exclusion; added `get_genetic_codependency` + `find_cocorrelated_genes`; extended `export_subgraph` with `with_depmap`
+- `src/identifier_normalizer.py` — added `get_normalizer()` module-level lazy singleton
+- `src/mcp_server.py` — three new `@mcp.tool()` registrations
+- `src/skill_runner.py` — three new `_TOOL_DEFS` entries + dispatch branches; updated `_GRAPH_TOOLS` set
+- `skills/corpus-explorer/SKILL.md` — DepMap section, sign-convention framing, two new pitfalls
+
+### Out of scope (deferred to sprint 5+)
+
+- Cross-species ortholog lookup for yeast / Drosophila / bacterial gene names (would lift node coverage from ~41 % toward 60–70 %).
+- A bulk pre-computed `data/depmap_edges.parquet` for the full literature graph — needed only when sprint 5 starts iterating over all edges for clustering.
+- Contextual disambiguation of HGNC-ambiguous names (COX2, p62) using `experimental_context` text — needs a small LLM call per ambiguous occurrence; weighing against token cost.
+- Per-Celery-worker memory: each loads its own DepMap copy (~600 MB resident). Acceptable at current scale; revisit if scaling out.
+
+### Coverage diagnostic + three follow-up fixes
+
+User audit caught the gap between sprint 2's 69 % occurrence-weighted resolution and sprint 3's 38.9 % per-node coverage. Diagnostic broke it down by mention-count bucket and confirmed the long-tail effect (singletons resolved at 26.8 %, 100+ mention nodes at 100 %). Three targeted fixes applied:
+
+1. **Compound-name lookup in graph builder** — sprint 2 split `"YAP/TAZ"` into separate `YAP` + `TAZ` entries, but the graph builder was looking up the literal compound string. New `_resolve_compound_name` helper in `src/_corpus_graph.py` uses the same splitter as sprint 2, merges resolved components into a synthetic family-head entry. Catches `YAP/TAZ`, `MEK1/2`, `LATS1/2`, `Erk 1/2`, `APC/C`, etc.
+2. **Splitter handles paralog shorthand** — `split_compound` (renamed from `_split_compound` since it's now used across modules) extended to expand `"MEK1/2"` into `["MEK1", "MEK2"]` and `"MAP2K1/2/3"` into `["MAP2K1", "MAP2K2", "MAP2K3"]`. The previous version dropped the trailing digit because of a `len >= 2` filter.
+3. **Filter additions + curated aliases**:
+   - `_NON_PROTEIN_TERMS` extended with cellular structures (Membrane, mitochondria, Promoter, Enhancer, Antigen, Antibody, NCP, T-cell labels) and major lncRNAs (XIST, MALAT1, NEAT1).
+   - `_BIOLOGY_ALIASES` extended with MENIN→MEN1, MYOSIN→MYH7 (cardiac default), CARDIACMYOSIN→MYH7, NONMUSCLEMYOSIN→MYH9.
+
+Post-fix coverage:
+
+| Metric | Before fixes | After fixes | Δ |
+| --- | --- | --- | --- |
+| Per-node resolution | 38.9 % | **41.2 %** | +2.3 pp |
+| Mention-weighted graph resolution | 62.5 % | **64.2 %** | +1.7 pp |
+| Edges with both endpoints in DepMap | 39.6 % | **42.2 %** | +2.6 pp |
+| Singleton nodes resolved | 26.8 % | **29.8 %** | +3.0 pp |
+| Conditional (resolved → in-DepMap) | 96.8 % | 97.1 % | +0.3 pp |
+
+Marginal in absolute terms, as predicted — the singletons are mostly genuine non-mammalian and unfixable without ortholog-table scope creep. But the compound-name fix is high-value: each compound name is in many edges, so edges saw the biggest improvement.
+
+Sprint 2 backfill re-run with `--force` to apply (2) + (3) to existing fingerprints. Backfill stays idempotent — second run shows `already_current: 5,547`.
+
+---
+
+## 2026-05-03 — DepMap integration sprint 5: Louvain clustering
+
+Move from pairwise edges to co-functional modules. Pipeline:
+
+```
+literature graph + DepMap r --[edge_index]--> data/depmap_edges.parquet
+data/depmap_edges.parquet --[clustering]--> data/clusters.json
+```
+
+Three new tools (`cluster_for_protein`, `cluster_members`, `find_clusters_by_keyword`) wired into both transports + skill prompt updated.
+
+### Decisions taken (per user)
+
+1. **Algorithm**: Louvain via `networkx.algorithms.community.louvain_communities` — no new dependency. Leiden + igraph deferred unless quality demands it.
+2. **Edge weighting**: `weight = mentions × |depmap_r|` with thresholds `mentions ≥ 1` and `|r| ≥ 0.15`. DepMap-unavailable edges keep `default_r = 0.1` so literature-only signal stays a weak community anchor; DepMap-available edges with `|r| < 0.15` are excluded (DepMap actively rejects them).
+3. **Cluster size cap**: 50. Oversized clusters re-cluster recursively at 1.5× resolution, max depth 3.
+4. **Storage**: `data/depmap_edges.parquet` (pyarrow) for the enriched edge index; `data/clusters.json` for the cluster registry. Both are gitignored.
+
+### Edge index — gene-symbol collapse
+
+The literature graph keeps separate nodes for `KRAS` vs `K-RAS` (the legacy `_normalize_protein` preserves letter-letter hyphens). For clustering this would split a gene's edges across two nodes — bad. Solution: at edge-index build time, collapse all node-pair edges by canonical `(gene_a, gene_b)` keys and sum mentions across collapsed groups. DepMap r is computed once per unique pair.
+
+Edge index numbers (after collapse + threshold):
+
+| Stage | Count |
+| --- | --- |
+| Graph edges (raw) | 11,163 |
+| Graph edges with both endpoints resolved to a human gene | 4,852 |
+| Unique gene-pair edges after collapse | 4,582 |
+| Edges with available DepMap r | 4,404 |
+| Edges meeting weight threshold | **839** |
+
+The 839 final edges represent strong-signal interactions: literature-mentioned AND DepMap-supported (`|r| ≥ 0.15`) OR literature-only with a small default weight.
+
+### Clustering output
+
+| Metric | Value |
+| --- | --- |
+| Algorithm | Louvain (resolution = 1.0, seed = 42) |
+| Total clusters | 276 |
+| Largest cluster | 46 (under the 50 cap, no recursive splitting needed) |
+| Median cluster size | 2 |
+| Singletons | 6 |
+| Top 5 sizes | 46, 33, 29, 26, 25 |
+
+### Validation on known biology
+
+Spot-checked five canonical modules:
+
+| Module | Cluster ID | Size | Hub | Members (selected) | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| **Hippo / YAP** | #2 | 29 | YAP1 | YAP1, WWTR1, TEAD1–4, LATS1, LATS2, NF2, MARK2/3, TAOK1, WWC1, VGLL3, PTPN14, plus downstream FOS/FOSL1/JUN/E2F1 | ✅ canonical Hippo + downstream effectors |
+| **p53** | #1 | 33 | TP53 | TP53, MDM2, MDM4, CDKN1A, TP53BP1, USP28, USP7, RB1, CCND1/2/CCNE1, CDK2/4/6, SKP2, CKS1B | ✅ p53 axis + cell-cycle |
+| **mTOR** | #15 | 10 | TSC1 | MTOR, RHEB, RICTOR, RRAGA, TSC1/2, FLCN, FNIP1, TBC1D7, PTEN | ✅ tight mTORC1/lysosomal sensing module |
+| **BRCA / HR** | #13 | 11 | BRCA1 | BRCA1, BARD1, BRCA2, PALB2, RAD51B/C/D, XRCC3, HELQ, MDC1, RAD18 | ✅ homologous-recombination module |
+| **RTK + PI3K-AKT + DDR** | #0 | 46 (cap) | EGFR | EGFR, AKT1, PIK3CA, BRAF, IGF1R, IRS1, FOXO1, PTEN, ATM, CHEK2, APC, ARHGEF7, ASPG, BLNK, CD19, CD81, ... | ✅ growth-signalling supercluster, sits at size cap |
+| **MYC / RAS** | #8 | 16 | KRAS | KRAS, NRAS, MYC, MYCN, MAX, RAF1, SHOC2, CTNNB1 | ✅ RAS/MAPK + MYC oncogenic core |
+
+The size-46 supercluster #0 is at the cap. Inspecting the `external_edges` count (8) shows it's well-internally-connected; recursive splitting at 1.5× resolution didn't break it because the dense core resists higher-resolution decomposition. That's a **policy decision worth revisiting** if the user wants finer granularity inside the growth-signalling module specifically — bumping `RESOLUTION_STEP` or lowering `MAX_CLUSTER_SIZE` to 30 would force a split.
+
+### Notable absences
+
+A few proteins resolved correctly but didn't make it into the cluster registry (`reason: "not_clustered"`):
+
+- **Tau (MAPT)**: resolved fine but had no qualifying edges. Tau biology in DepMap is mostly aggregation-driven, not co-essential — its literature partners (USP10, GSK3B etc.) had `|r| < 0.15`. Honest signal: Tau interactions don't show as co-essential modules.
+- **AKT2, AKT3**: family-head resolution defaults `AKT` → AKT1, so AKT2/AKT3 mentions get folded into AKT1 in the edge index. Working as designed; user can query specific paralogs to see them split.
+
+> Earlier draft of this entry claimed STING was absent. False negative from a validation script that looked for the literal string `STING` in cluster members; the resolved symbol is **STING1** (the `paralog_default` tier maps `STING + "1" = STING1`). STING1 is correctly clustered in #38 with TBK1 / IRF3 / NLRC3 — the canonical cGAS-STING DNA-sensing module.
+
+### Files touched
+
+- `src/edge_index.py` (new) — pyarrow-backed edge index library, gene-symbol collapse, weight formula
+- `src/clustering.py` (new) — Louvain + recursive size-cap split + cluster registry loader
+- `scripts/build_edge_index.py` (new) — CLI for building the parquet
+- `scripts/cluster_corpus.py` (new) — CLI for clustering with `--rebuild-edges`, `--resolution`, `--seed`
+- `src/_corpus_graph.py` — three new tool functions: `cluster_for_protein`, `cluster_members`, `find_clusters_by_keyword`
+- `src/mcp_server.py` + `src/skill_runner.py` — tool registrations + dispatch
+- `skills/corpus-explorer/SKILL.md` — Co-functional clusters section + cheat-sheet entries
+- `data/depmap_edges.parquet` (gitignored, ~25 KB)
+- `data/clusters.json` (gitignored, ~280 KB)
+
+### Out of scope (deferred)
+
+- **Sprint 6 — semantic cluster neighbourhoods**: per-cluster literature embedding (mean of `situational_context_hook` vectors) + ESM mean-pool of cluster proteins → cluster-cluster cosine similarity → meta-graph. Gated on user inspecting sprint-5 clusters and deciding the question is well-posed.
+- **Leiden upgrade**: if Louvain's occasional disconnected-community pathology bites, swap to `leidenalg`.
+- **Per-cluster top-DOIs**: would need to walk fingerprints once per cluster to aggregate. Not in the current schema; cheap to add when consumers ask.
+- **Cluster stability across corpus growth**: when new papers are curated, clusters will shift. Worth tracking diff over time, but not blocking.
+
+---
+
+## 2026-05-03 — Open-science release planning session
+
+Design discussion on turning the corpus side of the project into a community-driven open-science release. Full planning document landed in `RELEASE_PLAN.md`; this entry captures the load-bearing decisions so future-me can find them without re-reading the discussion.
+
+### Headline shape
+
+- **Decouple corpus from design.** Two products in one repo via PyPI extras: `lpt-corpus` (light) and `lpt-corpus[design]` (heavy GPU/MCP deps). v0.1 ships corpus-only — design route hidden in the web UI but present in source. Reasoning: ~100× audience difference, very different dep profiles, less surface area to defend on launch.
+- **Hosting**: Hetzner CX32 (4 vCPU / 8 GB / EU) for the API + Celery + Redis + Postgres + LanceDB. Frontend on Cloudflare Pages (free). Data dumps on Zenodo (DOI per release, citable in papers) + R2 mirror. Total ~€13/mo. EU jurisdiction throughout for GDPR + open-science narrative + cleanest BYOK story.
+- **Capacity at this size**: 200–500 daily active users, 50–150 papers/day curation, 20–30 search QPS sustained. Box dies on concurrency spikes (>3 simultaneous curations, >50 simultaneous skill sessions), not volume. Upgrade path goes to ~€40/mo for 5–10× headroom before any replatform is needed.
+- **Auth**: hybrid. Anonymous-by-default for browse + skill chat with BYOK in session-scoped Redis (Fernet, TTL = session). GitHub OAuth (read:user only) for contribution + persistent history + cumulative cost ceilings. ORCID deferred until academic users ask.
+- **Corpus expansion via web**: Celery job runs `fetch_papers + curate_papers` with the user's BYOK decrypted into worker memory for the job's lifetime; results stage in a per-user review queue; user explicitly approves each fingerprint into a "candidate for shared corpus" pool that monthly releases merge. Never auto-merge. Anonymous quota = 0 (must sign in to contribute).
+- **Community trust model**: PMC-OA papers only (provenance verifiable). Bot re-curates a random 5% sample to detect adversarial submissions. Cost of spot-check at €0.01/paper × 5% = trivial.
+- **Cost protection (BYOK)**: log token counts (not query content) per session; warn at €1/€5/€10; user-set hard ceiling for authenticated accounts. `skill_runner.py` `--max-tokens` ceiling already exists — web path must enforce.
+
+### Hard pre-release blockers
+
+- **OA audit**: `data/literature.db` contains manually-added non-OA papers. Cross-reference against PMC OA file list; tag every paper; ship only OA-derived fingerprints in the public Zenodo snapshot. Add license-clean gate to `curate_papers.py` so non-OA can't enter the public corpus accidentally going forward.
+- **Curation provenance**: every fingerprint must record `curator_model + prompt_version + curated_date`. Audit existing fingerprints; backfill missing fields.
+- **Reproducibility**: pin gemini-flash to a specific snapshot, not the floating alias.
+- **CITATION.cff + Zenodo deposit** with DOI before public announcement — single biggest driver of academic adoption.
+- **Privacy notice + GDPR account-deletion path** must be drafted before launch, not after the first ticket.
+
+### Open questions deferred
+
+- Hosted MCP server on the public box? Defer until a user asks.
+- ORCID alongside GitHub OAuth? Defer.
+- Federation (private corpora that opt-in to the public one)? Out of v0.1 scope.
+- Schema migration policy for community contributions when v3.0 lands. Decide before contribution flow goes public.
+
+### Files touched
+
+- `RELEASE_PLAN.md` (new) — full planning document with deployment topology, capacity table, auth model, contribution flow, OA compliance steps, packaging, pre-release checklist, open questions.
