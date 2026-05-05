@@ -90,6 +90,16 @@ class TargetNode(BaseModel):
     suggested_pdb_structures: list[str] = []
     source_span: str
 
+    @field_validator("prior_therapeutic_targeting", mode="before")
+    @classmethod
+    def _coerce_list_to_str(cls, v):
+        # Gemini sometimes returns a list (e.g. ["PARP inhibitors", "Olaparib"])
+        # for this field even though the schema says string. Join into one string
+        # rather than reject — losing the data on a formatting mismatch is worse.
+        if isinstance(v, list):
+            return ", ".join(str(x) for x in v if x) or None
+        return v
+
 
 class PathwayContext(BaseModel):
     pathways: list[str] = []
