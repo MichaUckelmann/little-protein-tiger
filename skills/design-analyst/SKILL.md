@@ -55,6 +55,9 @@ The query body contains a CSV table with the MMR-selected top-K. Columns:
 | `complex_plddt` | overall complex pLDDT (0-1) | higher = better |
 | `binder_length` | residue count of the designed binder | — |
 | `mmr_max_similarity` | sequence identity to the most similar already-picked design | lower = better |
+| `liability_score` | BoltzGen composite developability score (cleavage motifs, oxidation, etc.) | **lower = better** |
+| `liability_high_severity_violations` | count of severe synthesis / stability risks (DPP4 cleavage, Asp-Pro, ProtTryp, etc.) | **0 strongly preferred** |
+| `liability_num_violations` | total liability hits (all severities) | lower = better |
 
 **You do not see protein sequences.** That is deliberate — sequences are
 withheld from this stage. Reference designs by `design_id`, not by
@@ -115,6 +118,15 @@ compute or follow-up effort. Look for any of:
 - **Empty or sparse top-K** — if fewer than 5 rows survived, the hard
   filters were too tight or the campaign too small. Recommend re-run
   before any further analysis.
+- **Developability liabilities** — any candidate with
+  `liability_high_severity_violations ≥ 1` is at risk for serum
+  degradation (DPP4 / ProtTryp / aspartate cleavage) or synthesis
+  problems (disulfide misassembly, Met / Trp oxidation hotspots).
+  `liability_score ≥ 20` is a yellow flag; `≥ 30` with multiple
+  high-severity hits is a red flag for ordering. Note it in this
+  section AND down-rank the affected candidate in section 4 — a
+  binder that can't survive 30 min in plasma is not the lead pick,
+  even if the binding metrics are best in the top-K.
 
 State "No red flags identified" if none apply. Don't manufacture concerns
 to fill space.
@@ -127,6 +139,14 @@ bulleted list, each line:
 
 - `design_id` — one short sentence on why this one (e.g. "best
   composite_score with tight iPAE and high hotspot occlusion").
+
+**Selection rule**: prefer designs that combine good binding metrics
+(composite_score, iPTM, iPAE, hotspot SASA) with **low liability_score**
+and **zero high-severity violations**. A design with the best
+composite_score but `liability_high_severity_violations ≥ 2` should
+NOT be the rank-1 pick — call this out explicitly and recommend a
+clean-liability alternative as the lead, with the high-binding-but-
+risky design as a secondary option for re-engineering or comparison.
 
 If the campaign genuinely produced no candidates worth pursuing, output
 the literal line `_None — see Recommended next steps for re-run guidance._`

@@ -1038,6 +1038,16 @@ class PipelineRunner:
         "complex_plddt",
         "binder_length",
         "mmr_max_similarity",
+        # BoltzGen's developability / synthesis-risk signals. liability_score is
+        # a composite of cleavage motifs, oxidation hotspots, hydrophobic
+        # patches etc.; the high-severity count is the most important — those
+        # are the violations that would degrade a cyclic peptide in serum
+        # (DPP4 sites, ProtTryp sites) or fail at synthesis (Asp-Pro cleavage,
+        # disulfide misassembly). The analyst weighs these alongside binding
+        # metrics so the recommended designs are actually orderable.
+        "liability_score",
+        "liability_high_severity_violations",
+        "liability_num_violations",
     )
 
     def _stage_summary(

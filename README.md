@@ -72,6 +72,11 @@ vector_store:
 
 ## Pipeline overview
 
+Two related pipelines share the corpus + skill catalogue:
+
+**Literature corpus (left side)** — build a curated, vector-indexed
+biochemistry database, queryable by skills and humans:
+
 ```
 fetch_papers.py          Search + download XMLs/PDFs → literature.db
       ↓
@@ -80,11 +85,42 @@ curate_papers.py         Claude extracts structured fingerprint JSONs
 ingest_vectors.py        Embed fingerprints into LanceDB vector store
       ↓
       ├── mcp_server.py            MCP tools for Claude Desktop skills
-      │                            (search_corpus, get_fingerprint)
+      │                            (search_corpus, get_fingerprint, …)
       │
       └── run_skill.py             CLI: run any expert skill via API
                                    (Claude or Gemini, no IDE required)
 ```
+
+**Binder design (right side)** — an autonomous 7-stage pipeline that
+takes a free-text design objective and produces a ranked top-K of
+designed cyclic-peptide or mini-protein binders, with audit traces at
+every stage:
+
+```
+PipelineRunner.run(query="Design therapeutics for ...")
+
+  stage 0  pathway-expert             → target complex + PDB
+  stage 1  molecular-biology-expert   → tractability + target_site_hint
+  stage 2  complex-structure-analysis → MODEL-READY HOTSPOTS (auth + label_seq)
+  stage 3  protein-design-script      → BoltzGen YAML + RFD3 JSON
+  stage 4  design_runner              → BoltzGen pilot → gate → production
+                                          (workstation GPU subprocess)
+  stage 5  design_metrics + ranking   → enrich top-K with pyrosetta hotspot
+                                          SASA, MMR-rank by composite score
+  stage 6  design-analyst             → final candidate review + FASTA
+```
+
+Stages 0–3 and 6 are LLM-driven (skills); stages 4 and 5 are deterministic
+Python. The orchestrator handles `auth_seq_id ↔ label_seq_id` numbering,
+PDB-identity sanity checks (catches paper-level protein/PDB conflations
+in the corpus), and BoltzGen's output renumbering quirks. See
+`src/pipeline_runner.py` for the full state machine and `diary.md` for
+the design notes and known failure modes.
+
+End-to-end driver: `scripts/test_e2e.py --prompt "..." --slug runname`.
+Configuration lives under `design:` in `config.yaml` (workstation
+executable, pilot/production batch sizes, hard filters, ranking weights,
+pyrosetta env path).
 
 ---
 
@@ -336,6 +372,73 @@ python scripts/ingest_vectors.py
 ```
 
 Restart Claude Desktop to pick up the new fingerprints via MCP.
+
+### 7. Run the binder design pipeline end-to-end
+
+The 7-stage design pipeline drives `PipelineRunner` (see `src/pipeline_runner.py`)
+from a free-text prompt. Stages 0–3 + 6 are LLM-driven skills; stage 4
+runs BoltzGen on the local GPU; stage 5 enriches the top-K with hotspot
+SASA via PyRosetta and ranks. The wrapper script in `scripts/test_e2e.py`
+takes a prompt + slug and captures per-stage conversation traces for audit.
+
+```bash
+.venv/bin/python scripts/test_e2e.py \
+  --prompt "Design cancer therapeutics to target key nodes in mesothelioma." \
+  --slug mesothelioma \
+  --pilot 50 --production 100
+```
+
+Configuration lives under `design:` in `config.yaml`:
+
+- `design.workstation.boltzgen_executable` — absolute path to the BoltzGen entry
+  point (we use the entry script's own shebang to invoke its conda/uv env, no
+  `conda activate` needed).
+- `design.workstation.cuda_device` / `timeout_hours` — GPU and time limits.
+- `design.pilot` / `design.production` — `num_designs` + `budget` per phase. The
+  pilot result gates the production run (raises `PipelinePausedError`
+  `pilot_failed` if completion + final-fill rates fall below threshold).
+- `design.thresholds` — hard filters in stage 5: `iptm_min`, `ipae_max`,
+  `hotspot_sasa_delta_min`, `require_boltzgen_pass`.
+- `design.ranking` — `enrich_top_k` (how many designs get pyrosetta SASA),
+  composite `weights`, `mmr` diversity params, `top_k`.
+- `design.constraints` — target-size limits (`max_target_residues`,
+  `target_residues_warn`) and binder size ranges (`cyclic_peptide` 12..15,
+  `mini_protein` 70..86 by default).
+- `design.pyrosetta.python_executable` — absolute path to a conda env where
+  PyRosetta imports cleanly (typically Python 3.11; see
+  `/home/.../pyrosetta/SETUP_NOTES.md`).
+
+Run outputs land under `outputs/<slug>/`:
+
+- `0X_<stage>.md` — markdown report from each LLM-driven stage.
+- `traces/<stage>/{trace_raw.json, trace_rendered.md}` — full conversation
+  history per LLM stage (only when `capture_traces=True`).
+- `03_design_inputs/*.yaml` + `*_submit.sh` — BoltzGen design YAMLs.
+- `04_execution_outputs/` — BoltzGen run dir (CIFs + `boltzgen.log` +
+  `final_ranked_designs/all_designs_metrics.csv`).
+- `05_metrics_enriched.csv` — every design with hotspot SASA appended.
+- `05_ranking/{ranked.csv, top_k.csv, filter_stats.txt}` — filtered, ranked,
+  MMR-diversified output.
+- `06_summary.md` + `06_top_k.fasta` — analyst review + deterministic FASTA
+  for ordering.
+
+A first-time setup also needs the RCSB metadata cache (used by
+`find_pdb_structures` to surface PDB titles + entity descriptions to the
+LLM, catching corpus paper-level protein/PDB conflations):
+
+```bash
+python scripts/fetch_pdb_metadata.py   # writes data/pdb_metadata.json
+```
+
+The pipeline expects BoltzGen and PyRosetta envs already configured. For
+BoltzGen, install per its README (`pip install boltzgen` or `uv pip install`)
+and set the absolute path in `config.yaml`. For PyRosetta, see
+`/home/m.uckelmann_cbs-niob.local/pyrosetta/SETUP_NOTES.md` — the LPT venv
+itself does NOT need PyRosetta installed; the orchestrator subprocesses out
+to a dedicated env via `scripts/_sasa_worker.py`.
+
+See `diary.md` for design notes, known failure modes, and the long-term
+plan for a ground-truth PDB→protein lookup table.
 
 ---
 
