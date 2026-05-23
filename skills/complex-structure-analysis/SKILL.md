@@ -131,6 +131,31 @@ be the authoritative starting set for hotspot selection — confirm their geomet
 do not silently drop residues from this list. If the list is empty, fall back to
 purely geometry-driven hotspot selection.
 
+**Confirm the structure is actually your target — BEFORE any geometry pass.**
+The corpus stores paper-level `entities.proteins` and `paper_metadata.pdb_accessions`
+as two independent lists. A paper that mentions protein X and deposits a PDB
+of paralog Y will resolve "find PDBs for X" → Y's PDB. The orchestrator now
+fails the run at `_ensure_structure` if the expected target name doesn't
+appear in the CIF title or polymer entity descriptions — but you should also
+do a first-line check so the rejection comes with a structural explanation,
+not just a hard abort.
+
+In Phase 1, **as the very first thing you do** with the loaded structure,
+quote each chain's `pdbx_description` (from the mmCIF header — the
+orchestrator already surfaces these in the query under "Chain entity
+descriptions and sizes") and compare them word-for-word against the
+expected target name in the query. Examples:
+
+- Expected `ENPP1` vs entity `"Ectonucleotide pyrophosphatase/phosphodiesterase family member 1"` → match (note both the abbreviation and the long form name in your report).
+- Expected `ENPP1` vs entity `"... family member 2"` → **mismatch**. Stop. Emit a NO_GO PIPELINE HANDOFF naming both the expected target and the actual entity, and recommend either (a) selecting a different PDB or (b) re-running the pathway stage with a stricter target.
+- Expected `YAP1 / TEAD4` vs entities containing both names → match.
+- Expected `YAP1 / TEAD4` vs entities containing only one → match for the one present, flag the missing partner; partner-chain absence is recoverable (you can sometimes still design against the single chain), but call it out.
+
+When the names look ambiguous (e.g. "EGFR" vs "Epidermal growth factor receptor"
+— same protein, different naming convention), proceed and note it as
+expected-equivalent in your report. When the names refer to clearly different
+paralogs (ENPP1 vs ENPP2, JAK1 vs JAK2), do not proceed.
+
 **On tool failures and UNVERIFIED label_seq_ids.** If `tool_get_sequence_map`
 or another structure tool returns an error (e.g. a transient MCP dependency
 issue), you may write `**UNVERIFIED**` in the `label_seq_id` column of
