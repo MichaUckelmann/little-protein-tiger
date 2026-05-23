@@ -131,6 +131,11 @@ class PipelineResult:
     # and _stage_literature.
     pathway_handoff: dict | None = None
     literature_handoff: dict | None = None
+    # Deterministic PDB-vs-expected-target identity check result, populated
+    # in run() right after _ensure_structure. Always present; the structure
+    # stage surfaces it to the LLM as evidence (synonym → proceed,
+    # paralog mismatch → NO_GO).
+    pdb_identity_check: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -340,25 +345,33 @@ class PipelineRunner:
                 result.pdb_id = pdb
                 asu_path = self._ensure_structure(pdb)
 
-                # Verify the structure actually matches the proposed target.
-                # The corpus pairs paper-level (proteins) ⊥ (pdb_accessions)
-                # without a per-PDB mapping, so a paper that mentions ENPP1
-                # while depositing an ENPP2 structure will resolve "ENPP1" →
-                # the ENPP2 PDB. Catching this at the file level prevents
-                # downstream stages from designing against the wrong target.
+                # PDB identity check. Naive substring match flags real bugs
+                # (5DLT/ENPP1→ENPP2) but also flags benign name variants
+                # (3KYS: "TEAD1" expected, entity says "Transcriptional
+                # enhancer factor TEF-1" — same protein). Instead of failing
+                # hard at the orchestrator, the result is recorded and surfaced
+                # to the structure-expert which has the biological knowledge
+                # to distinguish synonym ≠ paralog: TEF-1 = TEAD1 (proceed),
+                # ENPP1 vs ENPP2 (NO_GO).
                 expected = result.target_complex or (result.pathway_handoff or {}).get("target_complex", "")
                 ba1 = asu_path.with_name(f"{pdb.upper()}_ba1.cif")
                 analysis_path = ba1 if ba1.exists() else asu_path
                 ok, summary = self._verify_pdb_identity(analysis_path, expected)
-                if not ok:
-                    raise PipelineError(
-                        f"PDB identity check FAILED for {pdb} ({analysis_path.name}).\n"
-                        f"  Expected target: {expected!r}\n"
-                        f"  Structure metadata: {summary}\n"
-                        f"Pathway analysis recommended this PDB for the target above, but the "
-                        f"structure file is for a different protein. Likely a corpus paper-level "
-                        f"protein/PDB conflation. Re-run pathway-expert with the expected target "
-                        f"name in the prompt, or override `pdb_id` to a verified accession."
+                # Stash the check result on result so _stage_structure can
+                # include it in the query. The structure-expert is the
+                # judge — it produces the actual NO_GO if the mismatch is
+                # not a synonym/canonical-name case.
+                result.pdb_identity_check = {
+                    "ok": ok,
+                    "summary": summary,
+                    "expected": expected,
+                }
+                if ok:
+                    logger.info(f"  PDB identity check PASS for {pdb}: {summary[:160]}")
+                else:
+                    logger.warning(
+                        f"  PDB identity check flagged a possible mismatch for {pdb} "
+                        f"— structure-expert will adjudicate. {summary[:200]}"
                     )
 
             # ── Stage 2: complex-structure-analysis ──────────────────────────
@@ -565,6 +578,26 @@ class PipelineRunner:
         query += f"\n\ndesign_intent: {design_intent}"
         if site_hint:
             query += f"\ntarget_site_hint: {site_hint}"
+
+        # Inject the orchestrator's PDB-identity check result so the structure
+        # expert can judge synonym ≠ paralog. The check is intentionally
+        # strict (substring match); the LLM filters out benign name variants
+        # like "Transcriptional enhancer factor TEF-1" ≡ TEAD1, while
+        # rejecting real paralog mismatches like ENPP1 vs ENPP2.
+        idc = result.pdb_identity_check or {}
+        if idc:
+            verdict = "PASS" if idc.get("ok") else "MISMATCH"
+            query += (
+                f"\n\n### Orchestrator PDB identity check: {verdict}\n"
+                f"- Expected target: {idc.get('expected', '(unknown)')!r}\n"
+                f"- Structure metadata: {idc.get('summary', '(no summary)')}\n"
+                f"- Adjudication rule: a MISMATCH between expected target name and the canonical "
+                f"RCSB entity description (e.g. 'YAP1' vs 'Yes-associated protein', "
+                f"'TEAD1' vs 'TEF-1') is a SYNONYM — proceed and note the equivalence in your "
+                f"report. A MISMATCH between different paralogs / family members (e.g. ENPP1 vs "
+                f"ENPP2, JAK1 vs JAK2, TEAD1 vs TEAD4) is a REAL mismatch — emit NO_GO with the "
+                f"expected and actual proteins named in your rationale."
+            )
 
         logger.info("Stage 1: complex-structure-analysis")
         # Don't pass prior stage context: structure_query already contains everything

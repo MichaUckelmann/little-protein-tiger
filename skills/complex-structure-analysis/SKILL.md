@@ -139,27 +139,39 @@ purely geometry-driven hotspot selection.
 **Confirm the structure is actually your target — BEFORE any geometry pass.**
 The corpus stores paper-level `entities.proteins` and `paper_metadata.pdb_accessions`
 as two independent lists. A paper that mentions protein X and deposits a PDB
-of paralog Y will resolve "find PDBs for X" → Y's PDB. The orchestrator now
-fails the run at `_ensure_structure` if the expected target name doesn't
-appear in the CIF title or polymer entity descriptions — but you should also
-do a first-line check so the rejection comes with a structural explanation,
-not just a hard abort.
+of paralog Y will resolve "find PDBs for X" → Y's PDB. The orchestrator runs
+a deterministic substring check and surfaces the result in the query as
+**"Orchestrator PDB identity check: PASS | MISMATCH"** with the expected target
+and actual structure metadata. You are the judge — orchestrator check is
+strict and produces false positives on canonical-name variants.
 
-In Phase 1, **as the very first thing you do** with the loaded structure,
-quote each chain's `pdbx_description` (from the mmCIF header — the
-orchestrator already surfaces these in the query under "Chain entity
-descriptions and sizes") and compare them word-for-word against the
-expected target name in the query. Examples:
+Adjudication rules (apply before any geometry call):
 
-- Expected `ENPP1` vs entity `"Ectonucleotide pyrophosphatase/phosphodiesterase family member 1"` → match (note both the abbreviation and the long form name in your report).
-- Expected `ENPP1` vs entity `"... family member 2"` → **mismatch**. Stop. Emit a NO_GO PIPELINE HANDOFF naming both the expected target and the actual entity, and recommend either (a) selecting a different PDB or (b) re-running the pathway stage with a stricter target.
-- Expected `YAP1 / TEAD4` vs entities containing both names → match.
-- Expected `YAP1 / TEAD4` vs entities containing only one → match for the one present, flag the missing partner; partner-chain absence is recoverable (you can sometimes still design against the single chain), but call it out.
+- **PASS** verdict → proceed. The expected name appears in title / entity
+  descriptions.
+- **MISMATCH but same protein under canonical RCSB long form** → proceed,
+  note the synonymy in your report. Examples:
+  - Expected `YAP1` vs entity `"65 kDa Yes-associated protein"` → same, proceed.
+  - Expected `TEAD1` vs entity `"Transcriptional enhancer factor TEF-1"` → same, proceed.
+  - Expected `EGFR` vs entity `"Epidermal growth factor receptor"` → same, proceed.
+  - Expected `ENPP1` vs entity `"Ectonucleotide pyrophosphatase/phosphodiesterase family member 1"` → same, proceed.
+- **MISMATCH = different paralogs / family members** → **NO_GO**. Emit a stub
+  PIPELINE HANDOFF naming both the expected target and the actual entity.
+  Examples:
+  - Expected `ENPP1` vs entity `"... family member 2"` → ENPP2, NO_GO.
+  - Expected `TEAD4` vs entity `"Transcriptional enhancer factor TEF-1"` → TEAD1, NO_GO (different TEAD paralog).
+  - Expected `JAK1` vs entity for JAK2 → NO_GO.
+  - Expected `YAP1 / TEAD4` vs TAZ-TEAD complex → NO_GO (TAZ ≠ YAP1, paralog).
+- **MISMATCH = different species / orthologs but same gene** (e.g. mouse vs
+  human ENPP1) → proceed if the design intent doesn't require human-specific
+  residue numbering; otherwise NO_GO with a clear "needs human PDB" note.
+- **Partial match** (e.g. one of a PPI pair matches, the other is missing) →
+  proceed only if you can name a substitute or argue the missing partner is
+  not needed for the design. Otherwise NO_GO.
 
-When the names look ambiguous (e.g. "EGFR" vs "Epidermal growth factor receptor"
-— same protein, different naming convention), proceed and note it as
-expected-equivalent in your report. When the names refer to clearly different
-paralogs (ENPP1 vs ENPP2, JAK1 vs JAK2), do not proceed.
+Be conservative — only proceed when you can name the equivalence in plain
+English. If you can't articulate why the actual entity name maps to the
+expected name, treat it as a paralog mismatch and NO_GO.
 
 **On tool failures and UNVERIFIED label_seq_ids.** If `tool_get_sequence_map`
 or another structure tool returns an error (e.g. a transient MCP dependency

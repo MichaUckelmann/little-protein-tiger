@@ -1897,3 +1897,110 @@ to catch this:
 
 Will add both nudges to the relevant SKILL.md files in the next pass, but
 the deterministic safeguard at `_ensure_structure` is the real fix.
+
+## 2026-05-23 (even later) — Mesothelioma e2e + PDB metadata cache + soft identity check
+
+Second end-to-end test with an open prompt ("Design cancer therapeutics to target
+key nodes in mesothelioma."). Three takes:
+
+### Run 1 (failed at safeguard, correctly): pathway picked 5GN0 for YAP1/TEAD4
+The corpus has only one fingerprint citing 5GN0 — the paper *literally titled*
+"Crystal structure of TAZ-TEAD complex reveals a distinct interaction mode
+from that of YAP-TEAD complex". Same conflation pattern as the 5DLT/ENPP1
+bug — paper mentions YAP1 in its entities.proteins list but deposits a TAZ
+structure. The pipeline correctly aborted at the `_verify_pdb_identity` check
+within 331s. The paper title alone would have told the agent it's not a
+YAP-TEAD PDB.
+
+### Fix: populate the PDB metadata cache
+Discovered `scripts/fetch_pdb_metadata.py` + `_find_pdb_structures` already
+plumb RCSB GraphQL → `data/pdb_metadata.json` cache → enriched tool result
+(title + per-entity descriptions + organism). Cache file just didn't exist.
+Ran the fetch script — 3977/3978 corpus-cited PDBs cached in ~1 min. Verified
+5GN0 ("Structure of TAZ-TEAD complex" with TAZ + TEF-3 entities) and 5DLT
+("Crystal structure of Autotaxin (ENPP2)...") are now visible to
+`find_pdb_structures` callers.
+
+### Run 2 (failed at safeguard, false positive): pathway picked 3KYS for YAP1/TEAD1
+With the cache populated, pathway-expert correctly switched to 3KYS — the
+real YAP-TEAD reference. But `_verify_pdb_identity` failed strict substring
+match: expected "YAP1 / TEAD1" vs actual entities ["Transcriptional enhancer
+factor TEF-1", "65 kDa Yes-associated protein"]. These are the canonical
+RCSB long forms of TEAD1 and YAP1 — same proteins, different naming
+convention. Naive matcher can't bridge "TEAD1" ↔ "TEF-1" or "YAP1" ↔ "Yes-
+associated protein".
+
+### Fix: soften identity check from hard-fail to LLM-judged warning
+Tension: strict matcher catches real bugs (5DLT/ENPP1 → ENPP2 — also a
+substring fail) but throws false positives on legitimate name variants.
+Resolution: `_verify_pdb_identity` still runs and computes pass/fail, but
+the result is **stashed on `result.pdb_identity_check`** and **injected into
+the structure-stage query** as evidence — the structure-expert is the judge.
+Skill prompt now lists explicit rules:
+- Synonym (TEAD1 = TEF-1, YAP1 = "Yes-associated protein") → proceed with
+  note.
+- Different paralog numbers (ENPP1 vs ENPP2, JAK1 vs JAK2, TEAD1 vs TEAD4) →
+  NO_GO with both names quoted.
+- Species ortholog of same gene → proceed unless human-specific residue
+  numbering matters.
+- Partial PPI match → proceed if substitutable, NO_GO otherwise.
+
+### Run 3 (mechanics pass, design quality NO_GO): real YAP-TEAD design campaign
+42.7 min total wall time — substantially faster than the cGAS-STING run
+(~3h) because TEAD1 is ~210 residues vs Autotaxin's 795. Confirms target
+size is the dominant runtime factor, not cyclic-peptide protocol.
+
+All 7 stages ran cleanly:
+- pathway-expert → ENPP1 was not the highest-confidence target this time;
+  it picked YAP1/TEAD as the validated mesothelioma node (correct).
+- mol-bio-expert → tractability GO, modality cyclic_peptide, target_site_hint
+  with 12 priority residues.
+- structure-expert → adjudicated the TEAD1/TEF-1 synonym correctly, used
+  `disrupt` mode with `target_complex: "TEAD1 (TEAD4 proxy) / YAP1"`.
+- design-script → wrote a valid BoltzGen YAML, `boltzgen check` passed.
+- execution → pilot 50 PASS, production extended to 100. ~30 min.
+- analysis → top-K=20 by composite score.
+- summary → Haiku NO_GO verdict.
+
+**Why NO_GO?** The design-analyst caught a real failure: all 20 top-K designs
+have `lpt_hotspot_sasa_delta = 0.0` despite acceptable interface metrics
+(iPTM 0.55–0.67, iPAE 3.6–5.5 Å, complex_plddt ≥ 0.82). Binders fold against
+the TEAD1/YAP1 complex stably but **don't engage the 12 specified hotspot
+residues** — off-target binding pattern. Without our SASA-based ranking, the
+campaign would have looked successful on iPTM alone and shipped bad designs.
+
+Likely root causes (not yet investigated):
+1. Hotspot residue numbering mismatch — 12 hotspots from literature mapped
+   onto 3KYS which is human YAP1-TEAD1 (corpus said YAP1-TEAD4); residues
+   may not align across TEAD paralogs.
+2. Cyclic peptide too small to reach hotspots in correct geometry (12-15
+   residues against a flat hydrophobic PPI surface).
+3. Boltzgen `binding_types` constraint is soft; the model can land elsewhere
+   on the target if the energy is favourable.
+
+### Long-term plan: ground-truth PDB → protein index
+The PDB metadata cache solves the immediate problem (LLM now sees structural
+ground truth on every PDB it considers). Proper fix:
+
+1. Extend `fetch_pdb_metadata.py` to also pull UniProt accessions
+   (`rcsb_polymer_entity_align`).
+2. Build `data/pdb_protein_index.parquet` — one row per (pdb_id, chain_id)
+   with normalized name, UniProt acc, organism, gene symbol.
+3. Replace `find_pdb_structures` semantics: ground-truth lookup
+   (`find_pdbs_for_protein`) vs corpus-mention hint
+   (`find_pdbs_mentioned_with_protein`). Two tools, different semantics.
+4. Skill prompts told to prefer the ground-truth tool for design-target
+   selection.
+
+Estimated cost: 200-300 LoC + one-time backfill (~1-2 min). Deferred as a
+focused separate change.
+
+### Files changed in this session step
+
+- `src/pipeline_runner.py` — `pdb_identity_check` field on PipelineResult,
+  soft-fail check, structure-stage query injection of the check result.
+- `skills/complex-structure-analysis/SKILL.md` — adjudication rules for
+  identity-check verdicts (synonym/paralog/ortholog/partial match).
+- `scripts/test_e2e.py` — generalised e2e test driver (took prompt + slug).
+- `data/pdb_metadata.json` — 3977 RCSB metadata entries (cached;
+  regeneratable with `scripts/fetch_pdb_metadata.py`).
