@@ -2004,3 +2004,90 @@ focused separate change.
 - `scripts/test_e2e.py` — generalised e2e test driver (took prompt + slug).
 - `data/pdb_metadata.json` — 3977 RCSB metadata entries (cached;
   regeneratable with `scripts/fetch_pdb_metadata.py`).
+
+## 2026-05-23 (still later) — Root cause of YAP-TEAD off-target binding
+
+The mesothelioma run produced 20 designs with strong interface metrics but
+`lpt_hotspot_sasa_delta = 0.0` across the board. Investigated. Two
+compounding numbering bugs.
+
+### Bug 1: structure expert mis-computed label_seq_id
+
+Structure report had `PHE314 | auth 314 | label 111`. Actually PHE314 is
+at label_seq=122 in 3KYS chain A. The LLM appears to have used 1-indexed
+chain position (PHE314 is the 111th residue in the resolved chain) and
+called it label_seq_id. But mmCIF `label_seq` starts at 3 in 3KYS (the
+construct's first 2 residues aren't resolved in the crystal), so position
+111 ≠ label_seq 111 — off by +11.
+
+All 12 hotspots had this same +11 offset error in the LLM output.
+
+BoltzGen reads the `binding:` field as `label_seq` values. So
+`binding: 111` constrained the binder to MET303 (the actual label_seq=111
+residue), not PHE314. Same for all 6 Region-1 residues. Boltzgen dutifully
+generated designs that bound the wrong patch — high confidence on a wrong
+target.
+
+### Bug 2: BoltzGen renames target chain in output CIFs
+
+This is the "always starts at 1" quirk: BoltzGen output CIFs renumber the
+target chain so that auth_seq_id becomes the original label_seq. Original
+3KYS chain A spans auth 195..510; output chain A spans auth 3..217.
+PHE314 (original auth=314, label=122) appears as auth=122 in the output.
+
+The SASA worker looks residues up by auth_seq_id (via pdb_info.number()).
+We were passing original auth_seq_ids (314, 346, …) which don't exist in
+the renumbered output. Every hotspot reported as missing → sasa_delta=0.0
+across the board.
+
+### Fixes
+
+Both in `src/pipeline_runner.py`:
+
+1. `_resolve_unverified_label_seq_ids` now **always** overwrites the
+   label_seq_id column with the gemmi-computed value, not just when the
+   LLM wrote UNVERIFIED. Each correction is logged as a warning so the
+   discrepancy is auditable. The BoltzGen `binding:` line is rewritten
+   per-region with the corrected values.
+
+   Verified on the existing 02_structure.md: 12 label_seq_id corrections
+   (every single one wrong by +11), `binding:` lines updated for both
+   Region 1 and Region 2.
+
+2. `_stage_analysis` now remaps each hotspot's auth_seq_id to its original
+   label_seq_id before calling the SASA worker, because BoltzGen output
+   uses the renumbered convention. Without this the worker can't find any
+   hotspots → sasa_delta is structurally zero.
+
+   Verified by re-running stage 5 on the existing BoltzGen output: top
+   designs now show real hotspot occlusion (317–350 Å²) instead of all-zero,
+   and the remaining zeros are genuine off-target designs (the YAML had
+   wrong label_seq_ids so BoltzGen tried to bind to wrong residues; some
+   drifted onto the right surface by luck, some didn't).
+
+### Cross-stage numbering convention now consistent
+
+Inputs:
+- mmCIF on disk → auth_seq_id and label_seq_id, both visible via gemmi.
+- LLM-emitted MODEL-READY HOTSPOTS table → carries (auth_seq_id, label_seq_id).
+  The orchestrator always re-derives label_seq_id from auth_seq_id via gemmi.
+
+Outputs:
+- BoltzGen YAML `binding:` → label_seq_id (verified from binder-design
+  reference YAMLs).
+- BoltzGen output CIFs → auth_seq_id = original label_seq_id.
+- SASA worker lookup key → auth_seq_id (in the *output* CIF, i.e. original
+  label_seq_id of the structure expert's hotspot list).
+
+The orchestrator centralises this: structure-expert provides auth_seq_id
+(canonical residue numbering for the literature), orchestrator computes
+label_seq_id (used by BoltzGen) and remaps to label_seq_id-as-auth (used
+by SASA-on-BoltzGen-output). LLM only needs to read the literature
+numbering correctly.
+
+### Implication for next run
+
+The previous YAP-TEAD run was effectively a misfire — designs were generated
+against the wrong residues. Re-running with the fix should produce designs
+genuinely targeting the YAP-binding groove. Not done yet (would take another
+~40 min).

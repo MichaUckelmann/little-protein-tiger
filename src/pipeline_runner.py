@@ -923,6 +923,41 @@ class PipelineRunner:
         # 1. Parse boltzgen output
         records = parse_boltzgen_outputs(bg_output)
 
+        # IMPORTANT — boltzgen renumbers the target chain in its output CIFs.
+        # Specifically, the original mmCIF `label_seq` becomes the new
+        # `auth_seq_id`. So if the original 3KYS PHE314 had label_seq=122,
+        # the boltzgen output CIF has that residue at auth_seq_id=122, not
+        # 314. The SASA worker looks up residues by auth_seq_id via
+        # pdb_info.number(), so we must rewrite each hotspot's auth_seq_id
+        # to its original label_seq_id before passing to the worker.
+        #
+        # Without this remap, every hotspot is "missing" in the boltzgen
+        # output (auth=314 doesn't exist when output runs 3..217) and the
+        # worker reports sasa_delta=0.0 across the board — exactly the
+        # YAP-TEAD off-target signature.
+        hotspots_remapped = []
+        any_remapped = False
+        for hs in hotspots:
+            auth = int(hs["auth_seq_id"])
+            label = hs.get("label_seq_id")
+            if label is None or label == auth:
+                # Either no label resolution available or original CIF was
+                # already label-aligned (label_seq == auth_seq, common for
+                # de-novo designed targets and some experimental structures).
+                hotspots_remapped.append(hs)
+                continue
+            remapped = dict(hs)
+            remapped["auth_seq_id"] = int(label)
+            remapped["_original_auth_seq_id"] = auth  # kept for debug
+            hotspots_remapped.append(remapped)
+            any_remapped = True
+        if any_remapped:
+            logger.info(
+                f"  remapped {sum(1 for h in hotspots if h.get('label_seq_id') != h['auth_seq_id'])} "
+                f"hotspot auth_seq_ids → original label_seq_ids for "
+                f"BoltzGen-renumbered output CIFs"
+            )
+
         # 2. Enrich top-K by quality_score with hotspot SASA.
         # We sort records in-place by quality_score (descending) so the
         # first N get enriched. Records without quality_score sort last.
@@ -934,7 +969,7 @@ class PipelineRunner:
             records,
             target_chain=target_chain,
             binder_chain=binder_chain,
-            hotspots=hotspots,
+            hotspots=hotspots_remapped,
             python_executable=pyr_cfg["python_executable"],
             init_flags=pyr_cfg.get("init_flags"),
             max_designs=enrich_top_k,
@@ -1715,97 +1750,152 @@ class PipelineRunner:
         cif_path: Path,
         target_chain: str,
     ) -> tuple[str, list[str]]:
-        """Replace `UNVERIFIED`-marked label_seq_id cells in MODEL-READY HOTSPOTS
-        with the real label_seq_id from the CIF, and sanity-check residue names.
+        """Validate and normalise the MODEL-READY HOTSPOTS table.
 
-        Returns ``(updated_text, warnings)``. ``warnings`` is a list of one-line
-        strings naming any residue whose expected name from the table (e.g.
-        ``THR238``) does not match the residue actually present at that
-        auth_seq_id in the structure — a strong signal of a numbering error
-        (mouse vs human offset, wrong chain selection, etc.). The downstream
-        log surfaces these warnings so an operator can intervene before GPU
-        burn.
+        Always overwrites the label_seq_id column with the value gemmi
+        computes from the CIF, even when the LLM wrote a specific number.
+        Empirically the LLM often gets label_seq_id wrong — typically using
+        1-indexed chain position rather than the true mmCIF label_seq, which
+        can disagree by several residues when the resolved structure starts
+        at a non-zero label_seq offset (e.g. 3KYS chain A starts at
+        label_seq=3 so position 111 ≠ label_seq=111). Boltzgen reads
+        `binding:` entries as label_seq values, so a wrong label_seq_id
+        constrains the binder to the wrong residues — the dominant cause
+        of zero hotspot occlusion in the YAP-TEAD mesothelioma run.
 
-        No-op when the text contains no UNVERIFIED markers AND no name
-        mismatch is detected.
+        Also runs a residue-name sanity check on every row and rewrites
+        the BoltzGen `binding: ...` line so it carries the corrected
+        label_seq_ids.
+
+        Returns ``(updated_text, warnings)``. ``warnings`` is a list of
+        one-line strings naming any residue whose expected name from the
+        table does not match the residue actually present at that
+        auth_seq_id, plus any case where the LLM-supplied label_seq_id
+        disagreed with gemmi's.
         """
         warnings: list[str] = []
-        has_unverified = (
-            "UNVERIFIED" in structure_text
-            or "**unmapped**" in structure_text.lower()
-        )
-
-        # Always validate names — even when label_seq_ids look fine, a
-        # residue-name mismatch is a stronger signal of trouble.
         auth_to_label_and_name = self._build_label_seq_id_map(cif_path, target_chain)
         if not auth_to_label_and_name:
-            if has_unverified:
-                logger.warning(
-                    f"  cannot auto-resolve UNVERIFIED label_seq_ids: gemmi could "
-                    f"not build chain map for {target_chain} of {cif_path.name}"
-                )
+            logger.warning(
+                f"  cannot build gemmi auth→label map for {target_chain}@{cif_path.name} "
+                f"— hotspot table left as-is, downstream stages may misnumber residues"
+            )
             return structure_text, warnings
 
-        # Pass 1: residue-name sanity check on every table row. Extract
-        # `| THR238 | 238 | ... |` style rows; the first column is `NAME` +
-        # optional digit suffix (e.g. ``THR238`` or just ``THR``).
+        # Walk every table row, validate residue name, compare label_seq_id
+        # against gemmi truth, and substitute when needed. Match rows in
+        # `| NAME[digits] | auth | label_or_token | ... |` form.
         row_pat = re.compile(
-            r"\|\s*([A-Z]{3})\d*\s*\|\s*(\d+)\s*\|",
+            r"(\|\s*([A-Z]{3})\d*\s*\|\s*(\d+)\s*\|)\s*([^|]*?)\s*\|",
             re.MULTILINE,
         )
         seen: set[tuple[str, int]] = set()
-        for m in row_pat.finditer(structure_text):
-            expected_name, auth_s = m.group(1), int(m.group(2))
-            key = (expected_name, auth_s)
-            if key in seen:
-                continue
-            seen.add(key)
+        substitutions = 0
+
+        def _row_sub(match: re.Match) -> str:
+            nonlocal substitutions
+            prefix = match.group(1)
+            expected_name = match.group(2)
+            auth_s = int(match.group(3))
+            llm_label_raw = match.group(4).strip()
+
+            # Residue-name sanity (catches mouse↔human numbering offsets etc.)
             actual = auth_to_label_and_name.get(auth_s)
             if actual is None:
-                warnings.append(
-                    f"residue at chain {target_chain} auth_seq_id {auth_s} "
-                    f"({expected_name}) not present in structure — possible "
-                    f"chain or numbering error"
-                )
-                continue
-            _, actual_name = actual
-            if actual_name.upper() != expected_name.upper():
-                warnings.append(
-                    f"residue NAME mismatch at chain {target_chain} "
-                    f"auth_seq_id {auth_s}: report says {expected_name} but "
-                    f"structure has {actual_name} — likely a numbering "
-                    f"offset (mouse↔human ~+28, etc.) or wrong chain"
-                )
+                key = (expected_name, auth_s)
+                if key not in seen:
+                    seen.add(key)
+                    warnings.append(
+                        f"residue at chain {target_chain} auth_seq_id {auth_s} "
+                        f"({expected_name}) not present in structure"
+                    )
+                return match.group(0)  # leave row unchanged (can't fix)
 
-        # Pass 2: substitute UNVERIFIED tokens with real label_seq_ids.
-        if has_unverified:
-            # `| THR238 | 238 | **UNVERIFIED** | ...` → `| THR238 | 238 | 203 | ...`
-            unv_pat = re.compile(
-                r"(\|\s*[A-Z]{3}\d*\s*\|\s*(\d+)\s*\|)\s*[^|]*?(?:UNVERIFIED|unmapped)[^|]*?\s*\|",
-                re.IGNORECASE,
+            true_label, actual_name = actual
+            if actual_name.upper() != expected_name.upper():
+                key = (expected_name, auth_s)
+                if key not in seen:
+                    seen.add(key)
+                    warnings.append(
+                        f"residue NAME mismatch at chain {target_chain} "
+                        f"auth_seq_id {auth_s}: report says {expected_name} but "
+                        f"structure has {actual_name} — likely a numbering offset"
+                    )
+
+            # Compare LLM value to gemmi truth; always emit gemmi truth in
+            # the rewritten cell.
+            try:
+                llm_label = int(llm_label_raw)
+            except ValueError:
+                llm_label = None
+            if llm_label != true_label:
+                substitutions += 1
+                if llm_label is not None:
+                    warnings.append(
+                        f"label_seq_id correction at {expected_name}{auth_s}: "
+                        f"LLM said {llm_label}, gemmi says {true_label} "
+                        f"(BoltzGen `binding:` field uses label_seq)"
+                    )
+            return f"{prefix} {true_label} |"
+
+        new_text = row_pat.sub(_row_sub, structure_text)
+
+        # Rewrite the BoltzGen `binding:` line in each MODEL-READY HOTSPOTS
+        # section independently. The structure-expert may produce one or
+        # more sections (multi-region designs); each has its own table and
+        # its own `binding:` line. Combining them into a global list (the
+        # original bug) would corrupt multi-region runs.
+        section_pat = re.compile(
+            r"(### MODEL.READY HOTSPOTS[^\n]*\n.*?)(?=\n### MODEL.READY HOTSPOTS|\n## |\Z)",
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        def _section_sub(sec_match: re.Match) -> str:
+            section = sec_match.group(1)
+            local_residues: list[int] = []
+            for m in re.finditer(
+                r"\|\s*([A-Z]{3})\d*\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|",
+                section,
+            ):
+                try:
+                    local_residues.append(int(m.group(3)))
+                except ValueError:
+                    pass
+            if not local_residues:
+                return section
+            # Dedupe preserving order
+            dedup: list[int] = []
+            seen_lbl: set[int] = set()
+            for x in local_residues:
+                if x not in seen_lbl:
+                    seen_lbl.add(x)
+                    dedup.append(x)
+            new_binding = "binding: " + ",".join(str(x) for x in dedup)
+            return re.sub(
+                r"^\s*binding:\s*[^\n]+",
+                new_binding,
+                section,
+                flags=re.MULTILINE,
             )
 
-            def _row_sub(match: re.Match) -> str:
-                prefix = match.group(1)
-                auth_id = int(match.group(2))
-                hit = auth_to_label_and_name.get(auth_id)
-                if hit is None:
-                    return match.group(0)
-                label, _ = hit
-                return f"{prefix} {label} |"
+        new_text = section_pat.sub(_section_sub, new_text)
 
-            structure_text = unv_pat.sub(_row_sub, structure_text)
+        # Resolve any leftover `UNVERIFIED_NNN` placeholders globally.
+        new_text = re.sub(
+            r"UNVERIFIED_(\d+)",
+            lambda m: str(auth_to_label_and_name.get(int(m.group(1)), (m.group(0),))[0]),
+            new_text,
+        )
 
-            # Also resolve `binding: UNVERIFIED_238,UNVERIFIED_259,...` style
-            # placeholders in the BoltzGen binding line.
-            def _binding_sub(match: re.Match) -> str:
-                auth_id = int(match.group(1))
-                hit = auth_to_label_and_name.get(auth_id)
-                return str(hit[0]) if hit is not None else match.group(0)
+        if substitutions:
+            logger.info(
+                f"  label_seq_id corrections: {substitutions} residue(s) had "
+                f"LLM-provided label_seq disagreeing with gemmi; rewritten "
+                f"from CIF ground truth (this prevents BoltzGen from "
+                f"constraining the wrong residues)"
+            )
 
-            structure_text = re.sub(r"UNVERIFIED_(\d+)", _binding_sub, structure_text)
-
-        return structure_text, warnings
+        return new_text, warnings
 
     @staticmethod
     def _count_chain_residues(cif_path: Path) -> dict[str, int]:
