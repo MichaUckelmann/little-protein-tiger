@@ -1812,3 +1812,88 @@ residue: T266, N287, T356, S542 plus the Zn-coordinating histidines at the
 correct positions) — or, better, instrument mol-bio-expert to verify
 residue identities against the proposed PDB before emitting target_site_hint.
 That's a follow-up.
+
+## 2026-05-23 (later still) — 5DLT identity bug + safeguard
+
+User flagged a serious mistake from the cGAS-STING run: **5DLT is Autotaxin (ENPP2),
+not ENPP1.** Confirmed by gemmi-reading the CIF header — `_struct.title` is literally
+"Crystal structure of Autotaxin (ENPP2) with 7-alpha-hydroxycholesterol", the bound
+ligand is 7α-hydroxycholesterol (not cGAMP). Every downstream skill — pathway,
+mol-bio, structure, design — treated the structure as ENPP1 and produced a
+self-consistent (but biologically wrong) campaign against the ENPP2 active site.
+
+### Source of the misattribution
+
+Only one corpus fingerprint cites 5DLT:
+`doi_10.1038_ncomms11248.json` — "Steroid binding to Autotaxin links bile salts
+and lysophosphatidic acid signalling", which IS an Autotaxin paper. But
+`entities.proteins = [Autotaxin, ENPP1, LPA1, Choline oxidase, Horseradish
+peroxidase]` and `pdb_accessions = [5DLT, 5DLV, 5DLW]`. The paper presumably
+discusses ENPP1 as a related family member without depositing any ENPP1 structures.
+
+The `find_pdb_structures` tool (in `src/skill_runner.py`) returns all PDBs from
+papers that mention the queried protein. Two independent lists are joined at the
+paper level — there is **no per-PDB protein annotation in the corpus**. So a
+query for "ENPP1 PDBs" returns 5DLT because the same paper mentions ENPP1 AND
+deposited 5DLT, even though 5DLT is not an ENPP1 structure.
+
+This is a corpus *structure* issue (not a curation error). Fixing it properly
+would mean adding per-PDB protein annotation at curation time — real work.
+
+### Pipeline-side safeguard
+
+Added `_read_pdb_identity` (gemmi-backed: title + polymer entity descriptions
++ organisms) and `_verify_pdb_identity` (strict substring match of expected
+target name(s) against title + entity descriptions, both directions,
+case-insensitive). Wired into `run()` right after `_ensure_structure`:
+
+```
+expected = result.target_complex or pathway_handoff["target_complex"]
+ok, summary = self._verify_pdb_identity(analysis_path, expected)
+if not ok:
+    raise PipelineError(...)  # surface BOTH expected and actual to the user
+```
+
+Verified on the 5DLT/ENPP1 case: identity check returns `ok=False` with a
+useful message naming both the expected target and the actual structure title.
+Verified that 5DLT vs "Autotaxin / ENPP2" returns `ok=True`.
+
+### Failure-mode hierarchy
+
+Three signals available, in increasing cost:
+
+1. **CIF header** — title + entity descriptions. Implemented. Catches 5DLT
+   vs ENPP1 immediately. Fails fast (~1 ms).
+2. **RCSB GraphQL** — entity → UniProt accession + organism mapping. Higher
+   confidence but adds a network call. Not yet wired; useful when names are
+   ambiguous (e.g. EGFR vs "Epidermal growth factor receptor").
+3. **Sequence alignment** — last resort when names disagree but the
+   structure might still be the right protein (e.g. orthologs, isoforms).
+   Not yet wired.
+
+For now (1) covers the common case; (2) and (3) are follow-ups when (1)
+generates false positives.
+
+### What was missed
+
+Both stage 0 (pathway-expert) and stage 2 (structure-expert) had opportunities
+to catch this:
+
+- pathway-expert: the corpus search returned a paper titled "Steroid binding
+  to Autotaxin" with PDBs 5DLT/5DLV/5DLW. The skill should have noticed the
+  title and asked "wait, is this actually an ENPP1 paper or an Autotaxin
+  paper?" before recommending the PDB. The skill prompt could add: "When
+  citing a PDB from a paper, confirm the paper's title/abstract names the
+  same protein you're recommending." Worth adding.
+
+- structure-expert: it called `tool_get_sequence_map` and got chain entity
+  descriptions back. Those descriptions said "Ectonucleotide
+  pyrophosphatase/phosphodiesterase family member 2" — clearly ENPP2.
+  Either the skill ignored this (likely, since the report doesn't quote
+  the entity description) or the tool returned `No module named 'Bio'`
+  before getting that far. Worth adding to the skill prompt: "Before
+  proceeding with hotspot analysis, confirm the chain's
+  `pdbx_description` matches the expected target name."
+
+Will add both nudges to the relevant SKILL.md files in the next pass, but
+the deterministic safeguard at `_ensure_structure` is the real fix.

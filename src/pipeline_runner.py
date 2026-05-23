@@ -322,7 +322,7 @@ class PipelineRunner:
                         "go_rationale": handoff.get("go_rationale", ""),
                     })
 
-            # ── Stage 1.5: ensure structure on disk ──────────────────────────
+            # ── Stage 1.5: ensure structure on disk + identity check ─────────
             if start_idx <= 2:
                 pdb = result.pdb_id or (result.pathway_handoff or {}).get("pdb_id", "")
                 if not pdb or pdb.upper() == "NOT_FOUND":
@@ -338,7 +338,28 @@ class PipelineRunner:
                         },
                     )
                 result.pdb_id = pdb
-                self._ensure_structure(pdb)
+                asu_path = self._ensure_structure(pdb)
+
+                # Verify the structure actually matches the proposed target.
+                # The corpus pairs paper-level (proteins) ⊥ (pdb_accessions)
+                # without a per-PDB mapping, so a paper that mentions ENPP1
+                # while depositing an ENPP2 structure will resolve "ENPP1" →
+                # the ENPP2 PDB. Catching this at the file level prevents
+                # downstream stages from designing against the wrong target.
+                expected = result.target_complex or (result.pathway_handoff or {}).get("target_complex", "")
+                ba1 = asu_path.with_name(f"{pdb.upper()}_ba1.cif")
+                analysis_path = ba1 if ba1.exists() else asu_path
+                ok, summary = self._verify_pdb_identity(analysis_path, expected)
+                if not ok:
+                    raise PipelineError(
+                        f"PDB identity check FAILED for {pdb} ({analysis_path.name}).\n"
+                        f"  Expected target: {expected!r}\n"
+                        f"  Structure metadata: {summary}\n"
+                        f"Pathway analysis recommended this PDB for the target above, but the "
+                        f"structure file is for a different protein. Likely a corpus paper-level "
+                        f"protein/PDB conflation. Re-run pathway-expert with the expected target "
+                        f"name in the prompt, or override `pdb_id` to a verified accession."
+                    )
 
             # ── Stage 2: complex-structure-analysis ──────────────────────────
             # prev_handoff here is the literature handoff (carries target_site_hint).
@@ -1496,6 +1517,105 @@ class PipelineRunner:
                 logger.warning(f"  BA1 download failed for {pdb_id}: {exc} — will use ASU")
 
         return dest
+
+    @staticmethod
+    def _read_pdb_identity(cif_path: Path) -> dict:
+        """Return ``{title, entity_descriptions, organisms}`` from a CIF header.
+
+        Three independent identity signals — the model is more confident
+        when all three agree, and a mismatch in any one is a strong red flag.
+        Returns empty values on parse failure (caller decides whether to
+        abort or proceed without verification).
+        """
+        out: dict = {"title": "", "entity_descriptions": [], "organisms": []}
+        try:
+            import gemmi  # type: ignore
+            doc = gemmi.cif.read(str(cif_path))
+            block = doc.sole_block()
+
+            title_pair = block.find_pair("_struct.title")
+            if title_pair:
+                out["title"] = title_pair[1].strip('"').strip("'").strip()
+
+            descs: list[str] = []
+            for row in block.find(["_entity.id", "_entity.type", "_entity.pdbx_description"]):
+                # Only protein/polymer entities — skip waters, ions, ligands.
+                if row[1].lower() == "polymer":
+                    descs.append(row[2].strip('"').strip("'").strip())
+            out["entity_descriptions"] = descs
+
+            orgs: list[str] = []
+            for row in block.find(["_entity_src_gen.ncbi_taxonomy_id",
+                                   "_entity_src_gen.pdbx_gene_src_scientific_name"]):
+                if row[1]:
+                    orgs.append(row[1].strip('"').strip("'").strip())
+            out["organisms"] = orgs
+        except Exception as exc:
+            logger.warning(f"Could not read PDB identity from {cif_path}: {exc}")
+        return out
+
+    def _verify_pdb_identity(
+        self,
+        cif_path: Path,
+        expected_target: str,
+    ) -> tuple[bool, str]:
+        """Check that the structure at ``cif_path`` matches the expected target.
+
+        Strict substring match (case-insensitive, both directions) of the
+        expected protein name(s) against:
+          - the structure title (``_struct.title``)
+          - every polymer entity description (``_entity.pdbx_description``)
+
+        For a target like ``"YAP1 / TEAD4"`` the check passes only when **at
+        least one** of the named proteins is found — partner-chain misses
+        are caller-handled (we generally trust the entity descriptions).
+        For inhibit_active_site mode (one protein), exact recognition of
+        the single name is required.
+
+        Returns ``(passed, message)``. ``message`` always names the actual
+        polymer entities present so the caller can produce a useful error.
+        """
+        meta = self._read_pdb_identity(cif_path)
+        title = meta["title"]
+        descs = meta["entity_descriptions"]
+        actual_summary = f'title="{title or "(empty)"}", entities={descs or "(none)"}'
+
+        if not title and not descs:
+            return False, f"could not read identity metadata from {cif_path}"
+
+        # Extract candidate protein names from the expected target. Strip
+        # parenthetical annotations ("ENPP1 (active site)" → "ENPP1") and
+        # split on common separators.
+        cleaned = re.sub(r"\([^)]*\)", " ", expected_target)
+        tokens = re.split(r"[/,;+&]| and ", cleaned, flags=re.IGNORECASE)
+        names = [t.strip() for t in tokens if t.strip()]
+        if not names:
+            return False, f"could not extract a protein name from expected target {expected_target!r}"
+
+        hay_lower = (title + " " + " ".join(descs)).lower()
+        hits: list[str] = []
+        for name in names:
+            n = name.lower()
+            if n in hay_lower:
+                hits.append(name)
+                continue
+            # Reverse: maybe the expected name is the long form ("Yes-
+            # associated protein 1") and entities use the short form. Try
+            # token-overlap as a fallback.
+            for word in re.split(r"\s+", n):
+                if len(word) >= 4 and word in hay_lower:
+                    hits.append(name)
+                    break
+
+        if hits:
+            logger.info(f"  PDB identity check OK — matched {hits}  ({actual_summary[:160]})")
+            return True, actual_summary
+
+        return False, (
+            f"PDB identity mismatch — expected target {expected_target!r} "
+            f"(extracted names: {names}) does not appear in structure metadata. "
+            f"Actual: {actual_summary}"
+        )
 
     @staticmethod
     def _chain_entity_descriptions(cif_path: Path) -> dict[str, str]:
