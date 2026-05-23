@@ -2,12 +2,17 @@
 name: pathway-expert
 description: >
   Query the curated literature database to characterise pathway biology for a disease
-  context, identify dysregulated nodes, and recommend the highest-priority PPI target
-  for therapeutic intervention. Use as the first step when the user provides a disease
-  or cancer subtype without a specific PPI in mind, or when the question is "which node
-  should we target in pathway X in disease Y?". Output feeds directly into
-  complex-structure-analysis (provides PDB ID) and molecular-biology-expert (provides complex
-  name and disease context). Requires literature-db MCP server.
+  context, identify dysregulated nodes, and recommend the highest-priority druggable
+  opportunity for therapeutic intervention. Default mode is to recommend a PPI target
+  (the design pipeline is optimised for that); however, when literature evidence for
+  PPI disruption is weak AND there is explicit precedent for direct active-site or
+  allosteric-pocket inhibition (e.g. characterised macrocyclic peptide inhibitors of
+  an enzyme), the skill may pivot to recommend a single-protein target with a
+  catalytic / pocket binding mode. Use as the first step when the user provides a
+  disease or cancer subtype without a specific target in mind. Output feeds directly
+  into molecular-biology-expert (provides complex name + disease context) and
+  complex-structure-analysis (provides PDB ID + binding mode). Requires literature-db
+  MCP server.
   Trigger on: "which target in", "pathway analysis for", "what to target in",
   "disease mechanism", "KRAS pathway in", "Hippo pathway in", "what's dysregulated in",
   "target selection for", "which node should we target", or any question pairing a
@@ -18,11 +23,20 @@ description: >
 
 This skill queries the curated literature corpus to characterise signalling pathway
 biology in a disease context, assess candidate target nodes, and recommend the optimal
-PPI for the downstream design pipeline. It does not perform structural or biochemistry
-analysis — that is the job of complex-structure-analysis and molecular-biology-expert.
+target for the downstream design pipeline. It does not perform structural or
+biochemistry analysis — that is the job of complex-structure-analysis and
+molecular-biology-expert.
 
-The output is a structured `## PATHWAY BIOLOGY REPORT` containing a recommended PPI
-and PDB ID(s) ready to pass directly into complex-structure-analysis.
+**Default target type is a PPI** (protein-protein interaction) — the binder design
+pipeline is most mature for that case. **Pivot to a direct-inhibition recommendation**
+(enzyme active site, allosteric pocket) only when (a) PPI evidence for the node is
+genuinely weak AND (b) literature provides explicit precedent for direct-inhibition
+modality (e.g. characterised peptide/macrocycle inhibitors of the catalytic site).
+The pivot path is documented as a fourth tier; PPI candidates always rank first
+when supported.
+
+The output is a structured `## PATHWAY BIOLOGY REPORT` containing the recommended
+target (PPI or direct-inhibition) and PDB ID(s) ready to pass downstream.
 
 ---
 
@@ -220,25 +234,40 @@ in corpus", explicitly reason through the following before writing the report:
    physically engage a specific partner to exert its disease-relevant activity?
    Use `pathway_logic`, `upstream_regulators`, `downstream_effectors`, and
    `key_findings` as evidence sources.
-2. **Therapeutic mechanism — disrupt or stabilize?** Determine which design intent
-   applies to this node:
-   - `disrupt` — breaking the interaction attenuates the disease-relevant output
-     (e.g. loss of complex formation → loss of oncogenic signalling, loss of
-     transcriptional co-activation, failure to relay a pathological signal)
+2. **Therapeutic mechanism — disrupt, stabilize, or inhibit_active_site?** Determine
+   which design intent applies to this node:
+   - `disrupt` — breaking a protein-protein interaction attenuates the
+     disease-relevant output (e.g. loss of complex formation → loss of oncogenic
+     signalling, loss of transcriptional co-activation, failure to relay a
+     pathological signal). **Default for PPI candidates.**
    - `stabilize` — the disease mechanism is that a normally protective or
      autoinhibitory interaction is *lost* or *weakened*; reinforcing it restores
      the healthy state (e.g. restoring an autoinhibitory complex, re-engaging a
-     sequestered OFF-state, protecting a tumour suppressor complex from degradation)
-   Record one `design_intent` per node. Default to `disrupt` if ambiguous.
+     sequestered OFF-state, protecting a tumour suppressor complex from degradation).
+   - `inhibit_active_site` — for an enzyme or pocket-bearing single protein where
+     direct catalytic or allosteric-pocket blockade is the established therapeutic
+     mode. **Only use when (a) the corpus shows explicit precedent for peptide /
+     macrocycle / mini-protein inhibitors of this pocket AND (b) no high-quality
+     PPI option exists for the same node.** Do not pivot to direct inhibition
+     just because the protein is "an enzyme" — small molecules dominate that
+     space; the binder pipeline only adds value when the pocket is poorly
+     druggable by small molecules.
+   Record one `design_intent` per node. Default to `disrupt` if ambiguous between
+   disrupt and stabilize. Default to `disrupt` (PPI) over `inhibit_active_site`
+   when both are plausible.
 3. **Interaction knowability**: Is the specific binding partner named or strongly
    implied in the corpus (e.g. a co-activator, scaffold, receptor partner)?
    Do not infer a generic "this protein must bind something" — name the partner.
+   For `inhibit_active_site` candidates this condition is **replaced by**: is the
+   pocket / active site well-characterised in the corpus (catalytic residues
+   named, or pocket-binding residues from prior inhibitor structures)?
 
-If all three conditions are met, label this node **[PATHWAY INFERRED]** in the report.
+If conditions 1+2+3 are met for a PPI candidate, label it **[PATHWAY INFERRED]**.
 If genetic dependency is also confirmed, label it **[BIOLOGICALLY JUSTIFIED]**.
 If prior therapeutic targeting is documented in the corpus, label it **[VALIDATED]**.
-
-A node may carry only one label — use the highest tier supported by evidence.
+If the candidate is an `inhibit_active_site` pivot, label it **[DIRECT INHIBITION]** —
+this tier ranks **below** all PPI tiers regardless of the strength of the active-site
+evidence, because the pipeline is PPI-optimised. A node may carry only one label.
 
 ---
 
@@ -299,12 +328,16 @@ For each candidate:
 - **Key uncertainty**: <what is not yet established — no therapeutic precedent, no structure, redundancy risk>
 - **Suggested PDB ID(s)**: <verbatim from fingerprint fields only; "Not found in corpus" if absent>
 
-Tier definitions for the header labels:
-- [VALIDATED]           — Prior therapeutic targeting documented in corpus
-- [BIOLOGICALLY JUSTIFIED] — Genetic dependency confirmed; interaction necessity supported
+Tier definitions for the header labels (PPI candidates ranked above direct-inhibition):
+- [VALIDATED]            — PPI; prior therapeutic targeting documented in corpus
+- [BIOLOGICALLY JUSTIFIED] — PPI; genetic dependency confirmed; interaction necessity supported
                              by pathway evidence; no therapeutic precedent in corpus
-- [PATHWAY INFERRED]    — No genetic dependency data; but named interaction is required
+- [PATHWAY INFERRED]     — PPI; no genetic dependency data; but named interaction is required
                           for disease-relevant pathway output per corpus logic
+- [DIRECT INHIBITION]    — Single-protein target (enzyme active site or allosteric pocket);
+                          characterised peptide/macrocycle/mini-protein precedent in corpus AND
+                          no high-quality PPI option for this node. Always ranked below the
+                          three PPI tiers regardless of active-site evidence strength.
 
 ### PRIMARY RECOMMENDATION
 
@@ -321,13 +354,22 @@ structural tractability, and novelty value). If the user has provided a constrai
   (only if PDB confirmed from corpus; otherwise await user input)
 
 Selection criteria (apply in order, but surface all tiers in the landscape regardless):
-1. Genetic dependency confirmed (CRISPR essential in disease-relevant lines) — strongest evidence
-2. Pathway position as a convergence node (multiple upstream alterations feed into it)
-3. Prior therapeutic targeting attempts — validates the interface is engageable
-4. Inferred interaction necessity — named partner, corpus-supported pathway logic,
+1. PPI tier rank — [VALIDATED] > [BIOLOGICALLY JUSTIFIED] > [PATHWAY INFERRED] > [DIRECT INHIBITION]
+2. Genetic dependency confirmed (CRISPR essential in disease-relevant lines) — strongest evidence
+3. Pathway position as a convergence node (multiple upstream alterations feed into it)
+4. Prior therapeutic targeting attempts — validates the interface / pocket is engageable
+5. Inferred interaction necessity — named partner, corpus-supported pathway logic,
    predictable consequence of disruption (see Phase 4a)
-5. Known PDB structure available — required for the downstream chimerax step
-6. Accessible interface — prefer extracellular or surface-exposed over buried enzymatic sites
+6. Known PDB structure available — required for the downstream structure-analysis step
+7. For PPIs: accessible interface (prefer surface-exposed). For DIRECT INHIBITION:
+   pocket characterised in corpus + peptide / macrocycle inhibitor precedent.
+8. **Target chain size** — design + prediction scale with residue count. Strong
+   preference for chains ≤ 250 residues; hard limit at 500. If a candidate's
+   binding-relevant chain or domain exceeds 500 residues, prefer either (a) a
+   PDB of a smaller domain construct of the same target, (b) a different target
+   in the same pathway, or (c) note the cropping recommendation explicitly so
+   the downstream structure stage can act on it. Surfacing a giant target
+   without flagging the size is a pipeline-time failure mode.
 
 If no recommendation can be made from corpus data alone, state this explicitly and
 suggest the user run `python scripts/fetch_papers.py` with specific pathway keywords.
@@ -349,9 +391,9 @@ suggest the user run `python scripts/fetch_papers.py` with specific pathway keyw
 
 ### PIPELINE HANDOFF
 - pdb_id: <PDB accession from corpus (pdb_accessions or suggested_pdb_structures fields only), or NOT_FOUND>
-- target_complex: <ProteinA / ProteinB>
-- design_intent: <disrupt | stabilize — from Phase 4a reasoning for the PRIMARY RECOMMENDATION>
-- structure_query: <one sentence — e.g. "Analyze PDB {pdb_id} at data/structures/{pdb_id}.cif. Target chain {chain} ({ProteinA}). Partner chain {chain} ({ProteinB}). Identify hotspot residues for {modality} design.">
+- target_complex: <ProteinA / ProteinB — for PPI candidates. For DIRECT INHIBITION, the single protein name with annotation, e.g. "DPP4 (active site)">
+- design_intent: <disrupt | stabilize | inhibit_active_site — from Phase 4a reasoning for the PRIMARY RECOMMENDATION>
+- structure_query: <one sentence. For PPI: "Analyze PDB {pdb_id} at data/structures/{pdb_id}.cif. Target chain {chain} ({ProteinA}). Partner chain {chain} ({ProteinB}). Identify hotspot residues for {modality} design." For inhibit_active_site: "Analyze PDB {pdb_id} at data/structures/{pdb_id}.cif. Target chain {chain} ({ProteinName}). Identify catalytic pocket residues for {modality} active-site inhibition.">
 - choices_json: <compact JSON array — see format below>
 
 **IMPORTANT:** Write the `### PIPELINE HANDOFF` section as plain bullet lines exactly as shown above.
@@ -362,12 +404,12 @@ Rules for `### PIPELINE HANDOFF`:
 - `pdb_id` must come from `paper_metadata.pdb_accessions`, `pathway_context.target_nodes[].suggested_pdb_structures` in retrieved fingerprints, **or the `find_pdb_structures` tool result from Phase 3.6**. Write `NOT_FOUND` if nothing found — never guess.
 - `structure_query` is the verbatim query string passed to complex-structure-analysis by the programmatic orchestrator; make it self-contained (include the local file path `data/structures/{pdb_id}.cif`).
 - `choices_json` must be a single-line JSON array listing every candidate from TARGET OPPORTUNITY LANDSCAPE in the same order. Each element has exactly these keys:
-  - `tier`: one of `"VALIDATED"`, `"BIOLOGICALLY_JUSTIFIED"`, or `"PATHWAY_INFERRED"`
-  - `complex`: the protein pair name exactly as written in the `####` header (e.g. `"YAP1 / TEAD4"`)
+  - `tier`: one of `"VALIDATED"`, `"BIOLOGICALLY_JUSTIFIED"`, `"PATHWAY_INFERRED"`, or `"DIRECT_INHIBITION"`
+  - `complex`: the protein pair name exactly as written in the `####` header (e.g. `"YAP1 / TEAD4"`). For DIRECT_INHIBITION candidates, the single-protein label (e.g. `"DPP4 (active site)"`)
   - `pdb_ids`: array of PDB accession strings from corpus only — empty array `[]` if none found
   - `evidence_basis`: one sentence summary of the evidence (no newlines, no quotes inside the string)
   - `key_uncertainty`: one sentence summary of the key uncertainty (no newlines, no quotes inside the string)
-  - `design_intent`: `"disrupt"` or `"stabilize"` from Phase 4a reasoning for this candidate
+  - `design_intent`: `"disrupt"`, `"stabilize"`, or `"inhibit_active_site"` from Phase 4a reasoning for this candidate
 
   Example (must be on ONE line, no line breaks inside):
   `- choices_json: [{"tier":"VALIDATED","complex":"YAP1 / TEAD4","pdb_ids":["5GN0","8J9A"],"evidence_basis":"Mesothelioma xenograft regression confirmed upon YAP-TEAD inhibition.","key_uncertainty":"TAZ paralog redundancy may require dual targeting."},{"tier":"BIOLOGICALLY_JUSTIFIED","complex":"NF2 / LATS1","pdb_ids":[],"evidence_basis":"CRISPR dependency confirmed in NF2-null cell lines.","key_uncertainty":"No structural data in corpus."}]`
@@ -405,8 +447,13 @@ extracts the `PRIMARY RECOMMENDATION` block and passes it to Stage 1 automatical
   and provide the user with RCSB search terms to look it up manually.
 - Redundancy risks are easy to miss — always check `pathway_context.redundancy_risks`
   across ALL retrieved fingerprints, not just the top-scoring one.
-- The recommended PPI must be a protein-protein interaction, not a single protein or
-  enzymatic active site — the downstream chimerax skill requires a two-chain complex.
+- **PPI is the strong default**: a [DIRECT INHIBITION] candidate is only correct
+  when the corpus provides explicit evidence for peptide / macrocycle / mini-protein
+  active-site inhibitors of *this specific pocket* AND no [VALIDATED] / [BIOLOGICALLY
+  JUSTIFIED] / [PATHWAY INFERRED] PPI candidate exists for the node. If both a PPI
+  and a direct-inhibition path are plausible, recommend the PPI in PRIMARY
+  RECOMMENDATION and include the direct-inhibition entry in the landscape as a
+  lower-tier alternative.
 - In Phase 3.5, do not re-query with terms already present in any Phase 2 query string —
   this yields near-duplicate results and wastes calls. Only use genuinely new gene symbols
   or mutation terms surfaced by the fingerprints.

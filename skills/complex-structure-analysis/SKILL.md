@@ -23,14 +23,25 @@ quantities (BSA, SASA, contacts, H-bonds) are computed directly from atomic
 coordinates — not inferred from residue names. Reasoning is applied on top of
 reliable numerical outputs.
 
-**Two operating modes**, selected by the `design_intent` field in the PIPELINE HANDOFF
-from pathway-expert or wildcard-expert:
+**Three operating modes**, selected by the `design_intent` field in the PIPELINE
+HANDOFF from pathway-expert (and confirmed by mol-bio-expert):
 - **`disrupt` mode** (default): identify single-chain interface hotspots; binder
-  competes with the partner chain to break the interaction.
+  competes with the partner chain to break the interaction. **Two-chain input.**
 - **`stabilize` mode (molecular glue)**: identify periinterface patches on *both*
   chains flanking the interface; binder bridges across and reinforces the complex.
+  **Two-chain input.**
+- **`inhibit_active_site` mode**: single-protein target — enzyme active site,
+  allosteric pocket, or other ligand-binding cleft. Hotspots come primarily from
+  the literature-stage handoff (`target_site_hint.priority_residues`), with
+  structural confirmation of pocket geometry per residue. **Single-chain input.**
 
-Output: `## PPI ANALYSIS REPORT` with MODEL-READY HOTSPOT formats for BoltzGen and RFD3.
+When the mol-bio-expert handoff includes a `target_site_hint` JSON object with
+`priority_residues`, treat those as the authoritative starting set in **any**
+mode — they are the residues literature already implicated. The job of this
+skill is to confirm geometry, not to re-derive residue importance from scratch.
+
+Output: `## TARGET ANALYSIS REPORT` with MODEL-READY HOTSPOT formats for BoltzGen
+and RFD3.
 
 ---
 
@@ -92,7 +103,7 @@ If not present, download on the fly:
 
 ---
 
-## Phase 0: Detect Design Mode
+## Phase 0: Detect Design Mode + Parse Literature Hint
 
 Before any tool calls, read the `design_intent` from the PIPELINE HANDOFF (passed in
 the query from the orchestrator). Set the operating mode for this entire run:
@@ -101,10 +112,53 @@ the query from the orchestrator). Set the operating mode for this entire run:
 - `design_intent: stabilize` → **STABILIZE mode** — follow the STABILIZE branches in
   Phases 1–3; skip Phase 2 (surface patch scoring) and use `tool_find_glue_pockets`
   instead.
+- `design_intent: inhibit_active_site` → **INHIBIT_ACTIVE_SITE mode** — single-chain
+  input. Skip Phase 1 (no two-chain interface to analyse) and Phase 2 (no patch
+  scoring); go straight to Phase 1B (per-residue context) using the literature-supplied
+  priority residues.
 - Not present → default to **DISRUPT mode**.
 
-Record the mode explicitly: write `<!-- MODE: DISRUPT -->` or `<!-- MODE: STABILIZE -->`
-at the top of your scratchpad so it stays visible throughout the analysis.
+Record the mode explicitly: write `<!-- MODE: DISRUPT -->`, `<!-- MODE: STABILIZE -->`,
+or `<!-- MODE: INHIBIT_ACTIVE_SITE -->` at the top of your scratchpad so it stays
+visible throughout the analysis.
+
+**Also parse `target_site_hint`** (if present in the query). It looks like:
+```
+target_site_hint: {"mode":"ppi_interface","target_protein":"TEAD4","priority_residues":["F69","L91","R89"],"notes":"…"}
+```
+The `priority_residues` list comes from the mol-bio-expert literature pass and should
+be the authoritative starting set for hotspot selection — confirm their geometry but
+do not silently drop residues from this list. If the list is empty, fall back to
+purely geometry-driven hotspot selection.
+
+**On tool failures and UNVERIFIED label_seq_ids.** If `tool_get_sequence_map`
+or another structure tool returns an error (e.g. a transient MCP dependency
+issue), you may write `**UNVERIFIED**` in the `label_seq_id` column of
+MODEL-READY HOTSPOTS and the orchestrator will resolve those tokens
+post-hoc via gemmi before passing the report to downstream stages. **Do
+not invent workaround scripts in your report** — the auth_seq_id + the
+literal `UNVERIFIED` token is enough; the orchestrator handles the rest.
+The orchestrator also runs a residue-name sanity check (e.g. confirming
+that `THR238` is actually a threonine at auth_seq_id 238 in the structure)
+and logs a warning if there's a mismatch — useful for catching
+mouse↔human numbering offsets that look correct on paper.
+
+**Respect the target size policy.** The orchestrator injects per-chain residue
+counts plus the configured `max_target_residues` (default 500) and
+`target_residues_warn` (default 250) into your query. Before committing to a
+target chain assignment:
+- If the chosen target chain ≤ `target_residues_warn`: proceed normally.
+- If between warn and max: proceed but **note in the report** that the binder
+  pass rate may drop and flag this for the user.
+- If above `max_target_residues`: **do not proceed with the full analysis**.
+  Instead, produce a short report recommending one of:
+    1. Cropping to a binding domain — name the residue range if literature or
+       the mmCIF header suggests one.
+    2. Selecting a different PDB or chain — name an alternative if you can.
+    3. Re-running the pathway stage with a constraint to avoid this target.
+  Emit a stub PIPELINE HANDOFF with `go_recommendation: NO_GO` and
+  `go_rationale` naming the size violation. The downstream design stage will
+  not run.
 
 ---
 
@@ -200,6 +254,53 @@ mcp__structure-tools__tool_get_sequence_map
 ```
 The `length` field helps identify which chain is which. For designed binders,
 the shorter chain is usually the binder.
+
+---
+
+## Phase 1B: Single-protein pocket analysis
+
+**[INHIBIT_ACTIVE_SITE mode only]** — skip if in DISRUPT or STABILIZE mode.
+
+The input is a single-chain enzyme or pocket-bearing protein. There is no partner
+chain to analyse. The hotspot set is sourced from `target_site_hint.priority_residues`
+(literature-derived catalytic / pocket residues from the mol-bio stage) and confirmed
+by single-residue geometric context.
+
+For each residue in `priority_residues`, gather geometric context:
+
+```
+mcp__structure-tools__tool_get_residue_contacts
+  file_path = "<absolute_path>"
+  chain     = "<target_chain>"
+  residue   = <auth_seq_id>
+  cutoff    = 4.5
+```
+
+Record per residue:
+- `residue.name` and `residue.auth_seq_id` — canonical identifier
+- `residue.sasa_A2` — solvent accessibility (a buried residue is a poor binder
+  target; flag any priority_residue with `sasa_A2 < 5` as unlikely to be
+  pocket-facing — note for the user but keep in the hotspot list)
+- `contacts[]` — neighbouring residues within the cutoff; these are the pocket
+  walls. Use them to confirm the residue is part of a coherent pocket
+  (≥ 3 close contacts) rather than an isolated surface residue.
+
+If the literature `priority_residues` list is empty (the mol-bio stage couldn't find
+specific residues), report this as a degraded run: the structure expert cannot
+de-novo identify a binding pocket without either (a) literature guidance or
+(b) a co-crystal structure with a bound ligand. Recommend the user re-run
+literature search with more targeted queries.
+
+**Score and rank for output**: use a simple composite to pick the top 4–6 residues
+for MODEL-READY HOTSPOTS:
+- `sasa_A2 ≥ 30` → likely solvent-accessible pocket-facing
+- `len(contacts) ≥ 4` → in a coherent pocket
+- High residue-type score for designability (HYS, ASP, GLU, ARG, LYS, TYR, TRP, PHE
+  preferred over GLY, ALA, SER, etc.)
+
+For INHIBIT_ACTIVE_SITE mode, the MODEL-READY HOTSPOTS section is the same format
+as DISRUPT mode but uses the target chain only (no partner_chain — the binder
+will be the second chain in boltzgen's design).
 
 ---
 
@@ -481,6 +582,32 @@ select_hotspots:
     <chain><auth_resnum>: <atom1>,<atom2>
     <chain><auth_resnum>: <atom1>,<atom2>
 ```
+
+**[INHIBIT_ACTIVE_SITE mode only]** — single-chain format for pocket binders. Same
+shape as DISRUPT but the target is a single protein (no partner chain) and the
+residues come from `target_site_hint.priority_residues` confirmed by Phase 1B
+geometry:
+
+```
+### MODEL-READY HOTSPOTS [INHIBIT_ACTIVE_SITE]
+
+Target chain <id> (<ProteinName>) — pocket residues — selected <M> residues:
+
+| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms | SASA (Å²) |
+|---|---|---|---|---|
+| <name> | <auth> | <label> | <atom1>,<atom2> | <sasa> |
+
+#### BoltzGen binding
+binding: <label_seq_id_1>,<label_seq_id_2>,...
+
+#### RFD3 select_hotspots
+select_hotspots:
+    <chain><auth_resnum>: <atom1>,<atom2>
+    <chain><auth_resnum>: <atom1>,<atom2>
+```
+
+Flag any residue with SASA < 5 Å² in a note (likely buried; the binder may not be
+able to reach it).
 
 **[STABILIZE mode only]** — dual-chain format for molecular glue:
 

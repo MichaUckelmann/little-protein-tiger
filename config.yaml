@@ -33,62 +33,17 @@ keywords:
   - "embryonic patterning[Title/Abstract] AND gene regulatory networks[Title/Abstract]"
   - "embryonic patterning[Title/Abstract] AND transcription factors[Title/Abstract]"
   - "Lineage-specific transcription factors[Title/Abstract]"
-  - "DNMT3A[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "DNMT3A[Title/Abstract] AND structure[Title/Abstract]"
-  - "DNMT3A[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "TET1[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "TET1[Title/Abstract] AND structure[Title/Abstract]"
-  - "TET1[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "GATA1[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "GATA1[Title/Abstract] AND structure[Title/Abstract]"
-  - "GATA1[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "PAX6[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "PAX6[Title/Abstract] AND structure[Title/Abstract]"
-  - "PAX6[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "NGN2[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "NGN2[Title/Abstract] AND structure[Title/Abstract]"
-  - "NGN2[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "OCT4[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "OCT4[Title/Abstract] AND structure[Title/Abstract]"
-  - "OCT4[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "SOX2[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "SOX2[Title/Abstract] AND structure[Title/Abstract]"
-  - "SOX2[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "YAP[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "YAP[Title/Abstract] AND structure[Title/Abstract]"
-  - "YAP[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "Tissue differentiation[Title/Abstract] AND pathways[Title/Abstract]"
-  - "Tissue differentiation[Title/Abstract] AND biochemistry[Title/Abstract]"
-  - "Tissue differentiation[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "Terminal differentiation[Title/Abstract] AND pathways[Title/Abstract]"
-  - "Terminal differentiation[Title/Abstract] AND biochemistry[Title/Abstract]"
-  - "Terminal differentiation[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "mechanosensing[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "mechanosensing[Title/Abstract] AND development[Title/Abstract]"
-  - "mechanosensing[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "single cell transcriptomics[Title/Abstract] AND development[Title/Abstract]"
-  - "single cell transcriptomics[Title/Abstract] AND histone modifications[Title/Abstract]"
-  - "single cell transcriptomics[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "single cell epigenomics[Title/Abstract] AND development[Title/Abstract]"
-  - "single cell epigenomics[Title/Abstract] AND histone modifications[Title/Abstract]"
-  - "single cell epigenomics[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "spatial chromatin organization[Title/Abstract] AND development[Title/Abstract]"
-  - "spatial chromatin organization[Title/Abstract] AND histone modifications[Title/Abstract]"
-  - "spatial chromatin organization[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "chromatin organization[Title/Abstract] AND development[Title/Abstract]"
-  - "chromatin organization[Title/Abstract] AND histone modifications[Title/Abstract]"
-  - "chromatin organization[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "chromatin structure[Title/Abstract] AND development[Title/Abstract]"
-  - "chromatin structure[Title/Abstract] AND histone modifications[Title/Abstract]"
-  - "chromatin structure[Title/Abstract] AND differentiation[Title/Abstract]"
-  - "chromatin structure[Title/Abstract] AND cryo-EM[Title/Abstract]"
-  - "chromatin structure[Title/Abstract] AND lamina[Title/Abstract]"
-  - "chromatin structure[Title/Abstract] AND gene regulation[Title/Abstract]"
-  - "spatial chromatin organization[Title/Abstract] AND gene regulation[Title/Abstract]"
-  - "chromatin structure[Title/Abstract] AND transcriptional regulation[Title/Abstract]"
-  - "spatial chromatin organization[Title/Abstract] AND transcriptional regulation[Title/Abstract]"
-
-
+  - "honey bee[Title/Abstract] AND epigenetics[Title/Abstract]"
+  - "varroa mite[Title/Abstract] AND inhibitor[Title/Abstract]"
+  - "varroa mite[Title/Abstract] AND proteome[Title/Abstract]"
+  - "varroa mite[Title/Abstract] AND biochemistry[Title/Abstract]"
+  - "honey bee[Title/Abstract] AND pest[Title/Abstract] AND molecular mechanism[Title/Abstract]"
+  - "honey bee[Title/Abstract] AND varroa mite[Title/Abstract]"
+  - "honey bee[Title/Abstract] AND biochemistry[Title/Abstract]"
+  - "varroa mite[Title/Abstract] AND proteomics[Title/Abstract]"
+  - "varroa mite[Title/Abstract] AND protein[Title/Abstract]"
+  - "bee parasites[Title/Abstract] AND molecular mechanism[Title/Abstract]"
+  - "varroa mite[Title/Abstract] AND molecular mechanism[Title/Abstract]"
 
   
 
@@ -112,14 +67,36 @@ paths:
   structures_dir: "data/structures"
 
 curation:
-  provider: "claude"            # "claude" or "gemini"
+  provider: "claude"            # "claude" | "gemini" | "local". Override per-run with --provider.
   model: "claude-haiku-4-5-20251001"    # options: "claude-haiku-4-5-20251001" and "claude-sonnet-4-6"
-  gemini_model: "gemini-3.1-flash-lite-preview"  # used when provider = "gemini"
+  gemini_model: "gemini-3.1-flash-lite"  # used when provider = "gemini"
   # alternatives: "gemini-3-flash-preview" (standard), "gemini-3.1-flash-lite-preview" (high-volume/lower-cost)
-  local_model: "Qwen/Qwen3.5-9B"
-  local_endpoint: "http://localhost:8000/v1"
+
+  # ── Local provider ────────────────────────────────────────────────────────
+  # Default points at Ollama's OpenAI-compatible endpoint.
+  # For vLLM/SGLang, switch local_endpoint to http://localhost:8000/v1 and set
+  # local_model to the HF id (e.g. "Qwen/Qwen3.5-9B").
+  local_model: "gemma4:26b-a4b-it-q4_K_M"
+  local_endpoint: "http://localhost:11434/v1"
+  # Sampling knobs merged into the request body. Low temperature for strict
+  # structured extraction; response_format pins Ollama into JSON-only mode.
+  # reasoning_effort=none disables Gemma 4's thinking mode — without it the
+  # model dumps everything into a `reasoning` field and `content` stays empty
+  # until reasoning ends, blowing through max_tokens before producing output.
+  local_sampling:
+    temperature: 0.1
+    top_p: 0.95
+    reasoning_effort: "none"
+    response_format: {type: "json_object"}
+  # Ollama-specific nested options. num_ctx must be large enough to hold
+  # system prompt (~5k tok) + max_input_chars/4 input tok + max_tokens output.
+  # At 150 000 chars input this is ~50k tokens total → 65 536 ctx is safe.
+  local_options:
+    num_ctx: 65536
+  local_request_timeout: 900    # seconds; local generation is slower than cloud
+
   max_tokens: 8000
-  max_input_chars: 90000
+  max_input_chars: 150000       # raised from 90 000 — fits in num_ctx 65 536
   delay_s: 1.0
   max_retries: 3
   prompt_path: "curation_prompt.md"
@@ -136,3 +113,84 @@ vector_store:
   db_path: "data/vectors"
   embedding_model: "NeuML/pubmedbert-base-embeddings"
   top_k_default: 5
+
+# ---------------------------------------------------------------------------
+# Design execution (workstation, stages 4-6)
+# ---------------------------------------------------------------------------
+# Stage 4 (execution) is deterministic: src/design_runner.py wraps
+# `boltzgen check` + `boltzgen run` as a blocking subprocess on this machine.
+# Pilot then production, using BoltzGen's --reuse flag so production extends
+# the pilot output in place (no double-billing of GPU time).
+design:
+  workstation:
+    # Absolute path to the boltzgen entry point. The shebang on this script
+    # carries its own venv's Python, so we can invoke it directly without
+    # activating the env or going through `uv run`.
+    boltzgen_executable: "/home/m.uckelmann_cbs-niob.local/code/boltzgen/.venv/bin/boltzgen"
+    cuda_device: 0
+    timeout_hours: 24
+
+  pilot:
+    num_designs: 1000          # small first-pass batch
+    budget: 30                 # final-set size for pilot
+    min_completion_rate: 0.5   # fraction of num_designs that must finish the pipeline
+    min_final_fill_rate: 0.5   # fraction of pilot budget that must survive filtering
+
+  production:
+    num_designs: 20000
+    budget: 100
+
+  # Stage 5 (analysis + ranking).
+  # Hard filters — designs failing any of these are dropped before ranking.
+  # Columns refer to entries on the enriched design records (boltzgen-native
+  # or lpt_-prefixed; see src/design_metrics.py).
+  thresholds:
+    iptm_min: 0.60                  # design_to_target_iptm (higher = better)
+    ipae_max: 10.0                  # min_design_to_target_pae (lower = better)
+    hotspot_sasa_delta_min: 30.0    # lpt_hotspot_sasa_delta (Å² occluded; higher = better)
+    require_boltzgen_pass: true     # require pass_filters == True from boltzgen's filter step
+
+  ranking:
+    # Only enrich the top-N by boltzgen's own quality_score with SASA before
+    # filtering+ranking. At ~0.6s/design via the pyrosetta worker, 200 caps
+    # the analysis stage at ~2 min even on full 20k production runs.
+    enrich_top_k: 200
+    # All weights act on z-scored survivors in "higher is better" form.
+    # Columns must exist on the records (boltzgen-native or lpt_*).
+    # Use neg_min_design_to_target_pae (boltzgen pre-inverts so higher = better).
+    weights:
+      design_to_target_iptm: 2.0
+      neg_min_design_to_target_pae: 1.5
+      lpt_hotspot_sasa_delta: 1.5
+      complex_plddt: 1.0
+    mmr:
+      lambda_: 0.5                  # tradeoff: 1.0 = quality only, 0.0 = diversity only
+      seq_identity_cap: 0.7         # designs ≥ this similar to a higher-ranked pick are dropped
+    top_k: 20
+
+  pyrosetta:
+    # PyRosetta runs in its own conda env (Python 3.11) because the
+    # installed pyrosetta build is ABI-incompatible with the LPT venv's
+    # Python. src/pyrosetta_sasa.py subprocesses scripts/_sasa_worker.py
+    # under this interpreter; results come back as JSON on stdout.
+    python_executable: "/home/m.uckelmann_cbs-niob.local/miniconda3/envs/pyrosetta/bin/python"
+    init_flags: "-mute all -ignore_unrecognized_res -load_PDB_components false"
+
+  # Hard ground rules for what the pipeline will design against. The
+  # structure stage surfaces per-chain residue counts to the LLM in the
+  # structure_query so it can pick a chain within bounds (or recommend
+  # cropping). The binder size ranges below are baked into the BoltzGen
+  # YAML's `sequence: <min>..<max>` slot at the protein-design-script step.
+  constraints:
+    # BoltzGen + structure prediction scale with target residue count.
+    # Above max_target_residues the design pass rate drops and GPU memory
+    # pressure increases. Smaller is generally better.
+    max_target_residues: 500     # hard upper limit — flag any chain above
+    target_residues_warn: 250    # softer threshold — note in query as suboptimal
+    binder_sizes:
+      cyclic_peptide:
+        min: 12
+        max: 15
+      mini_protein:
+        min: 70
+        max: 86

@@ -2,50 +2,62 @@
 name: molecular-biology-expert
 description: >
   Query the curated scientific literature database to assess the biology, prior art,
-  feasibility, and design challenges for a protein-protein interaction (PPI) target.
-  Use whenever the user asks about the biology of a target complex, known inhibitors,
-  what the literature says about a protein pair, or as the second step in the
-  structural → literature → design pipeline after complex-structure-analysis.
+  feasibility, and design challenges for a candidate binder target — either a
+  protein-protein interaction (PPI; default) or a single-protein active-site /
+  allosteric-pocket target when the pathway-expert handoff specifies
+  design_intent=inhibit_active_site. Runs BEFORE complex-structure-analysis in the
+  pipeline: emits literature-derived residue hints (target_site_hint) that the
+  structure-analysis stage uses to focus its geometry pass. Also uses corpus graph
+  and DepMap tools when the target is a cancer / disease pathway node.
   Trigger on: "what does the literature say about", "prior art for", "known inhibitors
-  of", "has anyone targeted", "biology of [complex name]", "feasibility of targeting",
-  "molecular biology analysis", or when a complex-structure-analysis report is present and
-  the user asks to proceed with the pipeline. Requires the literature-db MCP server
-  (search_corpus and get_fingerprint tools).
+  of", "has anyone targeted", "biology of [target]", "feasibility of targeting",
+  "target feasibility", "molecular biology analysis", or as stage 1 of the
+  pathway → mol-bio → structure → design pipeline. Requires the literature-db MCP
+  server (search_corpus, get_fingerprint, graph tools).
 ---
 
-# Molecular Biology Expert: Literature-Based PPI Feasibility Analysis
+# Molecular Biology Expert: Target Feasibility Analysis
 
 This skill queries the curated biochemistry literature database to characterize a
-protein-protein interaction target. The output is a structured report covering the
-target's biological context, inhibitor prior art, experimentally validated interface
-residues, and a design feasibility assessment — ready for consumption by a downstream
-protein design agent.
+candidate binder target. It works for both PPI targets (the default — characterise
+both partners, the interface, and prior PPI-disruptor or stabilizer art) and
+single-protein direct-inhibition targets (active site or allosteric pocket,
+characterise the pocket residues and prior peptide/macrocycle inhibitor art).
+
+The output is a structured report covering biological context, inhibitor prior art,
+literature-derived candidate residues, and a design feasibility assessment.
+Crucially, the report emits a `target_site_hint` field in the PIPELINE HANDOFF —
+this is consumed by the next stage (complex-structure-analysis) to focus its
+geometry pass on the residues literature has already implicated.
 
 ## Prerequisites
 
-Verify that `search_corpus` and `get_fingerprint` tools are available (literature-db
-MCP server must be connected). Both tools will be used extensively.
+Verify that `search_corpus`, `get_fingerprint`, and the graph tools (`cluster_for_protein`,
+`get_genetic_codependency`, `find_cocorrelated_genes`, `shortest_interaction_path`)
+are available — literature-db MCP server must be connected.
 
-If a `complex-structure-analysis` report is present in the conversation, read it before
-starting — the PDB ID, hotspot residues, and interface characterization will sharpen
-the literature queries and enable cross-referencing in the report.
+You run **before** complex-structure-analysis in the pipeline. There is no
+structure report yet to cross-reference against. Your job is to give the structure
+expert the best literature-derived starting point.
 
 ---
 
 ## Phase 1: Identify the Target
 
-Extract the following from the user's request or from a preceding chimerax report:
+Extract the following from the user's request or the pathway-expert handoff:
 
-- **ProteinA** and **ProteinB** — the two proteins forming the complex
-- **Target protein** — the protein whose surface the binder will engage (may differ
-  from ProteinA/ProteinB ordering)
+- **For PPI targets** (most common):
+  - **ProteinA** and **ProteinB** — the two proteins forming the complex
+  - **Target protein** — the protein whose surface the binder will engage
+- **For direct-inhibition targets** (pathway-expert handoff sets `design_intent=inhibit_active_site`):
+  - **Target protein** — the single enzyme / pocket-bearing protein
+  - **Site type** — active site / allosteric pocket / cryptic pocket
 - **Organism** — human unless specified otherwise
-- **Hotspot residues** — from chimerax report if available (e.g., "Phe69, Leu91,
-  Arg89 on TEAD4")
 - **Disease context** — cancer, viral, inflammatory, etc. (if known)
+- **design_intent** from pathway-expert handoff: `disrupt`, `stabilize`, or `inhibit_active_site`
 
-If the target complex is ambiguous (e.g., "KRAS" without specifying which effector),
-ask the user to clarify before proceeding.
+If the target is ambiguous (e.g., "KRAS" without specifying which effector), ask the
+user to clarify before proceeding.
 
 **Common name normalisation:** Use canonical protein names in queries. Examples:
 - YAP1 / YAP / hYAP → "YAP"
@@ -61,33 +73,38 @@ different aspects of the target. Collect all results and deduplicate by DOI.
 
 ### Required queries (always run)
 
-**Query 1 — Interaction biology:**
+Adapt the query wording to the design_intent:
+
+**Query 1 — Target biology:**
 ```
+# PPI target:
 search_corpus  query="<ProteinA> <ProteinB> interaction mechanism binding"  top_k=8
+# Direct-inhibition target:
+search_corpus  query="<ProteinName> active site catalytic mechanism structure"  top_k=8
 ```
 
 **Query 2 — Inhibitor prior art:**
 ```
+# PPI target:
 search_corpus  query="<ProteinA> <ProteinB> inhibitor peptide Ki Kd affinity"  top_k=8
+# Direct-inhibition target:
+search_corpus  query="<ProteinName> macrocyclic peptide inhibitor Ki IC50 active site"  top_k=8
 ```
 
-**Query 3 — Mutagenesis and hotspots:**
+**Query 3 — Key residues:**
 ```
+# PPI target:
 search_corpus  query="<ProteinA> <ProteinB> mutagenesis alanine scanning hotspot residues ΔΔG"  top_k=5
+# Direct-inhibition target:
+search_corpus  query="<ProteinName> catalytic residues active site mutation activity"  top_k=5
 ```
 
 ### Conditional queries (run if applicable)
 
 **Query 4 — Disease / in vivo relevance** (if disease context is known):
 ```
-search_corpus  query="<ProteinA> <ProteinB> <cancer/tumor/signaling> in vivo cellular"  top_k=5
+search_corpus  query="<target> <cancer/tumor/signaling> in vivo cellular"  top_k=5
 ```
-
-**Query 5 — Chimerax hotspot residues** (if a structural report is present):
-```
-search_corpus  query="<ResX> <ResY> <ProteinA> binding interface"  top_k=5
-```
-Use the 2–3 top hotspot residue names from the chimerax report.
 
 ### Deduplication
 
@@ -115,7 +132,8 @@ When choosing which papers to fetch in full, prioritise:
 2. `study_type`: `experimental_in_vitro` or `experimental_structural` over `review`
    or `computational`
 3. Non-null `affinities_kd_Molar` or `inhibitory_constant_Ki` (quantitative data)
-4. Papers with `key_amino_acid_residues` that overlap with chimerax hotspots
+4. Papers with `key_amino_acid_residues` populated — these residue lists are exactly
+   what feeds the `target_site_hint` handoff to the structure stage.
 
 Always fetch the top 3 papers by score regardless of study type.
 
@@ -140,25 +158,66 @@ From `methodology`:
 
 ---
 
-## Phase 4: Synthesise and Generate Report
+## Phase 4: Pathway / DepMap context (when applicable)
 
-Analyse across all retrieved fingerprints. Do not fabricate information — if a
-section cannot be filled from the corpus, write "Not found in corpus." and note
-whether the absence is informative (e.g., no prior inhibitors = novel target) or
-simply a corpus coverage gap.
+This phase runs only when the target is a human protein in a disease context
+(cancer, immune, metabolic, etc.). For viral / structural / academic-mechanism
+targets, skip and proceed to Phase 5.
+
+The graph tools answer questions that semantic search can't:
+
+- **`cluster_for_protein(<target>)`** — what co-functional module does this
+  protein sit in? Hub gene, internal/external edge counts, max internal
+  DepMap correlation. Use this to surface unsuspected functional partners
+  the user might want to consider as alternative targets or co-targets.
+- **`get_genetic_codependency(<target>, <partner>)`** — for PPI targets, this
+  is the Pearson correlation between the two genes' DepMap dependency scores.
+  |r| ≥ 0.3 is meaningful (the genes co-essential across cell lines), |r| ≥ 0.5
+  is strong corroboration that the PPI is biologically load-bearing. **A
+  high-confidence PPI without DepMap codependency is a yellow flag** — the
+  interaction may not be functionally important in the cell lines DepMap
+  covers.
+- **`find_cocorrelated_genes(<target>, top_k=10)`** — top co-essential
+  partners. Use this to discover unsuspected functional partners not surfaced
+  by literature.
+- **`shortest_interaction_path(<target>, <disease-gene>)`** — connects the
+  target to a known disease driver. Surface to the user when the path is
+  short (≤ 2 hops); it justifies why the target matters in the disease
+  context.
+
+Run **at most 2–3 graph tool calls** here — they are not free and the
+literature queries above are already substantial. Pick the ones that
+materially change the tractability verdict.
+
+**For inhibit_active_site targets**, the graph tools are less central
+(enzymes often have weak DepMap signal because of redundancy), but
+`cluster_for_protein` is still useful to surface paralog risk.
+
+---
+
+## Phase 5: Synthesise and Generate Report
+
+Analyse across all retrieved fingerprints + graph results. Do not fabricate
+information — if a section cannot be filled from the corpus, write "Not found
+in corpus." and note whether the absence is informative (e.g., no prior
+inhibitors = novel target) or simply a corpus coverage gap.
 
 **Citation policy:** All cited claims must come from retrieved fingerprints.
 - Citation format: DOI string only (e.g. `10.7554/eLife.25068`) + source_span.
   The `Source:` field in the KNOWN INHIBITORS table and the `Source (DOI, span)`
-  column in the INTERFACE INSIGHTS table must use this format.
+  column in the TARGET-SITE INSIGHTS table must use this format.
 - No author names, journal names, or years. Write the DOI, not "Smith et al. 2023
   Nature" or "eLife 2024".
 - If a fact is known from training knowledge but no corpus DOI exists for it, state
   the fact without any citation. Do not invent or guess a reference.
+- DepMap and graph tool results are not literature citations — cite them as
+  e.g. "(DepMap codependency r=0.42)" without a DOI.
 
-If chimerax hotspot residues are present, explicitly cross-reference them against
-`key_amino_acid_residues` from each fingerprint. Normalise naming conventions when
-comparing (e.g., "Phe69" = "F69" = "PHE69" = "hYAP Phe69").
+The job of this report is to give the downstream structure-analysis stage the
+best literature-derived starting point. Collect every key residue mentioned in
+the corpus with mutagenesis or structural evidence — these go into the
+`target_site_hint` field in PIPELINE HANDOFF (the structure expert uses them
+to focus its geometry pass).
 
 Use `source_span` values from fingerprints to cite provenance (e.g., "Page 3,
 Para 1" of DOI 10.7554/eLife.25068).
@@ -201,22 +260,26 @@ For each inhibitor class (max 4 classes; group variants; max 5 bullets each):
 - Key residues engaged: <list, or omit if not reported>
 - Limitations: <selectivity, permeability, stability — or omit if not reported>
 
-### INTERFACE INSIGHTS FROM LITERATURE
+### TARGET-SITE INSIGHTS FROM LITERATURE
 
-#### Confirmed hotspots (mutagenesis / structural data)
-| Residue | Protein | ΔΔG or effect | Method | Source (DOI, span) |
+#### Confirmed key residues (mutagenesis / structural data)
+For PPIs: interface residues with ΔΔG or alanine-scan effect on binding.
+For inhibit_active_site: catalytic residues + pocket-lining residues from
+inhibitor co-crystal structures.
+
+| Residue | Protein | Role / effect | Method | Source (DOI, span) |
 |---------|---------|---------------|--------|--------------------|
 | ...     | ...     | ...           | ...    | ...                |
 
 #### Residues tolerant of mutation
 <Only include if data exists — omit sub-section entirely if not found in corpus.>
 
-#### Cross-reference with structural report
-- Confirmed by literature: <hotspot residues from structure report that appear in corpus mutagenesis data>
-- Structural only (no experimental validation): <residues from structure report not found in corpus>
-- Literature-only hotspots: <residues in corpus not in structure report — or omit if none>
-
-If no structural report is present, omit this sub-section.
+#### Pathway / DepMap context
+<Include if Phase 4 produced results — otherwise omit this sub-section.>
+- Co-functional cluster: <hub gene + top 2–3 members from cluster_for_protein>
+- Genetic codependency: <Pearson r with named partners, e.g. "TARGET / PARTNER: r=0.42 (DepMap)">
+- Notable co-essential genes: <top 3 from find_cocorrelated_genes if surprising / informative>
+- Disease-driver connectivity: <shortest_interaction_path summary if used — omit otherwise>
 
 ### FEASIBILITY ASSESSMENT
 - Target tractability: <Excellent / Good / Marginal / Poor>
@@ -243,11 +306,13 @@ If no structural report is present, omit this sub-section.
 | 1 | ...                           | ... | ...        | ...   | ...         |
 
 ### PIPELINE HANDOFF
-- target_complex: <ProteinA / ProteinB>
+- target_complex: <ProteinA / ProteinB for PPI, or single-protein label for inhibit_active_site>
+- design_intent: <disrupt | stabilize | inhibit_active_site — pass through from pathway-expert handoff>
 - tractability: <Excellent | Good | Marginal | Poor>
 - go_recommendation: <GO | CONDITIONAL_GO | NO_GO>
 - go_rationale: <one sentence — the single most decisive reason for the recommendation>
 - modality: <cyclic_peptide | mini_protein | stapled_helix | either>
+- target_site_hint: <compact JSON object — see format below; consumed by complex-structure-analysis to focus the geometry pass>
 - design_query: <one sentence — e.g. "Generate {modality} design inputs for {complex}, PDB {pdb_id}, target chain {chain}. Priority hotspots: {res_list}. Affinity target: {kd}. {key constraint if any}.">
 
 **IMPORTANT:** Write the `### PIPELINE HANDOFF` section as plain bullet lines exactly as shown above.
@@ -258,6 +323,13 @@ Rules for `### PIPELINE HANDOFF`:
 - `go_recommendation` must be exactly one of: `GO`, `CONDITIONAL_GO`, or `NO_GO`. Use the tractability rubric: Excellent/Good → GO; Marginal → CONDITIONAL_GO; Poor → NO_GO.
 - `go_rationale` is a single sentence — the programmatic orchestrator displays this directly to the user.
 - `design_query` is the verbatim query string passed to protein-design-script; include PDB ID, chain, top 3–5 hotspot residues, and suggested affinity target.
+- `target_site_hint` is a single-line JSON object with these keys (use straight double-quotes, no trailing commas):
+  - `mode`: `"ppi_interface"` (for disrupt / stabilize) or `"single_protein_pocket"` (for inhibit_active_site)
+  - `target_protein`: the protein whose surface the binder engages
+  - `priority_residues`: array of residue identifiers from the corpus (numbers and/or one-letter+number, e.g. `["F69", "L91", "R89"]` or `["245", "247", "250"]`); leave empty `[]` if literature gave no specific residues
+  - `notes`: short string explaining the source of the residues (e.g. "alanine scan ΔΔG > 2 kcal/mol from doi:..." or "catalytic triad from inhibitor co-crystal doi:...")
+
+  Example: `- target_site_hint: {"mode":"ppi_interface","target_protein":"TEAD4","priority_residues":["F69","L91","R89"],"notes":"Alanine scan ΔΔG > 1.5 kcal/mol from doi:10.7554/eLife.25068"}`
 
 ---
 

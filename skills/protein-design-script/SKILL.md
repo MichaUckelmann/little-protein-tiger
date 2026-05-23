@@ -2,26 +2,45 @@
 name: protein-design-script
 description: >
   Generates input YAML/JSON for protein design models BoltzGen and RFDiffusion3
-  (RFD3). Input is a PPI analysis report with hotspot residues. Trigger on:
-  "generate protein design input", "RFD3 script", "boltzgen script", "protein
-  design script", or when user uploads a PPI analysis .md file.
+  (RFD3). Input is a target-site analysis report with hotspot residues — the
+  report may come from PPI mode (disrupt or stabilize; hotspots are interface
+  residues) or from inhibit_active_site mode (hotspots are pocket / catalytic
+  residues on a single-chain enzyme). The downstream mechanic — target chain +
+  hotspot list + modality → BoltzGen / RFD3 input — is identical across modes.
+  Trigger on: "generate protein design input", "RFD3 script", "boltzgen script",
+  "protein design script", or when user uploads a target-site analysis .md file
+  from the complex-structure-analysis skill.
 ---
-# Generation of input scripts for protein designing AI models to generate cyclic peptides or mini-protein binders targeting specified PPI sites.
- 
-Should be used together with a PPI analysis uploaded as .md file from the complex-structure-analysis skill. Hotspots and target chain are specified in the input analysis. User should provide the path to the PDB/CIF file holding the target chain.
- 
+# Generation of input scripts for protein design AI models to produce cyclic peptides or mini-protein binders targeting specified hotspot residues — PPI interfaces or single-protein pockets alike.
+
+Should be used together with a target-site analysis uploaded as .md file from the
+complex-structure-analysis skill. Hotspots and target chain are specified in the
+input analysis. User should provide the path to the PDB/CIF file holding the
+target chain. For inhibit_active_site mode there is no partner chain — the binder
+becomes the second chain in the boltzgen output, same as for PPI binders.
+
 ## Prerequisites
-Input is a PPI analysis report from the complex-structure-analysis skill. The report
-contains a MODEL-READY HOTSPOTS section with pre-formatted hotspot data for both
-BoltzGen and RFD3 (correct indexing and atom names). Use these directly — do not
-re-derive residue indices.
+Input is a target-site analysis report from the complex-structure-analysis skill.
+The report contains one of:
+- `### MODEL-READY HOTSPOTS [DISRUPT]` — interface hotspots, single target chain
+- `### MODEL-READY HOTSPOTS [STABILIZE — Glue Pocket N]` — periinterface patches on both chains
+- `### MODEL-READY HOTSPOTS [INHIBIT_ACTIVE_SITE]` — pocket residues on a single enzyme chain
+
+Each format has pre-formatted hotspot data for both BoltzGen and RFD3 (correct
+indexing and atom names). Use these directly — do not re-derive residue indices.
  
 ## Design defaults, unless otherwise specified by user
 - Use BoltzGen model as default, unless otherwise specified
-- Number of designed residues defaults: cyclic peptides = 14, mini-protein binder = 90
+- **Binder size ranges** (hardcoded; passed to BoltzGen as `sequence: <min>..<max>`):
+  - Cyclic peptide: **12..15** residues
+  - Mini-protein binder: **70..86** residues
+  Single-integer length values are **not** to be used — always emit a range so
+  BoltzGen samples lengths within the bracket.
 - Number of designs (`num_designs`): 20000
 - Budget (final diversity-optimized set): 50
-- Hotspot residues: 2–8 residues, as specified in the MODEL-READY HOTSPOTS section, for cyclic peptides 2-5 residues, specified in subsection BoltzGen cyclic peptide binding_types
+- Hotspot residues: 2–8 residues, as specified in the MODEL-READY HOTSPOTS section,
+  for cyclic peptides 2-5 residues, specified in subsection BoltzGen cyclic peptide
+  binding_types
  
 ## Output Location
 
@@ -61,24 +80,68 @@ sections are present), generate **separate** design submissions for each:
   Separate submissions generated; run both and compare hit rates."
  
 ## BoltzGen Input Generation
- 
+
 ### Protocol selection
 - Cyclic peptide: `--protocol peptide-anything`
 - Mini-protein binder: `--protocol protein-anything`
- 
-### YAML structure
-Use the `binding_types` block from MODEL-READY HOTSPOTS directly. The residue
-numbers in that block are already `label_seq_id` (1-indexed mmCIF), which is
-what BoltzGen requires.
- 
-For cyclic peptides, include `cyclic: True` on the designed protein entity.
- 
+
+### YAML schema — **BoltzGen, NOT Boltz-1/Boltz-2**
+
+These two formats look similar and are easy to confuse — the LLM's training
+data has more Boltz examples than BoltzGen examples. Use **only** the
+BoltzGen schema below. `boltzgen check` will hard-fail on Boltz-flavored
+YAMLs.
+
+**Required top-level key**: `entities:` (a list). **Forbidden top-level keys**
+(will cause an immediate validation failure): `version`, `sequences`,
+`constraints`, `chain_a`, `chain_b`, `residues_a`, `residues_b`.
+
+Each entity is either a `file:` entity (the target — loaded from a CIF/PDB)
+or a `protein:` entity (the designed binder, by length). `binding_types:`
+goes **nested under the target's `file:` entity**, not at the top level.
+
+### Canonical YAML template — use this verbatim, swap in target-specific values
+
+```yaml
+entities:
+  # ── Target: loaded from a CIF/PDB file ─────────────────────────────────
+  - file:
+      path: <ABSOLUTE_PATH_TO_TARGET_CIF_OR_PDB>
+      include:
+        - chain:
+            id: <TARGET_CHAIN_ID>           # e.g. "A"
+      # binding_types tells BoltzGen which residues the designed binder
+      # should engage — nested HERE under file, not at the top level.
+      binding_types:
+        - chain:
+            id: <TARGET_CHAIN_ID>
+            binding: <LABEL_SEQ_ID_LIST>    # e.g. 27,53,34,31,60 — no quotes, no brackets
+
+  # ── Designed binder: by length, identified by chain ID B ───────────────
+  - protein:
+      id: B
+      sequence: <MIN>..<MAX>                # cyclic 12..15, mini-protein 70..86 — always a range
+      cyclic: True                          # OMIT this line for mini_protein
+```
+
+Notes:
+
+- `binding:` takes a **comma-separated list of integers** with no quotes and
+  no brackets — these are `label_seq_id` values (1-indexed mmCIF) copied
+  verbatim from MODEL-READY HOTSPOTS.
+- For cyclic peptides include `cyclic: True` on the designed entity.
+  For mini-proteins omit it.
+- For `inhibit_active_site` mode the structure has only a single target
+  chain (no partner) — the YAML shape is **identical** to a PPI binder.
+- The reference file at `references/boltzgen_example_yaml_cyclic_peptide.yaml`
+  is the same schema; use it as a sanity check if anything above is unclear.
+
 ### Validation
+
 After writing the YAML, instruct the user to run `boltzgen check <yaml_path>`
-to verify the design specification before submitting the full job.
- 
-### Example YAML (cyclic peptide)
-See references/boltzgen_example_yaml_cyclic_peptide.yaml
+to verify the design specification before submitting the full job. The
+orchestrator runs this automatically in stage 4 and will hard-fail there
+if the schema is wrong, so getting it right here saves a round trip.
  
 ## RFD3 Input Generation
  

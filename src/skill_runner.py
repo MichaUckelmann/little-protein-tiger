@@ -569,6 +569,11 @@ _TOOL_DEFS: list[dict[str, Any]] = [
 # Only design/optimizer skills should write files — analysis skills produce
 # their output as return text which PipelineRunner writes to disk.
 # Restricting at the schema level is more reliable than prompt instructions alone.
+# Skills that work purely from their context_text and emit a markdown report
+# — no MCP tools should be exposed, since extras just confuse the model and
+# waste tokens. Add a skill here when it has no genuine tool needs.
+_NO_TOOL_SKILLS = {"design-analyst"}
+
 _WRITE_FILE_SKILLS = {"protein-design-script", "binder-optimizer"}
 
 # Skills that need the full residue index maps for AF3/BoltzGen JSON construction
@@ -579,7 +584,7 @@ _PDB_LOOKUP_SKILLS = {"pathway-expert", "complex-expert", "orchestrator"}
 
 # Skills that have access to the NetworkX-backed graph tools (path, hubs, export).
 # Other skills don't need them and shouldn't pay the system-prompt overhead.
-_GRAPH_TOOL_SKILLS = {"corpus-explorer", "pathway-expert"}
+_GRAPH_TOOL_SKILLS = {"corpus-explorer", "pathway-expert", "molecular-biology-expert"}
 _GRAPH_TOOLS = {
     "shortest_interaction_path", "interaction_hubs", "export_subgraph",
     "get_genetic_codependency", "find_cocorrelated_genes",
@@ -713,6 +718,8 @@ def _search_rcsb_pdb(proteins: list[str], fingerprint_dir: Path) -> dict:
 
 def _filter_tools(defs: list[dict], skill_name: str) -> list[dict]:
     """Return the tool list for a given skill, removing tools the skill shouldn't have."""
+    if skill_name in _NO_TOOL_SKILLS:
+        return []
     if skill_name not in _WRITE_FILE_SKILLS:
         defs = [d for d in defs if d["name"] != "write_file"]
     if skill_name not in _PDB_LOOKUP_SKILLS:
@@ -1538,6 +1545,14 @@ class SkillRunner:
                 logger.warning(
                     f"Response truncated at max_tokens on call #{iteration + 1} "
                     f"({out_tok:,} out) — '### PIPELINE HANDOFF' may be missing."
+                )
+            elif response.stop_reason == "refusal":
+                # Safety-filter refusal — model returned no content. Surface
+                # this loudly so the caller doesn't get a silent empty report.
+                logger.warning(
+                    f"Model refused on call #{iteration + 1} "
+                    f"(stop_reason=refusal) — empty response. "
+                    f"Check skill prompt + query for safety triggers."
                 )
 
             if in_tok > self.max_input_tokens:
