@@ -30,10 +30,15 @@ HANDOFF from pathway-expert (and confirmed by mol-bio-expert):
 - **`stabilize` mode (molecular glue)**: identify periinterface patches on *both*
   chains flanking the interface; binder bridges across and reinforces the complex.
   **Two-chain input.**
-- **`inhibit_active_site` mode**: single-protein target — enzyme active site,
-  allosteric pocket, or other ligand-binding cleft. Hotspots come primarily from
-  the literature-stage handoff (`target_site_hint.priority_residues`), with
-  structural confirmation of pocket geometry per residue. **Single-chain input.**
+- **`inhibit_active_site` mode**: single-protein target — interpret broadly.
+  Covers (a) enzyme catalytic sites, (b) allosteric pockets, (c) any
+  substrate-binding cleft on a non-catalytic protein, including DNA-binding
+  clefts (e.g. blocking cGAS from sensing cytosolic dsDNA), RNA-binding
+  pockets, lipid-binding sites, and metabolite-binding pockets. The mode
+  name is historical — the analysis is the same for any single-chain
+  binding-pocket target. Hotspots come primarily from the literature-stage
+  handoff (`target_site_hint.priority_residues`), with structural
+  confirmation of pocket geometry per residue. **Single-chain input.**
 
 When the mol-bio-expert handoff includes a `target_site_hint` JSON object with
 `priority_residues`, treat those as the authoritative starting set in **any**
@@ -286,10 +291,13 @@ the shorter chain is usually the binder.
 
 **[INHIBIT_ACTIVE_SITE mode only]** — skip if in DISRUPT or STABILIZE mode.
 
-The input is a single-chain enzyme or pocket-bearing protein. There is no partner
-chain to analyse. The hotspot set is sourced from `target_site_hint.priority_residues`
-(literature-derived catalytic / pocket residues from the mol-bio stage) and confirmed
-by single-residue geometric context.
+The input is a single-chain pocket-bearing protein — could be an enzyme, an
+innate-immunity DNA sensor, an RNA-binding protein, a lipid-binding protein,
+or any single chain whose binding cleft is the design target. There is no
+partner chain to analyse. The hotspot set is sourced from
+`target_site_hint.priority_residues` (literature-derived catalytic /
+substrate-binding / DNA-binding / allosteric pocket residues from the mol-bio
+stage) and confirmed by single-residue geometric context.
 
 For each residue in `priority_residues`, gather geometric context:
 

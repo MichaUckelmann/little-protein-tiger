@@ -74,7 +74,16 @@ angle to capture different aspects of the evidence:
 Substitute `<disease_mechanism_term>`, `<dysregulation_term>`, and `<protective_regulator_term>`
 with the values resolved from the `disease_category` mapping in Phase 1 before issuing any query.
 
-**Query 1 — Disease-pathway mechanism** (top_k=8):
+**Important on `top_k` sizing.** The corpus has thousands of fingerprints. With
+`top_k=5-8` you're sampling ~0.1% — a strong topical hit can easily fall outside
+the window if a few off-topic papers happen to rank above it. Use **`top_k=20-30`
+on the first 1-2 broad queries** to get a real sense of coverage, then narrow
+down with smaller `top_k` for the follow-up queries. A pathway being "thin in
+the corpus" should be established by *more* search than usual, not less. Do
+not declare a corpus gap until you have run at least three queries with
+combined unique paper count ≥ 30 AND surveyed the graph tools (next section).
+
+**Query 1 — Disease-pathway mechanism** (top_k=20):
 ```
 search_corpus
   query="<pathway_hint OR disease> signaling dysregulation <disease_mechanism_term>"
@@ -115,6 +124,27 @@ re-run the same queries **without** the `study_category` filter. Many existing
 biochemistry papers have incidental pathway context in their situational_context_hook.
 
 **Always state the fallback explicitly in the report** — see CORPUS COVERAGE section.
+
+### Graph tools — use before declaring the corpus thin
+
+For any disease pathway involving well-known central nodes (KRAS pathway, cGAS-STING,
+JAK/STAT, Hippo, Wnt, etc.) the literature corpus is almost certainly **not** the
+limiting signal — but `search_corpus` with small `top_k` can miss it. Before
+concluding that the corpus is sparse on the pathway, run at least one of:
+
+- `cluster_for_protein(<central_node>)` — what co-functional module is the
+  proposed target in? Reveals unsuspected co-essential partners (DepMap) and
+  the cluster's hub.
+- `interaction_hubs(top_n=10, min_mentions=2)` — corpus-wide highest-degree
+  nodes (with the "research-attention bias" caveat). Catches central nodes
+  semantic search may have missed.
+- `find_cocorrelated_genes(<central_node>, top_k=10)` — DepMap-confirmed
+  functional partners.
+- `shortest_interaction_path(<central_node>, <disease_driver>)` — if you have
+  a candidate disease driver, this confirms or refutes pathway connectivity.
+
+Use them sparingly (2-3 calls max for a normal run) but use at least one
+before writing "no candidates from the corpus".
 
 ---
 
@@ -244,14 +274,25 @@ in corpus", explicitly reason through the following before writing the report:
      autoinhibitory interaction is *lost* or *weakened*; reinforcing it restores
      the healthy state (e.g. restoring an autoinhibitory complex, re-engaging a
      sequestered OFF-state, protecting a tumour suppressor complex from degradation).
-   - `inhibit_active_site` — for an enzyme or pocket-bearing single protein where
-     direct catalytic or allosteric-pocket blockade is the established therapeutic
-     mode. **Only use when (a) the corpus shows explicit precedent for peptide /
-     macrocycle / mini-protein inhibitors of this pocket AND (b) no high-quality
-     PPI option exists for the same node.** Do not pivot to direct inhibition
-     just because the protein is "an enzyme" — small molecules dominate that
-     space; the binder pipeline only adds value when the pocket is poorly
-     druggable by small molecules.
+   - `inhibit_active_site` — for a single protein where direct occlusion of a
+     **binding cleft** (any kind, not just enzyme active sites) is the established
+     therapeutic mode. The mode name is historical — interpret broadly: it
+     covers (a) enzyme catalytic sites, (b) allosteric pockets, (c) substrate-
+     binding clefts on non-enzymes including **DNA-binding clefts** (e.g.
+     blocking cGAS from sensing dsDNA), RNA-binding clefts, lipid-binding
+     pockets, and metabolite-binding sites. The pipeline mechanic is identical
+     in every case: a designed peptide / macrocycle / mini-protein occupies
+     the cleft and competes with the natural ligand.
+
+     **Only use when (a) the corpus shows explicit precedent for peptide /
+     macrocycle / mini-protein modulators of this cleft AND (b) no
+     high-quality PPI option exists for the same node.** For enzyme active
+     sites specifically, do not pivot just because the protein is "an enzyme"
+     — small molecules dominate catalytic-site inhibition and the binder
+     pipeline only adds value when the pocket is poorly druggable by small
+     molecules. For DNA / RNA / substrate-binding clefts the binder pipeline
+     is more competitive (large, flat, polar surfaces are harder for small
+     molecules), so the bar for choosing this mode is lower.
    Record one `design_intent` per node. Default to `disrupt` if ambiguous between
    disrupt and stabilize. Default to `disrupt` (PPI) over `inhibit_active_site`
    when both are plausible.
@@ -334,10 +375,14 @@ Tier definitions for the header labels (PPI candidates ranked above direct-inhib
                              by pathway evidence; no therapeutic precedent in corpus
 - [PATHWAY INFERRED]     — PPI; no genetic dependency data; but named interaction is required
                           for disease-relevant pathway output per corpus logic
-- [DIRECT INHIBITION]    — Single-protein target (enzyme active site or allosteric pocket);
-                          characterised peptide/macrocycle/mini-protein precedent in corpus AND
-                          no high-quality PPI option for this node. Always ranked below the
-                          three PPI tiers regardless of active-site evidence strength.
+- [DIRECT INHIBITION]    — Single-protein target where the designed binder occludes a
+                          binding cleft on one chain. Covers enzyme active sites, allosteric
+                          pockets, AND substrate-binding clefts on non-catalytic proteins
+                          (DNA-binding clefts on innate immunity sensors, RNA-binding sites,
+                          lipid-binding pockets, etc.). Use when there is characterised
+                          peptide/macrocycle/mini-protein precedent in corpus AND no
+                          high-quality PPI option for this node. Always ranked below the
+                          three PPI tiers regardless of evidence strength.
 
 ### PRIMARY RECOMMENDATION
 
