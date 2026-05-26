@@ -99,7 +99,8 @@ every stage:
 ```
 PipelineRunner.run(query="Design therapeutics for ...")
 
-  stage 0  pathway-expert             → target complex + PDB
+  stage 0  pathway-expert OR          → target complex + PDB
+           wildcard-expert (alt mode)   (novelty-driven; see --pathway-mode)
   stage 1  molecular-biology-expert   → tractability + target_site_hint
   stage 2  complex-structure-analysis → MODEL-READY HOTSPOTS (auth + label_seq)
   stage 3  protein-design-script      → BoltzGen YAML + RFD3 JSON
@@ -109,6 +110,18 @@ PipelineRunner.run(query="Design therapeutics for ...")
                                           SASA, MMR-rank by composite score
   stage 6  design-analyst             → final candidate review + FASTA
 ```
+
+Stage 0 has two modes (`design.pathway.mode` in `config.yaml` or
+`--pathway-mode` CLI flag): `standard` runs `pathway-expert` (tier-ranked
+on validated drug targets — VT3989-style precedent) and `wildcard` runs
+`wildcard-expert` (graph-driven novelty triage using `interaction_hubs`,
+`novelty_signal`, and DepMap `get_genetic_codependency` / `find_cocorrelated_genes`
+to surface mechanistically connected but literature-under-explored
+candidates). The wildcard branch supports both disease-anchored and basic-biology
+contexts and emits forward-compatible `predicted_consequence` /
+`falsifying_readout` fields on each candidate so a future probe-mode
+design-analyst can use the designed binder as a research probe, not just
+a therapeutic.
 
 Stages 0–3 and 6 are LLM-driven (skills); stages 4 and 5 are deterministic
 Python. The orchestrator handles `auth_seq_id ↔ label_seq_id` numbering,
@@ -215,7 +228,8 @@ usage: run_skill.py --skill SKILL --query QUERY
 | Skill | What it does |
 |---|---|
 | `corpus-explorer` | **Conversational** research assistant for free-form corpus exploration: relational queries ("which proteins interact with X?"), pathway construction with affinities, and competing-hypothesis generation. Inline DOI citations, no pipeline handoff. Pairs with `--interactive` for multi-turn sessions |
-| `pathway-expert` | Searches the literature corpus to characterise a signalling pathway in a disease context and recommend the best PPI target node |
+| `pathway-expert` | Searches the literature corpus to characterise a signalling pathway in a disease context and recommend the best PPI target node — tier-ranked on validated drug-target evidence (clinical precedent, prior peptide binders, mutagenesis-validated hotspots) |
+| `wildcard-expert` | Speculative counterpart to pathway-expert: graph-driven novelty triage (corpus interaction graph, DepMap co-essentiality, novelty_signal) to surface mechanistically connected but literature-under-explored PPI candidates. Disease-anchored AND basic-biology contexts. Emits hypothesis fields (`predicted_consequence`, `falsifying_readout`) so the designed binder doubles as a research probe |
 | `complex-structure-analysis` | Analyses a PDB/CIF structure, computes BSA + hotspot patches, and outputs BoltzGen/RFD3-ready residue specs |
 | `binder-optimizer` | Takes a predicted binder-target complex, proposes 4 single-point mutations, validates clashes, and emits AF3 submission JSONs |
 | `molecular-biology-expert` | Queries the corpus for biochemical detail on a specific protein pair (binding affinities, hotspot residues, inhibitor data) |
@@ -384,10 +398,22 @@ SASA via PyRosetta and ranks. The wrapper script in `scripts/test_e2e.py`
 takes a prompt + slug and captures per-stage conversation traces for audit.
 
 ```bash
+# Standard run (pathway-expert, validated-target-biased — picks YAP1/TEAD1-class
+# targets with clinical precedent and a known PDB)
 .venv/bin/python scripts/test_e2e.py \
   --prompt "Design cancer therapeutics to target key nodes in mesothelioma." \
   --slug mesothelioma \
   --pilot 50 --production 100
+
+# Wildcard run (wildcard-expert, novelty-driven — graph + DepMap triage,
+# prefers HYPOTHESIS / SYNTHETIC_LETHALITY / CROSS_INDICATION_TRANSFER /
+# DEPMAP-COUPLED candidates over VALIDATED when a tractable novel target
+# exists). Works on basic-biology prompts too:
+.venv/bin/python scripts/test_e2e.py \
+  --prompt "Identify a novel tractable PPI in the unfolded protein response." \
+  --slug upr_wildcard \
+  --pilot 50 --production 100 \
+  --pathway-mode wildcard
 ```
 
 Configuration lives under `design:` in `config.yaml`:
@@ -564,7 +590,8 @@ little_protein_tiger/
 │   └── pymol_show_topk.py       # PyMOL viewer for top-K designs (run inside PyMOL)
 │
 ├── skills/                      # Expert skill definitions (SKILL.md = system prompt)
-│   ├── pathway-expert/          # Disease pathway analysis + PPI target selection
+│   ├── pathway-expert/          # Disease pathway analysis + PPI target selection (validated-target-biased)
+│   ├── wildcard-expert/         # Speculative counterpart: graph + DepMap-driven novelty triage
 │   ├── complex-structure-analysis/ # PDB/CIF interface hotspot analysis
 │   ├── binder-optimizer/        # Point mutation proposals + AF3 JSON generation
 │   ├── molecular-biology-expert/# Corpus search for a specific protein pair

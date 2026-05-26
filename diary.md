@@ -2278,3 +2278,221 @@ Commit `61c83c3` (skill output discipline + multi-region surfacing):
   - `_find_design_yaml` returns `(picked, skipped)` tuple
   - `_stage_execution` writes `multi_region_skipped.txt`
   - `_stage_summary` forwards multi-region notice to analyst
+
+---
+
+## 2026-05-26 (later) — Wildcard-expert wiring + novelty signal + mol-bio rubric softening
+
+The mesothelioma audit closed with the observation that the current
+pathway-expert is structurally tier-anchored on `[VALIDATED]` — it
+correctly picked YAP1/TEAD1 (three clinical-stage inhibitors, 2.8 Å
+co-crystal) because its rubric demands the safest validated target.
+`wildcard-expert` exists in `skills/` as the speculative counterpart
+and `PipelineRunner.__init__` already accepts a `pathway_mode` kwarg
+that conditionally routes `wildcard-expert` instead — but the wiring
+was unfinished and the skill's PRIMARY RECOMMENDATION rubric had the
+same VALIDATED bias as pathway-expert. This session finished the
+wiring, added a deterministic novelty signal, made DepMap a
+first-class input, and softened the mol-bio rubric so the new mode
+doesn't auto-fall to NO_GO on missing ΔΔG.
+
+### Inflection-point framing (logged for future reference)
+
+The user pointed out that wildcard-expert is one piece of a
+broader hypothesis-design loop: if the skill can articulate a
+falsifiable mechanistic claim AND the structure→design→execution
+half of the pipeline can build a binder against any defined
+interface, then the binder becomes a probe for the hypothesis,
+not just a therapeutic. The full loop:
+
+1. wildcard-expert generates "PROTEIN_X drives DISEASE_Y via interaction
+   with PROTEIN_Z in CONTEXT" (the hypothesis).
+2. Stages 2–6 design a binder that disrupts the named interaction.
+3. The binder's effect in cell assays falsifies or confirms the
+   hypothesis (the predicted readout).
+
+We did NOT build the probe-mode design path this session — that
+expansion (a new `design_intent: probe` value, specificity-over-affinity
+acceptance criteria in the design-analyst, paralog selectivity scoring)
+is deferred. But we DID add the schema plumbing so the future
+expansion is a small refactor: each `choices_json` element now carries
+optional `predicted_consequence` and `falsifying_readout` fields, plus
+the wildcard SKILL.md requires populating them per candidate.
+
+Standard `pathway-expert` mode leaves these fields blank; wildcard mode
+populates them because in wildcard mode the hypothesis IS the rationale
+for picking a non-VALIDATED target.
+
+### What shipped — commit `a29e3bf` (first pass)
+
+**Surfacing `pathway_mode`** (was only a constructor kwarg):
+- `config.yaml`: new `design.pathway.mode` (default `standard`; alt `wildcard`).
+- `pipeline_runner.PipelineRunner.__init__` falls back to config when
+  kwarg is the default; validates against `{"standard", "wildcard"}`.
+- `scripts/test_e2e.py` gains `--pathway-mode {standard,wildcard}`.
+
+**Deterministic `novelty_signal`** (`src/_corpus_graph.py`):
+- Counts four signals across the fingerprint corpus per protein:
+  `mentions`, `pdb_papers`, `prior_targeting`, `quantitative_findings`.
+- Each squashed via `1 - exp(-count/scale)`; novelty = `1 - mean(s_i)`.
+- Reviewer-transparent: returns the raw counts so the score can be
+  recomputed by hand. Scales (`20/8/5/5`) live in `_NOVELTY_SCALES`
+  for tuning.
+- Smoke-tested against the live corpus: YAP1 → 0.12, TEAD1 → 0.18,
+  TP53 → 0.17, DPP4 → 0.85, unknown → 0.99. Caveat surfacing works
+  for paralog-substring queries.
+- Dual-transport: `@mcp.tool()` in `mcp_server.py` and `_TOOL_DEFS` +
+  `_GRAPH_TOOLS` + dispatch in `skill_runner.py`.
+
+**Allowlist additions** (`skill_runner.py`):
+- `_PDB_LOOKUP_SKILLS` and `_GRAPH_TOOL_SKILLS` both gain
+  `"wildcard-expert"`. The PDB allowlist edit was a silent-bug fix —
+  the skill's Phase 4.6 has always called `find_pdb_structures`
+  which `_filter_tools` was silently dropping.
+
+**Wildcard SKILL.md rewrite** (first pass):
+- Preamble cleanup; tool list reflects actual surface.
+- New mandatory Phase 2.5 with `interaction_hubs`, `novelty_signal`,
+  `shortest_interaction_path` + hub-residuals classification table
+  (SATURATED / CONNECTED-NOVEL / PERIPHERY-NOVEL / UNCHARTED / MID-NOVEL).
+- PRIMARY RECOMMENDATION rubric inverted: HYPOTHESIS /
+  CROSS_INDICATION_TRANSFER / SYNTHETIC_LETHALITY win over VALIDATED
+  when (a) PDB exists, (b) interface interpretable, (c) ≥ 1 disease
+  mention. Anti-pattern guard: VALIDATED with `novelty_score < 0.3`
+  must NOT be recommended unless rule 1 unsatisfiable.
+- `choices_json` schema extended with `novelty_score`, `classification`,
+  `predicted_consequence`, `falsifying_readout`.
+
+**Mol-bio rubric softening**:
+- Tractability ladder reframed as "tractability AND informativeness".
+  Excellent now reachable via a clearly stated falsifiable hypothesis,
+  not only via mutagenesis-validated hotspots + prior peptide binder
+  ≤ 100 nM.
+- Explicit statement: absence of ΔΔG / Kd is NOT a downgrade trigger.
+  Quantitative anchors are highlighted when present, never gated on.
+- Tier-aware affinity-target fallback for `design_query`: corpus value
+  when available; ≤ 30 nM for VALIDATED/BIOLOGICALLY_JUSTIFIED;
+  ≤ 100 nM for HYPOTHESIS-tier.
+
+**Frontend passthrough**:
+- `_annotate_choices` passes through `design_intent`, `novelty_score`,
+  `classification`, `predicted_consequence`, `falsifying_readout`.
+- `TargetChoice` TS interface extends with the same optional fields.
+- `PathwayChoicePanel` adds tier styles for `SYNTHETIC_LETHALITY`,
+  `CROSS_INDICATION_TRANSFER`, `HYPOTHESIS`; renders a `novelty 0.xx`
+  badge alongside the tier badge when `novelty_score` is set.
+
+### What shipped — commit `903d957` (second pass, follow-up review)
+
+Reviewing the first-pass wildcard SKILL.md surfaced three structural
+limitations the user flagged:
+
+**(a) Disease bias was still pervasive** despite the inversion. Variable
+`disease_or_cancer`, all-cancer examples, queries hardcoding `<disease>`,
+mechanism rationales framed as "oncogenic signalling" / "tumour
+suppressor", report header `DISEASE CONTEXT`. Novel hypotheses are
+equally valuable in basic-pathway biology (UPR, DNA replication
+initiation, ciliogenesis) but the skill was barely usable there.
+
+Fix: introduce a derived `mode ∈ {disease_anchored, basic_biology}`.
+Rename `disease_or_cancer` → `biological_context`; broaden examples;
+mode-conditional alternates for every disease-dependent query in
+Phase 2/4/4.5. Phase 5 disrupt/stabilize rationales generalised to
+cover probe experiments alongside therapeutic intent. Report header
+`DISEASE CONTEXT` → `BIOLOGICAL CONTEXT`; `DYSREGULATED NODES
+ASSESSMENT` → `CANDIDATE NODE ASSESSMENT`. Disease/indication field
+remains, can be filled with "Not disease-anchored — basic biology".
+
+**(b) DepMap mentioned but never called.** The skill listed "synthetic
+lethality / co-dependency" as a hypothesis type but didn't actually
+invoke `get_genetic_codependency` or `find_cocorrelated_genes`. These
+ARE in the graph-tool surface (wildcard now has access after the
+first-pass allowlist edit) but the prompt didn't reach for them.
+
+This matters because DepMap is the closest thing to ground-truth
+functional co-dependency we have — co-essentiality across ~1,200 cell
+lines, independent of literature attention. A high-r pair (r ≥ 0.4)
+is strong evidence of functional coupling even when no paper has
+co-cited the two genes.
+
+Fix: Phase 2.5 grew from 3 to 6 calls. Two new MANDATORY:
+- Call 4: `get_genetic_codependency(anchor, candidate)` per candidate.
+  Records r + n_cell_lines with interpretation tiers (≥0.4 strong,
+  0.2–0.4 weak, <0.2 uncoupled).
+- Call 5: `find_cocorrelated_genes(anchor, top_n=15, min_r=0.3)` once,
+  to surface unexpected co-essential partners absent from Phase-2
+  fingerprints — "DepMap residuals" become the highest-yield
+  hypothesis seeds (functional ground truth + literature absence).
+
+Plus one optional Call 6: `cluster_for_protein(candidate)` for top
+candidates. New `DEPMAP-COUPLED` classification on the hub-residuals
+table (novelty_score ≥ 0.5 AND DepMap r ≥ 0.4 — functional coupling
+without literature recognition; the wildcard's highest-value class).
+`choices_json` gains `depmap_r_to_anchor: float | null`.
+
+**(c) Training-knowledge bridge dominated Phase 3.** The Phase 3
+"creative" stage put training knowledge first. The user (rightly)
+flagged that this undercuts the pipeline's value — "for querying
+training knowledge we could just ask Claude directly". The pipeline's
+edge is corpus + graph; hypotheses untethered to those forfeit it.
+
+Fix: Phase 3 reordered. Renamed "Hypothesis Generation — Corpus +
+Graph First, Training Knowledge as Gap-Filler". New step order:
+- 3a: mine Phase 2.5 graph patterns (DEPMAP-COUPLED, cluster residuals,
+  `find_cocorrelated_genes` flagged residuals).
+- 3b: mine non-obvious Phase 2 fingerprint connections (single-paper
+  bridges, asymmetric pathway membership, effector mismatches).
+- 3c: training knowledge ONLY to annotate hypotheses generated in
+  3a/3b — propose mechanism, residues, assays. Do NOT introduce new
+  proteins.
+
+HARD RULE: hypotheses introducing a protein absent from ALL
+Phase-2 / Phase-2.5 / DepMap outputs must re-anchor in Phase 4 or be
+dropped. Every hypothesis must cite a `Source signal` from Phase 2.5
+or Phase 2 — bare training knowledge is no longer a valid source.
+
+### Next session — benchmark runs
+
+Pipeline mechanics are in. Next is empirical validation:
+
+1. **Wildcard run on the mesothelioma prompt** (`--pathway-mode wildcard`)
+   to see if the skill picks a different target than YAP1/TEAD1 with
+   the same input. Expectation: it should surface a `DEPMAP-COUPLED`
+   or `PERIPHERY-NOVEL` candidate from the Hippo neighbourhood
+   (FOSL1, VGLL4, or a cluster-5 residual) rather than YAP1/TEAD1.
+
+2. **Wildcard run on a basic-biology prompt** to validate the
+   `basic_biology` mode end-to-end — e.g. "Identify a novel
+   tractable PPI in the unfolded protein response" with no disease
+   anchor.
+
+3. **Sanity regression** with `--pathway-mode standard` on the
+   mesothelioma prompt — outputs should match the existing
+   benchmark closely except for incidental wording from the mol-bio
+   rubric softening.
+
+4. Tune `_NOVELTY_SCALES` if the empirical novelty distribution
+   bunches at the extremes. Tune the DEPMAP-COUPLED threshold (r ≥ 0.4)
+   if the runs surface either no candidates or too many.
+
+### Files changed in this session
+
+Commit `a29e3bf` (wildcard wiring + mol-bio softening):
+- `config.yaml`
+- `scripts/test_e2e.py`
+- `skills/molecular-biology-expert/SKILL.md`
+- `skills/wildcard-expert/SKILL.md` (first-pass rewrite)
+- `src/_corpus_graph.py` (novelty_signal + scales)
+- `src/mcp_server.py` (novelty_signal @mcp.tool)
+- `src/pipeline_runner.py` (config fallback for pathway_mode,
+  _annotate_choices passthrough for 5 fields)
+- `src/skill_runner.py` (tool def + dispatch + allowlists)
+- `web/frontend/src/components/PathwayChoicePanel.tsx` (tier styles +
+  novelty badge)
+- `web/frontend/src/lib/api.ts` (TargetChoice extensions)
+
+Commit `903d957` (wildcard relaxation pass):
+- `skills/wildcard-expert/SKILL.md` (mode-conditional queries, DepMap
+  calls 4–6, training-knowledge demotion, report-template rename)
+- `src/pipeline_runner.py` (+1 line — depmap_r_to_anchor passthrough)
+- `web/frontend/src/lib/api.ts` (+1 line — depmap_r_to_anchor field)
