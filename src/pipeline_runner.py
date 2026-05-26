@@ -2303,6 +2303,7 @@ class PipelineRunner:
                 "design_intent": raw.get("design_intent"),
                 "novelty_score": raw.get("novelty_score"),
                 "classification": raw.get("classification"),
+                "depmap_r_to_anchor": raw.get("depmap_r_to_anchor"),
                 "predicted_consequence": raw.get("predicted_consequence"),
                 "falsifying_readout": raw.get("falsifying_readout"),
             })

@@ -10,9 +10,14 @@ description: >
   already been run and the user wants a parallel speculative analysis for comparison.
   Output format is identical to pathway-expert and feeds directly into
   complex-structure-analysis and molecular-biology-expert.
+  Works across disease-driven contexts (cancer indications, autoimmune,
+  metabolic) AND basic-biology contexts (signalling pathway exploration,
+  protein-complex assembly, organelle / compartment biology) — the
+  "novelty" mandate does not assume a disease anchor.
   Tools: search_corpus, get_fingerprint, find_pdb_structures, search_rcsb_pdb,
   interaction_hubs, shortest_interaction_path, novelty_signal,
-  get_interactions_for, find_quantitative_evidence, export_subgraph.
+  get_interactions_for, find_quantitative_evidence, export_subgraph,
+  get_genetic_codependency, find_cocorrelated_genes, cluster_for_protein.
   Trigger on: "wildcard", "novel target", "creative suggestions", "out-of-the-box",
   "unexpected PPI", "re-run wildcard", or any explicit request to explore non-obvious targets.
 ---
@@ -34,11 +39,23 @@ downstream pipeline.
 ## Phase 1: Extract Context from User Input
 
 Identify:
-- `disease_or_cancer` — e.g. "mesothelioma", "PDAC", "NSCLC", "HCC", "AML"
-- `pathway_hint` — optional; e.g. "Hippo", "KRAS signaling", "cGAS-STING"
-- `constraint` — optional; e.g. "avoid previously targeted nodes", "extracellular only"
+- `biological_context` — the system being explored. May be a disease
+  ("mesothelioma", "PDAC", "NSCLC", "HCC", "AML", "ALS", "type-2 diabetes"),
+  a pathway in normal physiology ("unfolded protein response",
+  "DNA replication initiation", "hematopoietic stem-cell quiescence"),
+  or a process ("ciliogenesis", "macroautophagy initiation", "spindle assembly
+  checkpoint"). The novelty mandate applies equally to both — many tractable
+  PPIs in basic biology have no disease anchor yet.
+- `pathway_hint` — optional; e.g. "Hippo", "KRAS signaling", "cGAS-STING",
+  "Wnt", "AMPK", "Integrated Stress Response"
+- `mode` — derived: `disease_anchored` if a disease/indication was named,
+  `basic_biology` if only a pathway/process was named. This determines whether
+  downstream queries include disease-essentiality terms or focus on
+  biochemistry / co-essentiality / structural biology.
+- `constraint` — optional; e.g. "avoid previously targeted nodes",
+  "extracellular only", "phase-separating proteins only"
 
-If disease is ambiguous proceed with the broad term — do not block on ambiguity.
+If the context is ambiguous proceed with the broad term — do not block on ambiguity.
 
 ---
 
@@ -47,23 +64,50 @@ If disease is ambiguous proceed with the broad term — do not block on ambiguit
 Run **2 queries** (not 4 — save context budget for the creative phases). Use
 `study_category="pathway_biology"` with unfiltered fallback if scores < 0.20.
 
-**Query 1 — Disease-pathway mechanism** (top_k=8):
+**Query 1 — Pathway mechanism** (top_k=20):
 ```
 search_corpus
-  query="<pathway_hint OR disease> signaling dysregulation cancer mechanism"
+  query="<pathway_hint OR biological_context> signaling molecular mechanism regulation"
   study_category="pathway_biology"
+  top_k=20
+```
+Notes: do NOT include "dysregulation" or "cancer" / "disease" keywords unless
+`mode = disease_anchored`. In `basic_biology` mode "regulation" / "activation" /
+"complex formation" give more relevant hits.
+
+**Query 2 — Genetic dependency / essentiality** (top_k=10):
+
+For `mode = disease_anchored`:
+```
+search_corpus
+  query="<biological_context> CRISPR screen genetic dependency essentiality <pathway_hint>"
+  study_category="pathway_biology"
+  top_k=10
+```
+
+For `mode = basic_biology`:
+```
+search_corpus
+  query="<pathway_hint> essential genes CRISPR screen co-essentiality"
+  study_category="pathway_biology"
+  top_k=10
+```
+DepMap-style essentiality data is informative regardless of disease anchor —
+the goal is to find proteins whose loss-of-function phenocopies the pathway
+state of interest.
+
+**Query 3 — Biochemistry / interface (mode-conditional, optional, top_k=8):**
+
+In `basic_biology` mode (or when the disease anchor is weak), add a third
+query to surface structural / mechanistic literature that pure
+disease-essentiality searches miss:
+```
+search_corpus
+  query="<pathway_hint> protein-protein interaction interface structure biochemistry"
   top_k=8
 ```
 
-**Query 2 — Genetic dependency / essentiality** (top_k=6):
-```
-search_corpus
-  query="<disease> CRISPR screen genetic dependency essentiality <pathway_hint>"
-  study_category="pathway_biology"
-  top_k=6
-```
-
-Deduplicate by DOI. Retrieve `get_fingerprint` for the top 4–6 unique papers from
+Deduplicate by DOI. Retrieve `get_fingerprint` for the top 12–16 unique papers from
 Phase 2. From each fingerprint, explicitly extract and record:
 
 - `pathway_context.pathways` — which pathways are covered
@@ -121,12 +165,20 @@ novelty_signal
 ```
 Record `novelty_score` ∈ [0, 1] and `counts.mentions` per candidate.
 
-**Call 3 — Connectivity to the canonical driver** (for each non-canonical candidate):
+**Call 3 — Connectivity to the anchor node** (for each non-anchor candidate):
 
-When a candidate is not already a known driver of the disease, call:
+Identify an `anchor_node` for connectivity queries:
+- `disease_anchored` mode → the canonical driver gene of the disease (e.g.
+  YAP1 for Hippo / mesothelioma; KRAS for KRAS-driven cancers; NF2 for
+  NF2-loss tumours).
+- `basic_biology` mode → the most-mentioned hub node in the Phase-2
+  fingerprints that participates in the pathway of interest (e.g. ATG1 /
+  ULK1 for autophagy initiation, PERK for the UPR).
+
+For each non-anchor candidate, call:
 ```
 shortest_interaction_path
-  protein_a=<canonical_disease_driver>
+  protein_a=<anchor_node>
   protein_b=<candidate>
   max_hops=4
   k=1
@@ -136,66 +188,181 @@ length ≤ 3 with `min_mentions_along_path ≥ 2` is **mechanistically connected
 A missing path or a 1-mention weak link is **disconnected** (still worth
 considering for UNCHARTED tier but flag the gap explicitly).
 
+**Call 4 — DepMap co-essentiality** *(MANDATORY for each candidate vs. anchor)*:
+
+DepMap co-essentiality is the closest thing to ground-truth functional
+co-dependency we have — it reflects loss-of-function phenocopying across
+~1,200 cell lines, independent of literature attention. A high-r pair is
+strong evidence of functional coupling even if no paper has explicitly
+connected the two genes.
+
+```
+get_genetic_codependency
+  gene_a=<anchor_node>
+  gene_b=<candidate>
+```
+Record `pearson_r` and `n_cell_lines`. Interpretation:
+- `r ≥ 0.4` and `n ≥ 200`: **co-essential** — a strong functional signal
+  even when the literature path is absent or weak.
+- `0.2 ≤ r < 0.4`: **weakly co-essential** — supports but does not establish
+  functional coupling.
+- `r < 0.2` or `n < 100`: **uncoupled** by DepMap criteria.
+
+**Call 5 — Co-essential partners of the anchor** *(MANDATORY once)*:
+
+Surface unexpected co-essential partners of the anchor that did NOT appear
+in Phase-2 fingerprints — these are the highest-yield hypothesis seeds
+because they combine functional ground truth with literature absence:
+```
+find_cocorrelated_genes
+  gene=<anchor_node>
+  top_n=15
+  min_r=0.3
+```
+Cross-reference the returned gene symbols against (a) Phase-2 proteins,
+(b) Phase-2 fingerprints' `target_nodes`, (c) the `interaction_hubs`
+top-20. Any gene that appears here with `r ≥ 0.35` but is missing from
+ALL three above is a **DepMap residual** — flag prominently for Phase 3.
+
+**Call 6 — Cluster context (optional, per top candidate)**:
+
+For each candidate scoring CONNECTED-NOVEL / PERIPHERY-NOVEL / UNCHARTED,
+optionally call:
+```
+cluster_for_protein
+  protein=<candidate>
+```
+Note the cluster's `hub`, top members, and whether the cluster contains
+the anchor. Co-cluster membership without direct literature path is itself
+a hypothesis seed.
+
 ### Synthesise: hub residuals table
 
-Combine the three calls into a single table that drives Phase 3 hypothesis
-generation:
+Combine all six calls into a single table that drives Phase 3 hypothesis
+generation. The DepMap r is your strongest non-literature signal — surface
+it as its own column:
 
-| Protein | hub rank | novelty_score | path to driver? | classification |
-|---------|----------|---------------|-----------------|----------------|
-| ...     | ...      | ...           | ...             | ...            |
+| Protein | hub rank | novelty_score | path to anchor (hops, min_mentions) | DepMap r (vs anchor) | cluster | classification |
+|---------|----------|---------------|-------------------------------------|----------------------|---------|----------------|
+| ...     | ...      | ...           | ...                                 | ...                  | ...     | ...            |
 
 **Classification rules** (assign one per candidate; first matching rule wins):
 
 | Class | Rule |
 |---|---|
-| SATURATED       | hub rank in top-20 AND novelty_score < 0.4 |
-| CONNECTED-NOVEL | hub rank in top-20 AND novelty_score ≥ 0.6 |
-| PERIPHERY-NOVEL | not a hub AND novelty_score ≥ 0.6 AND path to driver exists |
-| UNCHARTED       | novelty_score ≥ 0.8 AND no path (or only weak links) |
-| MID-NOVEL       | otherwise (0.4 ≤ novelty_score < 0.6, or borderline cases) |
+| SATURATED        | hub rank in top-20 AND novelty_score < 0.4 |
+| CONNECTED-NOVEL  | hub rank in top-20 AND novelty_score ≥ 0.6 |
+| PERIPHERY-NOVEL  | not a hub AND novelty_score ≥ 0.6 AND literature path to anchor exists |
+| DEPMAP-COUPLED   | not a hub AND novelty_score ≥ 0.5 AND DepMap r ≥ 0.4 (regardless of literature path) — functional coupling without literature recognition; this is the highest-yield wildcard class |
+| UNCHARTED        | novelty_score ≥ 0.8 AND no literature path AND DepMap r < 0.2 (or n too small to call) |
+| MID-NOVEL        | otherwise (0.4 ≤ novelty_score < 0.6, or borderline cases) |
 
-`CONNECTED-NOVEL`, `PERIPHERY-NOVEL`, and `UNCHARTED` are the **interesting**
-classifications. `SATURATED` candidates are pathway-expert's job, not yours;
-the wildcard mandate is novelty.
+`CONNECTED-NOVEL`, `PERIPHERY-NOVEL`, `DEPMAP-COUPLED`, and `UNCHARTED` are
+the **interesting** classifications. `SATURATED` candidates are
+pathway-expert's job, not yours; the wildcard mandate is novelty.
 
-Carry the `novelty_score` and `classification` per candidate forward into
-Phase 5 tier assignment and into the `choices_json` handoff.
+Carry `novelty_score`, `classification`, and the DepMap r per candidate
+forward into Phase 5 tier assignment and into the `choices_json` handoff.
 
 ---
 
-## Phase 3: Training Knowledge Bridge
+## Phase 3: Hypothesis Generation — Corpus + Graph First, Training Knowledge as Gap-Filler
 
-**This is the core creative phase.** You are explicitly permitted to reason from
-parametric training knowledge here. Generate **3–5 novel PPI hypotheses** that would
-not arise naturally from the Phase 2 corpus results alone.
+Generate **3–5 novel PPI hypotheses**. The goal is hypotheses the corpus + graph
+have already *implied* but no individual paper has *stated* — these are the
+highest-value outputs of this skill. Training knowledge is allowed only as a
+last resort to fill specific mechanism / residue gaps after the corpus and
+graph have done their work.
 
-For each hypothesis consider:
-- **Cross-pathway convergence**: a node in a different pathway that feeds the same
-  disease-relevant output (e.g. an mTORC1 effector that co-activates the primary
-  transcription factor via a non-canonical route)
-- **Synthetic lethality / co-dependency**: a PPI that becomes essential only because
-  of a co-occurring alteration present in the disease (e.g. a backup pathway that is
-  the sole remaining route when the primary is blocked by mutation)
-- **Paralog vulnerability**: a less-studied paralog of a known target whose interaction
-  with a shared scaffold is required when the primary paralog is lost
-- **Cross-indication transfer**: a PPI well-characterized in a related disease (e.g.
-  another solid tumour, a metabolic disease with shared pathway logic) that may be
-  relevant here despite sparse direct evidence
-- **Upstream rewiring**: an upstream adaptor or co-chaperone whose interaction with
-  the disease driver has been described in biochemistry but not yet as a therapeutic
-  target in this indication
+**Step order** (do all three; do them in this order):
+
+### Step 3a — Mine Phase 2.5 graph patterns (PRIMARY hypothesis source)
+
+Look at the hub-residuals table for these patterns:
+- **DEPMAP-COUPLED candidates**: a `DEPMAP-COUPLED` row is a hypothesis on a
+  plate — high co-essentiality (DepMap r ≥ 0.4) but no direct literature path
+  means "these two genes phenocopy each other across hundreds of cell lines
+  but nobody has connected them in writing yet". Lift this candidate verbatim
+  as a hypothesis; the mechanism rationale is the DepMap r value.
+- **CONNECTED-NOVEL with long path**: a candidate with novelty_score ≥ 0.6
+  and a 3-hop path to the anchor through low-mention edges. The intermediate
+  hop proteins are themselves hypothesis seeds (often more interesting than
+  the endpoint).
+- **Cluster residuals**: a `cluster_for_protein` result containing a member
+  the disease-driver literature never mentions but the cluster hub does.
+- **`find_cocorrelated_genes` flagged residuals**: genes that came back with
+  r ≥ 0.35 against the anchor but appeared in zero Phase-2 fingerprints. The
+  Phase-2.5 call already flagged these — promote them to full hypotheses here.
+
+### Step 3b — Mine non-obvious connections in Phase 2 fingerprints
+
+Look across the Phase-2 fingerprint set for:
+- **Single-paper bridges**: two proteins co-mentioned in exactly one fingerprint
+  with `key_findings.protein_pair` — the corpus has *seen* this pair once but
+  no one has built a programme around it.
+- **Asymmetric pathway membership**: a protein appearing in
+  `pathway_context.target_nodes` but with `prior_therapeutic_targeting=null`
+  in every fingerprint that mentions it.
+- **Effector / regulator mismatches**: an `upstream_regulator` in one
+  fingerprint that doesn't appear in any other fingerprint's pathway map —
+  suggests an incompletely described axis.
+
+### Step 3c — Training knowledge ONLY to fill gaps
+
+Use parametric knowledge to ANNOTATE the corpus/graph-derived hypotheses
+above — add mechanism, propose specific interface residues from family
+structural biology, suggest a tractable assay. Do NOT introduce entirely new
+proteins via training knowledge.
+
+**HARD RULE**: if your hypothesis introduces a protein that did NOT appear in
+ANY Phase-2 fingerprint, ANY Phase-2.5 graph output, OR the DepMap correlated
+set, you are reasoning from training knowledge alone — drop the hypothesis
+unless Phase 4 re-anchors it. The pipeline's value-add over "ask Claude
+directly" is the corpus + graph; hypotheses untethered to those forfeit
+that value-add.
+
+### Hypothesis archetypes to consider
+
+These are LENSES for interpreting the Step 3a/3b signals, not free-form
+brainstorming prompts:
+
+- **Co-essential dark partner** (DepMap-driven): two genes are co-essential
+  across cell lines but no paper has co-cited them in this context.
+  Most-likely interpretation: shared complex, shared substrate, or
+  parallel-pathway redundancy.
+- **Cross-context transfer**: a PPI well-characterised in a different
+  biological context (different disease, different tissue, different
+  developmental stage) that should generalise here. Requires explicit
+  reasoning about WHY the transfer works.
+- **Paralog vulnerability**: a less-studied paralog whose interaction with
+  a shared scaffold becomes load-bearing when the canonical paralog is lost
+  or suppressed.
+- **Upstream rewiring**: an adaptor / co-chaperone whose interaction with
+  a known node has been described in biochemistry but not yet as a target
+  in this context.
+- **Phase-separation / condensate residency**: a protein known to localise
+  to a relevant condensate / membrane-less compartment but never characterised
+  as a PPI target there.
+
+Disease-anchored archetypes (use only when `mode = disease_anchored`):
+- **Synthetic lethality**: a PPI that becomes essential only because of a
+  co-occurring alteration present in the disease.
+- **Cross-indication transfer**: a PPI well-characterised in a related disease
+  that may be relevant despite sparse direct evidence in the target indication.
 
 Write each hypothesis in this block (internal reasoning — shown before the report):
 
 ```
 ## WILDCARD HYPOTHESIS GENERATION
-[Training knowledge — not corpus citations. Do not cite these as evidence.]
+[Generated from Phase 2.5 graph patterns + Phase 2 corpus connections; training
+knowledge used only for annotation. Citations to corpus/DepMap data are
+permitted here; bare training-knowledge claims are not.]
 
 HYPOTHESIS 1: <ProteinA / ProteinB>
-  Mechanism: <why this PPI is disease-relevant — 1–2 sentences using pathway logic>
+  Source signal: <Step 3a graph pattern / Step 3b corpus connection / DepMap r value>
+  Mechanism: <why this PPI matters in the biological context — 1–2 sentences>
   Novelty: <what makes this non-obvious — 1 sentence>
-  Why corpus might support it: <indirect evidence path — what to search for>
+  Why corpus might support it: <indirect evidence path — what to search for in Phase 4>
   Search terms: ["<term1>", "<term2>", "<term3>"]
 
 HYPOTHESIS 2: <ProteinA / ProteinB>
@@ -203,10 +370,15 @@ HYPOTHESIS 2: <ProteinA / ProteinB>
 ```
 
 **Hard rules for Phase 3:**
-- Do not repeat any PPI already surfaced by Phase 2 fingerprints.
+- Do not repeat any PPI already surfaced by Phase 2 fingerprints as a known
+  pathway node.
 - Do not include a hypothesis unless you can name *both* proteins specifically.
-- Mark this entire block clearly as training knowledge — it must NOT appear as a
-  citation or evidence source anywhere in the final report.
+- Every hypothesis must cite at least ONE Phase-2.5 graph signal or Phase-2
+  corpus connection in its `Source signal` line. Bare training knowledge is
+  not a valid Source signal.
+- Do not include a hypothesis that introduces a protein absent from all
+  Phase-2 / Phase-2.5 outputs UNLESS the Phase 4 search succeeds in finding
+  corpus evidence for it.
 
 ---
 
@@ -218,24 +390,39 @@ queries total** across all hypothesis + cross-pathway searches below.
 **For each hypothesis** (run at most 3 hypothesis queries):
 ```
 search_corpus
-  query="<ProteinA> <ProteinB> <mechanism_keyword from hypothesis> <disease>"
+  query="<ProteinA> <ProteinB> <mechanism_keyword from hypothesis> <biological_context>"
   top_k=5
 ```
+Drop `<biological_context>` from the query if the hypothesis is a basic-biology
+PPI without a strong disease anchor — including a weak disease term often
+suppresses good biochemistry hits.
 
-**Cross-pathway synthetic lethality query** (always run, top_k=6):
+**Co-dependency / cross-pathway query** (always run, top_k=6):
+
+For `mode = disease_anchored`:
 ```
 search_corpus
-  query="<disease> synthetic lethality co-dependency pathway compensation"
+  query="<biological_context> synthetic lethality co-dependency pathway compensation"
+  top_k=6
+```
+For `mode = basic_biology`:
+```
+search_corpus
+  query="<pathway_hint> functional redundancy compensation parallel pathway"
   top_k=6
 ```
 
-**Adjacent-indication transfer query** (run if pathway_hint is known, top_k=5):
+**Adjacent-context transfer query** (run if pathway_hint is known, top_k=5):
 ```
 search_corpus
-  query="<pathway_hint OR primary_target> <adjacent_indication> mechanism inhibition"
+  query="<pathway_hint OR anchor_node> <adjacent_context> mechanism interaction"
 ```
-Use the closest well-characterised disease neighbour you identified in Phase 3
-(e.g. if disease is PDAC and the pathway is Hippo, try "mesothelioma" or "HCC").
+Use the closest well-characterised context neighbour you identified in Phase 3:
+- Disease mode: e.g. if context is PDAC and pathway is Hippo, try "mesothelioma"
+  or "HCC".
+- Basic-biology mode: a different tissue / cell type / developmental stage where
+  the same pathway has been better characterised (e.g. UPR in plasma cells if
+  the context is UPR in pancreatic β-cells).
 
 Deduplicate all Phase 4 results against Phase 2 DOIs. For each **new** paper with
 score ≥ 0.20, call `get_fingerprint` and merge into the working evidence set.
@@ -266,10 +453,12 @@ already done the creative expansion):
 
 ```
 search_corpus
-  query="<new_gene_symbol_1> [<new_gene_symbol_2>] <disease> mechanism dependency"
+  query="<new_gene_symbol_1> [<new_gene_symbol_2>] <biological_context> mechanism dependency"
   study_category="pathway_biology"
   top_k=5
 ```
+In `basic_biology` mode replace `<biological_context>` with the pathway / process
+keyword.
 
 Deduplicate; call `get_fingerprint` for new papers with score ≥ 0.25.
 
@@ -327,13 +516,20 @@ For every candidate node, run the same four-condition reasoning check as
 pathway-expert Phase 4a (interaction necessity, therapeutic mechanism, consequence
 of disruption or stabilization, interaction knowability).
 
-The therapeutic mechanism step:
-- `disrupt` — breaking the interaction attenuates the disease-relevant output (loss of
-  complex formation → loss of oncogenic signalling, failure to relay a pathological signal)
-- `stabilize` — the disease mechanism is that a normally protective or autoinhibitory
-  interaction is *lost* or *weakened*; reinforcing it restores the healthy state (e.g.
-  restoring an autoinhibitory complex, re-engaging a sequestered OFF-state, protecting
-  a tumour suppressor complex from degradation)
+The mechanism-of-action step (covers both therapeutic intent AND probe
+experiments — the same `design_intent` field serves both):
+- `disrupt` — breaking the interaction attenuates the pathway-relevant output.
+  In disease mode this is "loss of oncogenic signalling" or "loss of pathological
+  signal relay"; in basic-biology mode it's "loss of the predicted regulatory
+  step" — useful as a probe to demonstrate that the predicted regulatory step
+  is in fact load-bearing.
+- `stabilize` — a normally protective or autoinhibitory interaction is weakened
+  (by mutation, expression loss, or experimental challenge) and reinforcing
+  it restores the unperturbed state. Examples: restoring an autoinhibitory
+  complex, re-engaging a sequestered OFF-state, protecting a tumour-suppressor
+  complex from degradation, or clamping an autoinhibited kinase in its OFF
+  conformation as a probe of pathway function.
+
 Record one `design_intent` per node. Default to `disrupt` if ambiguous.
 
 For **hypothesis-tier candidates**: replace the four-condition check with:
@@ -404,33 +600,39 @@ All sections identical to pathway-expert **except**:
    `- **Corpus support**: <what was found, or "Nothing found in corpus">`
 
 4. The CORPUS COVERAGE section has additional lines:
-   - `- Wildcard hypotheses generated: <N> total; <N> corpus-supported; <N> weakly supported; <N> corpus-absent`
-   - `- Hub residuals table: <N candidates>; <N> SATURATED, <N> CONNECTED-NOVEL, <N> PERIPHERY-NOVEL, <N> UNCHARTED, <N> MID-NOVEL`
+   - `- Wildcard hypotheses generated: <N> total; <N> corpus-supported; <N> weakly supported; <N> corpus-absent; <N> graph/DepMap-derived (Step 3a)`
+   - `- Hub residuals table: <N candidates>; counts per class (SATURATED / CONNECTED-NOVEL / PERIPHERY-NOVEL / DEPMAP-COUPLED / UNCHARTED / MID-NOVEL)`
+   - `- DepMap signals used: <N> get_genetic_codependency calls; <N> find_cocorrelated_genes calls; <N> cluster_for_protein calls`
 
 ```
 ## PATHWAY BIOLOGY REPORT
 
-### DISEASE CONTEXT
-- Disease / indication: <name>
-- Pathway(s) implicated: <comma-separated list>
-- Primary disease mechanism: <one sentence — cite DOI + source_span>
-- Frequency of pathway dysregulation: <mutation_frequency if stated>
+### BIOLOGICAL CONTEXT
+- Mode: <disease_anchored | basic_biology>
+- Disease / indication: <name, or "Not disease-anchored — basic biology" if mode = basic_biology>
+- Pathway(s) / process(es): <comma-separated list>
+- Primary mechanism of interest: <one sentence — cite DOI + source_span. In
+  disease mode this is the dysregulation mechanism; in basic-biology mode this
+  is the regulatory question or process being interrogated.>
+- Frequency / prevalence: <mutation_frequency if stated; otherwise omit in basic-biology mode>
 
 ### PATHWAY MAP
-- Upstream regulators: <max 3 items with alteration type>
+- Upstream regulators: <max 3 items; include alteration type only in disease mode>
 - Core cascade: <one sentence of pathway logic>
-- Key effectors / transcription factors: <max 3 items>
+- Key effectors / downstream nodes: <max 3 items>
 
-### DYSREGULATED NODES ASSESSMENT
+### CANDIDATE NODE ASSESSMENT
 
 For each candidate target node — max 5 nodes total (wildcard allows one extra),
 6–7 bullet lines per node:
 
 #### <ProteinName (gene symbol)>
 - Pathway position: <pathway_position>
-- Dysregulation: <one sentence — cite source_span + DOI>
-- Genetic dependency: <evidence, or omit if absent>
-- Prior therapeutic strategies: <prior targeting, or omit if absent>
+- State / dysregulation: <one sentence — cite source_span + DOI. In disease mode
+  describe the dysregulation; in basic-biology mode describe the regulatory role.>
+- Genetic dependency: <evidence — DepMap or CRISPR — or omit if absent>
+- DepMap co-essentiality (vs. anchor): <r value + n_cell_lines from Phase 2.5 Call 4, or omit if not run>
+- Prior therapeutic / probe targeting: <prior targeting, or omit if absent>
 - Suggested PDB structures: <IDs, or omit if absent>
 - Inferred PPI opportunity: <max 2 sentences: named partner, evidence, consequence — or "Insufficient evidence.">
 - Novelty note: <one sentence on what makes this node non-obvious, or omit if it is a standard target>
@@ -448,7 +650,7 @@ For each candidate:
 - **What makes it attractive**: <therapeutic rationale — pathway position, druggable interface, unmet need>
 - **Key uncertainty**: <what is not yet established>
 - **Novelty rationale**: <why this is non-obvious — 1 sentence>
-- **Novelty signal**: novelty_score=<value>, classification=<SATURATED | CONNECTED-NOVEL | PERIPHERY-NOVEL | UNCHARTED | MID-NOVEL>
+- **Novelty signal**: novelty_score=<value>, classification=<SATURATED | CONNECTED-NOVEL | PERIPHERY-NOVEL | DEPMAP-COUPLED | UNCHARTED | MID-NOVEL>, DepMap r=<value vs anchor, or "N/A" if anchor not applicable>
 - **Hypothesis**: <one sentence — the mechanistic claim. "PROTEIN_X drives DISEASE via interaction with PROTEIN_Y in CONTEXT.">
 - **Predicted consequence**: <one sentence — what should happen biologically if the hypothesis is true and we disrupt the interaction. Name the cellular or molecular readout. e.g. "CTGF and CYR61 transcript reduction ≥ 50% at 24h in NF2-null cells">
 - **Falsifying readout**: <one sentence — the assay + threshold that decides. e.g. "qPCR of CTGF/CYR61 at 24h post-treatment; ≥50% reduction = consistent with hypothesis; ≤20% = falsifies">
@@ -544,7 +746,8 @@ Rules for `### PIPELINE HANDOFF`:
   - `key_uncertainty`: one sentence summary (no newlines, no quotes inside)
   - `design_intent`: `"disrupt"` or `"stabilize"` from Phase 5 reasoning for this candidate
   - `novelty_score`: float in `[0.0, 1.0]` from `novelty_signal` for the candidate's primary protein
-  - `classification`: one of `"SATURATED"`, `"CONNECTED-NOVEL"`, `"PERIPHERY-NOVEL"`, `"UNCHARTED"`, `"MID-NOVEL"`
+  - `classification`: one of `"SATURATED"`, `"CONNECTED-NOVEL"`, `"PERIPHERY-NOVEL"`, `"DEPMAP-COUPLED"`, `"UNCHARTED"`, `"MID-NOVEL"`
+  - `depmap_r_to_anchor`: float (Pearson r vs the Phase-2.5 anchor node) or `null` if not applicable / not computed
   - `predicted_consequence`: one sentence — what disruption should produce biologically; name the readout
   - `falsifying_readout`: one sentence — the assay + threshold that falsifies the hypothesis
 

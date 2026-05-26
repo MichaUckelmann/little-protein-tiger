@@ -75,6 +75,7 @@ export interface TargetChoice {
   design_intent?: string;
   novelty_score?: number;
   classification?: string;
+  depmap_r_to_anchor?: number;
   predicted_consequence?: string;
   falsifying_readout?: string;
 }
