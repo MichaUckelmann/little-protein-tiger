@@ -313,7 +313,7 @@ inhibitor co-crystal structures.
 - go_rationale: <one sentence — the single most decisive reason for the recommendation>
 - modality: <cyclic_peptide | mini_protein | stapled_helix | either>
 - target_site_hint: <compact JSON object — see format below; consumed by complex-structure-analysis to focus the geometry pass>
-- design_query: <one sentence — e.g. "Generate {modality} design inputs for {complex}, PDB {pdb_id}, target chain {chain}. Priority hotspots: {res_list}. Affinity target: {kd}. {key constraint if any}.">
+- design_query: <one sentence — e.g. "Generate {modality} design inputs for {complex}, PDB {pdb_id}. Priority hotspots: {res_list}. Affinity target: {kd}. {key constraint if any}." DO NOT include chain letters (A/B/...) anywhere in this query — you have not inspected the mmCIF at this stage and any chain assignment will be a guess. Chain identity is resolved by the structure-analysis stage from the mmCIF entity descriptions and flows downstream from there.>
 
 **IMPORTANT:** Write the `### PIPELINE HANDOFF` section as plain bullet lines exactly as shown above.
 Do NOT wrap it in a code fence (no ``` before or after). Do NOT omit the `- ` prefix.
@@ -322,7 +322,7 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
 Rules for `### PIPELINE HANDOFF`:
 - `go_recommendation` must be exactly one of: `GO`, `CONDITIONAL_GO`, or `NO_GO`. Use the tractability rubric: Excellent/Good → GO; Marginal → CONDITIONAL_GO; Poor → NO_GO.
 - `go_rationale` is a single sentence — the programmatic orchestrator displays this directly to the user.
-- `design_query` is the verbatim query string passed to protein-design-script; include PDB ID, chain, top 3–5 hotspot residues, and suggested affinity target.
+- `design_query` is the verbatim query string passed to protein-design-script; include PDB ID, top 3–5 hotspot residues, and suggested affinity target. Do NOT include chain letters — chain assignment is handled by the structure-analysis stage downstream.
 - `target_site_hint` is a single-line JSON object with these keys (use straight double-quotes, no trailing commas):
   - `mode`: `"ppi_interface"` (for disrupt / stabilize) or `"single_protein_pocket"` (for inhibit_active_site)
   - `target_protein`: the protein whose surface the binder engages

@@ -151,9 +151,9 @@ export function PathwayChoicePanel({ runId, choices, onResumed }: Props) {
                   {choice.complex}
                 </span>
                 {choice.chain_ids_inferred && (
-                  <span title="Chain assignments are auto-inferred — verify in the structure report before continuing"
+                  <span title="Non-primary candidate — the structure-analysis stage receives a synthesized query (target complex + design intent only), not the pathway expert's full rationale. Chain assignment is resolved from the mmCIF regardless of which choice you pick."
                     style={{ fontSize: "12px", color: "#d97706", marginLeft: "4px" }}>
-                    ⚠ Chain IDs inferred
+                    ⚠ Alternative — limited context
                   </span>
                 )}
               </div>

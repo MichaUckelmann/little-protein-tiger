@@ -502,8 +502,27 @@ class PipelineRunner:
         if using_ba1:
             logger.info(f"  Using biological assembly 1 for structure analysis: {ba1_path}")
 
-        # Parse chain→entity descriptions from the CIF header so the skill can
-        # unambiguously identify target vs. partner chains even in multi-copy ASUs.
+        # ─────────────────────────────────────────────────────────────────────
+        # CHAIN ASSIGNMENT CONVENTION
+        # ---------------------------
+        # Chain identity (which mmCIF chain is the design target vs. partner)
+        # is determined HERE, deterministically, from the mmCIF entity
+        # descriptions + residue counts. The structure-analysis stage is the
+        # single source of truth for chain letters; downstream stages read
+        # chain IDs out of its PIPELINE HANDOFF.
+        #
+        # Upstream skills (pathway-expert, molecular-biology-expert,
+        # wildcard-expert, ...) MUST NOT emit chain letters in their handoff
+        # `structure_query` / `design_query` fields. Their SKILL.md templates
+        # were corrected to drop `target chain {chain}` placeholders, because
+        # at those stages the LLM has not inspected the mmCIF and any chain
+        # claim is a guess — observed failure mode: a pathway-expert run on
+        # 3KYS hallucinated "Chain B = TEAD1, Chain A = YAP1" (reversed), and
+        # the structure-expert had to spend tokens reconciling the conflict.
+        #
+        # When adding a new upstream skill that talks about a structure,
+        # follow the same rule: name proteins, not chain letters.
+        # ─────────────────────────────────────────────────────────────────────
         chain_descs = self._chain_entity_descriptions(analysis_path)
         chain_counts = self._count_chain_residues(analysis_path)
         target_complex = result.target_complex or prev_handoff.get("target_complex", "the target complex")
