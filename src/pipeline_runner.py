@@ -195,8 +195,20 @@ class PipelineRunner:
         # only way to audit the full conversation including thinking blocks
         # and tool call/response chains after a run.
         self._capture_traces = capture_traces
-        # "standard" = pathway-expert | "wildcard" = wildcard-expert
-        self._pathway_mode: str = pathway_mode
+        # "standard" = pathway-expert | "wildcard" = wildcard-expert.
+        # CLI / explicit kwarg overrides config; if caller passed the default
+        # "standard" verbatim, fall back to whatever config says so users can
+        # set the default per-project in config.yaml without touching code.
+        cfg_pathway_mode = (
+            (config.get("design") or {}).get("pathway", {}).get("mode", "standard")
+        )
+        resolved_mode = pathway_mode if pathway_mode != "standard" else cfg_pathway_mode
+        if resolved_mode not in {"standard", "wildcard"}:
+            raise ValueError(
+                f"Invalid pathway_mode={resolved_mode!r}; expected "
+                f"'standard' or 'wildcard'."
+            )
+        self._pathway_mode: str = resolved_mode
 
     @property
     def model_id(self) -> str:
@@ -2282,6 +2294,17 @@ class PipelineRunner:
                 "key_uncertainty": raw.get("key_uncertainty", ""),
                 "structure_query": structure_query,
                 "chain_ids_inferred": chain_ids_inferred,
+                # Pass-through fields. Pathway-expert (standard mode) leaves
+                # most of these blank; wildcard-expert populates them for the
+                # graph-driven novelty triage + hypothesis articulation.
+                # Future-compat: hypothesis fields plumb through here so a
+                # later probe-mode design-analyst can read them without any
+                # additional schema change.
+                "design_intent": raw.get("design_intent"),
+                "novelty_score": raw.get("novelty_score"),
+                "classification": raw.get("classification"),
+                "predicted_consequence": raw.get("predicted_consequence"),
+                "falsifying_readout": raw.get("falsifying_readout"),
             })
 
         # Bubble primary to index 0 if it wasn't first

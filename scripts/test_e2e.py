@@ -43,6 +43,11 @@ def main() -> int:
     ap.add_argument("--production", type=int, default=100)
     ap.add_argument("--no-trace", action="store_true",
                     help="Skip per-stage trace dumps.")
+    ap.add_argument("--pathway-mode", choices=["standard", "wildcard"], default=None,
+                    dest="pathway_mode",
+                    help="Stage-0 skill: 'standard' (pathway-expert, validated-target-biased) "
+                         "or 'wildcard' (wildcard-expert, novelty-driven). "
+                         "Default: read from config.yaml (design.pathway.mode).")
     args = ap.parse_args()
 
     run_dir = _ROOT / "outputs" / f"e2e_{args.slug}"
@@ -70,6 +75,7 @@ def main() -> int:
         max_iter=30,
         max_tokens=120_000,
         capture_traces=not args.no_trace,
+        pathway_mode=args.pathway_mode or "standard",
     )
 
     print(f"[start]  {time.strftime('%Y-%m-%d %H:%M:%S')}")

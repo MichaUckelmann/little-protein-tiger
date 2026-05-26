@@ -432,6 +432,27 @@ _TOOL_DEFS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "novelty_signal",
+        "description": (
+            "Deterministic corpus-coverage novelty score for a candidate target. "
+            "Higher score (closer to 1.0) means less prior art in the corpus. "
+            "Returns the four input counts (mentions, pdb_papers, prior_targeting, "
+            "quantitative_findings) alongside the score so a reviewer can recompute "
+            "by hand. Use during wildcard-expert Phase 2.5 to triage candidates: "
+            "well-characterised targets (TP53, KRAS, YAP1) score near 0.0; novel "
+            "or under-explored proteins score near 1.0. Do NOT hard-threshold — "
+            "paralog-substring matching can inflate counts for short queries; "
+            "check the caveats field."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "protein": {"type": "string", "description": "Gene symbol or protein name. Queries < 2 chars after alias normalisation are rejected."},
+            },
+            "required": ["protein"],
+        },
+    },
+    {
         "name": "export_subgraph",
         "description": (
             "Write a depth-bounded interaction neighbourhood around seed proteins "
@@ -579,14 +600,21 @@ _WRITE_FILE_SKILLS = {"protein-design-script", "binder-optimizer"}
 # Skills that need the full residue index maps for AF3/BoltzGen JSON construction
 _NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer", "complex-structure-analysis"}
 
-# Skills that have access to the corpus-wide PDB lookup tool
-_PDB_LOOKUP_SKILLS = {"pathway-expert", "complex-expert", "orchestrator"}
+# Skills that have access to the corpus-wide PDB lookup tool. wildcard-expert's
+# Phase 4.6 calls find_pdb_structures — without the allowlist entry the call
+# was being silently filtered out of the tool surface and the skill emitted
+# NOT_FOUND more often than it should.
+_PDB_LOOKUP_SKILLS = {"pathway-expert", "wildcard-expert", "complex-expert", "orchestrator"}
 
-# Skills that have access to the NetworkX-backed graph tools (path, hubs, export).
-# Other skills don't need them and shouldn't pay the system-prompt overhead.
-_GRAPH_TOOL_SKILLS = {"corpus-explorer", "pathway-expert", "molecular-biology-expert"}
+# Skills that have access to the NetworkX-backed graph tools (path, hubs, export,
+# novelty). Other skills don't need them and shouldn't pay the system-prompt
+# overhead. wildcard-expert is in the set because its Phase 2.5 (graph-driven
+# novelty triage) requires interaction_hubs + shortest_interaction_path +
+# novelty_signal.
+_GRAPH_TOOL_SKILLS = {"corpus-explorer", "pathway-expert", "molecular-biology-expert", "wildcard-expert"}
 _GRAPH_TOOLS = {
     "shortest_interaction_path", "interaction_hubs", "export_subgraph",
+    "novelty_signal",
     "get_genetic_codependency", "find_cocorrelated_genes",
     "cluster_for_protein", "cluster_members", "find_clusters_by_keyword",
 }
@@ -1125,6 +1153,14 @@ class SkillRunner:
                     min_mentions=int(input_dict.get("min_mentions", 3)),
                     human_only=bool(input_dict.get("human_only", True)),
                     taxa=_coerce_taxa(input_dict.get("taxa")),
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "novelty_signal":
+                from src._corpus_graph import novelty_signal
+                result = novelty_signal(
+                    protein=str(input_dict.get("protein", "")),
+                    fingerprint_dir=self._fingerprint_dir,
                 )
                 return json.dumps(result, ensure_ascii=False, indent=2)
 

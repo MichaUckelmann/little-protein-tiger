@@ -18,9 +18,16 @@ interface Props {
 }
 
 const TIER_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  // Standard pathway-expert tiers (validated-target-biased)
   VALIDATED: { bg: "#dcfce7", text: "#166534", label: "Validated" },
   BIOLOGICALLY_JUSTIFIED: { bg: "#fef9c3", text: "#854d0e", label: "Biologically Justified" },
   PATHWAY_INFERRED: { bg: "#f3f4f6", text: "#374151", label: "Pathway Inferred" },
+  // Wildcard-expert tiers (novelty-driven). Colour-coded by speculative risk:
+  // synthetic lethality (well-grounded) → cross-indication (transfer reasoning) →
+  // hypothesis (most speculative).
+  SYNTHETIC_LETHALITY: { bg: "#e0f2fe", text: "#075985", label: "Synthetic Lethality" },
+  CROSS_INDICATION_TRANSFER: { bg: "#ede9fe", text: "#5b21b6", label: "Cross-Indication" },
+  HYPOTHESIS: { bg: "#fce7f3", text: "#9d174d", label: "Hypothesis" },
 };
 
 function tierStyle(tier: string) {
@@ -150,6 +157,22 @@ export function PathwayChoicePanel({ runId, choices, onResumed }: Props) {
                 <span style={{ fontSize: "14px", fontWeight: 600, color: "#111827" }}>
                   {choice.complex}
                 </span>
+                {typeof choice.novelty_score === "number" && (
+                  <span title={`Corpus-coverage novelty score (higher = less prior art). ${
+                    choice.classification ? `Classification: ${choice.classification}.` : ""
+                  } Computed by novelty_signal from fingerprint counts; do not hard-threshold.`}
+                    style={{
+                      fontSize: "11px",
+                      fontWeight: 500,
+                      padding: "2px 7px",
+                      borderRadius: "10px",
+                      background: "#f1f5f9",
+                      color: "#0f172a",
+                      whiteSpace: "nowrap",
+                    }}>
+                    novelty {choice.novelty_score.toFixed(2)}
+                  </span>
+                )}
                 {choice.chain_ids_inferred && (
                   <span title="Non-primary candidate — the structure-analysis stage receives a synthesized query (target complex + design intent only), not the pathway expert's full rationale. Chain assignment is resolved from the mmCIF regardless of which choice you pick."
                     style={{ fontSize: "12px", color: "#d97706", marginLeft: "4px" }}>

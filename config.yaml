@@ -122,6 +122,13 @@ vector_store:
 # Pilot then production, using BoltzGen's --reuse flag so production extends
 # the pilot output in place (no double-billing of GPU time).
 design:
+  # Stage 0 (pathway) skill selection. "standard" = pathway-expert (default,
+  # validated-target-biased); "wildcard" = wildcard-expert (graph-driven
+  # novelty triage, prefers HYPOTHESIS/SYNTHETIC_LETHALITY/CROSS_INDICATION_TRANSFER
+  # tiers when tractable). CLI --pathway-mode overrides this value when set.
+  pathway:
+    mode: standard
+
   workstation:
     # Absolute path to the boltzgen entry point. The shebang on this script
     # carries its own venv's Python, so we can invoke it directly without

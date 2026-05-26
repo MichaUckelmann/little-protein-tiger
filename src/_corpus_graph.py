@@ -412,6 +412,144 @@ def find_quantitative_evidence(
 
 
 # ---------------------------------------------------------------------------
+# Tool 3: deterministic novelty score from corpus coverage
+# ---------------------------------------------------------------------------
+#
+# Used by wildcard-expert to triage candidate targets — higher = less prior
+# art = more novel. The four-signal heuristic is reviewer-transparent: the
+# function returns the raw counts so anyone can recompute the score by hand
+# from the dict. Scales were eyeballed against well-studied targets (TP53,
+# KRAS) saturating near 1.0 on each component; tune in `_NOVELTY_SCALES`
+# without re-deriving the formula.
+
+_NOVELTY_SCALES = {
+    "mentions":              20.0,  # # fingerprints citing the protein
+    "pdb_papers":             8.0,  # # of those with non-empty pdb_accessions
+    "prior_targeting":        5.0,  # # with prior_therapeutic_targeting set
+    "quantitative_findings":  5.0,  # # key_findings with non-null Kd or Ki
+}
+
+
+def novelty_signal(
+    protein: str,
+    fingerprint_dir: Path,
+) -> dict[str, Any]:
+    """Deterministic corpus-coverage novelty score for a candidate target.
+
+    Counts four signals across the fingerprint corpus and squashes each via
+    ``s_i = 1 - exp(-count_i / scale_i)``. Final novelty score is
+    ``1 - mean(s_i)`` so a well-characterised target (TP53, KRAS) scores
+    near 0.0 and a protein absent from the corpus scores near 1.0.
+
+    Signals (per fingerprint):
+      - ``mentions``: cites the protein in any ``key_findings[].protein_pair``
+        OR ``pathway_context.target_nodes[].protein``.
+      - ``pdb_papers``: of those, how many also have a non-empty
+        ``paper_metadata.pdb_accessions`` list.
+      - ``prior_targeting``: of those, how many have a non-null
+        ``pathway_context.target_nodes[].prior_therapeutic_targeting`` for
+        the matched node.
+      - ``quantitative_findings``: count of ``key_findings`` entries with a
+        non-null ``affinities_kd_Molar`` or ``inhibitory_constant_Ki`` whose
+        ``protein_pair`` contains the query.
+
+    Protein-name matching reuses ``_protein_matches`` (light substring +
+    alias normalisation). Paralog inflation (e.g. ``"RAS"`` matching KRAS,
+    NRAS, HRAS) is documented in ``caveats``; downstream prompts should NOT
+    hard-threshold on the score until ~10 wildcard runs are available for
+    calibration.
+    """
+    fingerprint_dir = Path(fingerprint_dir)
+    caveats: list[str] = []
+
+    q_normalised = _normalize_protein(protein)
+    if len(q_normalised) < 2:
+        return {
+            "protein": protein,
+            "counts": {k: 0 for k in _NOVELTY_SCALES},
+            "components": {k: 0.0 for k in _NOVELTY_SCALES},
+            "novelty_score": 1.0,
+            "caveats": [
+                f"Query '{protein}' normalises to '{q_normalised}' "
+                f"(< 2 chars after stripping species prefix and hyphens); "
+                f"cannot match anything in the corpus."
+            ],
+        }
+
+    if not fingerprint_dir.exists():
+        return {
+            "protein": protein,
+            "counts": {k: 0 for k in _NOVELTY_SCALES},
+            "components": {k: 0.0 for k in _NOVELTY_SCALES},
+            "novelty_score": 1.0,
+            "caveats": [f"Fingerprint directory not found: {fingerprint_dir}"],
+        }
+
+    # Paralog-inflation caveat for short queries that look like a family root.
+    if len(q_normalised) <= 4:
+        caveats.append(
+            f"Query '{protein}' is short ({len(q_normalised)} chars after "
+            f"normalisation); substring matching may inflate 'mentions' for "
+            f"paralog families. Verify against returned counts."
+        )
+
+    counts = {k: 0 for k in _NOVELTY_SCALES}
+
+    for fp_file in fingerprint_dir.glob("*.json"):
+        try:
+            fp = json.loads(fp_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        # Per-fingerprint match: True if any of the protein references hit.
+        matched_in_findings = False
+        matched_in_pathway = False
+        matched_node_has_prior = False
+
+        # key_findings[].protein_pair scan
+        for finding in fp.get("key_findings") or []:
+            pair = [p for p in (finding.get("protein_pair") or []) if p]
+            if any(_protein_matches(p, protein) for p in pair):
+                matched_in_findings = True
+                kd = finding.get("affinities_kd_Molar")
+                ki = finding.get("inhibitory_constant_Ki")
+                if kd is not None or ki is not None:
+                    counts["quantitative_findings"] += 1
+
+        # pathway_context.target_nodes[].protein scan
+        for node in (fp.get("pathway_context") or {}).get("target_nodes") or []:
+            node_name = node.get("protein") or ""
+            if _protein_matches(node_name, protein):
+                matched_in_pathway = True
+                if node.get("prior_therapeutic_targeting"):
+                    matched_node_has_prior = True
+
+        if matched_in_findings or matched_in_pathway:
+            counts["mentions"] += 1
+            pdb_ids = (fp.get("paper_metadata") or {}).get("pdb_accessions") or []
+            if pdb_ids:
+                counts["pdb_papers"] += 1
+            if matched_node_has_prior:
+                counts["prior_targeting"] += 1
+
+    # Squash each signal independently. exp() of small ratios is cheap.
+    import math
+    components = {
+        k: 1.0 - math.exp(-counts[k] / _NOVELTY_SCALES[k])
+        for k in _NOVELTY_SCALES
+    }
+    novelty_score = 1.0 - (sum(components.values()) / len(components))
+
+    return {
+        "protein": protein,
+        "counts": counts,
+        "components": {k: round(v, 4) for k, v in components.items()},
+        "novelty_score": round(novelty_score, 4),
+        "caveats": caveats,
+    }
+
+
+# ---------------------------------------------------------------------------
 # NetworkX graph cache (used by graph-query tools below)
 # ---------------------------------------------------------------------------
 #

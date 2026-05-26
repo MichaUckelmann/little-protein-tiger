@@ -27,6 +27,7 @@ from src._corpus_graph import (
     get_genetic_codependency as _get_genetic_codependency,
     get_interactions_for as _get_interactions_for,
     interaction_hubs as _interaction_hubs,
+    novelty_signal as _novelty_signal,
     shortest_interaction_path as _shortest_interaction_path,
 )
 from src.fingerprint_store import load_fingerprint
@@ -256,6 +257,33 @@ def interaction_hubs(
         min_mentions=int(min_mentions),
         human_only=bool(human_only),
         taxa=list(taxa) if taxa else None,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def novelty_signal(protein: str) -> str:
+    """
+    Deterministic corpus-coverage novelty score for a candidate target.
+
+    Higher score = less prior art = more novel. Score is in [0.0, 1.0] where
+    well-studied targets (TP53, KRAS) score near 0.0 and proteins absent from
+    the corpus score near 1.0. The four input signals (mention count, PDB
+    paper count, prior-targeting paper count, quantitative-finding count)
+    are also returned so a reviewer can recompute the score by hand.
+
+    Used by wildcard-expert to triage candidate targets in Phase 2.5. Do NOT
+    hard-threshold on the score in deterministic code — paralog-substring
+    matching can inflate counts for short queries (e.g. "RAS"); the caveats
+    field flags this.
+
+    Args:
+        protein: Gene symbol or protein name. Queries < 2 chars after alias
+                 normalisation are rejected (returns novelty=1.0 with caveat).
+    """
+    result = _novelty_signal(
+        protein=protein,
+        fingerprint_dir=Path(_FINGERPRINT_DIR),
     )
     return json.dumps(result, ensure_ascii=False, indent=2)
 

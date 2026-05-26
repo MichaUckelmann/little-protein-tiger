@@ -2,13 +2,17 @@
 name: wildcard-expert
 description: >
   Query the curated literature database to identify non-obvious, potentially novel
-  PPI targets for a disease context. Uses a training-knowledge bridge to generate
-  creative hypotheses, then validates each strictly against the corpus. Complements
-  pathway-expert: use when the user explicitly wants creative or out-of-the-box
-  suggestions, or when standard pathway analysis has already been run and the user
-  wants a parallel speculative analysis for comparison.
+  PPI targets for a disease context. Uses a training-knowledge bridge plus
+  graph-driven novelty triage (interaction_hubs, shortest_interaction_path,
+  novelty_signal) to generate hypotheses, then validates each strictly against
+  the corpus. Complements pathway-expert: use when the user explicitly wants
+  creative or out-of-the-box suggestions, or when standard pathway analysis has
+  already been run and the user wants a parallel speculative analysis for comparison.
   Output format is identical to pathway-expert and feeds directly into
-  complex-structure-analysis and molecular-biology-expert. Requires literature-db MCP server.
+  complex-structure-analysis and molecular-biology-expert.
+  Tools: search_corpus, get_fingerprint, find_pdb_structures, search_rcsb_pdb,
+  interaction_hubs, shortest_interaction_path, novelty_signal,
+  get_interactions_for, find_quantitative_evidence, export_subgraph.
   Trigger on: "wildcard", "novel target", "creative suggestions", "out-of-the-box",
   "unexpected PPI", "re-run wildcard", or any explicit request to explore non-obvious targets.
 ---
@@ -83,6 +87,80 @@ These fingerprints form the baseline evidence set and seed the term list for Pha
 
 If both queries return scores < 0.20 or empty, re-run without `study_category`.
 Always state the fallback in the CORPUS COVERAGE section.
+
+---
+
+## Phase 2.5: Graph-Driven Novelty Triage  *(MANDATORY)*
+
+Before Phase 3's creative reasoning, anchor your search in the corpus
+interaction graph and the novelty signal. This phase produces a "hub
+residuals" table — well-connected nodes the literature has NOT yet
+saturated — and seeds the hypothesis space for Phase 3 with proteins
+your training-knowledge bridge alone would miss.
+
+**Required calls (do not skip):**
+
+**Call 1 — Establish prior-art hubs** (always):
+```
+interaction_hubs
+  top_n=20
+  min_mentions=3
+```
+Record the top 5 protein names as **HIGH PRIOR ART nodes** — these are the
+proteins everyone is already chasing. Candidates that match this list need
+extraordinary justification for inclusion as novel hypotheses.
+
+**Call 2 — Score every emerging candidate**:
+
+For each candidate protein already surfaced in Phase 2 (proteins from
+`pathway_context.target_nodes[].protein`, plus the canonical driver if
+known from `disease_or_cancer`), call:
+```
+novelty_signal
+  protein=<GENE_SYMBOL>
+```
+Record `novelty_score` ∈ [0, 1] and `counts.mentions` per candidate.
+
+**Call 3 — Connectivity to the canonical driver** (for each non-canonical candidate):
+
+When a candidate is not already a known driver of the disease, call:
+```
+shortest_interaction_path
+  protein_a=<canonical_disease_driver>
+  protein_b=<candidate>
+  max_hops=4
+  k=1
+```
+Record whether a path exists and the `min_mentions_along_path`. A path of
+length ≤ 3 with `min_mentions_along_path ≥ 2` is **mechanistically connected**.
+A missing path or a 1-mention weak link is **disconnected** (still worth
+considering for UNCHARTED tier but flag the gap explicitly).
+
+### Synthesise: hub residuals table
+
+Combine the three calls into a single table that drives Phase 3 hypothesis
+generation:
+
+| Protein | hub rank | novelty_score | path to driver? | classification |
+|---------|----------|---------------|-----------------|----------------|
+| ...     | ...      | ...           | ...             | ...            |
+
+**Classification rules** (assign one per candidate; first matching rule wins):
+
+| Class | Rule |
+|---|---|
+| SATURATED       | hub rank in top-20 AND novelty_score < 0.4 |
+| CONNECTED-NOVEL | hub rank in top-20 AND novelty_score ≥ 0.6 |
+| PERIPHERY-NOVEL | not a hub AND novelty_score ≥ 0.6 AND path to driver exists |
+| UNCHARTED       | novelty_score ≥ 0.8 AND no path (or only weak links) |
+| MID-NOVEL       | otherwise (0.4 ≤ novelty_score < 0.6, or borderline cases) |
+
+`CONNECTED-NOVEL`, `PERIPHERY-NOVEL`, and `UNCHARTED` are the **interesting**
+classifications. `SATURATED` candidates are pathway-expert's job, not yours;
+the wildcard mandate is novelty.
+
+Carry the `novelty_score` and `classification` per candidate forward into
+Phase 5 tier assignment and into the `choices_json` handoff.
 
 ---
 
@@ -314,14 +392,20 @@ All sections identical to pathway-expert **except**:
 1. The `#### [<TIER>]` header in TARGET OPPORTUNITY LANDSCAPE uses the expanded
    tier set (including SYNTHETIC_LETHALITY, CROSS_INDICATION_TRANSFER, HYPOTHESIS).
 
-2. Every candidate in TARGET OPPORTUNITY LANDSCAPE has an additional bullet:
-   `- **Novelty rationale**: <why this target/PPI is non-obvious — 1 sentence>`
+2. Every candidate in TARGET OPPORTUNITY LANDSCAPE has these additional bullets:
+   - `**Novelty rationale**` — why this target/PPI is non-obvious (1 sentence)
+   - `**Novelty signal**` — `novelty_score=<value>, classification=<class>`
+   - `**Hypothesis**` — the mechanistic claim being tested (1 sentence)
+   - `**Predicted consequence**` — biological outcome if hypothesis is true and
+     the interaction is disrupted (1 sentence, named readout)
+   - `**Falsifying readout**` — assay + threshold that decides (1 sentence)
 
 3. HYPOTHESIS-tier entries have an additional bullet:
    `- **Corpus support**: <what was found, or "Nothing found in corpus">`
 
-4. The CORPUS COVERAGE section has an additional line:
-   `- Wildcard hypotheses generated: <N> total; <N> corpus-supported; <N> weakly supported; <N> corpus-absent`
+4. The CORPUS COVERAGE section has additional lines:
+   - `- Wildcard hypotheses generated: <N> total; <N> corpus-supported; <N> weakly supported; <N> corpus-absent`
+   - `- Hub residuals table: <N candidates>; <N> SATURATED, <N> CONNECTED-NOVEL, <N> PERIPHERY-NOVEL, <N> UNCHARTED, <N> MID-NOVEL`
 
 ```
 ## PATHWAY BIOLOGY REPORT
@@ -364,6 +448,10 @@ For each candidate:
 - **What makes it attractive**: <therapeutic rationale — pathway position, druggable interface, unmet need>
 - **Key uncertainty**: <what is not yet established>
 - **Novelty rationale**: <why this is non-obvious — 1 sentence>
+- **Novelty signal**: novelty_score=<value>, classification=<SATURATED | CONNECTED-NOVEL | PERIPHERY-NOVEL | UNCHARTED | MID-NOVEL>
+- **Hypothesis**: <one sentence — the mechanistic claim. "PROTEIN_X drives DISEASE via interaction with PROTEIN_Y in CONTEXT.">
+- **Predicted consequence**: <one sentence — what should happen biologically if the hypothesis is true and we disrupt the interaction. Name the cellular or molecular readout. e.g. "CTGF and CYR61 transcript reduction ≥ 50% at 24h in NF2-null cells">
+- **Falsifying readout**: <one sentence — the assay + threshold that decides. e.g. "qPCR of CTGF/CYR61 at 24h post-treatment; ≥50% reduction = consistent with hypothesis; ≤20% = falsifies">
 - **Corpus support**: <for HYPOTHESIS only — what was found, or "Nothing found in corpus">
 - **Suggested PDB ID(s)**: <verbatim from fingerprint fields only; "Not found in corpus" if absent>
 
@@ -377,16 +465,41 @@ Tier definitions:
 
 ### PRIMARY RECOMMENDATION
 
-State which candidate is recommended for the downstream pipeline, and why (1–2
-sentences balancing evidence strength, structural tractability, and novelty value).
+State which candidate is recommended for the downstream pipeline. Wildcard
+mode INVERTS pathway-expert's preference: novelty is the value-add of this
+skill, so high-prior-art targets are deliberately deprioritised. Apply this
+rule **in order** — first match wins:
 
-Prefer VALIDATED or BIOLOGICALLY_JUSTIFIED if available. If the most novel candidate
-is HYPOTHESIS tier but has an available PDB, it may be recommended with an explicit
-caveat: "Speculative — corpus support is absent; proceed only if user accepts the
-higher biological uncertainty."
+1. **Novelty-first rule.** If a `HYPOTHESIS`, `CROSS_INDICATION_TRANSFER`,
+   or `SYNTHETIC_LETHALITY` candidate satisfies **all three** of:
+     (a) a PDB ID exists in the corpus or via `find_pdb_structures` /
+         `search_rcsb_pdb`,
+     (b) the structural interface is interpretable (the partner protein
+         or a homologous interface is present in the PDB entry),
+     (c) at least one corpus fingerprint mentions the candidate (or a
+         paralog) in a disease context,
+   recommend that candidate. This is the wildcard mandate.
+
+2. **Fallback.** If no candidate satisfies rule 1, recommend the
+   highest-tier remaining candidate (VALIDATED > BIOLOGICALLY_JUSTIFIED >
+   PATHWAY_INFERRED) and state explicitly that the wildcard run found no
+   tractable novel candidate.
+
+3. **Rationale must cite `novelty_score`.** State the score in one
+   sentence — e.g. "novelty_score=0.72 — PERIPHERY-NOVEL, mechanistically
+   connected to KRAS via SOS1 (3-hop path, min mentions = 4)".
+
+**Tie-break** under rule 1: higher `novelty_score` wins.
+
+**Anti-pattern guard.** A high-prior-art VALIDATED candidate with
+`novelty_score < 0.3` should NOT be recommended by this skill unless rule 1
+is unsatisfiable — those targets belong to pathway-expert. If the wildcard
+run keeps picking the same VALIDATED targets pathway-expert would pick,
+the skill has failed at its job.
 
 - **Target complex**: <ProteinA / ProteinB>
 - **Evidence tier**: <tier label>
+- **Novelty**: novelty_score=<value> (<classification>)
 - **Suggested PDB ID(s)**: <verbatim from corpus; "Not found in corpus" if absent>
 - **Proposed next step**: Run complex-structure-analysis on PDB <ID>
   (only if PDB confirmed from corpus; otherwise await user input)
@@ -430,9 +543,19 @@ Rules for `### PIPELINE HANDOFF`:
   - `evidence_basis`: one sentence summary (no newlines, no quotes inside)
   - `key_uncertainty`: one sentence summary (no newlines, no quotes inside)
   - `design_intent`: `"disrupt"` or `"stabilize"` from Phase 5 reasoning for this candidate
+  - `novelty_score`: float in `[0.0, 1.0]` from `novelty_signal` for the candidate's primary protein
+  - `classification`: one of `"SATURATED"`, `"CONNECTED-NOVEL"`, `"PERIPHERY-NOVEL"`, `"UNCHARTED"`, `"MID-NOVEL"`
+  - `predicted_consequence`: one sentence — what disruption should produce biologically; name the readout
+  - `falsifying_readout`: one sentence — the assay + threshold that falsifies the hypothesis
+
+  `predicted_consequence` and `falsifying_readout` are REQUIRED for wildcard
+  mode (picking a non-VALIDATED candidate without articulating the testable
+  claim defeats the skill's purpose). They are the JSON-extracted forms of
+  the `Hypothesis` / `Predicted consequence` / `Falsifying readout` bullets
+  in the TARGET OPPORTUNITY LANDSCAPE block.
 
   Example (must be on ONE line):
-  `- choices_json: [{"tier":"PATHWAY_INFERRED","complex":"YAP1 / TEAD4","pdb_ids":["5GN0"],"evidence_basis":"Mesothelioma corpus supports YAP nuclear accumulation requiring TEAD4 co-activation.","key_uncertainty":"TAZ paralog redundancy may require dual targeting.","design_intent":"disrupt"},{"tier":"HYPOTHESIS","complex":"VGLL4 / TEAD4","pdb_ids":[],"evidence_basis":"Training knowledge: VGLL4 competes with YAP for TEAD binding; no direct corpus evidence in this indication.","key_uncertainty":"No corpus evidence in mesothelioma; interaction knowability unverified.","design_intent":"stabilize"}]`
+  `- choices_json: [{"tier":"PERIPHERY_NOVEL","complex":"VGLL4 / TEAD4","pdb_ids":[],"evidence_basis":"Training knowledge plus Phase-4 hit: VGLL4 competes with YAP at the TEAD interface; corpus has 2 papers in gastric cancer.","key_uncertainty":"No mesothelioma-specific evidence; whether stabilising VGLL4-TEAD displaces YAP in NF2-null context is untested.","design_intent":"stabilize","novelty_score":0.71,"classification":"PERIPHERY-NOVEL","predicted_consequence":"VGLL4-TEAD stabilisation reduces YAP-TEAD chromatin occupancy by >50% and rescues NF2-null cell-cycle arrest.","falsifying_readout":"ChIP-seq YAP signal at canonical TEAD-binding sites 24h post-treatment; <20% reduction falsifies."}]`
 
 ---
 

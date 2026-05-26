@@ -287,11 +287,34 @@ inhibitor co-crystal structures.
 - Disease-driver connectivity: <shortest_interaction_path summary if used — omit otherwise>
 
 ### FEASIBILITY ASSESSMENT
-- Target tractability: <Excellent / Good / Marginal / Poor>
-  - Excellent: mutagenesis-validated hotspot + prior peptide/protein binder ≤ 100 nM
-  - Good: interface characterised + some inhibitor precedent
-  - Marginal: limited data, only small-molecule or computational precedent
-  - Poor: no characterisation, no precedent, or clear failure modes
+- Target tractability / informativeness: <Excellent / Good / Marginal / Poor>
+  - **Excellent**: structural interface clear (PDB with both partners, or convincing
+    homology); literature names at least 2 interface residues; modality precedent
+    in the literature (peptide / mini-protein / antibody-fragment for ANY member of
+    the same family is sufficient), **OR** a clearly stated falsifiable hypothesis
+    from the pathway stage where disrupting the interaction predicts a specific
+    biological readout. Quantitative anchors (Kd / Ki / ΔΔG) reported when present
+    but NOT required.
+  - **Good**: structural interface clear AND at least one mutagenesis or
+    interface-residue claim in the corpus, OR a modality precedent on a paralog,
+    OR a coherent mechanistic prediction with a named readout.
+  - **Marginal**: structural interface clear but no residue-level data, no modality
+    precedent, AND no clear falsifiable prediction.
+  - **Poor**: structural interface unresolved (partner absent from PDB and no
+    homologue available); cannot be designed against until structure work is done.
+
+  Absence of ΔΔG or Kd in the corpus is NOT grounds for downgrading. Novel or
+  hypothesis-tier targets typically lack these values. If the structural rationale
+  is sound AND the pathway stage articulated a falsifiable hypothesis (a
+  `predicted_consequence` + `falsifying_readout` in the upstream handoff), GO
+  stands. Quantitative anchors are HIGHLIGHTED when present (always cite the DOI
+  + value), but they are reportable evidence, never gates.
+
+  When the upstream pathway-stage choice carries `predicted_consequence` /
+  `falsifying_readout` fields (wildcard mode emits these), restate them at the
+  TOP of this FEASIBILITY ASSESSMENT section so the design stages downstream see
+  the testable claim, not just the target name.
+
 - Corpus confidence: <High (≥ 5 papers) / Medium (2–4) / Low (0–1)>
 - Design challenges: <bullet list — isoform redundancy, localisation, flat surface, etc.>
 - Negative results: <what failed and why — cite source_span; omit if none>
@@ -302,7 +325,15 @@ inhibitor co-crystal structures.
 - Residues to prioritise: <literature-validated hotspots>
 - Residues to avoid: <tolerant-of-mutation residues — omit if none found>
 - Epitope to mimic: <partner peptide or co-crystal epitope, if known>
-- Affinity target: <e.g. "aim for ≤ 50 nM Kd — best prior art is 18 nM SPR (eLife.25068)">
+- Affinity target — use the FIRST rule that applies, and state in one sentence which rule fired:
+  1. **Corpus has measured Kd or Ki** (use `find_quantitative_evidence`) → aim for one
+     half-log tighter than the tightest cited value. E.g. corpus has 31 nM SPR → "aim
+     for ≤ 10 nM Kd (one half-log tighter than the 31 nM cyclic probe in DOI X)".
+  2. **VALIDATED or BIOLOGICALLY_JUSTIFIED tier** (from pathway-expert handoff) →
+     "aim for ≤ 30 nM Kd, peptide-binding heuristic for druggable PPIs".
+  3. **HYPOTHESIS / CROSS_INDICATION_TRANSFER / SYNTHETIC_LETHALITY / PATHWAY_INFERRED
+     without quant anchor** → "aim for ≤ 100 nM Kd, peptide-binding heuristic for
+     novel targets — refine after first design round".
 - Key risk: <single most important design challenge — one sentence>
 
 ### LITERATURE SOURCES (max 8 rows)
@@ -325,7 +356,7 @@ Do NOT wrap it in a code fence (no ``` before or after). Do NOT omit the `- ` pr
 The programmatic orchestrator parses these lines with a regex — any deviation breaks the pipeline.
 
 Rules for `### PIPELINE HANDOFF`:
-- `go_recommendation` must be exactly one of: `GO`, `CONDITIONAL_GO`, or `NO_GO`. Use the tractability rubric: Excellent/Good → GO; Marginal → CONDITIONAL_GO; Poor → NO_GO.
+- `go_recommendation` must be exactly one of: `GO`, `CONDITIONAL_GO`, or `NO_GO`. Use the tractability rubric: Excellent/Good → GO; Marginal → CONDITIONAL_GO (still produces designs, with the key risk surfaced); Poor → NO_GO. Note: missing ΔΔG / Kd values are not a downgrade trigger — see the Tractability rubric in FEASIBILITY ASSESSMENT.
 - `go_rationale` is a single sentence — the programmatic orchestrator displays this directly to the user.
 - `design_query` is the verbatim query string passed to protein-design-script; include PDB ID, top 3–5 hotspot residues, and suggested affinity target. Do NOT include chain letters — chain assignment is handled by the structure-analysis stage downstream.
 - `target_site_hint` is a single-line JSON object with these keys (use straight double-quotes, no trailing commas):

@@ -58,13 +58,25 @@ export interface Run {
 
 export interface TargetChoice {
   index: number;
-  tier: string; // VALIDATED | BIOLOGICALLY_JUSTIFIED | PATHWAY_INFERRED
+  // VALIDATED | BIOLOGICALLY_JUSTIFIED | PATHWAY_INFERRED |
+  // SYNTHETIC_LETHALITY | CROSS_INDICATION_TRANSFER | HYPOTHESIS
+  tier: string;
   complex: string;
   pdb_ids: string[];
   evidence_basis: string;
   key_uncertainty: string;
   structure_query: string;
   chain_ids_inferred: boolean;
+  // Wildcard-mode extensions (optional; pathway-expert leaves these unset).
+  // novelty_score / classification come from the graph-driven novelty triage;
+  // predicted_consequence / falsifying_readout articulate the hypothesis the
+  // designed binder is meant to test (forward-compat plumbing for a future
+  // probe-mode design-analyst).
+  design_intent?: string;
+  novelty_score?: number;
+  classification?: string;
+  predicted_consequence?: string;
+  falsifying_readout?: string;
 }
 
 export interface RunDetail {
