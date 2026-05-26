@@ -112,10 +112,12 @@ PipelineRunner.run(query="Design therapeutics for ...")
 
 Stages 0–3 and 6 are LLM-driven (skills); stages 4 and 5 are deterministic
 Python. The orchestrator handles `auth_seq_id ↔ label_seq_id` numbering,
-PDB-identity sanity checks (catches paper-level protein/PDB conflations
-in the corpus), and BoltzGen's output renumbering quirks. See
-`src/pipeline_runner.py` for the full state machine and `diary.md` for
-the design notes and known failure modes.
+chain identity (resolved deterministically from the mmCIF in stage 2; no
+upstream skill emits chain letters), PDB-identity sanity checks (catches
+paper-level protein/PDB conflations in the corpus), modality reconciliation
+between mol-bio and structure stages, and BoltzGen's output renumbering
+quirks. See `src/pipeline_runner.py` for the full state machine and
+`diary.md` for the design notes and known failure modes.
 
 End-to-end driver: `scripts/test_e2e.py --prompt "..." --slug runname`.
 Configuration lives under `design:` in `config.yaml` (workstation
@@ -414,8 +416,13 @@ Run outputs land under `outputs/<slug>/`:
 - `traces/<stage>/{trace_raw.json, trace_rendered.md}` — full conversation
   history per LLM stage (only when `capture_traces=True`).
 - `03_design_inputs/*.yaml` + `*_submit.sh` — BoltzGen design YAMLs.
+  Stage 3 may emit multiple YAMLs (e.g. Region 1 + Region 2 for a wide
+  interface); stage 4 currently executes only the alphabetically first.
 - `04_execution_outputs/` — BoltzGen run dir (CIFs + `boltzgen.log` +
-  `final_ranked_designs/all_designs_metrics.csv`).
+  `final_ranked_designs/all_designs_metrics.csv`). When stage 3 emitted
+  multiple YAMLs, a `multi_region_skipped.txt` file lists the YAMLs that
+  were generated but not run; the design-analyst surfaces this in
+  `06_summary.md` so the human can manually run the unsampled regions.
 - `05_metrics_enriched.csv` — every design with hotspot SASA appended.
 - `05_ranking/{ranked.csv, top_k.csv, filter_stats.txt}` — filtered, ranked,
   MMR-diversified output.
@@ -550,7 +557,11 @@ little_protein_tiger/
 │   ├── ask_corpus.py            # CLI: interactive conversational search
 │   ├── launch_mcp.py            # Launcher for literature-db MCP server
 │   ├── launch_structure_tools.py# Launcher for structure-tools MCP server
-│   └── run_skill.py             # CLI: run any expert skill via Claude/Gemini API
+│   ├── run_skill.py             # CLI: run any expert skill via Claude/Gemini API
+│   ├── test_e2e.py              # Driver for the full binder-design pipeline
+│   ├── compare_providers.py     # Sandboxed claude/gemini/local provider bake-off
+│   ├── score_provider_compare.py# Scorecard + REPORT.md across providers
+│   └── pymol_show_topk.py       # PyMOL viewer for top-K designs (run inside PyMOL)
 │
 ├── skills/                      # Expert skill definitions (SKILL.md = system prompt)
 │   ├── pathway-expert/          # Disease pathway analysis + PPI target selection

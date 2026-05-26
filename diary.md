@@ -2091,3 +2091,190 @@ The previous YAP-TEAD run was effectively a misfire — designs were generated
 against the wrong residues. Re-running with the fix should produce designs
 genuinely targeting the YAP-binding groove. Not done yet (would take another
 ~40 min).
+
+---
+
+## 2026-05-26 — Mesothelioma e2e audit: skill output discipline + chain-convention codification
+
+Reviewed the `outputs/e2e_mesothelioma` benchmark run end-to-end against
+the six stage reports. Found one structural bug (multi-region YAMLs silently
+dropped) and five LLM-output discipline issues. All fixed; no GPU re-runs
+needed for the discipline fixes. Architecture-side: stage 4 still single-YAML,
+but skipped YAMLs now flow to the analyst as a red flag.
+
+### Where the chain hallucination came from
+
+Anomaly noted in `02_structure.md`:
+> "Chain identity note: the user's query designated Chain B as TEAD1 and
+> Chain A as YAP1. The mmCIF biological assembly has this reversed..."
+
+Traced back: the original user prompt was the bare "design cancer therapeutics
+against key nodes in mesothelioma". The "user query" the structure-expert
+was reconciling against was its own stage-input — the pathway-expert's
+`structure_query` handoff: `"...Target chain B (TEAD1). Partner chain A
+(YAP1)..."`. The pathway-expert's SKILL.md handoff template asked the LLM
+to fill in `Target chain {chain}` placeholders before any mmCIF had been
+inspected; the LLM did so by guessing. The same template bug existed in
+`molecular-biology-expert/SKILL.md` and `wildcard-expert/SKILL.md`.
+
+The orchestrator's `_stage_structure` already parses `chain_descs` from
+the mmCIF and appends a `chain_hint` block to the structure-expert's
+query, so the structure-expert always had ground truth — but the
+pathway-expert's wrong assertion still travelled through the trace and
+forced the structure-expert to spend tokens reconciling the conflict.
+
+### Convention codified in code + three skills
+
+- `pathway-expert/SKILL.md`, `molecular-biology-expert/SKILL.md`,
+  `wildcard-expert/SKILL.md`: chain placeholders removed from the
+  handoff templates with an explicit "DO NOT include chain letters"
+  instruction.
+- `pipeline_runner.py:_stage_structure` (~line 505): added a
+  CHAIN ASSIGNMENT CONVENTION comment block above the
+  `_chain_entity_descriptions()` call, stating that chain identity is
+  determined there from the mmCIF and that no upstream skill may emit
+  chain letters in its handoff. Future skill authors should see it.
+- `web/frontend/src/components/PathwayChoicePanel.tsx`: the
+  `⚠ Chain IDs inferred` badge was rewritten to `⚠ Alternative —
+  limited context`; the old wording implied the primary choice had
+  trustworthy chain letters (it never did — they were LLM guesses).
+
+### Multi-region YAMLs were silently dropped
+
+Stage 3 (`protein-design-script`) had a "Multiple Hotspot Regions" path
+that emitted Region 1 + Region 2 YAMLs when the structure expert
+identified two distinct interface sub-pockets. Stage 4
+(`_find_design_yaml`) picked the alphabetically-first YAML and logged a
+warning. No downstream stage surfaced this — `06_summary.md` shipped a
+clean GO verdict on what was effectively a half-sampled campaign.
+
+Fix without changing the GPU side:
+- `_find_design_yaml` now returns `(picked, skipped)`.
+- `_stage_execution` writes
+  `04_execution_outputs/multi_region_skipped.txt` listing the skipped
+  YAMLs and the rationale.
+- `_stage_summary` reads that file (if present) and injects its contents
+  into the design-analyst's query as a red flag.
+- `design-analyst/SKILL.md` was extended with a "Multi-region runs"
+  paragraph instructing it to surface the skip prominently in section 3.
+
+A future PR could make stage 4 loop over all YAMLs (each region gets its
+own pilot → production → ranking). That's deferred — the conservative
+surfacing fix lets the human run Region 2 manually for now.
+
+### Modality disagreement was being silently resolved
+
+Mol-biology-expert and structure-expert both emit a `modality:` field in
+their handoffs (mol-bio reasons from corpus prior-art affinity precedent;
+structure reasons from interface BSA + patch geometry). They sometimes
+disagree — in the mesothelioma run mol-bio said `cyclic_peptide` (31 nM
+probe in the corpus), structure said `mini_protein` (BSA 3,400 Å² across
+3 sub-interfaces). `_stage_design` was only reading the literature
+handoff; the structure-side recommendation died in the report.
+
+Fix:
+- New `PipelineResult.structure_handoff` field; `_stage_structure`
+  persists its full handoff.
+- `_stage_design` reads both modalities. When they disagree it appends a
+  `MODALITY DISAGREEMENT` note to the design-script's query asking it to
+  pick one and justify which signal it weighted higher (literature
+  affinity vs interface geometry). Choice is then in the audit trail.
+
+### Mol-bio paralog numbering bug
+
+`01_literature.md` asserted: *"TEAD residues are hTEAD4 equivalents
+(numbering conserved in TEAD1)... TEAD4 residue numbers... map directly
+onto TEAD1 in PDB 3KYS."* This is wrong — 3KYS uses truncated-construct
+auth_seq_ids, hTEAD4 literature numbers do NOT map directly. The
+structure-expert correctly remapped by contact geometry (D272 → ASP249,
+K376 → VAL318-region, V389 → VAL391). The mol-bio claim was load-bearing
+nowhere downstream but a fragile chain of trust.
+
+Fix: added a residue-numbering guardrail to
+`molecular-biology-expert/SKILL.md`. Cross-paralog auth_seq_id
+equivalence claims are forbidden in the report body; numbering
+provenance must be recorded in `target_site_hint.notes`. The structure
+stage owns literature → PDB residue mapping.
+
+### Design-analyst rank↔design_id transcription errors
+
+In `06_summary.md` section 3 the analyst wrote: "Rank 4 (design_78) and
+rank 5 (design_53)..." — but cross-referencing against `top_k.csv`:
+mmr_rank 4 was actually `design_72`, rank 5 was `design_78`, rank 6 was
+`design_53`. Section 4 of the same report used the correct mapping;
+section 3 was free-typing without looking up the table. A human
+following the section-3 pointer would open the wrong CIF.
+
+Fix: `design-analyst/SKILL.md`:
+- Section-2 table now requires `design_id` as a visible column (so the
+  rank → ID lookup is always one glance away).
+- Added an explicit "Rank ↔ design_id cross-check rule" stating the
+  table is the only ground truth; do not type a design_id from memory.
+
+### Liability data was visible to the analyst but ignored
+
+`_SUMMARY_CONTEXT_COLS` in `pipeline_runner.py` includes `liability_score`,
+`liability_high_severity_violations`, and `liability_num_violations`.
+The analyst SKILL.md already had thresholds defined. But the
+mesothelioma run's top-3 designs all carried `AspCleave(*, sev10)`
+(severity 10/10) violations and the report said "No other red flags
+identified" — the analyst silently skipped liability assessment.
+
+Fix:
+- Added `liab_HS` column to the required section-2 table.
+- Added a mandatory "Liability statement" line in section 3: even when
+  no red flags apply, the section must state liability status of the
+  top-5 explicitly. Silent waiver is no longer possible.
+
+### Conversational preambles leaking into reports
+
+`01_literature.md`, `02_structure.md`, `03_design_report.md` each opened
+with the LLM's pre-report self-talk ("All data collected. I now have
+everything needed to compile the full report. Let me synthesise..." etc.).
+Cosmetic, but every stage report carried it into the persisted markdown.
+
+Fix: added a "Begin output directly with `## <REPORT HEADER>`, no
+preamble" instruction near each skill's Report Format section
+(pathway-expert, molecular-biology-expert, complex-structure-analysis,
+protein-design-script).
+
+### What was NOT done
+
+Per the user direction "we can accept some redundancy if removing it
+would risk losing a bit of quality", deferred:
+- C1: PDB selection reasoning appears 3× in pathway-expert output
+- C2: MPM disease background told 3× across stages 0-2
+- C3: Hotspot residue rationale appears in structure / design / analysis
+- C5: 06_summary.md largely re-emits 05_analysis.md's verdict
+
+These are token waste, not correctness issues. The trade-off is that
+each stage's prompt is self-contained and re-derives context rather
+than depending on inheritance — that's quality-positive in practice
+(failure modes from skipped/short context are worse than redundant
+tokens).
+
+Also deferred: renaming `chain_ids_inferred` (frontend field), which
+now semantically means "non-primary alternative with synthesized query"
+rather than "chains were auto-inferred". Touches the API wire format
+and PathwayChoicePanel.tsx; held back as a future cleanup PR.
+
+### Files touched in this session
+
+Commit `830003d` (chain convention):
+- `skills/{pathway,molecular-biology,wildcard}-expert/SKILL.md`
+- `src/pipeline_runner.py` (convention comment block)
+- `web/frontend/src/components/PathwayChoicePanel.tsx` (badge rewording)
+
+Commit `61c83c3` (skill output discipline + multi-region surfacing):
+- `skills/complex-structure-analysis/SKILL.md` (preamble strip)
+- `skills/molecular-biology-expert/SKILL.md` (preamble strip + numbering guardrail)
+- `skills/pathway-expert/SKILL.md` (preamble strip)
+- `skills/protein-design-script/SKILL.md` (preamble strip)
+- `skills/design-analyst/SKILL.md` (rank cross-check + liability + multi-region surfacing)
+- `src/pipeline_runner.py`:
+  - new `PipelineResult.structure_handoff` field
+  - `_stage_structure` persists handoff
+  - `_stage_design` injects MODALITY DISAGREEMENT note
+  - `_find_design_yaml` returns `(picked, skipped)` tuple
+  - `_stage_execution` writes `multi_region_skipped.txt`
+  - `_stage_summary` forwards multi-region notice to analyst
