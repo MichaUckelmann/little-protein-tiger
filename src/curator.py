@@ -185,19 +185,36 @@ def _call_local(
     model: str,
     max_tokens: int,
     endpoint: str,
+    sampling: dict | None = None,
+    options: dict | None = None,
+    request_timeout: int = 600,
 ) -> tuple[str, int, int]:
-    """Call a local OpenAI-compatible endpoint (vLLM/SGLang serving Qwen3.5)."""
+    """Call a local OpenAI-compatible endpoint (Ollama / vLLM / SGLang).
+
+    Parameters
+    ----------
+    sampling
+        Sampling kwargs merged into the request body (temperature, top_p,
+        response_format, etc.). Keep this provider-agnostic — Qwen / Gemma /
+        Llama tunables come from config so the same code path serves any
+        local model.
+    options
+        Ollama-specific nested ``options`` block (e.g. ``num_ctx`` to override
+        the default context window). Ignored by non-Ollama backends, which
+        is fine.
+    """
     full_messages = [{"role": "system", "content": system_prompt}] + messages
-    payload = {
+    payload: dict = {
         "model": model,
         "messages": full_messages,
         "max_tokens": max_tokens,
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "top_k": 20,
-        "chat_template_kwargs": {"enable_thinking": False},
+        "temperature": 0.1,
     }
-    resp = requests.post(f"{endpoint}/chat/completions", json=payload, timeout=180)
+    if sampling:
+        payload.update(sampling)
+    if options:
+        payload["options"] = options
+    resp = requests.post(f"{endpoint}/chat/completions", json=payload, timeout=request_timeout)
     resp.raise_for_status()
     body = resp.json()
     text = body["choices"][0]["message"]["content"]
@@ -250,6 +267,9 @@ def curate_paper(
     gemini_model = curation_cfg.get("gemini_model", "gemini-2.0-flash")
     local_model = curation_cfg.get("local_model", "Qwen/Qwen3.5-9B")
     local_endpoint = curation_cfg.get("local_endpoint", "http://localhost:8000/v1")
+    local_sampling = curation_cfg.get("local_sampling", {}) or {}
+    local_options = curation_cfg.get("local_options", {}) or {}
+    local_request_timeout = int(curation_cfg.get("local_request_timeout", 600))
     max_tokens = curation_cfg.get("max_tokens", 4096)
     max_retries = curation_cfg.get("max_retries", 3)
 
@@ -288,7 +308,14 @@ def curate_paper(
                 )
             elif provider == "local":
                 raw_response, input_tokens, output_tokens = _call_local(
-                    claude_messages, system_prompt, local_model, max_tokens, local_endpoint
+                    claude_messages,
+                    system_prompt,
+                    local_model,
+                    max_tokens,
+                    local_endpoint,
+                    sampling=local_sampling,
+                    options=local_options,
+                    request_timeout=local_request_timeout,
                 )
             else:
                 raw_response, input_tokens, output_tokens = _call_claude(

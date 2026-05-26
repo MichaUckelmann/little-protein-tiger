@@ -24,7 +24,13 @@ Deconstruct the provided paper into a **concise** structured JSON object. The fi
 
 5. **Entity Mapping**: Identify all key chemical, biological, and mathematical entities.
 
-6. **Protein-Protein Interactions**: Map domains and amino acid residues critical for binding. Report affinity measures if available. Populate `protein_pair` and `experimental_context` for each relevant finding. Structural data: X-ray crystallography and cryo-EM structures of protein complexes are evidence of interaction, map amino acid residues and domains in interfaces. 
+6. **Protein-Protein Interactions**: Map domains and amino acid residues critical for binding. Report affinity measures if available. Populate `protein_pair` and `experimental_context` for each relevant finding. Structural data: X-ray crystallography and cryo-EM structures of protein complexes are evidence of interaction, map amino acid residues and domains in interfaces.
+
+   **`protein_pair` contains exactly two PROTEIN NAMES** — gene symbols or canonical protein labels (e.g. `"YAP1"`, `"TEAD4"`, `"human YAP (hYAP50-171)"`). Never put amino-acid residues, mutations, domain identifiers, or small molecules in this field — those belong in `key_amino_acid_residues` or `entities.chemicals` instead. Every `key_findings` entry must use the same two proteins in `protein_pair`, even if the finding discusses a specific residue-residue contact between them.
+
+   - ✅ Correct:   `"protein_pair": ["YAP1", "TEAD4"]`, with `"key_amino_acid_residues": ["YAP Phe69", "TEAD4 Lys376"]`
+   - ❌ Wrong:    `"protein_pair": ["YAP Phe69", "TEAD4 Lys376"]`   (these are residues, not proteins)
+   - ❌ Wrong:    `"protein_pair": ["YAP-TBD", "YAP"]`              (a domain is not a separate protein)
 
 # UNIT CONVERSION RULES
 - `affinities_kd_Molar` and `inhibitory_constant_Ki` MUST be expressed as Molar floats.

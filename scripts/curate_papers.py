@@ -91,15 +91,25 @@ def get_paper_key(paper: Paper) -> str:
 
 
 def resolve_file_path(paper: Paper, config: dict) -> Path | None:
-    """Return path to the downloaded file (PDF or XML), or None if missing."""
+    """Return path to the downloaded file (PDF or XML), or None if missing.
+
+    Tolerates Windows-style separators in the stored path so DBs written on
+    Windows can be read on POSIX hosts after a machine migration.
+    """
     if paper.pdf_path:
-        p = Path(paper.pdf_path)
+        raw = paper.pdf_path.replace("\\", "/")
+        p = Path(raw)
         if p.exists():
             return p
-        # Try resolving relative to project root
-        p2 = ROOT / paper.pdf_path
+        # Try resolving relative to project root (covers stored relative paths)
+        p2 = ROOT / raw
         if p2.exists():
             return p2
+        # Last resort: match by basename inside the configured pdf_dir
+        pdf_dir = ROOT / config["paths"]["pdf_dir"]
+        p3 = pdf_dir / Path(raw).name
+        if p3.exists():
+            return p3
     return None
 
 
@@ -245,7 +255,13 @@ def main():
         tokens = (cm.get("input_tokens", 0) or 0) + (cm.get("output_tokens", 0) or 0)
         model = cm.get("model", curation_cfg.get("model", "unknown"))
 
-        db.mark_curated(paper_key, str(fp_path), model, tokens)
+        # Store as project-relative POSIX path so the DB remains portable
+        # across OSes (Windows write → Linux read on machine migration).
+        try:
+            fp_rel = fp_path.resolve().relative_to(ROOT).as_posix()
+        except ValueError:
+            fp_rel = fp_path.as_posix()
+        db.mark_curated(paper_key, fp_rel, model, tokens)
         stats["curated"] += 1
         stats["tokens"] += tokens
 

@@ -158,7 +158,7 @@ def download_papers(
         )
         if existing:
             logger.debug(f"File already exists, marking downloaded: {existing.name}")
-            db.mark_downloaded(paper.doi, paper.pmcid, str(existing))
+            db.mark_downloaded(paper.doi, paper.pmcid, existing.as_posix())
             continue
 
         # Clean up any stale .tmp left by a previous interrupted run
@@ -211,7 +211,7 @@ def download_papers(
         if final_path is not None:
             fmt = "XML" if final_path.suffix == ".xml" else "PDF"
             logger.debug(f"Downloaded [{fmt}]: {final_path.name}")
-            db.mark_downloaded(paper.doi, paper.pmcid, str(final_path))
+            db.mark_downloaded(paper.doi, paper.pmcid, final_path.as_posix())
         else:
             db.mark_failed(paper.doi, paper.pmcid, "All URL attempts failed")
             logger.warning(f"Failed: {paper.title[:70]}")
