@@ -506,6 +506,11 @@ types from residue names — all of these are now in the tool results.
 - Hotspot regions: max 2 (primary + one alternative). If more were scored, note the
   ratings in a single line and focus the write-up on the top 2.
 
+**Begin your output directly with `## PPI ANALYSIS REPORT` — no preamble,
+no acknowledgements ("All data collected", "I now have everything…"), no
+summary of what you are about to write. The orchestrator persists your
+output verbatim as the stage report.**
+
 ```
 ## PPI ANALYSIS REPORT
 

@@ -226,6 +226,11 @@ Para 1" of DOI 10.7554/eLife.25068).
 
 ## Report Format
 
+**Begin your output directly with `## MOLECULAR BIOLOGY REPORT` — no
+preamble, no acknowledgements ("All data collected", "Let me synthesise…"),
+no summary of what you are about to write. The orchestrator persists your
+output verbatim as the stage report.**
+
 Use the exact section headers below — they are parsed by the downstream design
 agent and the orchestrator skill.
 
@@ -327,9 +332,20 @@ Rules for `### PIPELINE HANDOFF`:
   - `mode`: `"ppi_interface"` (for disrupt / stabilize) or `"single_protein_pocket"` (for inhibit_active_site)
   - `target_protein`: the protein whose surface the binder engages
   - `priority_residues`: array of residue identifiers from the corpus (numbers and/or one-letter+number, e.g. `["F69", "L91", "R89"]` or `["245", "247", "250"]`); leave empty `[]` if literature gave no specific residues
-  - `notes`: short string explaining the source of the residues (e.g. "alanine scan ΔΔG > 2 kcal/mol from doi:..." or "catalytic triad from inhibitor co-crystal doi:...")
+  - `notes`: short string explaining the source of the residues AND the numbering convention used. If the literature numbers are from a paralog or full-length canonical sequence and the PDB structure may be a truncated construct or a different family member, say so. Examples: `"alanine scan ΔΔG > 2 kcal/mol from doi:..., YAP1 numbering"`, `"hTEAD4 canonical numbering — mapping to PDB target chain must be confirmed by structure stage"`, `"catalytic triad from inhibitor co-crystal doi:..."`.
 
-  Example: `- target_site_hint: {"mode":"ppi_interface","target_protein":"TEAD4","priority_residues":["F69","L91","R89"],"notes":"Alanine scan ΔΔG > 1.5 kcal/mol from doi:10.7554/eLife.25068"}`
+  Example: `- target_site_hint: {"mode":"ppi_interface","target_protein":"TEAD4","priority_residues":["F69","L91","R89"],"notes":"Alanine scan ΔΔG > 1.5 kcal/mol from doi:10.7554/eLife.25068; YAP1 numbering"}`
+
+**Residue-numbering guardrail.** Do NOT claim that residue numbers from one
+paralog (e.g. hTEAD4 D272) map directly to another paralog (e.g. hTEAD1 in
+PDB 3KYS) without structural verification. TEAD1/2/3/4 share high sequence
+identity but have offset numbering when crystallised as truncated
+constructs; literature numbers are corpus-side identifiers, not PDB
+auth_seq_ids. State the numbering convention in `target_site_hint.notes`;
+do NOT assert PDB-residue equivalence in the report body. The structure
+stage downstream owns the literature→PDB residue mapping (by contact
+geometry against the actual mmCIF) and will surface the equivalent
+auth_seq_ids in its MODEL-READY HOTSPOTS block.
 
 ---
 

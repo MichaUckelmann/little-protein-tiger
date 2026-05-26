@@ -127,9 +127,10 @@ class PipelineResult:
     # Populated after the structure stage; None if MODEL-READY HOTSPOTS not found.
     hotspot_residues_json: str | None = None
     # Persisted handoff dicts so later stages can read fields from earlier
-    # stages even when prev_handoff has been rebound. Set by _stage_pathway
-    # and _stage_literature.
+    # stages even when prev_handoff has been rebound. Set by _stage_pathway,
+    # _stage_structure, and _stage_literature.
     pathway_handoff: dict | None = None
+    structure_handoff: dict | None = None
     literature_handoff: dict | None = None
     # Deterministic PDB-vs-expected-target identity check result, populated
     # in run() right after _ensure_structure. Always present; the structure
@@ -625,6 +626,7 @@ class PipelineRunner:
         result.stages_completed.append("structure")
         result.stage_files["structure"] = output_file
         result.target_complex = handoff.get("target_complex") or result.target_complex
+        result.structure_handoff = handoff  # persist so _stage_design can compare modalities
 
         # Extract MODEL-READY HOTSPOTS as JSON so the analysis stage can compute
         # hotspot-restricted SASA without re-reading the structure report.
@@ -706,6 +708,25 @@ class PipelineRunner:
         if str(design_dir) not in query:
             query += f"\n\nWrite all output files to: {design_dir}"
 
+        # Surface modality disagreement between mol-bio (literature) and the
+        # structure-analysis stage. Both can emit a `modality:` line in their
+        # handoff; mol-bio reasons from prior-art affinity precedent, structure
+        # reasons from interface BSA and patch geometry. They sometimes
+        # disagree (e.g. mol-bio says cyclic_peptide because of a 31 nM probe
+        # in the corpus; structure says mini_protein because BSA > 2000 Å²).
+        # Without surfacing it, the design-script silently follows mol-bio's
+        # recommendation. Let the design-script know and pick explicitly.
+        struct_modality = ((result.structure_handoff or {}).get("modality") or "").strip().lower()
+        lit_modality = (prev_handoff.get("modality") or "").strip().lower()
+        if struct_modality and lit_modality and struct_modality != lit_modality:
+            query += (
+                f"\n\nMODALITY DISAGREEMENT — literature stage recommended "
+                f"`{lit_modality}`; structure stage recommended `{struct_modality}`. "
+                f"Pick one and justify briefly in your report (one sentence on which "
+                f"signal you weighted higher: literature prior-art affinity, or "
+                f"interface size / hotspot patch geometry)."
+            )
+
         logger.info("Stage 4: protein-design-script")
         design_handoff = self._run_stage("protein-design-script", query, context_files, design_report)
         result.stages_completed.append("design")
@@ -727,12 +748,20 @@ class PipelineRunner:
         "either":         "protein-anything",  # default
     }
 
-    def _find_design_yaml(self, run_dir: Path) -> Path:
+    def _find_design_yaml(self, run_dir: Path) -> tuple[Path, list[Path]]:
         """Pick the boltzgen YAML out of 03_design_inputs/.
 
         Prefers files matching ``*_boltzgen.yaml`` (the protein-design-script
         skill's convention). Falls back to ``*.yaml`` if no match.
-        Raises :class:`PipelineError` on missing or ambiguous selection.
+        Raises :class:`PipelineError` if no YAML is present.
+
+        Returns ``(picked, skipped)`` where ``picked`` is the YAML stage 4
+        will actually execute and ``skipped`` is the list of additional
+        YAMLs found but not run (multi-region case; stage 4 is single-YAML
+        for now). Callers are expected to surface ``skipped`` so the
+        analyst can flag the unsampled design space — see ``_stage_execution``
+        which writes ``multi_region_skipped.txt`` and ``_stage_summary``
+        which forwards that file to the design-analyst.
         """
         design_dir = run_dir / "03_design_inputs"
         if not design_dir.exists():
@@ -748,13 +777,17 @@ class PipelineRunner:
                 f"no design YAML found under {design_dir}. "
                 "Check stage 3 (protein-design-script) output."
             )
-        if len(bg_yamls) > 1:
+        picked = bg_yamls[0]
+        skipped = bg_yamls[1:]
+        if skipped:
             logger.warning(
                 f"  multiple design YAMLs found ({[p.name for p in bg_yamls]}) — "
-                f"using first: {bg_yamls[0].name}. Multi-region runs are not "
-                "yet supported by the execution stage."
+                f"using first: {picked.name}. Multi-region runs are not "
+                "yet supported by the execution stage; remaining YAMLs will "
+                "be recorded in 04_execution_outputs/multi_region_skipped.txt "
+                "and surfaced in the design-analyst report."
             )
-        return bg_yamls[0]
+        return picked, skipped
 
     def _stage_execution(
         self,
@@ -784,8 +817,29 @@ class PipelineRunner:
         pilot_cfg = design_cfg.get("pilot", {})
         prod_cfg = design_cfg.get("production", {})
 
-        yaml_path = self._find_design_yaml(run_dir)
+        yaml_path, skipped_yamls = self._find_design_yaml(run_dir)
         bg_output = run_dir / "04_execution_outputs"
+
+        # Stage 4 is single-YAML for now (no multi-region orchestration).
+        # When stage 3 emitted multiple YAMLs (typically Region 1 + Region 2
+        # for a wide interface), write a metadata file the analyst can read.
+        # Without this surfacing the half-sampled design space goes unnoticed.
+        if skipped_yamls:
+            bg_output.mkdir(parents=True, exist_ok=True)
+            skipped_path = bg_output / "multi_region_skipped.txt"
+            skipped_lines = [
+                "Stage 4 executes a single design YAML; the following were generated",
+                "by stage 3 (protein-design-script) but NOT run. The corresponding",
+                "design space is unsampled. To sample it, run boltzgen manually on",
+                "each YAML, place the outputs in a parallel run directory, and",
+                "re-run stage 5 ranking against the combined set.",
+                "",
+                f"Executed YAML : {yaml_path.name}",
+                "Skipped YAMLs :",
+                *[f"  - {p.name}" for p in skipped_yamls],
+            ]
+            skipped_path.write_text("\n".join(skipped_lines) + "\n", encoding="utf-8")
+            logger.warning(f"  wrote multi-region notice → {skipped_path}")
 
         # Map modality → protocol. modality lives in the design handoff.
         modality = (prev_handoff.get("modality") or "either").strip().lower()
@@ -1124,6 +1178,18 @@ class PipelineRunner:
 
         target_complex = result.target_complex or prev_handoff.get("target_complex", "the target complex")
 
+        # Surface the multi-region skipped metadata (if stage 4 found multiple
+        # YAMLs and ran only the first). The analyst SKILL.md instructs the
+        # model to flag this in section 3 — without it, half-sampled design
+        # campaigns get a clean GO verdict without anyone noticing.
+        skipped_path = run_dir / "04_execution_outputs" / "multi_region_skipped.txt"
+        multi_region_note = ""
+        if skipped_path.exists():
+            multi_region_note = (
+                f"\n**Multi-region status (surface this in your section 3 as a red flag):**\n"
+                f"```\n{skipped_path.read_text(encoding='utf-8').rstrip()}\n```\n"
+            )
+
         # The slim CSV goes *inside* the query (not as context_text) so the
         # model sees one coherent user message — passing tabular data as a
         # "## Context from prior report" block confused both Sonnet (which
@@ -1137,7 +1203,9 @@ class PipelineRunner:
             f"- Modality: {modality}\n"
             f"- Hotspot residues ({len(hotspots)}): "
             + (", ".join(hotspots) if hotspots else "_(none recorded)_")
-            + "\n\n"
+            + "\n"
+            + multi_region_note
+            + "\n"
             f"Metrics table for the MMR-selected top-K (read every value from "
             f"this CSV — do not invent or estimate numbers):\n\n"
             f"{context_text}\n"

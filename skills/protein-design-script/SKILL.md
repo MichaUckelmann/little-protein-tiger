@@ -64,7 +64,7 @@ or write to the current working directory if they confirm.
 6. Write the input file(s) and SLURM script(s) — one pair per region
 7. Save all files to the run folder (or working directory if standalone)
 8. Write the `### PIPELINE HANDOFF` block (required — see end of this skill)
-9. Brief report to user: which targets selected, which hotspots, which protein design model, which modality, and the full paths of all saved files
+9. Brief report to user: which targets selected, which hotspots, which protein design model, which modality, and the full paths of all saved files. **Begin your report directly with a `## Design Input Generation — <complex>` header — no preamble, no acknowledgements ("All four files written", "Here is the full summary"), no narration of what you just did. The orchestrator persists your output verbatim as `03_design_report.md`.**
 
 ## Multiple Hotspot Regions
 
