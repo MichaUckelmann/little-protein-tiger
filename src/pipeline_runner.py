@@ -2304,6 +2304,8 @@ class PipelineRunner:
                 "novelty_score": raw.get("novelty_score"),
                 "classification": raw.get("classification"),
                 "depmap_r_to_anchor": raw.get("depmap_r_to_anchor"),
+                "depmap_max_r_to_hubs": raw.get("depmap_max_r_to_hubs"),
+                "depmap_neighborhood": raw.get("depmap_neighborhood"),
                 "predicted_consequence": raw.get("predicted_consequence"),
                 "falsifying_readout": raw.get("falsifying_readout"),
             })

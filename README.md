@@ -117,11 +117,17 @@ on validated drug targets — VT3989-style precedent) and `wildcard` runs
 `wildcard-expert` (graph-driven novelty triage using `interaction_hubs`,
 `novelty_signal`, and DepMap `get_genetic_codependency` / `find_cocorrelated_genes`
 to surface mechanistically connected but literature-under-explored
-candidates). The wildcard branch supports both disease-anchored and basic-biology
-contexts and emits forward-compatible `predicted_consequence` /
-`falsifying_readout` fields on each candidate so a future probe-mode
-design-analyst can use the designed binder as a research probe, not just
-a therapeutic.
+candidates). Wildcard Phase 2.5 runs codep against the **top-3 hubs**
+rather than a single anchor (catches candidates that sit outside the
+named driver's module) and a per-candidate **candidate-edge DepMap
+sweep** for the top-2 picks — `find_cocorrelated_genes(candidate)`
+cross-referenced against `get_interactions_for(candidate)` — to surface
+the highest-yield finding: a novel pick strongly codependent (r ≥ 0.4)
+with a corpus hub the literature has not yet linked it to. The wildcard
+branch supports both disease-anchored and basic-biology contexts and
+emits forward-compatible `predicted_consequence` / `falsifying_readout`
+fields on each candidate so a future probe-mode design-analyst can use
+the designed binder as a research probe, not just a therapeutic.
 
 Stages 0–3 and 6 are LLM-driven (skills); stages 4 and 5 are deterministic
 Python. The orchestrator handles `auth_seq_id ↔ label_seq_id` numbering,

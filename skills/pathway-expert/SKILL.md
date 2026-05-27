@@ -329,11 +329,6 @@ Write bullet points, not prose paragraphs. Each section should be a tight list.
 
 ### Report Format
 
-**Begin your output directly with `## PATHWAY BIOLOGY REPORT` — no preamble,
-no acknowledgements ("All data collected", "Let me synthesise…"), no
-summary of what you are about to write. The orchestrator persists your
-output verbatim as the stage report.**
-
 ```
 ## PATHWAY BIOLOGY REPORT
 

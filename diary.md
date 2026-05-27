@@ -2463,7 +2463,7 @@ Pipeline mechanics are in. Next is empirical validation:
 
 2. **Wildcard run on a basic-biology prompt** to validate the
    `basic_biology` mode end-to-end — e.g. "Identify a novel
-   tractable PPI in the unfolded protein response" with no disease
+   tractable PPI in the epigenetic regulation of transcription" with no disease
    anchor.
 
 3. **Sanity regression** with `--pathway-mode standard` on the
@@ -2496,3 +2496,238 @@ Commit `903d957` (wildcard relaxation pass):
   calls 4–6, training-knowledge demotion, report-template rename)
 - `src/pipeline_runner.py` (+1 line — depmap_r_to_anchor passthrough)
 - `web/frontend/src/lib/api.ts` (+1 line — depmap_r_to_anchor field)
+
+---
+
+## 2026-05-27 — Wildcard benchmark on epigenetic transcription + Phase 2.5 refinements + `/app/` path fix
+
+Diary item #2 from the previous session's punch list ("wildcard run
+on a basic-biology prompt to validate `basic_biology` mode end-to-
+end"). Ran stages 0+1 only — design half deferred — to test skill
+correctness on a no-disease anchor.
+
+### Stage 0 — wildcard-expert on the epigenetic-transcription prompt
+
+8 LLM calls, 102k input tokens, ~5 min.
+
+- Mode correctly derived as `basic_biology` (no disease named).
+  Frequency / prevalence section omitted as designed.
+- PRIMARY pick: **ZMYND11 / H3.3K36me3 nucleosome** (PDB 4N4I),
+  classification PERIPHERY-NOVEL, novelty_score=0.75, DepMap r=0.06
+  vs the inferred SMARCA4 anchor.
+- Avoided the obvious VALIDATED picks for this prompt (BRD4, EP300,
+  EZH2 — all known clinical inhibitor classes).
+- Phase 2.5 fired every mandatory call:
+  `get_genetic_codependency` ×4 (one per candidate vs SMARCA4),
+  `find_cocorrelated_genes` ×1 on anchor,
+  `cluster_for_protein` ×2,
+  `novelty_signal` ×7 across all surfaced proteins.
+- Every candidate carried `predicted_consequence` +
+  `falsifying_readout` populated with concrete assays, loci,
+  magnitudes, and timepoints — TT-seq at ZMYND11-bound loci ≥30 %
+  Pol II elongation increase; CUT&RUN for SMARCA4 24 h post-MLF2
+  dTAG depletion; ChIP-qPCR of ENL at MYC TSS 4 h post-XL-13m; etc.
+- Every hypothesis cited a `Source signal` from Phase 2.5 graph
+  data or Phase 2 fingerprints. No bare training-knowledge picks.
+
+### Stage 1 — complex-structure-analysis on 4N4I
+
+4 LLM calls, 111k tokens, ~2 min (after the `_resolve` fix below).
+
+- BSA 1,603 Å², 21 H-bonds across the interface (10 direct
+  protein–protein), chain A ZMYND11 BP cassette (192 protein
+  residues, auth 154–364), chain B 11-residue H3.3 peptide with M3L
+  at K36 confirmed as trimethyl-lysine.
+- Region 1 (aromatic cage: PHE291, ARG317, TRP294, MET288, PHE310,
+  GLN316) scored **Excellent** (hydrophobic fraction 0.67, spread
+  6.44 Å). Region 2 (polar shell: HIS250, GLU251, GLU254, ARG268)
+  scored Marginal.
+- Skill correctly identified B-factors (not pLDDT) for the X-ray
+  structure and disregarded `low_confidence_residues`.
+- Modality recommendation: mini-protein for dual-region engagement,
+  cyclic peptide for the cage alone — interface size at the
+  cyclic/mini boundary.
+
+Benchmark conclusion: pipeline mechanics check out for stages 0+1
+on basic-biology prompts. Skill behaviour matches the diary
+expectations (mode derivation, candidate diversity, DepMap calls,
+hypothesis fields, source-signal anchoring).
+
+### Finding: no DEPMAP-COUPLED candidate surfaced
+
+The diary called DEPMAP-COUPLED (novelty ≥ 0.5 AND r ≥ 0.4) the
+wildcard's highest-yield class. On this run, all four candidates'
+codep r vs SMARCA4 came in well below 0.4 (0.22 / 0.06 / 0.001 /
+null) — not a wiring bug (ZMYND11 truly sits in a separate
+functional module from SMARCA4) but a triage gap: with a single
+anchor the codep view is uninformative for hub-disconnected
+candidates. Motivated the Phase 2.5 refinements that follow.
+
+### Wildcard-expert refinement — Phase 2.5
+
+Two cheap-but-impactful additions, both in
+`skills/wildcard-expert/SKILL.md`:
+
+**(a) Call 4 → multi-hub codep.** Was: single anchor (`disease_driver`
+in `disease_anchored` mode, most-mentioned hub in `basic_biology`
+mode). Now: top-3 hubs from Call 1 `interaction_hubs`, with the
+disease driver substituted in for one slot in `disease_anchored`
+mode. Per-candidate codep called against each of the three; max r
+across the three goes into the candidate's `depmap_max_r_to_hubs`
+and the winning hub is recorded. Cost: N → 3N codep calls (≈+8
+for typical N=4 candidates). Catches functional coupling to a
+driver the LLM's single-anchor inference would have missed.
+
+**(b) New Call 7 — candidate-edge DepMap sweep.** Mandatory for the
+top-2 candidates by classification rank. Inverts the anchor-centric
+view of Calls 4–5 ("is this candidate coupled to a hub I already
+care about?") and surveys the candidate's OWN functional
+neighbourhood ("what is this novel pick coupled to that the corpus
+hasn't recognised?"). For each top-2 candidate, run both calls in
+parallel:
+- `find_cocorrelated_genes(candidate, top_n=10, min_r=0.3)` —
+  global DepMap residuals for the candidate.
+- `get_interactions_for(candidate, top_n=10)` — corpus-graph
+  neighbours.
+Cross-reference produces three categories:
+- **Graph-confirmed codep partners** (in both). Strongest single
+  signal you can produce; cite both sources.
+- **Codep residual for the candidate** (in DepMap, not in corpus
+  graph). Cross-reference against Call 1 hub top-20: a candidate
+  strongly codependent (r ≥ 0.4) with a corpus hub it is NOT
+  edge-connected to is the highest-yield wildcard finding —
+  functional coupling to a literature-attended driver without
+  literature recognition of the link.
+- **Corpus-only partner** (in graph, not in DepMap). Discount when
+  assessing functional importance.
+Top 3 partners by r (with n ≥ 200) per candidate carried as
+`depmap_neighborhood` into `choices_json` and the report.
+
+**Downstream consequences:**
+- Hub-residuals table grew two columns: `DepMap max_r vs hubs
+  (partner)` and `top codep neighbour (Call 7, if run)`.
+- DEPMAP-COUPLED classification rule extended: fires on either the
+  Call-4 hub r ≥ 0.4 OR a Call-7 neighbourhood r ≥ 0.4. Record
+  which.
+- CANDIDATE NODE ASSESSMENT template gained two bullet lines (the
+  multi-hub codep summary and the Call-7 top-3 neighbours).
+- TARGET OPPORTUNITY LANDSCAPE "Novelty signal" bullet now carries
+  the winning hub and a one-line neighbourhood top.
+- PRIMARY RECOMMENDATION rationale MUST cite the Call-7 strongest
+  partner when the sweep ran on the pick (or state explicitly
+  "none above r=0.4" otherwise).
+- `choices_json` extended with `depmap_max_r_to_hubs:
+  {r, hub, n_cell_lines}` and `depmap_neighborhood:
+  [{partner, r, n_cell_lines, in_corpus_graph, in_hub_top20}]`.
+  Backward-compat: existing `depmap_r_to_anchor` retained.
+- CORPUS COVERAGE counters split out the Call 7 sweep separately.
+
+### Pipeline-runner passthrough
+
+`src/pipeline_runner.py:_annotate_choices` extended with the two new
+optional fields. Two-line diff. Frontend `TargetChoice` TS interface
+not updated this session — fields will surface in JSON but not in
+the UI until that follow-up is wired (see punch list).
+
+### `/app/` path bug fix
+
+Stage 1's first attempt failed: every `tool_get_sequence_map` call
+raised `[Errno 2] unable to open() file /app/data/structures/4N4I.cif`.
+The user query passed `data/structures/4N4I.cif` (correct relative
+path); the model prepended `/app/` (Linux/Docker training prior)
+when emitting the tool call. The existing `_resolve()` returned
+absolute paths verbatim, so the spurious prefix wasn't recoverable.
+
+Root cause was deeper than the `/app/` hallucination: the existing
+`_resolve()` was effectively Windows-only for non-canonical
+absolute paths. On Linux, `Path("/data/x.cif").is_absolute()` is
+True, so root-relative paths emitted by the model bypassed the
+strip-and-rejoin branch entirely — directly contradicting the
+docstring's claim ("Root-relative with leading slash → strip
+slash, join _ROOT"). Two bugs sharing the same code path.
+
+Fix in both `src/skill_runner.py:_resolve` and
+`src/structure_tools_server.py:_resolve`: if the file doesn't exist
+as given, walk the leading path components left-to-right and try
+`_ROOT / <suffix>` for each successive tail. Falls back to basename
+under `data/structures/` (the canonical structures directory).
+Covers `/app/data/structures/x.cif`, `/workspace/code/data/x.cif`,
+`/tmp/x.cif`, root-relative `/data/x.cif`, and any other prefix-
+contaminated emission whose tail exists under the repo. Two new
+helper functions (`_recover_under_root`) added — one per file
+because the two `_resolve()` copies remain duplicated (they share
+the same logic but reference `_ROOT`/`ROOT` constants in different
+modules; refactor deferred).
+
+Validation: re-ran stage 1 with the ORIGINAL relative-path query —
+the one that previously failed. Result: zero file-not-found errors,
+5 LLM calls, 2 min, full PPI ANALYSIS REPORT with real measured
+numbers (BSA 1,603 Å², per-residue ΔΔG via `tool_score_surface_patch`,
+the hotspot table summarised above).
+
+### Preamble-leak fix attempt: reverted, deferred to runner-side post-processing
+
+Both stage 0 and stage 1 reports opened with conversational
+preambles before the first `## ` heading:
+- 00_pathway.md line 1: "Excellent results. I now have the full
+  picture to build the hub-residuals table and generate the report.
+  Let me compile all phases…"
+- 01_structure.md (first attempt) line 1: "I now have all the
+  structural and biochemical information needed…"
+- 01_structure.md (second attempt) line 1: "All data collected. The
+  aromatic cage patch scores Excellent…"
+
+Added explicit guards to wildcard-expert and complex-structure-
+analysis SKILL.md: "FIRST CHARACTER must be `#`", forbidden-opener
+enumeration, "if you find yourself writing a sentence before
+`## PPI ANALYSIS REPORT`, delete it". Re-ran stage 1. Result: model
+dodged every literal phrase in the guard and produced 17 lines of
+preamble before `## PPI ANALYSIS REPORT` (line 1: "The corpus
+returned the key mutagenesis paper… Now I have all data needed for
+the complete report. Let me compile the auth_to_label mappings…").
+
+Concluded that prompt-level enumeration of forbidden phrases is
+fundamentally fragile — the model can always pick a sibling
+phrasing. The right fix is a one-line post-processor in
+`src/skill_runner.py` that strips everything before the first `## `
+heading from the final response. Pre-existing pathway-expert,
+molecular-biology-expert, protein-design-script all had similar
+guards that the same fragility applied to; user direction was to
+remove all of them rather than leave dead instruction text. All
+five skills now have zero anti-preamble text. Post-processor
+deferred to next session.
+
+### Files changed this session
+
+- `skills/wildcard-expert/SKILL.md` (Phase 2.5 multi-hub + new Call 7,
+  hub-residuals table cols, `choices_json` schema, CANDIDATE NODE
+  ASSESSMENT template, PRIMARY RECOMMENDATION rationale, CORPUS
+  COVERAGE counters; plus preamble-guard removal)
+- `skills/complex-structure-analysis/SKILL.md` (preamble-guard removal,
+  both top-and-late blocks)
+- `skills/{pathway-expert,molecular-biology-expert,protein-design-script}/SKILL.md`
+  (pre-existing preamble guards removed)
+- `src/pipeline_runner.py` (+2 lines — `depmap_max_r_to_hubs` /
+  `depmap_neighborhood` passthrough in `_annotate_choices`)
+- `src/skill_runner.py` (`_resolve` recovery walk + `_recover_under_root`)
+- `src/structure_tools_server.py` (mirror of the same fix)
+
+### Punch list — next session
+
+1. Post-processor in `skill_runner.py` to strip preamble before the
+   first `##` heading. Single-source enforcement, immune to model
+   rephrasing.
+2. Mesothelioma `--pathway-mode wildcard` sanity run (diary item #1
+   from the previous punch list) — should still pick YAP1/TEAD1 or
+   surface a novel mesothelioma candidate now that multi-hub +
+   neighbourhood codep are wired.
+3. Re-run the epigenetic-transcription benchmark with the refined
+   Phase 2.5 — does the candidate-edge sweep surface a DEPMAP-COUPLED
+   alternative to ZMYND11, or does ZMYND11 hold up with the
+   neighbourhood signal added to the rationale?
+4. Frontend `TargetChoice` TS interface gains `depmap_max_r_to_hubs`
+   + `depmap_neighborhood` optional fields if you want the UI to
+   render them.
+5. Refactor the two `_resolve()` copies into a single shared helper
+   (deferred — they live in different modules with different `_ROOT`
+   constants, so an import refactor is non-trivial).

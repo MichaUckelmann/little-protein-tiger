@@ -25,22 +25,40 @@ mcp = FastMCP("structure-tools")
 
 
 def _resolve(file_path: str) -> str:
-    """Resolve relative or root-relative paths against the project root.
+    """Resolve a file path against the project root, with recovery for
+    model-emitted absolute paths that point outside the repo.
 
-    Handles three cases:
-    - Fully-qualified absolute path (C:\\... on Windows, /... on Linux) → pass through
-    - Root-relative with leading slash (/data/structures/x.cif) → strip slash, join ROOT
-    - Plain relative path (data/structures/x.cif) → join ROOT
-
-    The leading-slash strip is critical on Windows: pathlib's / operator interprets
-    a slash-prefixed path as drive-relative, producing C:\\data\\... instead of
-    ROOT\\data\\...
+    Mirrors `src/skill_runner.py:_resolve` — see that docstring for the
+    full resolution order. The two helpers stay in sync because the same
+    skills hit them under two different transports (MCP server vs.
+    direct Python dispatch). On change, update both.
     """
     import sys
     p = Path(file_path)
-    if p.is_absolute() and (sys.platform != "win32" or bool(p.drive)):
+    if p.exists():
         return str(p)
+    is_real_absolute = p.is_absolute() and (sys.platform != "win32" or bool(p.drive))
+    if is_real_absolute:
+        recovered = _recover_under_root(p)
+        if recovered is not None:
+            return str(recovered)
     return str(ROOT / Path(file_path.lstrip("/\\")))
+
+
+def _recover_under_root(p: Path) -> "Path | None":
+    """Find an existing file under `ROOT` whose tail matches `p`."""
+    parts = list(p.parts)
+    if parts and (parts[0] in ("/", "\\") or parts[0].endswith(":\\") or parts[0].endswith(":/")):
+        parts = parts[1:]
+    for i in range(len(parts)):
+        candidate = ROOT.joinpath(*parts[i:])
+        if candidate.exists():
+            return candidate
+    basename = p.name
+    for canonical in (ROOT / "data" / "structures" / basename, ROOT / basename):
+        if canonical.exists():
+            return canonical
+    return None
 
 
 @mcp.tool()

@@ -188,7 +188,7 @@ length ≤ 3 with `min_mentions_along_path ≥ 2` is **mechanistically connected
 A missing path or a 1-mention weak link is **disconnected** (still worth
 considering for UNCHARTED tier but flag the gap explicitly).
 
-**Call 4 — DepMap co-essentiality** *(MANDATORY for each candidate vs. anchor)*:
+**Call 4 — DepMap co-essentiality vs. top-3 hubs** *(MANDATORY for each candidate)*:
 
 DepMap co-essentiality is the closest thing to ground-truth functional
 co-dependency we have — it reflects loss-of-function phenocopying across
@@ -196,17 +196,30 @@ co-dependency we have — it reflects loss-of-function phenocopying across
 strong evidence of functional coupling even if no paper has explicitly
 connected the two genes.
 
+**Use three reference hubs, not one.** Literature attention crowns one
+canonical driver per pathway, but functional coupling does not respect
+that framing — a candidate uncoupled from the named anchor may still be
+strongly coupled to a hub the corpus underweights. Take the top-3 hub
+nodes from Call 1 (`interaction_hubs`); in `disease_anchored` mode,
+substitute the disease driver for one of them so it is always tested.
+Call `get_genetic_codependency` for each candidate against each of the
+three hubs (3 calls per candidate, runnable in parallel):
 ```
 get_genetic_codependency
-  gene_a=<anchor_node>
+  gene_a=<hub_i>
   gene_b=<candidate>
 ```
-Record `pearson_r` and `n_cell_lines`. Interpretation:
-- `r ≥ 0.4` and `n ≥ 200`: **co-essential** — a strong functional signal
-  even when the literature path is absent or weak.
-- `0.2 ≤ r < 0.4`: **weakly co-essential** — supports but does not establish
-  functional coupling.
-- `r < 0.2` or `n < 100`: **uncoupled** by DepMap criteria.
+Record `pearson_r` and `n_cell_lines` for each of the three pairings,
+take the **maximum r** across the three hubs as the candidate's
+`depmap_max_r_to_hubs`, and **remember which hub gave that maximum**
+(the candidate's strongest hub-codep partner). Interpretation applies
+to `max_r`:
+- `max_r ≥ 0.4` and `n ≥ 200`: **co-essential to at least one hub** —
+  a strong functional signal even when the literature path is absent.
+- `0.2 ≤ max_r < 0.4`: **weakly co-essential** — supports but does not
+  establish functional coupling.
+- `max_r < 0.2` or `n < 100` for all three: **uncoupled from the
+  hub set** by DepMap criteria.
 
 **Call 5 — Co-essential partners of the anchor** *(MANDATORY once)*:
 
@@ -236,15 +249,70 @@ Note the cluster's `hub`, top members, and whether the cluster contains
 the anchor. Co-cluster membership without direct literature path is itself
 a hypothesis seed.
 
+**Call 7 — Candidate-edge DepMap sweep** *(MANDATORY for the top-2 candidates by
+classification rank)*:
+
+Calls 4 and 5 view the codep landscape from the anchor's vantage point —
+"is this candidate coupled to a hub I already care about?" Call 7 inverts
+that: it surveys the candidate's OWN functional neighborhood. This catches
+the highest-value wildcard finding — "the novel pick is strongly
+codependent with a cancer-relevant protein the corpus has not yet linked
+to it" — which Calls 4–5 will miss whenever the candidate sits in a
+separate module from the anchor.
+
+Rank the candidates by classification (DEPMAP-COUPLED > PERIPHERY-NOVEL >
+UNCHARTED > CONNECTED-NOVEL > MID-NOVEL > SATURATED). For the top 2, run
+both of the following (they batch into parallel tool calls):
+
+(a) **Global DepMap residuals for the candidate** — top-k codependent
+    genes regardless of corpus presence:
+```
+find_cocorrelated_genes
+  gene=<candidate>
+  top_n=10
+  min_r=0.3
+```
+
+(b) **Corpus-graph neighbors of the candidate** — what the literature says
+    it interacts with:
+```
+get_interactions_for
+  protein=<candidate>
+  top_n=10
+```
+
+Cross-reference the two result sets and categorise each surfaced partner:
+- **Graph-confirmed codep partners** — present in BOTH (a) and (b). The
+  literature already names the interaction AND DepMap validates functional
+  coupling. Strongest single signal you can produce; cite both sources.
+- **Codep residual for the candidate** — present in (a) but NOT (b). Pure
+  functional connection the literature has not caught. Cross-reference
+  against the Call 1 `interaction_hubs` top-20: a candidate strongly
+  codependent (r ≥ 0.4) with a corpus hub it is not edge-connected to is
+  the **highest-yield wildcard finding** (functional coupling to a
+  literature-attended driver, without literature recognition of the link).
+  Flag prominently.
+- **Corpus-only partner** — present in (b) but NOT (a) with r ≥ 0.3.
+  Literature-claimed interaction without independent DepMap support.
+  Discount when assessing functional importance.
+
+Record the top 3 codep partners per candidate (highest `pearson_r` with
+`n ≥ 200`) as the candidate's `depmap_neighborhood`. Each entry:
+`{partner, r, n_cell_lines, in_corpus_graph: bool, in_hub_top20: bool}`.
+This feeds the CANDIDATE NODE ASSESSMENT line and the `choices_json`
+handoff, and should inform PRIMARY RECOMMENDATION rationale ("the pick
+is functionally coupled to <hub> at r=0.55 — an unrecognised axis").
+
 ### Synthesise: hub residuals table
 
 Combine all six calls into a single table that drives Phase 3 hypothesis
 generation. The DepMap r is your strongest non-literature signal — surface
-it as its own column:
+it as its own column, and surface the top codep partner (from Call 4's
+hub sweep) so the reviewer can see WHERE the coupling is:
 
-| Protein | hub rank | novelty_score | path to anchor (hops, min_mentions) | DepMap r (vs anchor) | cluster | classification |
-|---------|----------|---------------|-------------------------------------|----------------------|---------|----------------|
-| ...     | ...      | ...           | ...                                 | ...                  | ...     | ...            |
+| Protein | hub rank | novelty_score | path to anchor (hops, min_mentions) | DepMap max_r vs hubs (partner) | top codep neighbour (Call 7, if run) | cluster | classification |
+|---------|----------|---------------|-------------------------------------|--------------------------------|--------------------------------------|---------|----------------|
+| ...     | ...      | ...           | ...                                 | ...                            | ...                                  | ...     | ...            |
 
 **Classification rules** (assign one per candidate; first matching rule wins):
 
@@ -253,16 +321,18 @@ it as its own column:
 | SATURATED        | hub rank in top-20 AND novelty_score < 0.4 |
 | CONNECTED-NOVEL  | hub rank in top-20 AND novelty_score ≥ 0.6 |
 | PERIPHERY-NOVEL  | not a hub AND novelty_score ≥ 0.6 AND literature path to anchor exists |
-| DEPMAP-COUPLED   | not a hub AND novelty_score ≥ 0.5 AND DepMap r ≥ 0.4 (regardless of literature path) — functional coupling without literature recognition; this is the highest-yield wildcard class |
-| UNCHARTED        | novelty_score ≥ 0.8 AND no literature path AND DepMap r < 0.2 (or n too small to call) |
+| DEPMAP-COUPLED   | not a hub AND novelty_score ≥ 0.5 AND (max_r vs hubs ≥ 0.4 OR Call-7 top neighbour r ≥ 0.4) — functional coupling without literature recognition; this is the highest-yield wildcard class. The DepMap signal may come from any of the 3 hubs (Call 4) or from the candidate-edge sweep (Call 7); record which |
+| UNCHARTED        | novelty_score ≥ 0.8 AND no literature path AND max_r < 0.2 (or n too small to call) |
 | MID-NOVEL        | otherwise (0.4 ≤ novelty_score < 0.6, or borderline cases) |
 
 `CONNECTED-NOVEL`, `PERIPHERY-NOVEL`, `DEPMAP-COUPLED`, and `UNCHARTED` are
 the **interesting** classifications. `SATURATED` candidates are
 pathway-expert's job, not yours; the wildcard mandate is novelty.
 
-Carry `novelty_score`, `classification`, and the DepMap r per candidate
-forward into Phase 5 tier assignment and into the `choices_json` handoff.
+Carry `novelty_score`, `classification`, the max_r-to-hubs (with partner),
+and the Call-7 `depmap_neighborhood` (for the top 2 candidates) per
+candidate forward into Phase 5 tier assignment and into the
+`choices_json` handoff.
 
 ---
 
@@ -602,7 +672,8 @@ All sections identical to pathway-expert **except**:
 4. The CORPUS COVERAGE section has additional lines:
    - `- Wildcard hypotheses generated: <N> total; <N> corpus-supported; <N> weakly supported; <N> corpus-absent; <N> graph/DepMap-derived (Step 3a)`
    - `- Hub residuals table: <N candidates>; counts per class (SATURATED / CONNECTED-NOVEL / PERIPHERY-NOVEL / DEPMAP-COUPLED / UNCHARTED / MID-NOVEL)`
-   - `- DepMap signals used: <N> get_genetic_codependency calls; <N> find_cocorrelated_genes calls; <N> cluster_for_protein calls`
+   - `- DepMap signals used: <N> get_genetic_codependency calls (Call 4 multi-hub + Call 7 sweep); <N> find_cocorrelated_genes calls (Call 5 anchor + Call 7 per candidate); <N> cluster_for_protein calls; <N> get_interactions_for calls (Call 7 candidate-edge sweep)`
+   - `- Call 7 candidate-edge sweep ran on: <candidate_1>, <candidate_2> — strongest neighbourhood finding: <partner (r=<value>); "none above r=0.4" if no hit>`
 
 ```
 ## PATHWAY BIOLOGY REPORT
@@ -631,7 +702,8 @@ For each candidate target node — max 5 nodes total (wildcard allows one extra)
 - State / dysregulation: <one sentence — cite source_span + DOI. In disease mode
   describe the dysregulation; in basic-biology mode describe the regulatory role.>
 - Genetic dependency: <evidence — DepMap or CRISPR — or omit if absent>
-- DepMap co-essentiality (vs. anchor): <r value + n_cell_lines from Phase 2.5 Call 4, or omit if not run>
+- DepMap codep vs. top-3 hubs: <max_r=<value> with <hub> (n=<n>); or "uncoupled (max_r=<value>)"; or "not run">
+- DepMap neighborhood (Call 7, top candidates only): <"<partner_1> (r=<value>, in_corpus_graph=<bool>, in_hub_top20=<bool>); <partner_2> (...); <partner_3> (...)"; or omit if Call 7 not run for this candidate>
 - Prior therapeutic / probe targeting: <prior targeting, or omit if absent>
 - Suggested PDB structures: <IDs, or omit if absent>
 - Inferred PPI opportunity: <max 2 sentences: named partner, evidence, consequence — or "Insufficient evidence.">
@@ -650,7 +722,7 @@ For each candidate:
 - **What makes it attractive**: <therapeutic rationale — pathway position, druggable interface, unmet need>
 - **Key uncertainty**: <what is not yet established>
 - **Novelty rationale**: <why this is non-obvious — 1 sentence>
-- **Novelty signal**: novelty_score=<value>, classification=<SATURATED | CONNECTED-NOVEL | PERIPHERY-NOVEL | DEPMAP-COUPLED | UNCHARTED | MID-NOVEL>, DepMap r=<value vs anchor, or "N/A" if anchor not applicable>
+- **Novelty signal**: novelty_score=<value>, classification=<SATURATED | CONNECTED-NOVEL | PERIPHERY-NOVEL | DEPMAP-COUPLED | UNCHARTED | MID-NOVEL>, DepMap max_r vs hubs=<value> with <hub>, neighbourhood top=<partner (r=<value>) or "—" if Call 7 not run>
 - **Hypothesis**: <one sentence — the mechanistic claim. "PROTEIN_X drives DISEASE via interaction with PROTEIN_Y in CONTEXT.">
 - **Predicted consequence**: <one sentence — what should happen biologically if the hypothesis is true and we disrupt the interaction. Name the cellular or molecular readout. e.g. "CTGF and CYR61 transcript reduction ≥ 50% at 24h in NF2-null cells">
 - **Falsifying readout**: <one sentence — the assay + threshold that decides. e.g. "qPCR of CTGF/CYR61 at 24h post-treatment; ≥50% reduction = consistent with hypothesis; ≤20% = falsifies">
@@ -687,9 +759,14 @@ rule **in order** — first match wins:
    PATHWAY_INFERRED) and state explicitly that the wildcard run found no
    tractable novel candidate.
 
-3. **Rationale must cite `novelty_score`.** State the score in one
-   sentence — e.g. "novelty_score=0.72 — PERIPHERY-NOVEL, mechanistically
-   connected to KRAS via SOS1 (3-hop path, min mentions = 4)".
+3. **Rationale must cite `novelty_score` AND the strongest DepMap
+   neighbourhood signal (when Call 7 ran on the pick).** State both in
+   one sentence — e.g. "novelty_score=0.72 — PERIPHERY-NOVEL,
+   mechanistically connected to KRAS via SOS1 (3-hop path, min mentions
+   = 4); DepMap-coupled to RAF1 at r=0.58 (n=1208) — an interaction the
+   corpus has not yet recognised but DepMap validates functionally."
+   When the Call-7 sweep produced no partner with r ≥ 0.4, state that
+   explicitly rather than omitting the line.
 
 **Tie-break** under rule 1: higher `novelty_score` wins.
 
@@ -747,7 +824,9 @@ Rules for `### PIPELINE HANDOFF`:
   - `design_intent`: `"disrupt"` or `"stabilize"` from Phase 5 reasoning for this candidate
   - `novelty_score`: float in `[0.0, 1.0]` from `novelty_signal` for the candidate's primary protein
   - `classification`: one of `"SATURATED"`, `"CONNECTED-NOVEL"`, `"PERIPHERY-NOVEL"`, `"DEPMAP-COUPLED"`, `"UNCHARTED"`, `"MID-NOVEL"`
-  - `depmap_r_to_anchor`: float (Pearson r vs the Phase-2.5 anchor node) or `null` if not applicable / not computed
+  - `depmap_r_to_anchor`: float (Pearson r vs the Phase-2.5 anchor / primary hub) or `null` if not applicable / not computed — kept for backward compatibility with existing consumers; mirror `depmap_max_r_to_hubs` here if no single anchor is meaningful
+  - `depmap_max_r_to_hubs`: object `{r: float, hub: str, n_cell_lines: int}` or `null` — best Pearson r from the Call-4 top-3-hub sweep, with the hub that produced it
+  - `depmap_neighborhood`: array of up to 3 objects `{partner: str, r: float, n_cell_lines: int, in_corpus_graph: bool, in_hub_top20: bool}` from Call 7 — only populated for the top-2 candidates that received the sweep; empty array `[]` otherwise
   - `predicted_consequence`: one sentence — what disruption should produce biologically; name the readout
   - `falsifying_readout`: one sentence — the assay + threshold that falsifies the hypothesis
 
@@ -758,7 +837,7 @@ Rules for `### PIPELINE HANDOFF`:
   in the TARGET OPPORTUNITY LANDSCAPE block.
 
   Example (must be on ONE line):
-  `- choices_json: [{"tier":"PERIPHERY_NOVEL","complex":"VGLL4 / TEAD4","pdb_ids":[],"evidence_basis":"Training knowledge plus Phase-4 hit: VGLL4 competes with YAP at the TEAD interface; corpus has 2 papers in gastric cancer.","key_uncertainty":"No mesothelioma-specific evidence; whether stabilising VGLL4-TEAD displaces YAP in NF2-null context is untested.","design_intent":"stabilize","novelty_score":0.71,"classification":"PERIPHERY-NOVEL","predicted_consequence":"VGLL4-TEAD stabilisation reduces YAP-TEAD chromatin occupancy by >50% and rescues NF2-null cell-cycle arrest.","falsifying_readout":"ChIP-seq YAP signal at canonical TEAD-binding sites 24h post-treatment; <20% reduction falsifies."}]`
+  `- choices_json: [{"tier":"PERIPHERY_NOVEL","complex":"VGLL4 / TEAD4","pdb_ids":[],"evidence_basis":"Training knowledge plus Phase-4 hit: VGLL4 competes with YAP at the TEAD interface; corpus has 2 papers in gastric cancer.","key_uncertainty":"No mesothelioma-specific evidence; whether stabilising VGLL4-TEAD displaces YAP in NF2-null context is untested.","design_intent":"stabilize","novelty_score":0.71,"classification":"PERIPHERY-NOVEL","depmap_r_to_anchor":0.33,"depmap_max_r_to_hubs":{"r":0.41,"hub":"TEAD1","n_cell_lines":1208},"depmap_neighborhood":[{"partner":"TEAD1","r":0.41,"n_cell_lines":1208,"in_corpus_graph":true,"in_hub_top20":true},{"partner":"YAP1","r":0.36,"n_cell_lines":1208,"in_corpus_graph":true,"in_hub_top20":true},{"partner":"MOB1A","r":0.32,"n_cell_lines":1208,"in_corpus_graph":false,"in_hub_top20":false}],"predicted_consequence":"VGLL4-TEAD stabilisation reduces YAP-TEAD chromatin occupancy by >50% and rescues NF2-null cell-cycle arrest.","falsifying_readout":"ChIP-seq YAP signal at canonical TEAD-binding sites 24h post-treatment; <20% reduction falsifies."}]`
 
 ---
 

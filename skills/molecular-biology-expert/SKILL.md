@@ -226,11 +226,6 @@ Para 1" of DOI 10.7554/eLife.25068).
 
 ## Report Format
 
-**Begin your output directly with `## MOLECULAR BIOLOGY REPORT` — no
-preamble, no acknowledgements ("All data collected", "Let me synthesise…"),
-no summary of what you are about to write. The orchestrator persists your
-output verbatim as the stage report.**
-
 Use the exact section headers below — they are parsed by the downstream design
 agent and the orchestrator skill.
 
