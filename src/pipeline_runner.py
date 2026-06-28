@@ -26,6 +26,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import requests
 import yaml
@@ -51,6 +52,9 @@ from src.design_runner import (
 from src.fingerprint_store import load_fingerprint
 from src.skill_runner import SkillRunner
 
+if TYPE_CHECKING:
+    from src.project import Project
+
 _DEFAULT_MODELS = {
     "claude": "claude-sonnet-4-6",
     "gemini": "gemini-3.1-flash-lite-preview",
@@ -74,6 +78,13 @@ _STAGE_TO_SKILL: dict[str, str] = {
     "literature": "molecular-biology-expert",
     "design":     "protein-design-script",
     "summary":    "design-analyst",
+    # Enzyme (de novo active-site) workflow stages.
+    "substrate":          "enzyme-substrate-id",
+    "theozyme":           "enzyme-active-site-modeling",
+    "grafting":           "pdb-ligand-grafting",
+    "enzyme_design":      "protein-design-script",
+    "enzyme_validation":  "enzyme-design-validation",
+    "enzyme_summary":     "design-analyst",
 }
 
 
@@ -106,6 +117,52 @@ class PipelinePausedError(PipelineError):
         super().__init__(f"Paused at {pause_point}")
         self.pause_point = pause_point
         self.payload = payload
+
+
+class PipelineExternalStepError(PipelinePausedError):
+    """
+    Pipeline is pausing because a heavy EXTERNAL compute step must run outside
+    LPT — the user runs ORCA (QM) or the GPU design CLIs (RFD3/LigandMPNN/refold)
+    themselves, then resumes. LPT has written the inputs and recorded what it
+    expects back. Subclass of PipelinePausedError so existing web/CLI handlers
+    that catch PipelinePausedError keep working; the extra fields let a generic
+    "external step" panel/CLI message render uniformly.
+
+    Attributes
+    ----------
+    step_id : str
+        e.g. "orca_run", "design_run".
+    inputs : list[str]
+        Paths LPT wrote for the user to run.
+    expected_outputs : list[str]
+        Paths/globs LPT will look for on resume.
+    instructions : str
+        Human-readable "run X, drop outputs at Y, resume with --start-from Z".
+    resume_stage : str
+        The enzyme stage to pass to --start-from / start_from on resume.
+    """
+
+    def __init__(
+        self,
+        step_id: str,
+        inputs: list[str],
+        expected_outputs: list[str],
+        instructions: str,
+        resume_stage: str,
+    ) -> None:
+        payload = {
+            "step_id": step_id,
+            "inputs": inputs,
+            "expected_outputs": expected_outputs,
+            "instructions": instructions,
+            "resume_stage": resume_stage,
+        }
+        super().__init__(step_id, payload)
+        self.step_id = step_id
+        self.inputs = inputs
+        self.expected_outputs = expected_outputs
+        self.instructions = instructions
+        self.resume_stage = resume_stage
 
 
 # ---------------------------------------------------------------------------
@@ -178,11 +235,24 @@ class PipelineRunner:
         extended_thinking_stages: set[str] | None = None,
         pathway_mode: str = "standard",
         capture_traces: bool = False,
+        project: "Project | None" = None,
+        round_id: str | None = None,
+        workflow: str = "ppi",
     ) -> None:
         self.config = config
         self.provider = provider
         self._default_model = model_id or _DEFAULT_MODELS[provider]
         self._output_dir_override = output_dir
+        # Optional persistent project (src/project.py). When supplied, stage
+        # files land in project.run_dir(round_id) and stage state is mirrored
+        # into the project manifest. None => legacy outputs/<slug>_<date>/ layout.
+        self._project = project
+        self._round_id = round_id
+        # "ppi" (default binder/inhibitor track) | "enzyme" (de novo active-site).
+        # The enzyme track is a fully parallel stage sequence (_run_enzyme_track).
+        if workflow not in {"ppi", "enzyme"}:
+            raise ValueError(f"Invalid workflow={workflow!r}; expected 'ppi' or 'enzyme'.")
+        self._workflow = workflow
         self.max_iter = max_iter
         self.max_tokens = max_tokens
         # Per-stage overrides: {stage_name: model_id}. Empty = uniform default.
@@ -264,13 +334,30 @@ class PipelineRunner:
             start_from = "structure"
 
         safe_slug = re.sub(r"[^a-zA-Z0-9]+", "_", query[:40]).strip("_").lower()
-        run_dir = self._output_dir_override or (
-            _ROOT / "outputs" / f"{safe_slug}_{date.today().isoformat()}"
-        )
+        run_dir = self._output_dir_override
+        if run_dir is None and self._project is not None and self._round_id is not None:
+            # Persistent-project layout: projects/<slug>/runs/<round_id>/
+            run_dir = self._project.run_dir(self._round_id)
+        if run_dir is None:
+            run_dir = _ROOT / "outputs" / f"{safe_slug}_{date.today().isoformat()}"
         run_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Pipeline run dir: {run_dir}")
 
         result = PipelineResult(run_dir=run_dir, pdb_id=pdb_id, target_complex=target_complex)
+
+        # ── Enzyme workflow: fully parallel stage track ──────────────────────
+        # The de novo enzyme track does not share the PPI pathway/structure/
+        # BoltzGen path. It runs substrate -> theozyme -> (grafting) -> design ->
+        # validate with external ORCA/GPU steps (PipelineExternalStepError) and
+        # small-scale pilot iteration. start_from selects the enzyme stage.
+        if self._workflow == "enzyme":
+            if start_from in ("pathway", "structure", "literature", "design"):
+                start_from = "substrate"   # map PPI default to the enzyme entry
+            return self._run_enzyme_track(
+                query, run_dir, result,
+                start_from=start_from, context_file=context_file, auto_mode=auto_mode,
+            )
+
         handoff: dict[str, str] = {}
 
         # Seed handoff from a pre-existing context file when resuming.
@@ -472,6 +559,486 @@ class PipelineRunner:
             raise
 
         return result
+
+    # ==================================================================
+    # Enzyme workflow (de novo active-site design)
+    # ==================================================================
+    # A fully parallel track to the PPI pipeline. Compute model: LPT prepares
+    # inputs + validates outputs; the USER runs ORCA (QM) and the GPU design
+    # CLIs (RFD3/LigandMPNN/refold) externally. Those hand-offs surface as
+    # PipelineExternalStepError. Designs are validated/iterated at small scale
+    # (~500-trajectory pilot) before scale-up.
+
+    ENZYME_STAGE_ORDER = [
+        "substrate", "theozyme", "theozyme_diagnose",
+        "grafting", "enzyme_design", "enzyme_validation",
+    ]
+    _ENZYME_STAGE_FILES = {
+        "substrate":          "10_substrate.md",
+        "theozyme":           "11_theozyme.md",
+        "theozyme_diagnose":  "12_theozyme_diagnosis.md",
+        "grafting":           "13_grafting.md",
+        "enzyme_design":      "14_design_report.md",
+        "enzyme_validation":  "15_validation.md",
+    }
+
+    def _enzyme_dirs(self, run_dir: Path) -> dict[str, Path]:
+        enzyme = run_dir / "enzyme"
+        # ORCA inputs/outputs live in the shared project store when there is a
+        # project (reused across rounds), else under the run's enzyme/ dir.
+        if self._project is not None:
+            orca = self._project.shared_dir("orca")
+        else:
+            orca = enzyme / "orca"
+        dirs = {
+            "enzyme": enzyme,
+            "orca": orca,
+            "design_inputs": enzyme / "14_design_inputs",
+            "design_outputs": enzyme / "14_design_outputs",
+            "validation": enzyme / "15_validation",
+        }
+        for d in dirs.values():
+            d.mkdir(parents=True, exist_ok=True)
+        return dirs
+
+    def _load_enzyme_handoff(self, enzyme_dir: Path, stage: str) -> dict[str, str]:
+        """Parse a prior enzyme stage's handoff from its .md (for resume)."""
+        f = enzyme_dir / self._ENZYME_STAGE_FILES.get(stage, "")
+        if f.exists():
+            return self._parse_handoff(f.read_text(encoding="utf-8"))
+        return {}
+
+    def _run_enzyme_track(
+        self,
+        query: str,
+        run_dir: Path,
+        result: PipelineResult,
+        start_from: str = "substrate",
+        context_file: Path | None = None,
+        auto_mode: bool = True,
+    ) -> PipelineResult:
+        try:
+            start_idx = self.ENZYME_STAGE_ORDER.index(start_from)
+        except ValueError:
+            raise PipelineError(
+                f"Unknown enzyme start_from {start_from!r}; must be one of {self.ENZYME_STAGE_ORDER}"
+            )
+
+        dirs = self._enzyme_dirs(run_dir)
+        enzyme_dir = dirs["enzyme"]
+
+        # Pre-load handoffs from any existing enzyme stage files so a resumed run
+        # has the upstream context it needs (the manifest also records these).
+        H: dict[str, dict] = {s: self._load_enzyme_handoff(enzyme_dir, s) for s in self.ENZYME_STAGE_ORDER}
+
+        try:
+            # ── Stage E0: substrate identification ───────────────────────────
+            if start_idx <= 0:
+                out = enzyme_dir / self._ENZYME_STAGE_FILES["substrate"]
+                H["substrate"] = self._run_stage("enzyme-substrate-id", query, [], out)
+                result.stages_completed.append("substrate")
+                result.stage_files["substrate"] = out
+                if (H["substrate"].get("go_recommendation", "").upper().replace("-", "_") == "NO_GO"):
+                    result.go_recommendation = "NO_GO"
+                    result.go_rationale = H["substrate"].get("go_rationale", "")
+                    logger.info("Enzyme substrate stage NO_GO — halting.")
+                    return result
+                if not auto_mode:
+                    raise PipelinePausedError("substrate_choice", {
+                        "reaction": H["substrate"].get("reaction", ""),
+                        "substrate_smiles": H["substrate"].get("substrate_smiles", ""),
+                        "is_solved": H["substrate"].get("is_solved", ""),
+                    })
+
+            # ── Stage E1: theozyme design + ORCA input prep (external step) ──
+            if start_idx <= 1:
+                sub = H["substrate"]
+                q = (
+                    sub.get("substrate_query")
+                    or f"Design a theozyme / QM transition state for: {sub.get('reaction', query)}. "
+                    f"Substrate SMILES: {sub.get('substrate_smiles','?')}. "
+                    f"Rate-determining step: {sub.get('rate_determining_step','?')}. "
+                    f"Mechanism hint: {sub.get('mechanism_hint','unknown')}. "
+                    f"Cofactor: {sub.get('cofactor','none')}."
+                )
+                ctx = [f for f in [result.stage_files.get("substrate"), context_file] if f and f.exists()]
+                out = enzyme_dir / self._ENZYME_STAGE_FILES["theozyme"]
+                H["theozyme"] = self._run_stage("enzyme-active-site-modeling", q, ctx, out)
+                result.stages_completed.append("theozyme")
+                result.stage_files["theozyme"] = out
+
+                # Deterministic: write the ORCA inputs the user must run.
+                written = self._enzyme_prepare_orca(H["theozyme"], dirs)
+                instr = (
+                    f"Run ORCA on the inputs in {dirs['orca']} (relax → OptTS → Freq → scan), "
+                    f"leave the .out/.hess outputs alongside them, then resume:\n"
+                    f"  run_pipeline.py --workflow enzyme --project <slug> --start-from theozyme_diagnose"
+                )
+                self._enzyme_checkpoint("orca_run", "theozyme",
+                                        [str(p) for p in written],
+                                        [str(dirs["orca"] / "optts.out"), str(dirs["orca"] / "freq.out")],
+                                        instr)
+                raise PipelineExternalStepError(
+                    "orca_run", [str(p) for p in written],
+                    [str(dirs["orca"] / "*.out"), str(dirs["orca"] / "*.hess")],
+                    instr, "theozyme_diagnose",
+                )
+
+            # ── Stage E2: ingest ORCA outputs + barrier gate (deterministic) ─
+            if start_idx <= 2:
+                diag = self._enzyme_diagnose_orca(dirs, enzyme_dir, H["theozyme"])
+                result.stages_completed.append("theozyme_diagnose")
+                result.stage_files["theozyme_diagnose"] = enzyme_dir / self._ENZYME_STAGE_FILES["theozyme_diagnose"]
+                self._record_stage("enzyme-active-site-modeling", "complete",
+                                   result.stage_files["theozyme_diagnose"], diag)
+                if not auto_mode:
+                    raise PipelinePausedError("barrier_gate", diag)
+                logger.info(f"Barrier gate (auto): {diag.get('verdict','?')} "
+                            f"barrier={diag.get('barrier_kcal','?')} kcal/mol")
+
+            # ── Stage E3: optional PDB-ligand grafting ───────────────────────
+            if start_idx <= 3:
+                prior_pdbs = (H["substrate"].get("prior_art_pdbs", "") or "").strip()
+                if prior_pdbs and prior_pdbs.lower() not in ("none", "", "n/a"):
+                    q = (
+                        f"Substrate: {H['substrate'].get('substrate_smiles','?')}. "
+                        f"Candidate holo PDBs: {prior_pdbs}. "
+                        f"Theozyme acceptors: {H['theozyme'].get('acceptors','?')}, "
+                        f"forming bond: {H['theozyme'].get('forming_bond','?')}. "
+                        "Extract transferable first-shell contacts to graft (optional)."
+                    )
+                    ctx = [f for f in [result.stage_files.get("theozyme"),
+                                       result.stage_files.get("substrate")] if f and f.exists()]
+                    out = enzyme_dir / self._ENZYME_STAGE_FILES["grafting"]
+                    H["grafting"] = self._run_stage("pdb-ligand-grafting", q, ctx, out)
+                    result.stages_completed.append("grafting")
+                    result.stage_files["grafting"] = out
+                else:
+                    # No holo structure — skip gracefully (the common case).
+                    logger.info("Grafting skipped: no holo structure for the substrate.")
+                    H["grafting"] = {"grafting": "skipped (no holo structure)", "graft_residues_json": "[]"}
+                    self._record_stage("pdb-ligand-grafting", "skipped")
+
+            # ── Stage E4: design-input prep (RFD3/MPNN) + pilot (external) ───
+            if start_idx <= 4:
+                ctx = [f for f in [result.stage_files.get("theozyme"),
+                                   result.stage_files.get("grafting")] if f and f.exists()]
+                q = (
+                    "Prepare a de novo enzyme scaffolding run around the theozyme transition "
+                    "state. Fix the whole catalytic constellation; pass the TS as rigid "
+                    f"coordinates. Theozyme: forming_bond={H['theozyme'].get('forming_bond','?')}, "
+                    f"acceptors={H['theozyme'].get('acceptors','?')}, "
+                    f"donors={H['theozyme'].get('donors_json','{}')}. "
+                    f"Grafts: {H['grafting'].get('graft_residues_json','[]')}. "
+                    "Size for a ~500-trajectory PILOT."
+                )
+                out = enzyme_dir / self._ENZYME_STAGE_FILES["enzyme_design"]
+                H["enzyme_design"] = self._run_stage("protein-design-script", q, ctx, out)
+                result.stages_completed.append("enzyme_design")
+                result.stage_files["enzyme_design"] = out
+
+                written = self._enzyme_emit_design_inputs(H, dirs)
+                instr = (
+                    f"Run the ~500-trajectory pilot with the foundry CLIs (.venv-blackwell): "
+                    f"RFD3 on the spec in {dirs['design_inputs']} → LigandMPNN → refold, and "
+                    f"drop the design outputs (*.cif.gz + sidecar *.json) into "
+                    f"{dirs['design_outputs']}. Then resume:\n"
+                    f"  run_pipeline.py --workflow enzyme --project <slug> --start-from enzyme_validation"
+                )
+                self._enzyme_checkpoint("design_run", "enzyme_design",
+                                        [str(p) for p in written],
+                                        [str(dirs["design_outputs"])], instr)
+                raise PipelineExternalStepError(
+                    "design_run", [str(p) for p in written],
+                    [str(dirs["design_outputs"] / "*.cif.gz")], instr, "enzyme_validation",
+                )
+
+            # ── Stage E5: validate pilot + interpret + iterate decision ──────
+            if start_idx <= 5:
+                stats = self._enzyme_validate(dirs, enzyme_dir, H["theozyme"])
+                q = (
+                    "Interpret these enzyme-design pilot validation results and decide "
+                    "SCALE_UP / ITERATE / STOP. Pilot validation summary:\n"
+                    f"{json.dumps(stats, indent=2)}"
+                )
+                ctx = [f for f in [enzyme_dir / "15_validation_summary.md"] if f.exists()]
+                out = enzyme_dir / self._ENZYME_STAGE_FILES["enzyme_validation"]
+                H["enzyme_validation"] = self._run_stage("enzyme-design-validation", q, ctx, out)
+                result.stages_completed.append("enzyme_validation")
+                result.stage_files["enzyme_validation"] = out
+                go = H["enzyme_validation"].get("go_recommendation", "").upper().replace("-", "_")
+                result.go_recommendation = go or "INCOMPLETE"
+                result.go_rationale = H["enzyme_validation"].get("go_rationale", "")
+                decision = H["enzyme_validation"].get("decision", "").upper()
+                if decision == "ITERATE":
+                    logger.info(
+                        "Enzyme pilot says ITERATE — re-tune the active site and start a new "
+                        f"round. Change: {H['enzyme_validation'].get('iterate_change','?')}"
+                    )
+
+        except PipelineBlockedError:
+            raise
+        except PipelinePausedError:
+            raise
+        except Exception as exc:
+            result.error = str(exc)
+            logger.error(f"Enzyme pipeline error: {exc}")
+            raise
+
+        return result
+
+    def _enzyme_checkpoint(self, step_id, stage, inputs, expected, instructions) -> None:
+        if self._project is not None and self._round_id is not None:
+            try:
+                self._project.set_checkpoint(
+                    step_id, self._round_id, stage, "external_step",
+                    payload={"inputs": inputs, "expected_outputs": expected, "instructions": instructions},
+                )
+            except Exception as exc:
+                logger.warning(f"manifest checkpoint {step_id} failed: {exc}")
+
+    def _enzyme_prepare_orca(self, theozyme_handoff: dict, dirs: dict) -> list[Path]:
+        """Write the ORCA inputs the user must run, from the theozyme handoff."""
+        from src import enzyme_build as eb
+        orca_dir = dirs["orca"]
+        ts_path = (theozyme_handoff.get("ts_xyz_path") or "").strip()
+        ts_file = None
+        if ts_path and ts_path.upper() != "NEEDS_QM":
+            cand = Path(ts_path)
+            bases = [dirs["enzyme"].parent]            # run_dir
+            if self._project is not None:
+                bases.append(self._project.root)
+            bases.append(_ROOT)
+            if cand.is_absolute() and cand.exists():
+                ts_file = cand
+            else:
+                for base in bases:
+                    if (base / ts_path).exists():
+                        ts_file = base / ts_path
+                        break
+                ts_file = ts_file or cand
+
+        def _ints(key):
+            raw = (theozyme_handoff.get(key, "") or "").replace(";", ",")
+            out = []
+            for tok in raw.split(","):
+                tok = tok.strip()
+                if tok.lstrip("-").isdigit():
+                    out.append(int(tok))
+            return out
+
+        constraints = {"forming_bond": _ints("forming_bond_idx"), "anchors": _ints("anchor_idx")}
+        try:
+            charge = int(theozyme_handoff.get("charge", 0) or 0)
+        except ValueError:
+            charge = 0
+        try:
+            mult = int(theozyme_handoff.get("mult", 1) or 1)
+        except ValueError:
+            mult = 1
+
+        written: list[Path] = []
+        if ts_file and ts_file.exists():
+            for stage in ("relax", "optts", "freq", "scan"):
+                try:
+                    written += eb.write_orca_inputs(orca_dir, ts_file, stage, constraints,
+                                                    charge=charge, mult=mult)
+                except Exception as exc:
+                    logger.warning(f"write_orca_inputs({stage}) failed: {exc}")
+        else:
+            # No converged TS geometry yet — leave a README so the user runs the
+            # bare-reaction TS search first, then re-enters the theozyme stage.
+            note = orca_dir / "README_orca.md"
+            note.write_text(
+                "No TS geometry was provided (ts_xyz_path=NEEDS_QM).\n"
+                "1. Build/optimize the bare-reaction transition state in ORCA "
+                "(see skills/enzyme-active-site-modeling/reference/orca_templates.md).\n"
+                "2. Save the converged TS as a .xyz here and re-run the theozyme stage "
+                "with ts_xyz_path pointing at it so LPT can graft donors + emit the "
+                "relax/OptTS/Freq/scan inputs.\n",
+                encoding="utf-8",
+            )
+            written.append(note)
+        return written
+
+    def _enzyme_diagnose_orca(self, dirs: dict, enzyme_dir: Path, theozyme_handoff: dict) -> dict:
+        """Ingest ORCA outputs: single-imaginary check + barrier estimate."""
+        orca_dir = dirs["orca"]
+        diag: dict = {"barrier_kcal": None, "single_imaginary": None, "verdict": "incomplete", "notes": []}
+
+        # Barrier from OptTS FINAL SINGLE POINT ENERGY vs lowest scan point.
+        def _final_spe(path: Path):
+            if not path.exists():
+                return None
+            best = None
+            for line in path.read_text(errors="replace").splitlines():
+                if "FINAL SINGLE POINT ENERGY" in line:
+                    try:
+                        best = float(line.split()[-1])
+                    except (ValueError, IndexError):
+                        pass
+            return best
+
+        ts_e = _final_spe(orca_dir / "optts.out")
+        scan_es = []
+        scan_out = orca_dir / "scan.out"
+        if scan_out.exists():
+            for line in scan_out.read_text(errors="replace").splitlines():
+                if "FINAL SINGLE POINT ENERGY" in line:
+                    try:
+                        scan_es.append(float(line.split()[-1]))
+                    except (ValueError, IndexError):
+                        pass
+        if ts_e is not None and scan_es:
+            diag["barrier_kcal"] = round((ts_e - min(scan_es)) * 627.5095, 2)
+
+        # Single-imaginary check via the freq output (count negative frequencies).
+        freq_out = orca_dir / "freq.out"
+        if freq_out.exists():
+            negs = []
+            for line in freq_out.read_text(errors="replace").splitlines():
+                s = line.strip()
+                if "cm**-1" in s and "-" in s:
+                    for tok in s.split():
+                        try:
+                            v = float(tok)
+                            if v < -1.0:
+                                negs.append(v)
+                            break
+                        except ValueError:
+                            continue
+            diag["single_imaginary"] = (len([n for n in negs if n < -50]) == 1)
+            diag["imaginary_freqs"] = negs[:5]
+
+        if diag["barrier_kcal"] is not None and diag["single_imaginary"]:
+            diag["verdict"] = "ok"
+        elif diag["barrier_kcal"] is None and diag["single_imaginary"] is None:
+            diag["verdict"] = "no_orca_output"
+            diag["notes"].append(f"No ORCA outputs found in {orca_dir} — run them and resume.")
+
+        out = enzyme_dir / self._ENZYME_STAGE_FILES["theozyme_diagnose"]
+        lines = [
+            "## THEOZYME DIAGNOSIS (deterministic)\n",
+            f"- Electronic barrier ΔE‡: {diag['barrier_kcal']} kcal/mol",
+            f"- Single reaction-coordinate imaginary: {diag['single_imaginary']}",
+            f"- Imaginary frequencies (cm⁻¹): {diag.get('imaginary_freqs')}",
+            f"- Verdict: {diag['verdict']}",
+            "",
+            "_Note: a favorable electronic barrier is preliminary evidence, not a rate. "
+            "Real validation needs matched references / free energies and, ultimately, experiment._",
+        ]
+        out.write_text("\n".join(lines), encoding="utf-8")
+        return diag
+
+    def _enzyme_emit_design_inputs(self, H: dict, dirs: dict) -> list[Path]:
+        """Emit RFD3 spec + (when designs exist) MPNN config for the pilot."""
+        from src import enzyme_build as eb
+        written: list[Path] = []
+        di = dirs["design_inputs"]
+        th = H.get("theozyme", {})
+        # The design-script stage may already have written specs via write_file;
+        # here we ensure a deterministic RFD3 spec exists from the theozyme handoff.
+        try:
+            donors = json.loads(th.get("donors_json", "{}") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            donors = {}
+        motif_residues = [
+            {"key": k, "resname": v.get("resname", "ALA"), "mode": v.get("mode", "sc"),
+             "donor": v.get("donor"), "acc": v.get("acc")}
+            for k, v in (donors.items() if isinstance(donors, dict) else [])
+        ]
+        try:
+            spec = eb.emit_rfd3_spec(
+                di, name="pilot", motif_residues=motif_residues,
+                substrate=th.get("substrate_smiles", ""), strategy="SC_TyrHis",
+            )
+            written.append(di / "pilot.json")
+            if isinstance(spec, dict) and spec.get("written"):
+                written += [Path(p) for p in spec["written"]]
+        except Exception as exc:
+            logger.warning(f"emit_rfd3_spec failed (skill may have written specs directly): {exc}")
+            (di / "README_design.md").write_text(
+                "Run RFD3 with the spec from the design report (protein-design-script), "
+                "fixing the whole catalytic constellation and passing the TS as rigid "
+                "coordinates (bond re-perception disabled). ~500-trajectory pilot.\n",
+                encoding="utf-8",
+            )
+            written.append(di / "README_design.md")
+        return written
+
+    def _enzyme_validate(self, dirs: dict, enzyme_dir: Path, theozyme_handoff: dict) -> dict:
+        """Run the deterministic raw-design gates on the pilot outputs."""
+        from src import enzyme_validation as ev
+        out_dir = dirs["design_outputs"]
+        catspec = self._enzyme_catspec(theozyme_handoff)
+
+        rows: list[dict] = []
+        try:
+            rows = ev.validate_design_dir(out_dir, catspec)
+        except Exception as exc:
+            logger.warning(f"validate_design_dir failed: {exc}")
+
+        n = len(rows)
+        n_pass = sum(1 for r in rows if r.get("PASS"))
+        stats = {
+            "n_designs": n,
+            "n_pass": n_pass,
+            "pass_rate": round(n_pass / n, 3) if n else 0.0,
+            "n_cat_ok": sum(1 for r in rows if r.get("CAT_OK")),
+            "n_geom_ok": sum(1 for r in rows if r.get("GEOM_OK")),
+            "n_stitch_ok": sum(1 for r in rows if r.get("STITCH_OK")),
+            "n_lig_ok": sum(1 for r in rows if r.get("LIG_OK")),
+            "catspec": catspec,
+            "design_outputs_dir": str(out_dir),
+        }
+        if n == 0:
+            stats["note"] = (
+                f"No design outputs (*.cif.gz) found in {out_dir}. Run the pilot and resume, "
+                "or (if the pilot ran and produced nothing valid) ITERATE on the active site."
+            )
+
+        # Persist the per-design CSV + a short summary the LLM stage reads.
+        try:
+            import csv
+            if rows:
+                csv_path = dirs["validation"] / "validate_v2.csv"
+                cols = sorted({k for r in rows for k in r.keys()})
+                with open(csv_path, "w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=cols)
+                    w.writeheader()
+                    w.writerows(rows)
+        except Exception as exc:
+            logger.warning(f"writing validate_v2.csv failed: {exc}")
+
+        (enzyme_dir / "15_validation_summary.md").write_text(
+            "## ENZYME PILOT VALIDATION (deterministic)\n\n"
+            f"- designs: {n}\n- raw PASS: {n_pass} ({stats['pass_rate']:.0%})\n"
+            f"- CAT_OK: {stats['n_cat_ok']}  GEOM_OK: {stats['n_geom_ok']}  "
+            f"STITCH_OK: {stats['n_stitch_ok']}  LIG_OK: {stats['n_lig_ok']}\n"
+            + (f"\n{stats.get('note','')}\n" if stats.get("note") else ""),
+            encoding="utf-8",
+        )
+        return stats
+
+    @staticmethod
+    def _enzyme_catspec(theozyme_handoff: dict) -> dict:
+        """Build an enzyme_validation catspec from the theozyme handoff."""
+        def _split(key):
+            raw = (theozyme_handoff.get(key, "") or "").replace("-", ",")
+            return [t.strip() for t in raw.split(",") if t.strip()]
+        forming = _split("forming_bond")
+        acceptors = [t.strip() for t in (theozyme_handoff.get("acceptors", "") or "").split(",") if t.strip()]
+        try:
+            catalytic = json.loads(theozyme_handoff.get("donors_json", "{}") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            catalytic = {}
+        return {
+            "ligand_resname": theozyme_handoff.get("ligand_resname", "LIG"),
+            "forming_bond": forming[:2] if len(forming) >= 2 else forming,
+            "acceptors": acceptors,
+            "oxyanion_atom": acceptors[0] if acceptors else None,
+            "catalytic": catalytic if isinstance(catalytic, dict) else {},
+        }
 
     # ------------------------------------------------------------------
     # Stage implementations
@@ -1500,7 +2067,38 @@ class PipelineRunner:
                 f"  [{skill_name}] No '### PIPELINE HANDOFF' block found — "
                 "next stage will use a fallback query"
             )
+
+        # Mirror stage completion into the persistent project manifest, if one
+        # is attached. The manifest is the filesystem/CLI source of truth for
+        # stage state + artifact pointers (web.db stays authoritative for the
+        # web UI). Best-effort: a manifest hiccup must never fail the pipeline.
+        self._record_stage(skill_name, "complete", output_file, handoff)
         return handoff
+
+    def _record_stage(
+        self,
+        skill_name: str,
+        status: str,
+        output_file: Path | None = None,
+        handoff: dict | None = None,
+    ) -> None:
+        """Mirror a stage's state into the project manifest (no-op without one)."""
+        if self._project is None or self._round_id is None:
+            return
+        stage_name = next(
+            (s for s, sk in _STAGE_TO_SKILL.items() if sk == skill_name),
+            skill_name,
+        )
+        try:
+            self._project.update_stage(
+                self._round_id,
+                stage_name,
+                status,
+                artifacts=[output_file] if output_file else None,
+                handoff=handoff,
+            )
+        except Exception as exc:
+            logger.warning(f"  [{skill_name}] manifest update failed: {exc}")
 
     def _verify_citations(self, output_text: str, skill_name: str) -> str:
         """

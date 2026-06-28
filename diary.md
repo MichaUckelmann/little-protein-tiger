@@ -2731,3 +2731,138 @@ deferred to next session.
 5. Refactor the two `_resolve()` copies into a single shared helper
    (deferred — they live in different modules with different `_ROOT`
    constants, so an import refactor is non-trivial).
+
+## 2026-05-28 — PyMOL top-K design viewer (`scripts/pymol_show_topk.py`)
+
+Added a visualisation helper to inspect design output after an e2e run.
+Started as a one-off for the mesothelioma YAP-TEAD run, then generalised
+so it works for any campaign.
+
+### What it does
+
+Loads the top-K binders from `05_ranking/top_k.csv` (default 10, ordered by
+`mmr_rank`), superimposes them on a single target frame, highlights the
+per-design hotspots, and overlays the native complex for a "are we hitting
+the right side?" check. Styling mirrors the lab's
+`~/g/Group_Sahtoe/shared/scripts/pymol_functions_cycle.py` (black bg, gold
+target, ambient occlusion, transparency 0.2). Registered as the `topk` alias
+in `~/.pymolrc`.
+
+### Run-agnostic by construction
+
+Nothing is hardcoded to YAP-TEAD:
+
+- Target CIF path + target chain come from the first `file:` entity of the
+  design's BoltzGen YAML in `03_design_inputs/` (PyYAML if importable, regex
+  fallback — PyMOL 2.5.4 ships Python 3.7 and may lack PyYAML).
+- Hotspot residue list comes from that YAML's `binding:` field, parsed
+  per-design (so multi-region runs colour each binder's own hotspots).
+- Run dir + K + target/binder chains are all `show_topk` args; run dir
+  defaults to cwd.
+
+### Controls
+
+- F1 / F2 — prev / next design (only target + native + current binder shown;
+  hotspot sticks/labels update per design).
+- F3 — overlay all K with the union of hotspots.
+- `toggle_native` — hide/show the native overlay.
+
+### Numbering gotcha (carried over from 2026-05-23)
+
+The hotspot selection uses the YAML `binding:` integers directly against the
+output CIF's `auth_seq_id`. This is correct *because* BoltzGen writes the
+input `label_seq_id` as the output `auth_seq_id` — verified on the
+mesothelioma run (PHE@122, TYR@154, PHE@158, LYS@161, LEU@165, VAL@174,
+PHE@178 all resolve to the right residues). If the BoltzGen output-numbering
+convention ever changes again, this selection and the structure-expert
+`label_seq_id` derivation both need revisiting.
+
+### Two bugs hit while building it
+
+1. Colours defined via `cmd.set_color` *before* `cmd.reinitialize()` got
+   wiped by the reinitialize → "Unknown color: goud". Fix: register the
+   palette after reinitialize.
+2. `cmd.get_object_state` is not an enabled/disabled check; used
+   `obj in cmd.get_names("public_objects", enabled_only=1)` for `toggle_native`.
+
+Usage is documented in README §8 ("Visualise top-K designs in PyMOL").
+
+## 2026-06-28 — De novo enzyme active-site design workflow integration
+
+Integrated the new `enzyme-active-site-modeling` skill into a full, parallel
+**enzyme design workflow** alongside the PPI pipeline, plus a persistent
+project layer and a literature-corpus expansion into enzyme/chemistry/comp-chem.
+
+### Decisions (user-confirmed)
+- **Compute model: "LPT preps + validates".** LPT writes ORCA inputs and
+  RFD3/LigandMPNN specs deterministically; the **user runs** ORCA (QM) and the
+  foundry `.venv-blackwell` GPU CLIs; LPT ingests + validates outputs. No GPU/QM
+  subprocess runners added. Hand-offs surface as `PipelineExternalStepError`.
+- **Persistent project dir:** `projects/<slug>/` + `manifest.json` (atomic),
+  `shared/{structures,ligands,orca}`, `runs/<round>/{enzyme,scratch}`. Unified
+  CLI + (future) web; manifest is the filesystem source of truth, web.db stays
+  authoritative for the web UI. `src/project.py`.
+- **CCDC deferred** (no CSD licence): use a new RCSB search-by-ligand tool +
+  PDB CCD instead; CSD seam left as TODO.
+- **Grafting is optional**, never a hard block (no holo structure ⇒ build from
+  the QM model, let diffusion generate surrounding residues).
+- **Iterate at small scale**: ~500-traj pilot → validate → if diffusion can't
+  build the site, open a new round with a re-tuned active site before scale-up.
+
+### What was built
+- **Literature** (`src/ranking.py`, `curation_prompt.md`, `extraction_schema.json`,
+  `src/curator.py`, `src/vector_store.py`, `config_enzyme_chemistry.yaml`):
+  catalysis/comp-chem/biotech journals added (+ fixed 3 string-concat tier bugs:
+  `nnature chemical biology`, `nat genetcell chemical biology`, `imse j`); broadened
+  curation relevance gate; new `enzymology`/`biocatalysis`/`computational_chemistry`
+  categories; new `enzyme_context` fingerprint block (reactions/EC/SMILES, catalytic
+  residues+roles, kinetics kcat/Km, QM methods) wired through prompt+schema+Pydantic
+  `EnzymeContext`+embed text. `curate_papers.py --config`; `fetch_papers.py
+  --fetched-only/--max-downloads`. A targeted enzyme fetch + Gemini curation
+  (`--limit 1000`) ran to expand the corpus.
+- **Tools** (`src/structure_tools.py` + both transports): `extract_ligand_contacts`
+  (substrate-grafting input; metals reported separately — verified on 5DLT ENPP1),
+  `analyze_active_site_geometry`; `search_pdb_by_ligand` (CCD/SMILES/name via RCSB
+  text_chem + chemical services — verified live). Gated to enzyme skills via
+  `_LIGAND_TOOL_SKILLS`.
+- **Ported foundry logic** (pyrosetta-free): `src/enzyme_validation.py` (CAT/GEOM/
+  STITCH/LIG gates + refold + viewer fixes; generalized to a caller catspec; **0
+  row-by-row diffs vs the foundry originals**, reproduces 25% raw / 3-of-254 refold)
+  and `src/enzyme_build.py` (theozyme + build_inputs/build_mpnn/check_built + ORCA
+  input templating; RDKit ideal residues replace pyrosetta; reproduces foundry QM
+  contacts + RFD3 spec field-for-field).
+- **Workflow** (`src/pipeline_runner.py`): `--workflow enzyme` →
+  `_run_enzyme_track` with `ENZYME_STAGE_ORDER` = substrate → theozyme →
+  theozyme_diagnose → grafting(optional) → enzyme_design → enzyme_validation;
+  `PipelineExternalStepError` for orca_run + design_run (resume via
+  `--start-from`); deterministic helpers for ORCA prep/diagnosis (barrier +
+  single-imaginary), design-input emission, and pilot validation; manifest
+  checkpoints. `_STAGE_TO_SKILL` extended; `run_pipeline.py` gains
+  `--project`/`--workflow` + enzyme `--start-from` stages + external-step printout.
+- **Skills**: refined `enzyme-active-site-modeling` (tool protocol + handoff
+  contract); new `enzyme-substrate-id`, `pdb-ligand-grafting` (graceful skip),
+  `enzyme-design-validation` (iterate-loop diagnosis).
+
+### Verification
+Unit (project manifest round-trip; validator vs foundry 0-diff; build vs foundry
+spec) + a full **mocked-LLM e2e** that drove the enzyme track on REAL michaelase
+designs: paused at orca_run → resumed → barrier 12.55 kcal/mol + single imaginary
+→ grafting skipped → paused at design_run → resumed → real validator gave 2/12 raw
+PASS (≈17%, in range). Literature: enzyme/chem corpus fetch + Gemini curation run
+(verify `enzyme_context` populated + `search_corpus(study_category="biocatalysis")`
+once it finishes).
+
+### Punch list — next session
+1. Verify the curated enzyme corpus (enzyme_context populated; biocatalysis
+   search retrieval) once the background curation completes.
+2. Web layer (deferred/optional): redirect `web/backend/tasks.py` run_dir to
+   `projects/<slug>/runs/<id>`; add a generic "external step" pause panel; fix the
+   pre-existing 01/02 literature/structure stage-file naming mismatch in the web
+   layer; regenerate skill `.zip` artifacts for the new/edited skills.
+3. ~~README + CLAUDE.md: document the enzyme workflow + project dir + new
+   commands.~~ DONE — README §7b "Run the de novo enzyme design pipeline" +
+   "Project directories" + skill catalogue + new fetch/curate flags + updated
+   project tree; CLAUDE.md "Two design workflows" + "Persistent project layer" +
+   enzyme_context curation contract + extended sync-pairs.
+4. Real e2e on a live target with actual ORCA + GPU runs (the mocked test
+   covered the wiring; a real run will exercise the QM/diffusion fidelity).

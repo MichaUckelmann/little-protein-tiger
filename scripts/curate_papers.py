@@ -115,6 +115,11 @@ def resolve_file_path(paper: Paper, config: dict) -> Path | None:
 
 def main():
     parser = argparse.ArgumentParser(description="Curate papers with Claude")
+    parser.add_argument("--config", default="config.yaml",
+                        help="Config file (project-relative or absolute) supplying curation "
+                             "provider/model/prompt_path + paths. Use config_enzyme_chemistry.yaml "
+                             "to curate enzyme/chemistry papers with the broadened prompt. "
+                             "Paths (db/fingerprint dirs) must point at the same corpus as config.yaml.")
     parser.add_argument("--limit", type=int, default=0, help="Max papers to process (0 = all)")
     parser.add_argument("--reprocess", action="store_true", help="Reset and reprocess already-curated papers")
     parser.add_argument("--dry-run", action="store_true", help="List papers without calling Claude")
@@ -137,7 +142,11 @@ def main():
                              "won't find new papers until ingest_vectors.py runs.")
     args = parser.parse_args()
 
-    config = load_config()
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = ROOT / config_path
+    config = load_config(config_path)
+    logger.info(f"Loaded config: {config_path}")
     if args.provider:
         config["curation"]["provider"] = args.provider
     db_path = ROOT / config["paths"]["db_path"]

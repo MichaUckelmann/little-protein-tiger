@@ -14,6 +14,7 @@ build/
 # Pipeline run outputs
 web/runs/
 outputs/
+projects/
 tmp/
 
 # SQLite DB (runtime state, not source)

@@ -13,8 +13,10 @@ logger.add(_log_file, level="DEBUG", rotation="5 MB", enqueue=True)
 
 sys.path.insert(0, str(ROOT))
 from src.structure_tools import (
+    analyze_active_site_geometry,
     analyze_interface,
     check_mutation_clash,
+    extract_ligand_contacts,
     find_glue_pockets,
     get_residue_contacts,
     get_sequence_map,
@@ -267,6 +269,78 @@ def tool_find_glue_pockets(
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.exception("find_glue_pockets failed")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def tool_extract_ligand_contacts(
+    file_path: str,
+    ligand_resname: str = "",
+    ligand_chain: str = "",
+    cutoff: float = 4.5,
+    min_heavy_atoms: int = 6,
+    max_ligands: int = 3,
+) -> str:
+    """
+    Find bound non-polymer ligand(s) in a holo structure and the protein residues
+    lining them — the substrate-grafting input for enzyme active-site design.
+
+    For each substrate-like ligand (water + common crystallisation additives are
+    ignored; catalytic metals like Zn/Mg/Mn are reported separately, never as the
+    substrate) returns the first-shell interacting residues with the ligand atoms
+    they contact, so those interactions can be grafted into a de novo active site.
+
+    This is an OPTIONAL enrichment step: when no holo structure exists for the
+    substrate the result's `ligands` list is empty and the workflow should proceed
+    from the chemistry/QM active-site build (diffusion generates the surrounding
+    residues). Accepts .cif and .pdb.
+
+    Args:
+        file_path:       Absolute path to a holo structure file (.cif or .pdb)
+        ligand_resname:  Restrict to this ligand 3-letter code (optional)
+        ligand_chain:    Restrict to this chain (optional)
+        cutoff:          Heavy-atom contact cutoff in Å (default 4.5)
+        min_heavy_atoms: Ignore ligands smaller than this (drops ions/fragments; default 6)
+        max_ligands:     Max ligands to report, largest first (default 3)
+    """
+    try:
+        result = extract_ligand_contacts(
+            _resolve(file_path),
+            ligand_resname=ligand_resname or None,
+            ligand_chain=ligand_chain or None,
+            cutoff=cutoff,
+            min_heavy_atoms=min_heavy_atoms,
+            max_ligands=max_ligands,
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.exception("extract_ligand_contacts failed")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def tool_analyze_active_site_geometry(file_path: str, catalytic_spec: dict) -> str:
+    """
+    Measure catalytic-constellation distances/angles from an explicit spec.
+
+    Generic geometry reporter for diagnosing a grafted or designed active site
+    (donor→acceptor distances, catalytic-triad angles, residue→ligand contacts).
+    Atoms are referenced by [chain, resnum (auth_seq_id), atom_name].
+
+    catalytic_spec = {
+      "distances": [{"label": str, "a": [chain,resnum,atom], "b": [chain,resnum,atom]}, ...],
+      "angles":    [{"label": str, "a": [...], "b": [...], "c": [...]}]   # angle at b
+    }
+
+    Args:
+        file_path:      Absolute path to structure file (.cif or .pdb)
+        catalytic_spec: Distances/angles to measure (see format above)
+    """
+    try:
+        result = analyze_active_site_geometry(_resolve(file_path), catalytic_spec)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.exception("analyze_active_site_geometry failed")
         return json.dumps({"error": str(e)})
 
 

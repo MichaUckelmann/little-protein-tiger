@@ -22,7 +22,7 @@ from loguru import logger
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.database import Database
+from src.database import Database, _paper_key
 from src.models import DownloadStatus
 from src.search import EuropePMCClient, NCBIPMCClient, SemanticScholarClient
 from src.downloader import download_papers
@@ -51,6 +51,13 @@ def main():
     parser.add_argument("--keywords", nargs="+", help="Override keywords from config")
     parser.add_argument("--max", type=int, help="Max results per keyword (overrides config)")
     parser.add_argument("--dry-run", action="store_true", help="Search only, skip downloads")
+    parser.add_argument("--fetched-only", action="store_true",
+                        help="Download only papers found in THIS run's search, not the whole "
+                             "pending backlog. Use for a targeted topical expansion (e.g. the "
+                             "enzyme/chemistry config) so you don't pull the entire DB's pending set.")
+    parser.add_argument("--max-downloads", type=int, default=0,
+                        help="Cap the number of papers downloaded this run (0 = no cap). "
+                             "Applied after priority sort, so the highest-scoring papers download first.")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -122,6 +129,9 @@ def main():
     papers = list(all_papers.values())
     logger.info(f"Total unique papers across all sources: {len(papers)}")
 
+    # Canonical DB keys of the papers found in THIS run (for --fetched-only).
+    fetched_keys = {_paper_key(p.doi, p.pmcid, p.pmid, p.title) for p in papers}
+
     # Score and mark conference abstracts
     excluded = 0
     for paper in papers:
@@ -160,7 +170,14 @@ def main():
         and p.priority_score > min_score
         and (not require_tiered or is_tiered_journal(p.journal, tier1_extra, tier2_extra))
     ]
+    if args.fetched_only:
+        before = len(pending)
+        pending = [p for p in pending if _paper_key(p.doi, p.pmcid, p.pmid, p.title) in fetched_keys]
+        logger.info(f"--fetched-only: restricted pending {before} -> {len(pending)} (this run's papers)")
     pending.sort(key=lambda p: p.priority_score, reverse=True)
+    if args.max_downloads and len(pending) > args.max_downloads:
+        logger.info(f"--max-downloads: capping {len(pending)} -> {args.max_downloads} highest-priority papers")
+        pending = pending[: args.max_downloads]
     logger.info(f"{len(pending)} papers pending download (sorted by priority)")
 
     download_papers(

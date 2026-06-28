@@ -141,7 +141,8 @@ _TOOL_DEFS: list[dict[str, Any]] = [
                     ),
                     "enum": [
                         "biochemistry", "pathway_biology", "structural_biology",
-                        "host_pathogen", "clinical", "review",
+                        "host_pathogen", "enzymology", "biocatalysis",
+                        "computational_chemistry", "clinical", "review",
                     ],
                 },
             },
@@ -220,6 +221,81 @@ _TOOL_DEFS: list[dict[str, Any]] = [
                 },
             },
             "required": ["proteins"],
+        },
+    },
+    {
+        "name": "search_pdb_by_ligand",
+        "description": (
+            "Find PDB structures that contain a given small-molecule ligand / substrate, "
+            "for enzyme active-site grafting (\"which deposited structures have a protein "
+            "bound to substrate X?\"). Query by a 1-5 char PDB chemical component (CCD) id "
+            "(e.g. 'ATP', 'NAP', '5JK'), by SMILES (substructure or similarity), or by a "
+            "free-text chemical name. Returns up to ~10 entries with title, method, "
+            "resolution, the matching ligand id(s), and the protein entity descriptions. "
+            "Results are NOT corpus-sourced — confirm the entry truly contains your target "
+            "protein+substrate before grafting. OPTIONAL step: if nothing relevant is found, "
+            "build the active site from the chemistry/QM model and let diffusion generate "
+            "surrounding residues."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ccd_id": {"type": "string", "description": "PDB chemical component id, e.g. 'ATP', '5JK' (optional)"},
+                "smiles": {"type": "string", "description": "SMILES for substructure/similarity search (optional)"},
+                "name": {"type": "string", "description": "Free-text chemical/ligand name (optional)"},
+                "match": {
+                    "type": "string",
+                    "description": "For SMILES: 'substructure' (default) or 'similarity'.",
+                    "enum": ["substructure", "similarity"],
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "tool_extract_ligand_contacts",
+        "description": (
+            "Find bound non-polymer ligand(s) in a holo structure and the protein residues "
+            "lining them — the substrate-grafting input for enzyme active-site design. "
+            "Water + crystallisation additives are ignored; catalytic metals (Zn/Mg/Mn/...) "
+            "are reported separately, never as the substrate. Returns first-shell residues "
+            "with the ligand atoms they contact. OPTIONAL: empty 'ligands' means no holo "
+            "structure to graft from — proceed from the chemistry/QM build."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path to holo structure (.cif or .pdb)"},
+                "ligand_resname": {"type": "string", "description": "Restrict to this CCD code (optional)"},
+                "ligand_chain": {"type": "string", "description": "Restrict to this chain (optional)"},
+                "cutoff": {"type": "number", "description": "Heavy-atom contact cutoff in Å (default 4.5)"},
+                "min_heavy_atoms": {"type": "integer", "description": "Ignore ligands smaller than this (default 6)"},
+                "max_ligands": {"type": "integer", "description": "Max ligands to report, largest first (default 3)"},
+            },
+            "required": ["file_path"],
+        },
+    },
+    {
+        "name": "tool_analyze_active_site_geometry",
+        "description": (
+            "Measure catalytic-constellation distances/angles from an explicit spec. "
+            "Generic geometry reporter for diagnosing a grafted/designed active site "
+            "(donor→acceptor distances, catalytic-triad angles, residue→ligand contacts). "
+            "Atoms referenced by [chain, resnum (auth_seq_id), atom_name]."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path to structure file (.cif or .pdb)"},
+                "catalytic_spec": {
+                    "type": "object",
+                    "description": (
+                        "{'distances':[{'label','a':[chain,resnum,atom],'b':[chain,resnum,atom]}],"
+                        " 'angles':[{'label','a','b','c'}]}  (angle measured at b)"
+                    ),
+                },
+            },
+            "required": ["file_path", "catalytic_spec"],
         },
     },
     {
@@ -631,9 +707,9 @@ _TOOL_DEFS: list[dict[str, Any]] = [
 # Skills that work purely from their context_text and emit a markdown report
 # — no MCP tools should be exposed, since extras just confuse the model and
 # waste tokens. Add a skill here when it has no genuine tool needs.
-_NO_TOOL_SKILLS = {"design-analyst"}
+_NO_TOOL_SKILLS = {"design-analyst", "enzyme-design-validation"}
 
-_WRITE_FILE_SKILLS = {"protein-design-script", "binder-optimizer"}
+_WRITE_FILE_SKILLS = {"protein-design-script", "binder-optimizer", "enzyme-active-site-modeling"}
 
 # Skills that need the full residue index maps for AF3/BoltzGen JSON construction
 _NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer", "complex-structure-analysis"}
@@ -642,7 +718,8 @@ _NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer", "complex-struc
 # Phase 4.6 calls find_pdb_structures — without the allowlist entry the call
 # was being silently filtered out of the tool surface and the skill emitted
 # NOT_FOUND more often than it should.
-_PDB_LOOKUP_SKILLS = {"pathway-expert", "wildcard-expert", "complex-expert", "orchestrator"}
+_PDB_LOOKUP_SKILLS = {"pathway-expert", "wildcard-expert", "complex-expert", "orchestrator",
+                      "enzyme-substrate-id", "enzyme-active-site-modeling"}
 
 # Skills that have access to the NetworkX-backed graph tools (path, hubs, export,
 # novelty). Other skills don't need them and shouldn't pay the system-prompt
@@ -655,6 +732,18 @@ _GRAPH_TOOLS = {
     "novelty_signal",
     "get_genetic_codependency", "find_cocorrelated_genes",
     "cluster_for_protein", "cluster_members", "find_clusters_by_keyword",
+}
+
+# Enzyme-design skills that get the ligand / active-site structure tools and the
+# PDB-by-ligand search. Kept off other skills' tool surfaces to limit prompt
+# overhead (same philosophy as the graph/PDB-lookup gating above).
+_LIGAND_TOOL_SKILLS = {
+    "enzyme-active-site-modeling", "pdb-ligand-grafting",
+    "enzyme-substrate-id", "complex-structure-analysis",
+}
+_LIGAND_TOOLS = {
+    "tool_extract_ligand_contacts", "tool_analyze_active_site_geometry",
+    "search_pdb_by_ligand",
 }
 
 _RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
@@ -782,6 +871,98 @@ def _search_rcsb_pdb(proteins: list[str], fingerprint_dir: Path) -> dict:
     }
 
 
+def _search_pdb_by_ligand(
+    ccd_id: str = "",
+    smiles: str = "",
+    name: str = "",
+    match: str = "substructure",
+    fingerprint_dir: Path | None = None,
+    rows: int = 10,
+) -> dict:
+    """Find PDB entries containing a given small-molecule ligand / substrate.
+
+    Query by CCD id (text_chem service), SMILES (chemical descriptor service;
+    substructure 'graph-relaxed' or 'fingerprint-similarity'), or chemical name.
+    Returns entries enriched with the same title/method/resolution/protein-entity
+    metadata as search_rcsb_pdb. This is the "find a holo structure of a protein
+    bound to substrate X" hook for enzyme active-site grafting.
+    """
+    ccd_id = (ccd_id or "").strip().upper()
+    smiles = (smiles or "").strip()
+    name = (name or "").strip()
+
+    query: dict | None = None
+    matched_on = ""
+    if ccd_id:
+        query = {"type": "terminal", "service": "text_chem", "parameters": {
+            "attribute": "rcsb_chem_comp_container_identifiers.comp_id",
+            "operator": "exact_match", "value": ccd_id}}
+        matched_on = f"CCD id {ccd_id}"
+    elif smiles:
+        match_type = "fingerprint-similarity" if match == "similarity" else "graph-relaxed"
+        query = {"type": "terminal", "service": "chemical", "parameters": {
+            "value": smiles, "type": "descriptor", "descriptor_type": "SMILES",
+            "match_type": match_type}}
+        matched_on = f"SMILES ({match})"
+    elif name:
+        query = {"type": "terminal", "service": "text_chem", "parameters": {
+            "attribute": "rcsb_chem_comp.name", "operator": "contains_phrase", "value": name}}
+        matched_on = f"name '{name}'"
+    else:
+        return {"error": "Provide one of: ccd_id, smiles, or name."}
+
+    payload = {
+        "query": query,
+        "return_type": "entry",
+        "request_options": {"paginate": {"start": 0, "rows": rows}},
+    }
+    try:
+        resp = requests.post(_RCSB_SEARCH_URL, json=payload, timeout=20)
+        resp.raise_for_status()
+        ids = [hit["identifier"] for hit in resp.json().get("result_set", [])]
+    except Exception as e:
+        logger.warning(f"[search_pdb_by_ligand] {matched_on}: {e}")
+        return {"matched_on": matched_on, "entries": [], "total_found": 0,
+                "error": f"RCSB search failed: {e}"}
+
+    metadata_cache: dict[str, dict] = {}
+    if fingerprint_dir is not None:
+        mpath = fingerprint_dir.parent / "pdb_metadata.json"
+        if mpath.exists():
+            try:
+                metadata_cache = json.loads(mpath.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+    new_ids = [pid for pid in ids if pid not in metadata_cache]
+    if new_ids:
+        try:
+            resp = requests.post(
+                _RCSB_GRAPHQL_URL,
+                json={"query": _RCSB_GRAPHQL_QUERY, "variables": {"ids": new_ids}},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            for entry in (resp.json().get("data") or {}).get("entries") or []:
+                metadata_cache[entry["rcsb_id"]] = _parse_rcsb_entry(entry)
+        except Exception as e:
+            logger.warning(f"[search_pdb_by_ligand] GraphQL fetch failed: {e}")
+
+    entries = [{"pdb_id": pid, **metadata_cache.get(pid, {})} for pid in ids]
+    return {
+        "matched_on": matched_on,
+        "ligand_query": ccd_id or smiles or name,
+        "entries": entries,
+        "total_found": len(entries),
+        "note": (
+            "Entries from RCSB chemical search — not corpus-sourced. Confirm the "
+            "entry truly contains your target protein bound to the substrate before "
+            "grafting; then download it and call tool_extract_ligand_contacts. "
+            "OPTIONAL step: if nothing relevant, build the active site from the "
+            "chemistry/QM model and let diffusion generate surrounding residues."
+        ),
+    }
+
+
 def _filter_tools(defs: list[dict], skill_name: str) -> list[dict]:
     """Return the tool list for a given skill, removing tools the skill shouldn't have."""
     if skill_name in _NO_TOOL_SKILLS:
@@ -793,6 +974,8 @@ def _filter_tools(defs: list[dict], skill_name: str) -> list[dict]:
         defs = [d for d in defs if d["name"] != "search_rcsb_pdb"]
     if skill_name not in _GRAPH_TOOL_SKILLS:
         defs = [d for d in defs if d["name"] not in _GRAPH_TOOLS]
+    if skill_name not in _LIGAND_TOOL_SKILLS:
+        defs = [d for d in defs if d["name"] not in _LIGAND_TOOLS]
     return defs
 
 
@@ -1081,6 +1264,16 @@ class SkillRunner:
                 )
                 return json.dumps(result, ensure_ascii=False, indent=2)
 
+            if name == "search_pdb_by_ligand":
+                result = _search_pdb_by_ligand(
+                    ccd_id=input_dict.get("ccd_id", ""),
+                    smiles=input_dict.get("smiles", ""),
+                    name=input_dict.get("name", ""),
+                    match=input_dict.get("match", "substructure"),
+                    fingerprint_dir=self._fingerprint_dir,
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+
             if name == "tool_analyze_interface":
                 from src.structure_tools import analyze_interface
                 result = analyze_interface(
@@ -1134,6 +1327,26 @@ class SkillRunner:
                     _resolve(input_dict["file_path"]),
                     input_dict["chain"],
                     [int(r) for r in input_dict["residue_list"]],
+                )
+                return json.dumps(result, indent=2)
+
+            if name == "tool_extract_ligand_contacts":
+                from src.structure_tools import extract_ligand_contacts
+                result = extract_ligand_contacts(
+                    _resolve(input_dict["file_path"]),
+                    ligand_resname=input_dict.get("ligand_resname") or None,
+                    ligand_chain=input_dict.get("ligand_chain") or None,
+                    cutoff=float(input_dict.get("cutoff", 4.5)),
+                    min_heavy_atoms=int(input_dict.get("min_heavy_atoms", 6)),
+                    max_ligands=int(input_dict.get("max_ligands", 3)),
+                )
+                return json.dumps(result, indent=2)
+
+            if name == "tool_analyze_active_site_geometry":
+                from src.structure_tools import analyze_active_site_geometry
+                result = analyze_active_site_geometry(
+                    _resolve(input_dict["file_path"]),
+                    input_dict["catalytic_spec"],
                 )
                 return json.dumps(result, indent=2)
 

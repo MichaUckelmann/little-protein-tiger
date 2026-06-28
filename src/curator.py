@@ -111,11 +111,58 @@ class PathwayContext(BaseModel):
     downstream_effectors: list[str] = []
 
 
+# --- Enzyme / chemistry / computational-chemistry context -------------------
+# Populated only when study_category is enzymology | biocatalysis |
+# computational_chemistry (mirrors PathwayContext for pathway_biology papers).
+
+class EnzymeReaction(BaseModel):
+    reaction: str
+    reaction_class: Optional[str] = None
+    ec_number: Optional[str] = None
+    substrate: Optional[str] = None
+    substrate_smiles: Optional[str] = None
+    product: Optional[str] = None
+    cofactor: Optional[str] = None
+    source_span: Optional[str] = None
+
+
+class CatalyticResidue(BaseModel):
+    residue: str
+    role: Optional[str] = None
+    source_span: Optional[str] = None
+
+
+class EnzymeKinetics(BaseModel):
+    enzyme: Optional[str] = None
+    substrate: Optional[str] = None
+    kcat_s: Optional[float] = None
+    Km_Molar: Optional[float] = None
+    kcat_over_Km_M_s: Optional[float] = None
+    source_span: Optional[str] = None
+
+
+class ComputationalMethod(BaseModel):
+    method: str
+    level_of_theory: Optional[str] = None
+    software: Optional[str] = None
+    system: Optional[str] = None
+    source_span: Optional[str] = None
+
+
+class EnzymeContext(BaseModel):
+    reactions: list[EnzymeReaction] = []
+    catalytic_residues: list[CatalyticResidue] = []
+    kinetics: list[EnzymeKinetics] = []
+    computational_methods: list[ComputationalMethod] = []
+    design_strategy: Optional[str] = None
+
+
 class Fingerprint(BaseModel):
     schema_version: str = "2.0"
     relevant: bool
     study_category: Optional[str] = None
     pathway_context: Optional[PathwayContext] = None
+    enzyme_context: Optional[EnzymeContext] = None
     curation_metadata: Optional[CurationMetadata] = None
     paper_metadata: Optional[PaperMetadata] = None
     methodology: Optional[Methodology] = None

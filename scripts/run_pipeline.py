@@ -99,10 +99,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--start-from",
-        choices=["pathway", "structure", "literature", "design"],
+        choices=[
+            "pathway", "structure", "literature", "design",
+            # enzyme-workflow stages (used with --workflow enzyme)
+            "substrate", "theozyme", "theozyme_diagnose", "grafting",
+            "enzyme_design", "enzyme_validation",
+        ],
         default="pathway",
         dest="start_from",
-        help="Stage to begin at. Default: pathway.",
+        help="Stage to begin at. Default: pathway. For --workflow enzyme, resume "
+             "after an external step with e.g. --start-from theozyme_diagnose "
+             "(after ORCA) or --start-from enzyme_validation (after the GPU pilot).",
     )
     p.add_argument(
         "--context",
@@ -124,6 +131,24 @@ def _build_parser() -> argparse.ArgumentParser:
             "Override the default run output directory. "
             "Default: outputs/<query_slug>_<date>/."
         ),
+    )
+    p.add_argument(
+        "--project",
+        metavar="SLUG",
+        default=None,
+        help=(
+            "Persistent project name. Creates/loads projects/<slug>/ with a "
+            "manifest.json and per-round run dirs. Stage outputs + state are "
+            "tracked there so an iterative campaign can be resumed. Omit for the "
+            "legacy one-shot outputs/<slug>_<date>/ layout."
+        ),
+    )
+    p.add_argument(
+        "--workflow",
+        choices=["ppi", "enzyme"],
+        default="ppi",
+        help="Workflow track. 'ppi' (default) = binder/inhibitor design; "
+             "'enzyme' = de novo enzyme active-site design.",
     )
     p.add_argument(
         "--provider",
@@ -178,7 +203,28 @@ def main() -> int:
 
     config = _load_config()
 
-    from src.pipeline_runner import PipelineBlockedError, PipelineRunner
+    from src.pipeline_runner import (
+        PipelineBlockedError,
+        PipelineExternalStepError,
+        PipelineRunner,
+    )
+
+    # Optional persistent project. A new round is started for a fresh run
+    # (start-from pathway); a resume reuses the latest round.
+    project = None
+    round_id = None
+    if args.project:
+        from src.project import Project
+        project = Project.create(args.project, query=query, workflow=args.workflow)
+        if args.start_from == "pathway" or project.latest_round() is None:
+            rnd = project.new_round(note=query[:80])
+        else:
+            rnd = project.latest_round()
+        round_id = rnd["run_id"]
+        logger.info(
+            f"Project: {project.slug}  round: {round_id}  "
+            f"dir: {project.run_dir(round_id)}"
+        )
 
     runner = PipelineRunner(
         config=config,
@@ -187,6 +233,9 @@ def main() -> int:
         output_dir=args.output_dir,
         max_iter=args.max_iter,
         max_tokens=args.max_tokens,
+        project=project,
+        round_id=round_id,
+        workflow=args.workflow,
     )
 
     logger.info(f"Query: {query[:120]}{'...' if len(query) > 120 else ''}")
@@ -203,6 +252,22 @@ def main() -> int:
             pdb_id=args.pdb,
             context_file=args.context,
         )
+    except PipelineExternalStepError as exc:
+        # Enzyme workflow: a heavy external compute step must run outside LPT.
+        print()
+        print("=" * 60)
+        print(f"EXTERNAL STEP REQUIRED: {exc.step_id}")
+        print("=" * 60)
+        print(exc.instructions)
+        print("\nInputs written:")
+        for p in exc.inputs:
+            print(f"  {p}")
+        print("\nExpected outputs (drop here, then resume):")
+        for p in exc.expected_outputs:
+            print(f"  {p}")
+        print(f"\nResume with: --start-from {exc.resume_stage}")
+        print("=" * 60)
+        return 3
     except PipelineBlockedError as exc:
         logger.error(f"Pipeline blocked — user input required:\n  {exc}")
         logger.info(

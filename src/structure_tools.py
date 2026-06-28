@@ -756,6 +756,208 @@ def get_residue_contacts(
     }
 
 
+# ---------------------------------------------------------------------------
+# Ligand / active-site tools (enzyme design)
+# ---------------------------------------------------------------------------
+
+# Solvent + common crystallisation additives that are never the substrate.
+# Catalytic metals are deliberately NOT here — they are reported separately.
+_NON_SUBSTRATE_HET = {
+    "HOH", "DOD", "WAT",                       # water
+    "GOL", "EDO", "PEG", "PG4", "PGE", "1PE", "P6G", "ACT", "FMT",
+    "DMS", "MES", "EPE", "TRS", "BME", "MPD", "IMD", "FLC", "CIT",
+    "SO4", "PO4", "NO3", "BCT", "CO3", "ACY",  # buffers / cryoprotectants / ions
+    "CL", "BR", "IOD", "NA", "K", "CS", "RB",  # monatomic non-catalytic ions
+}
+# Single-atom species reported as potential catalytic metals rather than substrates.
+_METAL_ELEMENTS = {
+    "ZN", "MG", "MN", "FE", "CU", "NI", "CO", "CA", "MO", "W", "V", "CD", "HG",
+}
+
+
+def _gemmi_model(file_path: str):
+    """Return the first model of a gemmi structure with entities set up."""
+    st = _load_gemmi(file_path)
+    try:
+        st.setup_entities()
+    except Exception:
+        pass
+    if not len(st):
+        raise ValueError("Structure has no models")
+    return st[0]
+
+
+def _is_protein_residue(resname: str) -> bool:
+    info = gemmi.find_tabulated_residue(resname)
+    if info is not None:
+        return info.is_amino_acid()
+    return resname in AA3_TO_1
+
+
+def extract_ligand_contacts(
+    file_path: str,
+    ligand_resname: str | None = None,
+    ligand_chain: str | None = None,
+    cutoff: float = 4.5,
+    min_heavy_atoms: int = 6,
+    max_ligands: int = 3,
+) -> dict[str, Any]:
+    """Find bound non-polymer ligand(s) and the protein residues lining them.
+
+    This is the substrate-grafting input for enzyme design: given a holo
+    structure of a protein bound to (one of) the substrate(s), it returns the
+    first-shell interacting residues (with the ligand atoms they contact) so
+    those interactions can be grafted into a de novo active site. It is an
+    OPTIONAL enrichment step — when no holo structure exists the enzyme workflow
+    skips it and lets the diffusion model generate the surrounding residues.
+
+    Catalytic metals (Zn, Mg, Mn, ...) are reported separately, never treated as
+    the substrate. Water and common crystallisation additives are ignored.
+    """
+    model = _gemmi_model(file_path)
+
+    # Single pass: collect protein heavy atoms (with residue identity) and group
+    # candidate-ligand / metal heavy atoms by residue.
+    prot_coords: list[list[float]] = []
+    prot_meta: list[tuple[str, int, str, str]] = []  # (chain, seqid, resname, atom)
+    ligands: dict[tuple, dict] = {}                   # (chain,seqid,resname) -> {...}
+    metals: list[dict] = []
+
+    for chain in model:
+        for res in chain:
+            rname = res.name.strip().upper()
+            if _is_protein_residue(rname):
+                for atom in res:
+                    if atom.element.name == "H":
+                        continue
+                    prot_coords.append([atom.pos.x, atom.pos.y, atom.pos.z])
+                    prot_meta.append((chain.name, res.seqid.num, rname, atom.name))
+                continue
+            if rname in {"HOH", "DOD", "WAT"}:
+                continue
+            heavy = [a for a in res if a.element.name != "H"]
+            # Metal site (single-atom species with a metal element)
+            if len(heavy) == 1 and heavy[0].element.name.upper() in _METAL_ELEMENTS:
+                metals.append({
+                    "element": heavy[0].element.name.upper(),
+                    "chain": chain.name,
+                    "resnum": res.seqid.num,
+                    "resname": rname,
+                    "pos": [heavy[0].pos.x, heavy[0].pos.y, heavy[0].pos.z],
+                })
+                continue
+            if rname in _NON_SUBSTRATE_HET:
+                continue
+            if ligand_resname and rname != ligand_resname.strip().upper():
+                continue
+            if ligand_chain and chain.name != ligand_chain:
+                continue
+            key = (chain.name, res.seqid.num, rname)
+            ligands.setdefault(key, {"heavy": []})
+            for a in heavy:
+                ligands[key]["heavy"].append((a.name, [a.pos.x, a.pos.y, a.pos.z]))
+
+    # Drop tiny ligands (ions/fragments) below the heavy-atom floor, rank by size.
+    cand = [
+        {"chain": k[0], "resnum": k[1], "resname": k[2], "n_heavy": len(v["heavy"]), "_atoms": v["heavy"]}
+        for k, v in ligands.items() if len(v["heavy"]) >= min_heavy_atoms
+    ]
+    cand.sort(key=lambda c: c["n_heavy"], reverse=True)
+    cand = cand[:max_ligands]
+
+    if not cand:
+        return {
+            "ligands": [],
+            "metals": metals,
+            "note": (
+                "No substrate-like ligand found (no holo structure for grafting). "
+                "Proceed from the chemistry/QM active-site build and let the diffusion "
+                "model generate surrounding residues."
+            ),
+        }
+
+    if not prot_coords:
+        return {"ligands": [{"chain": c["chain"], "resnum": c["resnum"], "resname": c["resname"],
+                             "n_heavy": c["n_heavy"], "contacts": []} for c in cand],
+                "metals": metals, "note": "Ligand(s) present but no protein chain to contact."}
+
+    tree = KDTree(np.array(prot_coords))
+    out_ligands = []
+    for c in cand:
+        contact_res: dict[tuple, dict] = {}
+        for atom_name, pos in c["_atoms"]:
+            for h in tree.query_ball_point(pos, cutoff):
+                ch, seq, rn3, p_atom = prot_meta[h]
+                d = float(np.linalg.norm(np.array(pos) - np.array(prot_coords[h])))
+                rk = (ch, seq)
+                rec = contact_res.get(rk)
+                if rec is None or d < rec["min_dist_A"]:
+                    contact_res[rk] = {
+                        "chain": ch, "resnum": seq, "residue": rn3,
+                        "min_dist_A": round(d, 2),
+                        "protein_atom": p_atom, "ligand_atom": atom_name,
+                    }
+        contacts = sorted(contact_res.values(), key=lambda r: r["min_dist_A"])
+        out_ligands.append({
+            "chain": c["chain"], "resnum": c["resnum"], "resname": c["resname"],
+            "n_heavy": c["n_heavy"], "n_contacts": len(contacts), "contacts": contacts,
+        })
+
+    return {"ligands": out_ligands, "metals": metals,
+            "note": "First-shell residues are graft candidates for the de novo active site."}
+
+
+def analyze_active_site_geometry(file_path: str, catalytic_spec: dict) -> dict[str, Any]:
+    """Measure catalytic-constellation distances/angles from an explicit spec.
+
+    Atoms are referenced as [chain, resnum (auth), atom_name]. This is a generic
+    geometry reporter for diagnosing a grafted/designed active site (e.g. donor->
+    acceptor distances, catalytic-triad angles) — the heavy validation gates live
+    in src/enzyme_validation.py.
+
+    catalytic_spec = {
+      "distances": [{"label": str, "a": [chain,resnum,atom], "b": [chain,resnum,atom]}, ...],
+      "angles":    [{"label": str, "a": [...], "b": [...], "c": [...]}],   # angle at b
+    }
+    """
+    model = _gemmi_model(file_path)
+    # Index atoms by (chain, resnum, atom_name_upper) -> np.array(xyz)
+    idx: dict[tuple, np.ndarray] = {}
+    for chain in model:
+        for res in chain:
+            for atom in res:
+                idx[(chain.name, res.seqid.num, atom.name.strip().upper())] = (
+                    np.array([atom.pos.x, atom.pos.y, atom.pos.z])
+                )
+
+    def _get(ref) -> np.ndarray:
+        ch, num, name = ref[0], int(ref[1]), str(ref[2]).strip().upper()
+        key = (ch, num, name)
+        if key not in idx:
+            raise KeyError(f"atom {ch}/{num}/{name} not found")
+        return idx[key]
+
+    distances, angles, errors = [], [], []
+    for d in catalytic_spec.get("distances", []) or []:
+        try:
+            v = float(np.linalg.norm(_get(d["a"]) - _get(d["b"])))
+            distances.append({"label": d.get("label", ""), "a": d["a"], "b": d["b"],
+                              "distance_A": round(v, 2)})
+        except (KeyError, ValueError, TypeError) as exc:
+            errors.append(f"distance {d.get('label','')}: {exc}")
+    for a in catalytic_spec.get("angles", []) or []:
+        try:
+            pa, pb, pc = _get(a["a"]), _get(a["b"]), _get(a["c"])
+            v1, v2 = pa - pb, pc - pb
+            cos = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+            ang = float(np.degrees(np.arccos(max(-1.0, min(1.0, cos)))))
+            angles.append({"label": a.get("label", ""), "angle_deg": round(ang, 1)})
+        except (KeyError, ValueError, TypeError) as exc:
+            errors.append(f"angle {a.get('label','')}: {exc}")
+
+    return {"distances": distances, "angles": angles, "errors": errors}
+
+
 def check_mutation_clash(
     file_path: str,
     chain: str,

@@ -27,6 +27,19 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
 
 3. **Web platform** (`web/`): FastAPI + Celery backend (`web/backend/`), React/Vite frontend (`web/frontend/`). Celery wraps `pipeline_runner` as a background task. BYOK API keys are Fernet-encrypted (`web/backend/crypto.py`).
 
+## Two design workflows in one orchestrator
+
+`pipeline_runner.run()` drives **two parallel tracks**, selected by the `workflow` arg (`"ppi"` default, `"enzyme"`):
+
+- **PPI / binder track** (the original): `pathway → literature → structure → design → execution(BoltzGen) → analysis → summary`. Stages 0–3 and 6 are LLM skills; 4–5 are deterministic Python.
+- **Enzyme track** (`_run_enzyme_track`, `ENZYME_STAGE_ORDER`): `substrate → theozyme → theozyme_diagnose → grafting(optional) → enzyme_design → enzyme_validation`. It is a *fully parallel* sequence, not a branch midway through the PPI run — `run()` dispatches to it at the top when `workflow=="enzyme"`.
+
+Enzyme **compute model = "LPT preps + validates"**: LPT writes ORCA inputs (`src/enzyme_build.py`) and RFD3/LigandMPNN specs deterministically, and validates returned designs (`src/enzyme_validation.py`, ported foundry gates). The heavy ORCA/GPU runs happen **outside LPT** — those hand-offs raise `PipelineExternalStepError` (a `PipelinePausedError` subclass) with `inputs`/`expected_outputs`/`instructions`/`resume_stage`; the user runs the step and resumes via `--start-from <resume_stage>`. Do **not** add ORCA/GPU subprocess runners to the enzyme track. Grafting is optional (skips gracefully with no holo structure); designs are validated/iterated at small-scale pilot before scale-up.
+
+## Persistent project layer
+
+`src/project.py` manages `projects/<slug>/` with an atomic `manifest.json` (the filesystem source of truth for stage/checkpoint state + artifact pointers; `web.db` stays authoritative for the web UI). Layout: `shared/{structures,ligands,orca}/` + `runs/<round-N>/{enzyme,scratch}/`. `PipelineRunner(project=, round_id=)` mirrors stage state into the manifest (`_record_stage`) and computes `run_dir` from it. The binder track works without a project (legacy `outputs/<slug>_<date>/`); the enzyme track requires one (multi-round iteration). When adding an enzyme pause point, set a manifest checkpoint (`_enzyme_checkpoint`) so resume state survives.
+
 ## Skill execution model
 
 - A skill's source of truth is its `SKILL.md` frontmatter + body. The `.zip` siblings in `skills/` are packaged artifacts — regenerate them, don't hand-edit.
@@ -47,12 +60,13 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 
 - **Strict provenance**: every claim carries a `source_span` (e.g. `"Page 4, Para 2"`). Tool consumers may reject fingerprints without it.
 - **Units are normalised at extraction time**: `affinities_kd_Molar` and `inhibitory_constant_Ki` are floats in **Molar** (not nM/µM). `protein_origin_organism` is an **NCBI taxonomy integer ID** (e.g. 9606). `confidence_score` is 0.0–1.0.
-- **Closed enums**: `study_type` and `study_category` are validated against the schema — adding a new category means updating both the schema and any pathway-expert / complex-expert skill prompts that filter on it.
+- **Closed enums**: `study_type` and `study_category` are validated against the schema — adding a new category means updating both the schema and any pathway-expert / complex-expert skill prompts that filter on it. Current categories include `enzymology` / `biocatalysis` / `computational_chemistry` (also listed in `src/vector_store.py`'s `SEARCH_TOOL_DEFINITION` enum and the `search_corpus` def in `src/skill_runner.py`).
+- **Nested context blocks**: `pathway_context` (pathway_biology papers) and `enzyme_context` (enzyme/chemistry/comp-chem papers — reactions/EC/SMILES, catalytic residues with roles, kinetics in normalised units kcat s⁻¹/Km M/kcat·Km M⁻¹s⁻¹, QM methods) are each populated only for their categories. **Pydantic drops unknown fields by default**, so any new fingerprint field must be added to the Pydantic models in `src/curator.py` (`EnzymeContext` etc.) or it is silently discarded on `model_dump`, AND folded into `vector_store._build_embed_text` to be searchable.
 - **Curator output is strict JSON only**, no prose. Parsing in `src/curator.py` will fail loudly otherwise.
 
 ## Configuration layering
 
-`config.yaml` is the main config; alternates (`config_search_expansion.yaml`, `config_flagship_journals.yaml`, `config_with_complexes.yaml`) are passed via `--config` to `fetch_papers.py` for targeted searches without polluting the primary keyword list. The current main config is focused on hypertrophic cardiomyopathy / sarcomere biology — keyword sets rotate as research focus shifts.
+`config.yaml` is the main config; alternates (`config_search_expansion.yaml`, `config_flagship_journals.yaml`, `config_with_complexes.yaml`, `config_enzyme_chemistry.yaml`) are passed via `--config` to `fetch_papers.py` for targeted searches without polluting the primary keyword list. The current main config is focused on hypertrophic cardiomyopathy / sarcomere biology — keyword sets rotate as research focus shifts. `curate_papers.py` now also takes `--config` (so an enzyme-corpus run can use a different provider/prompt). For a topical sweep that shouldn't pull the whole pending backlog, `fetch_papers.py --fetched-only --max-downloads N` restricts downloads to the current search's hits.
 
 ## MCP launchers (Windows gotcha)
 
@@ -62,10 +76,11 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 
 ## Common file pairs to keep in sync
 
-- `extraction_schema.json` ⇄ `src/models.py` (Pydantic) ⇄ `curation_prompt.md` — schema, validator, and prompt must agree.
-- `src/mcp_server.py` ⇄ `src/skill_runner.py` tool dispatch — same tool surface, two transports.
+- `extraction_schema.json` ⇄ `src/curator.py` (Pydantic `Fingerprint`/`EnzymeContext`/…) ⇄ `curation_prompt.md` ⇄ `src/vector_store.py` (`_build_embed_text` + the search enum) — schema, validator, prompt, and what's embedded/searchable must agree.
+- `src/mcp_server.py` / `src/structure_tools_server.py` (MCP) ⇄ `src/skill_runner.py` `_TOOL_DEFS` + `_execute_tool` dispatch + `_filter_tools` gating sets — same tool surface, two transports. A skill that references a tool must also be in the right gating set (e.g. `_LIGAND_TOOL_SKILLS` for the enzyme ligand/active-site tools).
 - `src/structure_tools.py` (pure logic) ⇄ `src/structure_tools_server.py` (MCP wrapper) — server is a thin shim; logic lives in the former.
-- `src/pipeline_runner.py` ⇄ each skill's "PIPELINE HANDOFF" output block.
+- `src/pipeline_runner.py` ⇄ each skill's "PIPELINE HANDOFF" output block — including the enzyme stages: `_run_enzyme_track` reads keys (`forming_bond`, `acceptors`, `donors_json`, `ts_xyz_path`, `prior_art_pdbs`, …) from the enzyme skills' handoffs, and `_STAGE_TO_SKILL` must map every enzyme stage. `src/enzyme_build.py` / `src/enzyme_validation.py` are deterministic stage helpers (called directly, like `design_runner.py`), not LLM tools.
+- Configs: alternates passed via `--config` to `fetch_papers.py` (and now `curate_papers.py`). `config_enzyme_chemistry.yaml` writes into the SAME corpus paths as `config.yaml`, so the broadened `curation_prompt.md` must stay compatible with both.
 
 ## Frontend
 

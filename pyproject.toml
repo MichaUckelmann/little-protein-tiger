@@ -19,6 +19,8 @@ dependencies = [
     "networkx>=3.0",
     "gemmi>=0.7",
     "biopython>=1.85",
+    "rdkit>=2026.3.3",
+    "biotite>=1.7.1",
 ]
 
 [project.optional-dependencies]

@@ -23,8 +23,7 @@ _TIER1_JOURNALS: set[str] = {
     # Multidisciplinary flagships
     "nature", "science", "cell", "pnas",
     "proceedings of the national academy of sciences",
-    "new england journal of medicine","n engl j med",
-    "n"
+    "new england journal of medicine", "n engl j med",
     # Nature family
     "nature chemical biology", "nat chem biol",
     "nature structural & molecular biology", "nat struct mol biol",
@@ -33,7 +32,7 @@ _TIER1_JOURNALS: set[str] = {
     "nature cell biology", "nat cell biol",
     "nature medicine", "nat med",
     "nature cancer", "nat cancer",
-    "nature genetics", "nat genet"
+    "nature genetics", "nat genet",
     # Cell Press
     "cell chemical biology","cell chem biol",
     "molecular cell", "mol cell",
@@ -47,6 +46,13 @@ _TIER1_JOURNALS: set[str] = {
     "angewandte chemie", "angew chem int ed",
     "journal of medicinal chemistry", "j med chem",
     "acs chemical biology", "acs chem biol",
+    # Chemistry / catalysis / biotech flagships
+    "nature catalysis", "nat catal",
+    "nature chemistry", "nat chem",
+    "nature biotechnology", "nat biotechnol",
+    "acs central science", "acs cent sci",
+    "chem",          # Cell Press Chem (exact-match only)
+    "jacs au",
     "science advances", "sci adv",
     "science translational medicine", "sci transl med",
     "nucleic acids research", "nucleic acids res",
@@ -55,7 +61,7 @@ _TIER1_JOURNALS: set[str] = {
     "cell host & microbe", "cell host microbe",
     "fems microbiology reviews","fems microbiol rev",
     "current opinion microbiology", "curr opin microbiol",
-    "the isme journal", "imse j",
+    "the isme journal", "isme j",
     "circulation", 
     "jama the journal of the american medical association", "jama",
     "cardiovascular research", "cardiovasc res",
@@ -95,6 +101,27 @@ _TIER2_JOURNALS: set[str] = {
     "journal of molecular biology", "jmb",
     "clinical cancer research", "clin cancer res",
     "acta pharmaceutica sinica b", "acta pharm sin b",
+    # Catalysis / computational chemistry / biocatalysis / synthetic biology.
+    # NB: matching is exact-after-_normalise (ampersands become spaces and never
+    # match), so abbreviation forms are the reliable keys — full names are listed
+    # ampersand-free as a best-effort fallback.
+    "acs catalysis", "acs catal",
+    "chem catalysis", "chem catal",
+    "chemcatchem",
+    "catalysis science and technology", "catal sci technol",
+    "acs synthetic biology", "acs synth biol",
+    "metabolic engineering", "metab eng",
+    "protein engineering design and selection", "protein eng des sel", "peds",
+    "journal of chemical theory and computation", "j chem theory comput", "jctc",
+    "journal of chemical information and modeling", "j chem inf model", "jcim",
+    "the journal of physical chemistry b", "j phys chem b",
+    "the journal of physical chemistry letters", "j phys chem lett",
+    "physical chemistry chemical physics", "phys chem chem phys", "pccp",
+    "green chemistry", "green chem",
+    "organic letters", "org lett",
+    "chemical communications", "chem commun",
+    "chemistry a european journal", "chem eur j",
+    "biotechnology and bioengineering", "biotechnol bioeng",
 }
 
 # Publication types that indicate a conference abstract → exclude entirely

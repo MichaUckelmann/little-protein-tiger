@@ -143,6 +143,43 @@ Configuration lives under `design:` in `config.yaml` (workstation
 executable, pilot/production batch sizes, hard filters, ranking weights,
 pyrosetta env path).
 
+**Enzyme design (de novo active sites)** — a *parallel* track to the binder
+pipeline, selected with `--workflow enzyme`. It designs a catalytic active
+site for a small-molecule reaction (theozyme / QM transition-state cluster →
+scaffolding → validation) rather than a binder. The compute model is
+**"LPT preps + validates"**: LPT writes the ORCA (QM) inputs and the
+RFD3/LigandMPNN scaffolding specs deterministically; **you run** ORCA and the
+GPU design CLIs externally; LPT ingests and validates the results. Those
+hand-offs surface as a pause (`PipelineExternalStepError`) that you resume from.
+
+```
+PipelineRunner.run(query="design an enzyme for ...", workflow="enzyme")
+
+  substrate           enzyme-substrate-id        → substrate/SMILES, EC, cofactor,
+                                                    rate-determining step, prior-art PDBs
+  theozyme            enzyme-active-site-modeling → catalytic constellation + ORCA inputs
+       ⏸ orca_run     (you run ORCA: relax → OptTS → Freq → scan)
+  theozyme_diagnose   src/enzyme_build (mode_tools) → single-imaginary check + barrier
+                                                       (HITL barrier gate)
+  grafting (optional) pdb-ligand-grafting        → graft holo-structure contacts,
+                                                    or SKIP if no holo structure
+  enzyme_design       protein-design-script +    → RFD3 spec + LigandMPNN config
+                      src/enzyme_build              sized for a ~500-traj PILOT
+       ⏸ design_run   (you run RFD3 → LigandMPNN → refold on the GPU host)
+  enzyme_validation   src/enzyme_validation +    → raw-design gates (CAT/GEOM/STITCH/LIG,
+                      enzyme-design-validation     ported from foundry) + refold; then
+                                                   SCALE_UP / ITERATE / STOP decision
+```
+
+Designs are validated and **iterated at small scale** before scale-up: if the
+pilot can't build the active site, the validation stage diagnoses which gate
+failed and recommends an active-site re-tune as a new project round. The
+deterministic validators (`src/enzyme_validation.py`) port the foundry
+`current_best_practice` gates (orientation/rotamer-reachability, not distance;
+backbone-only geometry; name-independent ligand integrity; refold
+self-consistency). State is tracked in a persistent **project directory**
+(see below). Enzyme runs require a `--project`.
+
 ---
 
 ## Usage
@@ -165,9 +202,19 @@ python scripts/fetch_papers.py --config config_search_expansion.yaml
 
 # Override keywords inline
 python scripts/fetch_papers.py --keywords "MDM2 p53 inhibitor peptide" --max 100
+
+# Targeted topical expansion: download ONLY this run's hits (not the whole
+# pending backlog), capped — used for the enzyme/chemistry corpus expansion.
+python scripts/fetch_papers.py --config config_enzyme_chemistry.yaml \
+    --fetched-only --max-downloads 1500
 ```
 
-Re-running is safe — already-downloaded papers are skipped.
+Re-running is safe — already-downloaded papers are skipped. `--fetched-only`
+restricts downloads to papers found in the current search; `--max-downloads N`
+caps the batch (highest-priority first). `config_enzyme_chemistry.yaml` is a
+ready-made keyword set for enzyme design / biocatalysis / computational
+chemistry that writes into the same corpus (the broadened `curation_prompt.md`
+captures the new concepts).
 
 ### 2. Curate papers
 
@@ -191,9 +238,18 @@ python scripts/curate_papers.py --paper-key "doi:10.1101/2024.01.01.123456"
 
 # Use a different provider
 python scripts/curate_papers.py --provider gemini
+
+# Curate with a specific config (provider/model/prompt) — e.g. the enzyme corpus
+python scripts/curate_papers.py --config config_enzyme_chemistry.yaml \
+    --provider gemini --limit 1000
 ```
 
-Fingerprints are saved to `data/fingerprints/<paper_key>.json`.
+Fingerprints are saved to `data/fingerprints/<paper_key>.json`. Enzyme /
+chemistry / computational-chemistry papers additionally populate an
+`enzyme_context` block (reactions + EC + SMILES, catalytic residues with roles,
+kinetics in normalised units, QM methods) and are tagged with the
+`enzymology` / `biocatalysis` / `computational_chemistry` study categories, all
+searchable via `search_corpus`.
 
 ### 3. Ingest vectors
 
@@ -243,6 +299,10 @@ usage: run_skill.py --skill SKILL --query QUERY
 | `protein-design-script` | Generates RFDiffusion / BoltzDesign run scripts from a hotspot spec |
 | `chimerax-visualization` | Generates a ChimeraX `.cxc` script to visualise the interface: target in focus, binder washed out, hotspot patches highlighted |
 | `orchestrator` | End-to-end multi-stage run: pathway → interface → design → optimization |
+| `enzyme-substrate-id` | **Enzyme workflow** stage 0: scopes the chemistry — substrate/SMILES, reaction class, EC, cofactor, rate-determining step, and tool-verified prior-art holo PDBs. Corpus-first with `[uncited]`-tagged background fallback |
+| `enzyme-active-site-modeling` | **Enzyme workflow** theozyme stage: a methodology playbook for building a QM transition-state cluster + catalytic pocket and handing it to scaffolding. Emits the spec that LPT turns into ORCA inputs |
+| `pdb-ligand-grafting` | **Enzyme workflow** (optional): extracts first-shell interacting residues from a holo structure (via `tool_extract_ligand_contacts`) as graft candidates; skips gracefully when no holo structure exists |
+| `enzyme-design-validation` | **Enzyme workflow** terminal stage: interprets the deterministic raw-design + refold gates and decides SCALE_UP / ITERATE / STOP, diagnosing failures for the iterate loop |
 
 **Examples:**
 
@@ -479,6 +539,119 @@ to a dedicated env via `scripts/_sasa_worker.py`.
 See `diary.md` for design notes, known failure modes, and the long-term
 plan for a ground-truth PDB→protein lookup table.
 
+### 7b. Run the de novo enzyme design pipeline
+
+A parallel workflow (`--workflow enzyme`) that designs a catalytic active site
+for a small-molecule reaction. Compute model: **LPT prepares inputs and
+validates outputs; you run ORCA (QM) and the GPU design CLIs.** Runs require a
+`--project` so the iterative, human-in-the-loop state is tracked in a persistent
+project directory (see "Project directories" below).
+
+```bash
+# Start a new enzyme campaign (round 1). Runs substrate-id + theozyme, then
+# PAUSES and prints the ORCA inputs to run.
+python scripts/run_pipeline.py --workflow enzyme --project kemp-eliminase \
+    --query "design an enzyme for a Kemp elimination of 5-nitrobenzisoxazole"
+
+# ... run ORCA on the inputs in projects/kemp-eliminase/shared/orca/
+#     (relax → OptTS → Freq → scan), leave the .out/.hess outputs there ...
+
+# Resume: ingest the ORCA outputs (single-imaginary check + barrier), do the
+# optional grafting + design-input prep, then PAUSE for the GPU pilot.
+python scripts/run_pipeline.py --workflow enzyme --project kemp-eliminase \
+    --query "design an enzyme for a Kemp elimination of 5-nitrobenzisoxazole" \
+    --start-from theozyme_diagnose
+
+# ... run the ~500-trajectory pilot (RFD3 → LigandMPNN → refold) and drop the
+#     outputs (*.cif.gz + sidecar *.json) into
+#     projects/kemp-eliminase/runs/round-1/enzyme/14_design_outputs/ ...
+
+# Resume: validate the pilot (foundry gates + refold) and get the
+# SCALE_UP / ITERATE / STOP decision.
+python scripts/run_pipeline.py --workflow enzyme --project kemp-eliminase \
+    --query "design an enzyme for a Kemp elimination of 5-nitrobenzisoxazole" \
+    --start-from enzyme_validation
+```
+
+Each pause prints exactly what to run, where to drop the outputs, and the
+`--start-from` stage to resume with. If the pilot can't build the active site,
+the validation stage diagnoses the failing gate and recommends an active-site
+re-tune — start a fresh round (the manifest tracks rounds and lets you iterate).
+
+**Grafting is optional**: when no deposited holo structure of a protein bound to
+your substrate exists, the workflow builds the active site from the QM model and
+lets the diffusion model generate the surrounding residues — it never blocks on
+grafting.
+
+**Sourcing safeguards**: the enzyme reasoning skills query the curated corpus
+first and report `corpus_coverage`; when coverage is thin they may use background
+chemistry knowledge but must tag it `[uncited]` and never fabricate DOIs, PDB
+accessions (which must be tool-verified), or kinetic values. The orchestrator's
+automatic DOI verification flags any hallucinated citation on every stage.
+
+#### Project directories
+
+Both workflows can write into a persistent project at `projects/<slug>/`
+(`--project <slug>`), the source of truth for an iterative campaign:
+
+```
+projects/<slug>/
+  manifest.json           # rounds, per-stage status + handoffs, open checkpoints
+  shared/
+    structures/  ligands/  orca/      # reusable assets (ORCA inputs/outputs here)
+  runs/<round-N>/
+    00_pathway.md ...                  # PPI stage files (binder workflow)
+    enzyme/                            # enzyme stage files + 14_design_{inputs,outputs}/
+    scratch/                           # disposable intermediates
+```
+
+`src/project.py` manages it (atomic `manifest.json` writes). The binder pipeline
+works without `--project` (legacy `outputs/<slug>_<date>/` layout); the enzyme
+workflow requires one.
+
+### 8. Visualise top-K designs in PyMOL
+
+`scripts/pymol_show_topk.py` loads the top-K binders from any run's
+`05_ranking/top_k.csv`, superimposes them on a single target frame, highlights
+the per-design hotspots, and overlays the native complex so you can eyeball
+whether the designs hit the right interface. Styling follows the lab's
+`pymol_functions_cycle.py` (black bg, gold target, ambient occlusion).
+
+It is **run-agnostic** — nothing is hardcoded. The target CIF + chain and the
+hotspot residue list are read from each design's BoltzGen YAML in
+`03_design_inputs/`, so it works on any future campaign whose YAMLs follow the
+standard schema.
+
+```bash
+pymol
+```
+```
+topk                                  # ~/.pymolrc alias: loads the script
+show_topk outputs/e2e_mesothelioma    # path relative to cwd, or absolute
+show_topk <run>, 5                    # top-5 instead of the default 10
+show_topk <run>, 10, A, B             # explicit target / binder chain IDs
+```
+
+`show_topk` defaults the run dir to the current working directory and K to 10.
+Once the script is loaded, `show_topk` stays registered for the session, so you
+can point it at another run without re-running `topk`.
+
+Controls (bound on load):
+
+- **F1 / F2** — previous / next design. Only the target + native + current
+  binder are shown; the on-target hotspot sticks/labels update per design.
+- **F3** — overlay all K binders at once with the union of hotspots.
+- `toggle_native` — hide / show the native-complex overlay (purple partner
+  chain; its target chain is hidden to avoid a duplicate cartoon).
+
+Pre-made selections: `hotspots`, `binder_interface`, `target_chain`,
+`native_complex`.
+
+> Numbering note: BoltzGen output CIFs carry the input `label_seq_id` as their
+> `auth_seq_id`, which is exactly what the YAML `binding:` field lists — so the
+> hotspot selection lines up without any remapping (see the 2026-05-23 diary
+> entry on the chain/numbering convention).
+
 ---
 
 ## Database queries
@@ -561,7 +734,8 @@ To debug connection issues, check `data/mcp_server.log`. Known fix for sentence_
 ```
 little_protein_tiger/
 ├── config.yaml                  # Main config: keywords, limits, paths, curation settings
-├── curation_prompt.md           # System prompt for Claude curation
+├── config_enzyme_chemistry.yaml # Keyword set for the enzyme/chemistry corpus expansion
+├── curation_prompt.md           # System prompt for curation (incl. enzyme_context extraction)
 ├── extraction_schema.json       # Target JSON schema for fingerprints (v2.0)
 ├── requirements.txt
 ├── .env.example
@@ -578,9 +752,17 @@ little_protein_tiger/
 │   ├── fingerprint_store.py     # Save/load fingerprint JSONs
 │   ├── vector_store.py          # LanceDB wrapper + PubMedBERT embeddings
 │   ├── mcp_server.py            # FastMCP: search_corpus + get_fingerprint (MCP)
-│   ├── structure_tools.py       # Pure-Python interface analysis (BSA, contacts, SASA)
+│   ├── structure_tools.py       # Pure-Python structure analysis (BSA, contacts, SASA,
+│   │                            #   ligand contacts, active-site geometry)
 │   ├── structure_tools_server.py# FastMCP wrapper for structure_tools (MCP)
-│   └── skill_runner.py          # Agentic loop: loads SKILL.md, calls Claude/Gemini API
+│   ├── skill_runner.py          # Agentic loop: loads SKILL.md, calls Claude/Gemini API
+│   ├── pipeline_runner.py       # Orchestrator: binder pipeline + enzyme track (_run_enzyme_track)
+│   ├── project.py               # Persistent project dir + manifest.json (both workflows)
+│   ├── design_runner.py         # BoltzGen subprocess wrapper (binder execution stage)
+│   ├── design_metrics.py        # Parse BoltzGen output + pyrosetta hotspot-SASA enrichment
+│   ├── design_ranking.py        # Hard filters → composite z-score → MMR diversity ranking
+│   ├── enzyme_build.py          # Theozyme + ORCA-input + RFD3/MPNN-spec generation (pyrosetta-free)
+│   └── enzyme_validation.py     # De novo enzyme design gates (ported foundry validators)
 │
 ├── scripts/
 │   ├── fetch_papers.py          # CLI: search + download
@@ -590,6 +772,7 @@ little_protein_tiger/
 │   ├── launch_mcp.py            # Launcher for literature-db MCP server
 │   ├── launch_structure_tools.py# Launcher for structure-tools MCP server
 │   ├── run_skill.py             # CLI: run any expert skill via Claude/Gemini API
+│   ├── run_pipeline.py          # CLI: run the binder OR enzyme pipeline (--workflow, --project)
 │   ├── test_e2e.py              # Driver for the full binder-design pipeline
 │   ├── compare_providers.py     # Sandboxed claude/gemini/local provider bake-off
 │   ├── score_provider_compare.py# Scorecard + REPORT.md across providers
@@ -604,7 +787,15 @@ little_protein_tiger/
 │   ├── complex-expert/          # Corpus search for a named complex
 │   ├── protein-design-script/   # RFDiffusion / BoltzDesign script generation
 │   ├── chimerax-visualization/  # ChimeraX .cxc script for interface figures
-│   └── orchestrator/            # End-to-end multi-stage pipeline
+│   ├── design-analyst/          # Terminal binder-design QC + GO/NO-GO summary
+│   ├── orchestrator/            # End-to-end multi-stage pipeline
+│   ├── enzyme-substrate-id/     # Enzyme workflow: substrate/reaction scoping
+│   ├── enzyme-active-site-modeling/ # Enzyme workflow: theozyme / QM TS methodology
+│   ├── pdb-ligand-grafting/     # Enzyme workflow: optional holo-structure contact grafting
+│   └── enzyme-design-validation/# Enzyme workflow: validate gates + iterate decision
+│
+├── projects/                    # Gitignored: persistent per-campaign dirs (--project)
+│   └── <slug>/                  #   manifest.json + shared/{structures,ligands,orca} + runs/<round>/
 │
 └── data/                        # Gitignored
     ├── literature.db            # SQLite paper metadata + status tracking

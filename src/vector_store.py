@@ -83,13 +83,19 @@ class VectorStore:
                     "description": (
                         "Optional filter by scientific domain. Use 'pathway_biology' "
                         "to find disease mechanism and target selection papers. "
-                        "Use 'biochemistry' for binding assay and inhibitor papers."
+                        "Use 'biochemistry' for binding assay and inhibitor papers. "
+                        "Use 'enzymology' for enzyme mechanism/kinetics, 'biocatalysis' "
+                        "for enzyme engineering/design, and 'computational_chemistry' "
+                        "for QM/DFT/QM-MM reaction and transition-state modelling."
                     ),
                     "enum": [
                         "biochemistry",
                         "pathway_biology",
                         "structural_biology",
                         "host_pathogen",
+                        "enzymology",
+                        "biocatalysis",
+                        "computational_chemistry",
                         "clinical",
                         "review",
                     ],
@@ -204,6 +210,39 @@ class VectorStore:
             if parts:
                 pathway_str = " ".join(parts)
 
+        # Enrich embed text with enzyme/chemistry context so search_corpus can
+        # retrieve enzyme papers by reaction / substrate / catalytic-residue /
+        # method terms (mirrors the pathway_context enrichment above).
+        enzyme_str = ""
+        enzyme_ctx = fp.get("enzyme_context")
+        if enzyme_ctx:
+            eparts = []
+            for r in (enzyme_ctx.get("reactions") or []):
+                rxn = r.get("reaction", "")
+                bits = [b for b in [
+                    rxn,
+                    r.get("reaction_class"),
+                    f"substrate {r.get('substrate')}" if r.get("substrate") else "",
+                    f"EC {r.get('ec_number')}" if r.get("ec_number") else "",
+                    f"cofactor {r.get('cofactor')}" if r.get("cofactor") else "",
+                ] if b]
+                if bits:
+                    eparts.append("Reaction: " + ", ".join(bits) + ".")
+            res = [c.get("residue", "") for c in (enzyme_ctx.get("catalytic_residues") or []) if c.get("residue")]
+            if res:
+                eparts.append(f"Catalytic residues: {', '.join(res)}.")
+            methods = []
+            for m in (enzyme_ctx.get("computational_methods") or []):
+                mb = [b for b in [m.get("method"), m.get("level_of_theory"), m.get("software")] if b]
+                if mb:
+                    methods.append(" ".join(mb))
+            if methods:
+                eparts.append("Methods: " + "; ".join(methods) + ".")
+            if enzyme_ctx.get("design_strategy"):
+                eparts.append(f"Design strategy: {enzyme_ctx['design_strategy']}.")
+            if eparts:
+                enzyme_str = " ".join(eparts)
+
         claims = [
             kf.get("claim", "")
             for kf in (fp.get("key_findings") or [])
@@ -215,7 +254,7 @@ class VectorStore:
                 c if c.endswith(".") else c + "." for c in claims
             )
 
-        sections = [s for s in [proteins_str, hook, pathway_str, findings_str] if s.strip()]
+        sections = [s for s in [proteins_str, hook, pathway_str, enzyme_str, findings_str] if s.strip()]
         return "\n\n".join(sections).strip()
 
     @staticmethod

@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "relevant": true,
-  "study_category": "enum[biochemistry, pathway_biology, structural_biology, clinical, review]",
+  "study_category": "enum[biochemistry, pathway_biology, structural_biology, host_pathogen, enzymology, biocatalysis, computational_chemistry, clinical, review]",
   "pathway_context": {
     "pathways": ["string"],
     "disease_associations": [
@@ -28,6 +28,48 @@
     "redundancy_risks": ["string"],
     "upstream_regulators": ["string"],
     "downstream_effectors": ["string"]
+  },
+  "enzyme_context": {
+    "_comment": "Populate only when study_category is enzymology | biocatalysis | computational_chemistry; null otherwise.",
+    "reactions": [
+      {
+        "reaction": "string",
+        "reaction_class": "string or null",
+        "ec_number": "string or null",
+        "substrate": "string or null",
+        "substrate_smiles": "string or null",
+        "product": "string or null",
+        "cofactor": "string or null",
+        "source_span": "string"
+      }
+    ],
+    "catalytic_residues": [
+      {
+        "residue": "string",
+        "role": "enum[nucleophile, general_base, general_acid, oxyanion_hole, metal_ligand, electrostatic_stabilization, covalent_anchor, substrate_binding, other]",
+        "source_span": "string"
+      }
+    ],
+    "kinetics": [
+      {
+        "enzyme": "string or null",
+        "substrate": "string or null",
+        "kcat_s": "float or null (s^-1)",
+        "Km_Molar": "float or null (Molar)",
+        "kcat_over_Km_M_s": "float or null (M^-1 s^-1)",
+        "source_span": "string"
+      }
+    ],
+    "computational_methods": [
+      {
+        "method": "string",
+        "level_of_theory": "string or null",
+        "software": "string or null",
+        "system": "string or null",
+        "source_span": "string"
+      }
+    ],
+    "design_strategy": "string or null (max 50 words)"
   },
   "curation_metadata": {
     "model": "string",
