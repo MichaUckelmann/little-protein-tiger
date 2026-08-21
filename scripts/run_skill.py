@@ -41,7 +41,7 @@ load_dotenv(_ROOT / ".env")
 from src.skill_runner import SkillRunner
 
 _DEFAULT_MODELS = {
-    "claude": "claude-sonnet-4-6",
+    "claude": "claude-sonnet-5",
     "gemini": "gemini-3.1-flash-lite-preview",
 }
 

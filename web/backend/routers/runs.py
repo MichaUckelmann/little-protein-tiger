@@ -96,7 +96,7 @@ class RunCreate(BaseModel):
     pdb_id: Optional[str] = None
     provider: str = "claude"
     model_id: Optional[str] = None
-    # Per-stage model overrides, e.g. {"pathway": "claude-haiku-4-5-20251001", "structure": "claude-sonnet-4-6"}
+    # Per-stage model overrides, e.g. {"pathway": "claude-haiku-4-5", "structure": "claude-sonnet-5"}
     # Omit or set to null for uniform model_id across all stages.
     stage_models: Optional[dict[str, str]] = None
     # Enable Claude extended thinking on the structure stage (off by default)

@@ -310,7 +310,7 @@ def curate_paper(
     """
     curation_cfg = config.get("curation", {})
     provider = curation_cfg.get("provider", "claude")
-    model = curation_cfg.get("model", "claude-sonnet-4-6")
+    model = curation_cfg.get("model", "claude-haiku-4-5")
     gemini_model = curation_cfg.get("gemini_model", "gemini-2.0-flash")
     local_model = curation_cfg.get("local_model", "Qwen/Qwen3.5-9B")
     local_endpoint = curation_cfg.get("local_endpoint", "http://localhost:8000/v1")

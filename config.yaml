@@ -66,9 +66,70 @@ paths:
   fingerprint_dir: "data/fingerprints"
   structures_dir: "data/structures"
 
+# ── Model selection + pricing ────────────────────────────────────────────────
+# Single source of truth for which model each pipeline stage uses and what it
+# costs.  src/pipeline_runner.py falls back to its own _DEFAULT_* tables when a
+# key is absent here, so this block is optional but authoritative.
+#
+# NOTE: extended thinking on these models is ADAPTIVE — `budget_tokens` was
+# removed on claude-sonnet-5 / claude-opus-5 and is rejected with a 400.
+models:
+  claude:
+    default: "claude-sonnet-5"
+    # Haiku cannot do extended thinking; stages requesting it upgrade to this.
+    thinking_upgrade: "claude-sonnet-5"
+    # Retry here when a safety classifier declines a request. Refusals are
+    # strongly model-dependent: on the complex-structure-analysis prompt,
+    # claude-sonnet-5 refuses with category "bio"; claude-opus-5 answers for some
+    # targets and declines for others, so this is a chain tried in order.
+    # Tried in order when a safety classifier declines. A fallback entry may name
+    # another provider as "provider:model".
+    #
+    # Gemini goes FIRST, not last — an earlier version tried Claude
+    # alternates before crossing providers, and that measurably wastes both
+    # tokens and wall-clock. Ledger evidence from three separate interface-
+    # stage refusals on one target (PD-L1): claude-sonnet-5 refused (category
+    # "bio"), then claude-opus-5 ALSO refused (same category), every time,
+    # $0.13 spent for nothing each time, before claude-haiku-4-5 finally
+    # answered. Anthropic's safety classifiers are consistent across the
+    # Claude family for a given category, so a same-provider retry after a
+    # categorised refusal is a bet that has not once paid off here.
+    #
+    # gemini-3.7-flash answers reliably and is ~4x cheaper on input than
+    # sonnet. claude-opus-5 / claude-haiku-4-5 remain as later fallbacks only
+    # for the rare case Gemini itself declines or errors (see the
+    # SkillRefusedError handling added to `_run_gemini` for that case) —
+    # reached only when switching provider does not resolve it either.
+    refusal_fallbacks: ["gemini:gemini-3.7-flash", "claude-opus-5", "claude-haiku-4-5"]
+    stages:
+      # Sonnet-class models trigger a biosecurity refusal on the "review of
+      # designed binders" task regardless of prompt wording; Haiku handles the
+      # tabular summarisation correctly and ~3x cheaper.
+      summary: "claude-haiku-4-5"
+      binder_summary: "claude-haiku-4-5"
+      # A per-stage override may name another PROVIDER as "provider:model".
+      # The binder track's `interface` stage is declined by claude-sonnet-5 and
+      # often by claude-opus-5 with category "bio"; claude-haiku-4-5 answers but
+      # cannot reliably produce the MODEL-READY HOTSPOTS table the next stage
+      # parses. Gemini answers and is ~4x cheaper on input.
+      # interface: "gemini:gemini-3.7-flash"   # force it; normally a fallback
+  gemini:
+    default: "gemini-3.1-flash-lite-preview"
+
+  # USD per 1M tokens.  Cache multipliers apply to the INPUT rate:
+  # cache writes bill at ~1.25x (5-minute TTL; use 2.0 for a 1h TTL) and cache
+  # reads at ~0.10x.  The API reports uncached input, cache-write and cache-read
+  # as separate buckets, so they are priced separately — never summed.
+  pricing:
+    claude-opus-5:      {input: 5.00,  output: 25.00}
+    claude-sonnet-5:    {input: 3.00,  output: 15.00}   # $2/$10 intro rate through 2026-08-31
+    claude-haiku-4-5:   {input: 1.00,  output: 5.00}
+    claude-fable-5:     {input: 10.00, output: 50.00}
+    gemini-3.1-flash-lite-preview: {input: 0.10, output: 0.40}
+
 curation:
   provider: "claude"            # "claude" | "gemini" | "local". Override per-run with --provider.
-  model: "claude-haiku-4-5-20251001"    # options: "claude-haiku-4-5-20251001" and "claude-sonnet-4-6"
+  model: "claude-haiku-4-5"    # options: "claude-haiku-4-5" and "claude-sonnet-5"
   gemini_model: "gemini-3.1-flash-lite"  # used when provider = "gemini"
   # alternatives: "gemini-3-flash-preview" (standard), "gemini-3.1-flash-lite-preview" (high-volume/lower-cost)
 
@@ -128,6 +189,163 @@ design:
   # tiers when tractable). CLI --pathway-mode overrides this value when set.
   pathway:
     mode: standard
+
+  # Design backend: "boltzgen" (legacy, src/design_runner.py) or "foundry"
+  # (RFD3 -> solubleMPNN -> RF3 on the local GPU, src/foundry_runner.py).
+  backend: foundry
+
+  foundry:
+    root: "/home/m.uckelmann_cbs-niob.local/code/foundry"
+    # cwd MUST be `root` for `uv run` to resolve the venv. The Blackwell card is
+    # sm_120, which the shipped container's torch is not built for — hence the
+    # separate .venv-blackwell.
+    launcher: ["uv", "run"]
+    rfd3_bin: ".venv-blackwell/bin/rfd3"
+    rf3_bin:  ".venv-blackwell/bin/rf3"
+    mpnn_bin: ".venv-blackwell/bin/mpnn"
+    ckpt:
+      rfd3: "rfd3"            # checkpoint-registry aliases resolve to ~/pip_rcfoundry_ckpt
+      rf3:  "rf3"
+      mpnn: "solublempnn"
+    cuda_device: 0
+
+    gpu_memory_gb: 32
+    # Calibrated at ONE point (a ~175-token complex ran comfortably). RF3
+    # attention is O(N^2) in tokens; re-measure by bisecting n_batches=2 runs at
+    # increasing target size until OOM, then take 80% of the last passing value.
+    target_residue_budget: 220
+    # RF3 output is ~2.5 MB per design directory, so disk — not GPU — is the
+    # binding constraint: 48,000 refolds is ~120 GB.
+    disk_budget_gb: 120
+    min_free_gb: 20
+    poll_interval_s: 120
+    max_rfd3_attempts: 10
+    max_rf3_attempts: 20
+
+    rfd3:
+      diffusion_batch_size: 4
+      is_non_loopy: true
+      infer_ori_strategy: hotspots
+      inference_sampler:
+        # IPD's documented PPI-designability settings. The reference CD79b
+        # campaign used neither and returned 44 passing designs from 28,420.
+        step_scale: 3
+        gamma_0: 0.2
+
+    prefilter:
+      enabled: true
+      # null => derive from the trim's segment count. A single-segment target
+      # scores exactly 1 chainbreak; a two-segment trim scores 2, and a hardcoded
+      # 1 would then reject every design.
+      max_chainbreaks: null
+      max_sidechain_clashes: 0
+      max_backbone_clashes: 0
+      min_non_loop: 0.6
+
+    mpnn:
+      n_seq: 4
+      # The mpnn CLI buffers every result in RAM and flushes only after its last
+      # input, so one config over 8000 designs shows an empty output dir until
+      # the end and loses everything on a late crash.
+      chunk_size: 250
+      temperature: 0.1
+      omit: "CYS"
+
+    rf3:
+      template: target
+      # 1 is enough for screening; the engine default of 5 costs ~5x for a
+      # marginally better best-of pick.
+      diffusion_batch_size: 1
+      seed: 0
+
+    pilot:       {n_batches: 25}      # 100 designs — proves the spec runs
+    calibration: {n_batches: 145}     # ~300 prefilter survivors x 4 seq
+    production:  {n_batches: 3000}    # 12,000 designs
+
+  # Scoring + ranking for the foundry backend (src/binder_metrics.py,
+  # src/binder_ranking.py). Independent of the BoltzGen-oriented `thresholds`
+  # and `ranking` blocks below.
+  binder_metrics:
+    ipsae_pae_cutoff: 10.0
+    contact_cutoff: 8.0
+
+  binder_ranking:
+    thresholds:
+      binder_rmsd_dock_max: 5.0     # the mis-dock gate; does the most work
+      epitope_recall_min: 0.5
+      hotspot_engagement_min: 1.0
+      binder_rmsd_fold_max: 2.0
+      binder_plddt_min: 0.75
+      # ipsae_min is high-precision/low-recall: >0.5 is ~70% precise against the
+      # Rosetta-validated set but recovers only ~4% of it. Kept OFF as a gate and
+      # weighted heavily in the composite instead.
+      ipsae_min_min: null
+      iptm_min: 0.5
+      iface_pae_max: 15.0
+      require_no_clash: true
+    weights:
+      ipsae_min: 2.0
+      neg_binder_rmsd_dock: 1.5
+      binder_plddt: 1.5
+      iptm: 1.0
+      neg_iface_pae: 1.0
+      epitope_recall: 1.0
+      hotspot_engagement: 0.5
+    mmr: {lambda_: 0.5, seq_identity_cap: 0.7}
+
+    # PyRosetta interface metrics. Run ONLY on designs that already cleared the
+    # confidence and geometry gates above, and folded only into the final
+    # composite — never into the gate. Rosetta cannot tell a real complex from a
+    # confidently wrong one: a mis-docked binder is still a physical pose, so
+    # relax and InterfaceAnalyzer return well-defined numbers that mean nothing.
+    # Gating first is also what makes it affordable (~10-30 s per design).
+    rosetta:
+      enabled: true
+      max_designs: 300       # the tail is not worth the linear cost
+      relax: true
+      weights:               # merged over the weights above for the final rank
+        neg_rosetta_ddg: 1.5
+        rosetta_cms: 1.0
+        neg_rosetta_vbuns: 0.5
+    # The n_seq sequences sharing one RFD3 backbone are near-duplicates; without
+    # this cap a top-20 comes from a handful of backbones.
+    max_per_backbone: 1
+    top_k: 20
+    # How a production campaign is SIZED. Per 1000 RFD3 backbones, measured
+    # across two complete campaigns:
+    #     ipsae_min > 0.5 + gates    2.5 (8TAC)   0.1 (CD79b)
+    #     iPTM      > 0.7 + gates   13.2 (8TAC)   2.0 (CD79b)
+    # ipsae_min is a 5-20x rarer event, so a trial-sized sample cannot measure
+    # it; iPTM is the practical sizing metric. ipsae_min is still computed on
+    # every design and carries the heaviest weight in the ranking below.
+    #
+    # The gates are not optional: of designs with iPTM > 0.7, only 45% (8TAC)
+    # and 8% (CD79b) are actually docked on target.
+    success_metric: iptm       # iptm | ipsae_min
+    target_designs: 50         # 100 when success_metric is ipsae_min
+    excellence_bar: 0.7        # 0.5 when success_metric is ipsae_min
+    # Kept for reference: the calibrated ipsae_min bar. The best ipsae_min ever
+    # produced was 0.640 (8TAC) / 0.684 (CD79b) at the time this was written —
+    # but KRAS/RAF1 later hit 0.931, so "unreachable" is target-dependent, not
+    # a fact about ipsae_min itself. That is what adaptive_bar is for.
+    excellence_ipsae_min: 0.5
+    # On by default: before sizing at excellence_bar, walk the same bar ladder
+    # suggested_bar is drawn from (strictest first) and raise to the strictest
+    # rung that both has >= MIN_HITS_FOR_ESTIMATE hits and still fits the GPU
+    # budget at its pessimistic bound. An unusually good target (e.g. KRAS/RAF1,
+    # ipsae_min up to 0.93) gets sized to a correspondingly tighter bar instead
+    # of the same fixed default every target gets; a marginal target falls
+    # straight through to today's behaviour unchanged. Never lowers the bar.
+    adaptive_bar: true
+
+  # Domain-aware target truncation (src/structure_trim.py).
+  trim:
+    # Optional. Absent binaries degrade to RCSB annotations + the geometric
+    # partition, logged loudly. Foldseek CANNOT parse domains — it is here for
+    # the post-trim fold check and ranking diversity.
+    chainsaw_cmd: null
+    foldseek_bin: null
+    min_bsa_retention: 0.90
 
   workstation:
     # Absolute path to the boltzgen entry point. The shebang on this script

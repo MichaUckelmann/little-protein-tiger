@@ -84,7 +84,7 @@ quality:
 
 curation:
   provider: "claude"            # override per-run with --provider gemini
-  model: "claude-haiku-4-5-20251001"
+  model: "claude-haiku-4-5"
   gemini_model: "gemini-3.1-flash-lite"
   local_model: "gemma4:26b-a4b-it-q4_K_M"
   local_endpoint: "http://localhost:11434/v1"

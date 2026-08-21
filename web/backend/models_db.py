@@ -54,7 +54,7 @@ class Run(SQLModel, table=True):
     # JSON-serialised list of {chain, resnum, bsa_contribution} dicts populated after stage 1
     hotspot_residues: Optional[str] = None
 
-    # Per-stage model overrides: JSON string {"structure": "claude-sonnet-4-6", ...}
+    # Per-stage model overrides: JSON string {"structure": "claude-sonnet-5", ...}
     # NULL = use model_id for all stages (default uniform behaviour)
     stage_models_json: Optional[str] = None
     # Enable Claude extended thinking on the structure stage (off by default)

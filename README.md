@@ -56,7 +56,7 @@ quality:
 
 curation:
   provider: "claude"           # "claude" | "gemini" | "local"
-  model: "claude-haiku-4-5-20251001"
+  model: "claude-haiku-4-5"
 
 rate_limits:
   europepmc_delay_s: 0.5
@@ -271,7 +271,7 @@ Query the corpus in a conversational loop using Claude + semantic search.
 python scripts/ask_corpus.py
 
 # Options
-python scripts/ask_corpus.py --model claude-sonnet-4-6 --top-k 10
+python scripts/ask_corpus.py --model claude-sonnet-5 --top-k 10
 ```
 
 ### 5. Run expert skills from the CLI
@@ -354,7 +354,7 @@ python scripts/run_skill.py \
 | `--interactive`, `-i` | off | After the initial query (or with no `--query`), drop into a REPL for multi-turn follow-ups |
 | `--trace` | — | Write a conversation trace (raw JSON + rendered Markdown) to this directory |
 
-Default models: `claude-sonnet-4-6` for Claude, `gemini-3.1-flash-lite-preview` for Gemini.
+Default models: `claude-sonnet-5` for Claude, `gemini-3.1-flash-lite-preview` for Gemini.
 
 Token usage is logged after every LLM call. If the per-call input token count exceeds `--max-tokens`, the run is aborted with a clear error showing cumulative usage.
 
@@ -608,6 +608,150 @@ projects/<slug>/
 `src/project.py` manages it (atomic `manifest.json` writes). The binder pipeline
 works without `--project` (legacy `outputs/<slug>_<date>/` layout); the enzyme
 workflow requires one.
+
+### 7c. Run the binder pipeline from a target name
+
+When the target is already decided, the literature-discovery stages are the wrong
+tool. `--workflow binder` skips them: it resolves the name, picks an interface,
+trims the target to fit the GPU, and runs a foundry campaign
+(RFD3 → solubleMPNN → RF3) on the local workstation.
+
+```bash
+# Full run. --project is required: the track iterates in rounds, and the manifest
+# is what makes a multi-day GPU campaign resumable.
+python scripts/run_pipeline.py --workflow binder \
+    --target TEAD1 \
+    --query "design binders to TEAD1 to disrupt downstream interactions" \
+    --project tead1-binders \
+    --budget 5.00
+
+# --target alone is enough; the query then just carries intent.
+python scripts/run_pipeline.py --workflow binder --target KRAS --project kras
+
+# Launch the GPU stages and return immediately (a production campaign runs for
+# days). Resume with --start-from; every stage is skip-existing.
+python scripts/run_pipeline.py --workflow binder --target KRAS --project kras --detach
+python scripts/campaign_status.py projects/kras
+python scripts/run_pipeline.py --workflow binder --project kras --start-from calibration
+
+# A cheap smoke test: 8 designs, ~4 minutes of GPU.
+python scripts/run_pipeline.py --workflow binder --target KRAS --project kras_smoke \
+    --n-batches 2 --budget 2.00
+```
+
+Stages:
+
+```
+  target_intel     binder-target-intel      → PDB + chain pair + interface, chosen from a
+                   (+ src/target_resolve)     deterministically pre-computed candidate table
+  interface        complex-structure-analysis → MODEL-READY HOTSPOTS (atom level)
+  trim             src/structure_trim       → domain-aware crop to the GPU residue budget
+  binder_spec      src/foundry_spec         → RFD3 spec + pre-flight validation
+  pilot            src/foundry_runner       → small run; proves the spec works
+  calibration      src/campaign_calibration → MEASURE the scale production needs
+       ⏸ verdict   SCALE_UP / SCALE_UP_PARTIAL / ITERATE / STOP
+  production       src/foundry_runner       → campaign sized by the calibration
+  binder_scoring   src/binder_metrics       → ipSAE, dock RMSD, epitope recall, …
+                   + src/binder_ranking       → filter, composite, diversity, top-K
+  binder_summary   design-analyst           → final review + top_k.fasta
+```
+
+Only three stages call an LLM. Everything else is deterministic Python, which is
+why a full run costs cents rather than dollars.
+
+**Calibration, not guesswork.** A production campaign is a multi-day, ~100 GB
+commitment. The calibration stage refolds ~300 backbones × 4 sequences, measures
+how many designs clear the success bar, and extrapolates with a Wilson interval
+(a rule-of-three bound when there are no hits). It reports the required scale as a
+*range* and sizes cost against the pessimistic end. Backbones, not refolds, are the
+sampling unit — the sequences sharing one RFD3 backbone are correlated.
+
+Campaigns are **sized on iPTM and ranked on ipSAE**. Per 1000 backbones the
+reference campaigns produced 13.2 / 2.0 designs at `iPTM > 0.7` versus 2.5 / 0.1
+at `ipsae_min > 0.5`; the latter is too rare for a trial-sized sample to measure,
+so every verdict would be "enlarge the sample". Both are computed on every design
+and `ipsae_min` carries the heaviest ranking weight. The geometric gates are never
+optional — of designs with `iPTM > 0.7`, only 45 % (8TAC) and 8 % (CD79b) are
+actually docked on target.
+
+A 300-backbone trial is often too small: at the 8TAC rate it gave a usable rate
+estimate in 0/10 random seeds, and 1000 backbones in 8/10. `--escalate-to 1000`
+(on by default) re-runs a trial that came back unmeasurable.
+
+**Adaptive bar.** `design.binder_ranking.adaptive_bar` (on by default) raises the
+sizing bar for a target that turns out unusually good, instead of sizing every
+campaign to the same fixed default. It walks the same bar ladder `suggested_bar`
+is drawn from — strictest first — and takes the strictest rung that both has
+enough hits for a real Wilson estimate and still fits the budget at its
+pessimistic bound; on real KRAS/RAF1 data it raised the iptm bar from 0.7 to
+0.85 while staying comfortably SCALE_UP. It only ever raises the bar, never
+lowers it below what was requested, and it reuses the same interval math the
+base bar is already sized with rather than a hand-tuned multiplier table.
+
+**Comparing epitopes.** `--trial-sites N` runs a separate trial per candidate site
+the target-intel stage proposes and picks the winner on measured yield rather than
+argument — reasoning cannot settle which of two defensible epitopes is more
+designable, but a few hundred backbones can.
+
+**Membrane proteins.** Topology comes from UniProt and is mapped into the
+structure's author numbering. Design defaults to the extracellular side, and
+transmembrane residues are excluded whichever side you pick: in an isolated
+structure a TM helix is an exposed hydrophobic slab that preferentially attracts
+binders which cannot work in a cell, where that surface is buried in lipid.
+
+**Rosetta.** `design.binder_ranking.rosetta` scores gate survivors only (capped at
+300) and contributes to the final composite, never to the gate — Rosetta cannot
+tell a real complex from a confidently wrong one, so a mis-docked binder still
+returns a well-defined, meaningless ddG.
+
+**Refusals.** The interface stage is routinely declined by Claude's safety
+classifier with category `bio`. `models.claude.refusal_fallbacks` is a chain and
+crosses providers on the FIRST refusal — Gemini goes first, not another Claude
+model: measured across three separate refusals on one target, `claude-opus-5`
+refused right after `claude-sonnet-5` every single time (same category), which
+is pure wasted spend, not a second chance. Same-provider fallbacks stay in the
+chain only for the rare case Gemini itself declines.
+
+**Correctness guards.** Two checks run after every interface-stage call, since
+a wrong answer here wastes days of GPU time downstream, not just tokens:
+`_verify_hotspot_grounding` confirms each hotspot's stated residue actually
+exists at that position in the real structure (catches literature/textbook
+numbering reported for the wrong deposited structure); `_verify_target_chain_assignment`
+confirms `target_chain` is genuinely the target protein by aligning its modelled
+sequence against UniProt, not the partner (catches a target/partner swap, which
+grounding cannot — the residues are real, just on the wrong molecule). Both were
+written after live trials hit each failure mode for real.
+
+**Scoring.** Ported from the reference campaign scorers and validated **row-for-row
+against two complete campaigns** (CD79b: 28,420 refolds; 8TAC: 32,000 — zero
+differences across 25 columns), plus a fresh ipSAE implementation checked against
+[DunbrackLab/IPSAE](https://github.com/DunbrackLab/IPSAE). Note that RF3 templating
+cannot convey a docked pose, so iPTM and ipSAE are confidence in *whatever*
+interface the model chose: `binder_rmsd_dock` and `epitope_recall` are what
+actually separate on-target designs.
+
+**Reports.** Every trial and every scored campaign gets an illustrated,
+self-contained `report.html` — structure/site selection rationale, hotspot
+rationale, confidence-metric charts, and an interactive [Mol*](https://molstar.org)
+viewer over the top-ranked designs' actual refolded structures, so a human can
+visually confirm a design landed on the intended epitope rather than trusting
+ipTM alone. It is generated automatically as a side effect (never a gate — a
+report bug cannot fail a campaign) and can be regenerated any time with
+`scripts/generate_binder_report.py --project <slug> --round round-1 [--site <id>]`.
+No LLM and no GPU: it reads the same structured files the pipeline already
+writes and renders the target-intel/interface stages' own markdown prose
+verbatim for the narrative sections, rather than inventing new copy.
+
+**Budget.** `--budget 5.00` is a hard cap on API spend, cumulative across rounds.
+A stage whose projected cost would exceed it pauses with a resumable checkpoint
+instead of starting. It governs API cost only — GPU time is limited separately by
+the disk budget in `design.foundry`.
+
+**Optional tools.** `design.trim.chainsaw_cmd` and `design.trim.foldseek_bin` improve
+domain segmentation and add a post-trim fold check. Both are optional: without them
+trimming falls back to RCSB CATH/SCOP2/ECOD annotations and a contact-graph
+partition. Foldseek is a structural *search* tool and cannot parse domains — it is
+not the domain parser here.
 
 ### 8. Visualise top-K designs in PyMOL
 

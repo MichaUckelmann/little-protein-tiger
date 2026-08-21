@@ -2866,3 +2866,287 @@ once it finishes).
    enzyme_context curation contract + extended sync-pairs.
 4. Real e2e on a live target with actual ORCA + GPU runs (the mocked test
    covered the wiring; a real run will exercise the QM/diffusion fidelity).
+
+## 2026-08-20 — Binder track: target-name-first design on the local GPU
+
+A third workflow (`--workflow binder`) that skips literature discovery entirely,
+plus the scoring, calibration and cost-accounting machinery it needed.
+
+### What was built
+- **Scoring** (`src/binder_metrics.py`, `src/binder_ranking.py`): ported from
+  `data/BCR/scripts/score_refolds.py` and validated **0-diff across 25 columns**
+  against two complete campaigns (CD79b 28,420 refolds; 8TAC 32,000), reproducing
+  every per-criterion count including `binder_plddt >= 0.75` = 22333/28420 and the
+  28,420 -> 877 -> 44 funnel. Fresh **ipSAE** implementation, checked exactly
+  against DunbrackLab/IPSAE on 20 real designs.
+- **Calibration** (`src/campaign_calibration.py`): pilot -> calibration ->
+  production. Wilson intervals, rule-of-three at k=0, backbone-level rate as the
+  sizing unit, SCALE_UP/PARTIAL/ITERATE/STOP verdict.
+- **Trimming** (`src/structure_trim.py`): RCSB CATH/SCOP2/ECOD -> Chainsaw ->
+  contact-graph partition, SSE-snapped cuts, hotspot shell, connectivity filter,
+  single-segment preference. Reproduces the hand-made CD79 extracellular trim
+  (42-145 vs the reference 44-145).
+- **Campaign execution** (`src/foundry_runner.py`, `src/foundry_stages.py`,
+  `src/job_registry.py`, `src/foundry_spec.py`): generates and launches a detached
+  `run_campaign.sh`; disk-count progress; `validate_spec` as a pre-flight gate.
+  Prefilter reproduces the reference **7105/12000** exactly.
+- **Budget** (`src/token_budget.py`): per-bucket pricing, append-only ledger,
+  hard `--budget` cap with a resumable pause.
+- **Target intel** (`src/target_resolve.py` + `skills/binder-target-intel`): a
+  deterministic candidate table keeps the skill to 0-3 tool calls.
+
+### Findings that changed the design
+- **`ipsae_min > 0.7` is unreachable.** Best ever produced: 0.640 (8TAC), 0.684
+  (CD79b); the 8TAC Rosetta rank-1 design scores 0.615. Bar set to **0.5**, where
+  it is ~70% precise against the Rosetta-validated set at a 1.41% base rate (50x
+  enrichment) but only ~4% recall — so it is a ranking weight, not a gate.
+- **8TAC is the easier target**: 2.23% on-target base rate vs CD79b's 0.41%, and
+  ipSAE discriminates there (AUC 0.70) where on CD79b it barely does (0.54).
+- **`budget_tokens` is a 400** on claude-sonnet-5/opus-5 — the model rename could
+  not ship without switching to adaptive thinking.
+- Two pre-existing manifest bugs fixed by the `stage=` plumbing: wildcard runs
+  recorded as `wildcard-expert`, and `enzyme_design` overwriting `design`.
+
+### Verification
+149 unit tests + a mocked-LLM e2e that runs the real trim, spec, scoring,
+calibration and ranking against genuine CD79b structures. PPI and enzyme tracks
+verified unchanged.
+
+### Punch list
+1. Real GPU smoke test (`--n-batches 2`), then bisect the residue budget to
+   replace the single-point 220 estimate with a measurement.
+2. Install Chainsaw + Foldseek; both are optional and currently unconfigured.
+3. Web layer: surface the binder track's campaign/calibration pauses.
+4. Re-run CD79b with the IPD PPI settings (`step_scale=3`, `gamma_0=0.2`), which
+   the reference campaign omitted, as a controlled check.
+
+## 2026-08-21 — Binder track: multi-site trials, Gemini fallback, two live-fire bugs
+
+Continuation of 2026-08-20's binder-track build. This session ran the first real
+GPU campaigns through it, which is exactly what found the two most important bugs
+below — neither was reachable by unit tests or the mocked e2e, both would have
+gone undetected for a full multi-day production run.
+
+### Four tweaks implemented (user-requested, before any GPU run)
+
+1. **`--trial-sites N`** — run one calibration trial per candidate epitope the
+   target-intel skill proposes (`sites_json` in its handoff), compare measured
+   yields in `29_site_comparison.md`, carry the winner into production.
+   `--escalate-to 1000` (default) reruns a trial that came back with too few
+   hits to size a campaign — measured on 8TAC: 300 backbones gave a usable
+   estimate in 0/10 random seeds, 1000 in 8/10.
+2. **Campaigns now SIZE on iPTM, not ipsae_min.** Per 1000 backbones the
+   reference campaigns produced 13.2/2.0 designs at iPTM>0.7 vs 2.5/0.1 at
+   ipsae_min>0.5 — 5-20x rarer, unmeasurable from a trial-sized sample.
+   `design.binder_ranking.success_metric: iptm` (bar 0.7, target 50) is now the
+   default in `src/campaign_calibration.py`; ipsae_min is still computed on
+   every design and remains the heaviest ranking weight. The geometric gates
+   stay mandatory regardless of which metric sizes the run (iPTM>0.7 alone is
+   only 45%/8% actually on-target on 8TAC/CD79b).
+3. **Rosetta after the gates, never before** — `src/rosetta_metrics.py` (ported
+   from `data/dynamic_allostery/8TAC_binder/scripts/rosetta_metrics.py`) scores
+   only gate survivors (capped at 300 by `select_for_rosetta`), folds into the
+   final composite only. Runs via the dedicated `pyrosetta` conda env, same
+   subprocess pattern as `src/pyrosetta_sasa.py`.
+4. **Membrane topology** (`src/membrane_topology.py`) — UniProt
+   `Transmembrane`/`Topological domain` features mapped into author numbering
+   via the RCSB entity alignment (`uniprot_to_auth`). Design defaults to the
+   extracellular side; **transmembrane residues excluded on BOTH sides always**
+   (an isolated TM helix is a hydrophobic slab that attracts binders that can't
+   work in a membrane). Verified: PD-L1 19-238/239-259/260-290,
+   TREM2 19-174/175-195/196-230, KRAS and VEGF-A correctly soluble. Must run
+   AFTER domain segmentation, not before — filtering first removes the
+   contact-density drop that marks the ectodomain boundary (turned a clean
+   CD79B 42-145 trim into 58-159 when tried the other order).
+
+### GPU smoke test — the pipeline's first real foundry run
+
+An 8-design smoke test (`--trial-backbones 8 --escalate-to 0`) found two bugs
+that would have wasted a full production run:
+- **`checkpoint_path does not exist: solublempnn`** — RFD3/RF3 resolve
+  checkpoint-registry aliases themselves; MPNN takes a literal path. Failed
+  *after* RFD3 already ran. Fixed: `foundry_stages.resolve_checkpoint()` globs
+  `~/pip_rcfoundry_ckpt/` for the alias.
+- **`designed_chains must be a list if provided`** — this foundry build
+  type-checks it; the reference campaign's bare `"A"` fails here. Fixed:
+  `foundry_spec._as_chain_list()`.
+
+After both fixes the full chain ran clean: 16 designs -> 13 prefilter survivors
+-> 52 sequences -> 52 refolds -> scored -> calibrated, ~9 minutes end to end.
+
+### Real trials: PD-L1, KRAS, VEGF-A, TREM2
+
+Target-intel + interface stage tried on all four. **TREM2 never got a spec on
+any provider** — `claude-sonnet-5`/`claude-opus-5` refuse (category `bio`),
+`gemini-3.7-flash` answers but loops without converging (hit 832k input tokens
+by call #13, before the tool-result-truncation fix existed — worth retrying
+now that it does). PD-L1, KRAS, VEGF-A all produced valid specs.
+
+**Gemini comparison** (user asked to compare `gemini-3.7-flash` head to head with
+Claude on the two working targets): confirmed Gemini never refuses the interface
+prompt; ~4x cheaper on input ($0.75/$3.75 vs Sonnet's $3/$15 per MTok). On PD-L1,
+where both got a real answer, Gemini's hotspots were 6/6 on the true PD-1
+interface (narrower); Claude's (actually **Haiku's** — see ledger note below)
+were 8/9 (broader, plus a genuine second site).
+
+**Refusal-chain reordered — Gemini now goes FIRST, not last.** User asked for a
+guard against token wastage from same-provider refusal retries. Ledger evidence
+made the case: on three separate PD-L1 interface calls, `claude-sonnet-5`
+refused, then `claude-opus-5` **also** refused (same category, ~$0.13 spent for
+nothing each time) before `claude-haiku-4-5` finally answered — a same-family
+retry after a categorised refusal never once paid off. `refusal_fallbacks` is
+now `["gemini:gemini-3.7-flash", "claude-opus-5", "claude-haiku-4-5"]`.
+Corrected an earlier (wrong) claim in this diary/CLAUDE.md that "Claude picks a
+better epitope" — the ledger shows PD-L1's good answer came from **Haiku**, not
+Sonnet or Opus succeeding; both refused every time. Also added Gemini-side
+refusal detection (`_run_gemini` now raises `SkillRefusedError` on an empty
+`candidates` list / `promptFeedback.blockReason` / a per-candidate `finishReason`
+of SAFETY/PROHIBITED_CONTENT/BLOCKLIST/RECITATION/SPII) — previously a
+Gemini-side safety block crashed with a raw KeyError/IndexError instead of
+falling through the chain, which would have been a real problem once Gemini
+became the first-tried model.
+
+### Two live-fire correctness bugs — the important part of this session
+
+**1. Hotspot numbering not grounded in the actual structure.** PD-L1's second
+site (`denovo_precedent`, structure 8ZNL) got a hotspot table with PD-L1's
+*canonical literature* numbering (Tyr56, Gln66, Arg113, ...) — correct for a
+*different* PD-L1 structure (7CZD) but not for 8ZNL, where chain B residue 56 is
+actually VAL. `validate_spec` caught this instance only by luck (the stated
+atoms don't exist on valine); a mismatch that happened to share atom names
+would have sailed through and silently designed against the wrong residues for
+days. Fixed: `PipelineRunner._verify_hotspot_grounding()` reads the real residue
+name at each hotspot's `auth_seq_id` from the downloaded structure
+(`structure_tools.get_sequence_map`) and hard-fails on any mismatch, before a
+trim or spec is ever built. Verified against the real failure case.
+
+**2. Target/partner chain assignment silently swapped.** Much more dangerous:
+PD-L1's FIRST site (`vhh_igv_face`) completed a full ~5-hour GPU trial
+(444 backbones, 1776 refolds) with a "SCALE_UP" verdict (20.5% hit rate) —
+**designed against the anti-PD-L1 VHH nanobody itself, not PD-L1.** For 7CZD,
+RCSB has PD-L1 on chains B/D and the VHH on chains A/C; the interface stage
+assigned `target_chain=A` and picked hotspots on the VHH's own CDR loop
+(Tyr32/Trp33/Tyr35/Trp47/...) — its own summary even said "Target chain A
+(VHH)". Hotspot grounding could not catch this: the residues are real and
+correctly numbered, just on the wrong molecule. Confirmed via direct RCSB query
+(`rcsb_polymer_entity.pdbx_description` per auth chain) — and confirmed KRAS
+(chain A really is KRas) and VEGF-A (chain W really is VEGF-A) are NOT affected.
+
+Fixed with `PipelineRunner._verify_target_chain_assignment()`, TWO independent
+signals, **sequence first** (user asked whether metadata-only was sufficient or
+a real sequence check was warranted — it's cheap, ~ms, since the structure is
+already downloaded and the target's UniProt accession already resolved, so now
+does both):
+1. **Sequence** (primary): `structure_tools.sequence_identity()` — new utility,
+   local BLOSUM62 alignment via `Bio.Align.PairwiseAligner` — aligns the
+   chain's actual modelled residues against `target_resolve.fetch_uniprot_sequence()`
+   (new, `lru_cache`d). Threshold 0.85. Ground truth, immune to a curation
+   error, works even with no RCSB UniProt cross-reference at all. On the real
+   case: chain B is **100%** identical to CD274, chain A (labelled "target") is
+   **20%** — decisive.
+2. **RCSB metadata** (fallback): `entry_metadata()`'s per-chain description/
+   UniProt accession — used only when no accession resolves or the structure
+   isn't downloaded yet.
+Also closed a related gap: `_prepared_site()` (the resume path, used so a
+multi-day campaign doesn't re-pay for the interface stage) only ever called
+`validate_spec`, which has no opinion on which molecule a chain is — so a stale
+swapped spec generated before this guard existed would have been trusted
+forever on every resume. Now re-verifies chain assignment on every resume too,
+not just fresh generation (`_TrimFromDisk` gained `target_chain`/`partner_chain`/
+`pdb_id` fields read back from `trim_map.json` for this).
+
+Cleaned up: PD-L1's `vhh_igv_face` campaign output renamed
+`campaign_INVALID_wrong_target` (kept for the record, not deleted); both PD-L1
+sites' stale `trim/`/`spec/`/report files removed so they regenerate fresh with
+the guard active.
+
+### Reliability note: orchestration moved out of the session scratchpad
+
+The trial-launcher shell scripts were initially written to the session-scoped
+scratchpad (`/tmp/claude-.../scratchpad/`). Realized mid-session this is risky
+for anything that has to survive a session boundary: a wait-loop polling a
+scratchpad log file (`until grep -q TRIALSDONE scratchpad/log; do sleep; done`)
+would loop forever, indistinguishable from "not done yet", if that directory
+gets cleaned up — silently never launching the next trial. Moved the PD-L1 redo
+orchestration to `tmp/trial_orchestration/` (inside the repo, gitignored,
+persistent) and switched its wait condition from grepping a log file to
+`pgrep -f run_trials.sh` — a pure OS process-table check with no file
+dependency at all. **Any future long-running background orchestration in this
+repo should live under `tmp/`, not the session scratchpad, and gate on process
+existence or on-disk pipeline state (`projects/<slug>/...`), never on a
+scratchpad-relative log file.**
+
+### Verification
+207 unit tests (up from 149 yesterday). Real-data verification this session:
+ipSAE cross-checked against DunbrackLab/IPSAE reference on 20 real designs
+(exact to 4dp — done yesterday, re-confirmed nothing regressed); prefilter
+reproduces the CD79b reference exactly (7105/12000); both new guards verified
+against the actual failure cases with real RCSB/sequence data, not mocks.
+
+### CURRENT LIVE STATE as of 2026-08-21 ~11:30 — for a fresh session to resume
+
+Three background processes, all `nohup setsid` (survive terminal/session close),
+none dependent on this session's scratchpad any more:
+
+```
+pgrep -af "run_pipeline.py --workflow binder|run_trials.sh|run_pdl1_redo.sh"
+```
+
+should show `run_trials.sh` (the main queue) and its current
+`run_pipeline.py --workflow binder --target VEGF-A --project gem_vegf_a ...`
+child, plus `tmp/trial_orchestration/run_pdl1_redo.sh` (waiting).
+
+**Check GPU/campaign progress** (works from any session, reads persistent
+project files only):
+```
+python scripts/campaign_status.py projects/gem_vegf_a
+python scripts/campaign_status.py projects/trial_pd_l1   # once the redo starts
+```
+
+**Check verdicts already in** (all persistent, not scratchpad):
+```
+cat projects/trial_kras/runs/round-1/binder/25_calibration.md
+cat projects/trial_pd_l1/runs/round-1/binder/sites/*/binder/25_calibration.md  # old (invalid) + new once redone
+cat tmp/trial_orchestration/pdl1_redo_driver.log   # appears once the redo starts
+```
+
+**Results so far:**
+- **KRAS `raf1_rbd`: SCALE_UP, 176/481 backbones = 36.6%** (95% CI 32.4-41.0%)
+  — the best rate of any trial run against this pipeline so far, well above
+  both reference campaigns (0.1-1.3%) and above PD-L1's (now-invalidated) 20.5%.
+  This result is trustworthy — chain assignment independently confirmed correct.
+- **VEGF-A `vegfa_flt1_primary`: running**, RF3 in progress, was ~8% through at
+  last check, ETA a few hours from when it started (~10:10).
+- **PD-L1 `vhh_igv_face`: INVALID** (designed against the VHH, not PD-L1) — see
+  bug #2 above. Redo queued, will run once VEGF-A's queue finishes.
+- **PD-L1 `denovo_precedent`: never validly ran** (hotspot-grounding bug #1) —
+  same redo will retry it.
+- **TREM2: unresolved.** No working spec on any provider yet. Worth a fresh
+  attempt now — the tool-result-truncation fix (added before the trial run
+  started, so TREM2's specific 832k-token loop hasn't actually been re-tested
+  against it) may have already fixed the loop. Try:
+  ```
+  python scripts/run_pipeline.py --workflow binder --target TREM2 \
+      --project trial_trem2 --trial-sites 2 --stop-after spec --budget 15.00 \
+      --max-tokens 150000
+  ```
+  If it still refuses/loops on every provider, that's a genuine target-specific
+  finding worth reporting, not a pipeline bug to keep chasing.
+
+**Once VEGF-A and the PD-L1 redo both finish**, the four-target comparison is
+complete and the natural next step is deciding whether to scale any of them to
+production (`--start-from production`, sized by each site's calibration
+verdict) — none have been scaled yet; everything so far is calibration-only.
+
+### Punch list
+1. Land the PD-L1 redo result; if `vhh_igv_face` (designed correctly this time)
+   is still competitive, decide whether the earlier 20.5%-against-the-wrong-target
+   number said anything real about the epitope choice (it might not — a VHH's
+   CDR loop is a very different design problem from a native PPI interface).
+2. Retry TREM2 now that the tool-truncation and refusal-chain fixes are in.
+3. Real GPU residue-budget bisection (`target_residue_budget` is still the
+   single-point 220 estimate from before this repo's first design campaign).
+4. Install Chainsaw + Foldseek; both optional, still unconfigured.
+5. Web layer: surface the binder track's campaign/calibration/site-trial pauses.
+6. Nothing in this session's work is committed — 25+ new files, several dozen
+   modified. Worth a review + commit pass once the trial data settles.

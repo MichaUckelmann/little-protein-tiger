@@ -247,18 +247,18 @@ export default function ProjectDetail() {
   const [pathwayMode, setPathwayMode] = useState<"standard" | "wildcard" | "both">("standard");
 
   // Uniform model selector — used in Standard mode and as Custom base
-  const [modelKey, setModelKey] = useState("claude/claude-sonnet-4-6");
+  const [modelKey, setModelKey] = useState("claude/claude-sonnet-5");
 
   const MODEL_OPTIONS = [
-    { label: "Claude Sonnet 4.6 (default)", value: "claude/claude-sonnet-4-6" },
-    { label: "Claude Haiku 4.5 (fast)", value: "claude/claude-haiku-4-5-20251001" },
+    { label: "Claude Sonnet 5 (default)", value: "claude/claude-sonnet-5" },
+    { label: "Claude Haiku 4.5 (fast)", value: "claude/claude-haiku-4-5" },
     { label: "Gemini Flash Lite (experimental)", value: "gemini/gemini-3.1-flash-lite-preview" },
   ];
 
   const STAGE_MODEL_OPTIONS = [
     { label: "Same as base model", value: "" },
-    { label: "Claude Sonnet 4.6", value: "claude-sonnet-4-6" },
-    { label: "Claude Haiku 4.5", value: "claude-haiku-4-5-20251001" },
+    { label: "Claude Sonnet 5", value: "claude-sonnet-5" },
+    { label: "Claude Haiku 4.5", value: "claude-haiku-4-5" },
   ];
 
   // Resolve the actual API payload from the current mode/settings
@@ -266,19 +266,19 @@ export default function ProjectDetail() {
     if (mode === "economy") {
       return {
         provider: "claude",
-        model_id: "claude-sonnet-4-6",
+        model_id: "claude-sonnet-5",
         stage_models: {
-          pathway: "claude-haiku-4-5-20251001",
-          literature: "claude-haiku-4-5-20251001",
-          structure: "claude-sonnet-4-6",
-          design: "claude-sonnet-4-6",
+          pathway: "claude-haiku-4-5",
+          literature: "claude-haiku-4-5",
+          structure: "claude-sonnet-5",
+          design: "claude-sonnet-5",
         },
       };
     }
     if (mode === "quality") {
       return {
         provider: "claude",
-        model_id: "claude-sonnet-4-6",
+        model_id: "claude-sonnet-5",
         extended_thinking: true,
       };
     }
@@ -307,7 +307,7 @@ export default function ProjectDetail() {
     setExtThinking(false);
     setStageModels({});
     setShowAdvanced(false);
-    setModelKey("claude/claude-sonnet-4-6");
+    setModelKey("claude/claude-sonnet-5");
     setPathwayMode("standard");
   }
 

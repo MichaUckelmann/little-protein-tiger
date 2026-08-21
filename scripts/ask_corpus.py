@@ -7,7 +7,7 @@ Usage:
 
 Options:
     --config CONFIG   Path to config.yaml (default: repo root config.yaml)
-    --model MODEL     Claude model to use (default: claude-sonnet-4-6)
+    --model MODEL     Claude model to use (default: claude-sonnet-5)
     --top-k N         Default number of search results per tool call
 
 Type a question to query the corpus. Press Enter on an empty line or
@@ -135,8 +135,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default="claude-sonnet-4-6",
-        help="Claude model (default: claude-sonnet-4-6)",
+        default="claude-sonnet-5",
+        help="Claude model (default: claude-sonnet-5)",
     )
     parser.add_argument(
         "--top-k",

@@ -344,5 +344,50 @@ def tool_analyze_active_site_geometry(file_path: str, catalytic_spec: dict) -> s
         return json.dumps({"error": str(e)})
 
 
+@mcp.tool()
+def tool_resolve_protein_identifier(name: str) -> str:
+    """
+    Resolve a gene symbol, protein name or alias to its human UniProt accession.
+
+    Offline — reads the bundled UniProt ID mapping, no network call and no key.
+
+    Args:
+        name: Gene symbol or protein name, e.g. "KRAS"
+    """
+    try:
+        from dataclasses import asdict
+
+        from src.target_resolve import resolve_target
+
+        return json.dumps(asdict(resolve_target(name)), indent=2)
+    except Exception as e:
+        logger.exception("resolve_protein_identifier failed")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def tool_find_complex_structures(uniprot: str, rows: int = 25) -> str:
+    """
+    PDB entries containing this accession together with another protein entity.
+
+    A structured RCSB query, unlike the full-text `search_rcsb_pdb`: it can
+    express "a complex containing P01116", which full text cannot. Returns the
+    entry ids plus per-chain entity descriptions, lengths and accessions.
+
+    Args:
+        uniprot: UniProt accession, e.g. "P01116"
+        rows:    Maximum entries to return (default 25)
+    """
+    try:
+        from src.target_resolve import entry_metadata, find_complex_structures
+
+        ids = find_complex_structures(uniprot, rows=rows)
+        return json.dumps({"pdb_ids": ids, "entries": entry_metadata(ids[:15])},
+                          indent=2)
+    except Exception as e:
+        logger.exception("find_complex_structures failed")
+        return json.dumps({"error": str(e)})
+
+
 if __name__ == "__main__":
     mcp.run()

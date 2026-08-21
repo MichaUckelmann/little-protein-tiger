@@ -335,6 +335,21 @@ class Project:
             bucket.append(rel)
             self._save()
 
+    def set_budget(self, block: dict[str, Any]) -> None:
+        """
+        Mirror the API-spend rollup into the manifest.
+
+        `projects/<slug>/ledger.jsonl` stays authoritative (append-only, safe
+        under concurrent CLI + Celery writers); this is the summary the web UI
+        and `show_budget.py` read.  Written once per stage, not per API call —
+        the manifest must not become a hot file.
+
+        Additive: readers use ``manifest.get("budget", {})``, so no schema bump.
+        """
+        self._reload()
+        self._manifest["budget"] = block
+        self._save()
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

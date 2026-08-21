@@ -299,6 +299,59 @@ _TOOL_DEFS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "resolve_protein_identifier",
+        "description": (
+            "Resolve a gene symbol, protein name or alias to its human UniProt "
+            "accession, offline from the bundled ID mapping. Use to confirm what "
+            "a named target actually is before looking for its structures."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Gene symbol or protein name, e.g. KRAS"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "find_complex_structures",
+        "description": (
+            "PDB entries containing a given UniProt accession TOGETHER WITH at "
+            "least one other protein entity, with per-chain entity descriptions, "
+            "lengths and accessions. Unlike search_rcsb_pdb (full-text only) this "
+            "is a structured query and can express 'a complex containing P01116'. "
+            "Use when the supplied candidate table is empty or you suspect the "
+            "complex you need is missing from it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "uniprot": {"type": "string", "description": "UniProt accession, e.g. P01116"},
+                "rows": {"type": "integer", "description": "Max entries to return (default 25)"},
+            },
+            "required": ["uniprot"],
+        },
+    },
+    {
+        "name": "tool_find_glue_pockets",
+        "description": (
+            "Paired peri-interface pockets flanking an interface edge — the "
+            "molecular-glue mode. Returns candidate pocket pairs a small binder "
+            "could bridge, with per-pocket SASA and bridge span."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path to structure file"},
+                "chain_a": {"type": "string", "description": "Chain ID of first chain"},
+                "chain_b": {"type": "string", "description": "Chain ID of second chain"},
+                "periinterface_radius": {"type": "number", "description": "Å from the interface edge (default 10)"},
+                "top_n": {"type": "integer", "description": "Number of pocket pairs (default 3)"},
+            },
+            "required": ["file_path", "chain_a", "chain_b"],
+        },
+    },
+    {
         "name": "tool_analyze_interface",
         "description": (
             "Full interface analysis between two chains of a structure file. "
@@ -712,14 +765,16 @@ _NO_TOOL_SKILLS = {"design-analyst", "enzyme-design-validation"}
 _WRITE_FILE_SKILLS = {"protein-design-script", "binder-optimizer", "enzyme-active-site-modeling"}
 
 # Skills that need the full residue index maps for AF3/BoltzGen JSON construction
-_NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer", "complex-structure-analysis"}
+_NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer",
+                     "complex-structure-analysis", "binder-target-intel"}
 
 # Skills that have access to the corpus-wide PDB lookup tool. wildcard-expert's
 # Phase 4.6 calls find_pdb_structures — without the allowlist entry the call
 # was being silently filtered out of the tool surface and the skill emitted
 # NOT_FOUND more often than it should.
 _PDB_LOOKUP_SKILLS = {"pathway-expert", "wildcard-expert", "complex-expert", "orchestrator",
-                      "enzyme-substrate-id", "enzyme-active-site-modeling"}
+                      "enzyme-substrate-id", "enzyme-active-site-modeling",
+                      "binder-target-intel"}
 
 # Skills that have access to the NetworkX-backed graph tools (path, hubs, export,
 # novelty). Other skills don't need them and shouldn't pay the system-prompt
@@ -745,6 +800,17 @@ _LIGAND_TOOLS = {
     "tool_extract_ligand_contacts", "tool_analyze_active_site_geometry",
     "search_pdb_by_ligand",
 }
+
+# Structured target resolution for the binder track: gene symbol -> UniProt
+# (offline) and UniProt -> PDB complexes. search_rcsb_pdb is full-text only and
+# cannot express "two protein entities, one of which is P01116".
+_IDENTIFIER_TOOL_SKILLS = {"binder-target-intel"}
+_IDENTIFIER_TOOLS = {"resolve_protein_identifier", "find_complex_structures"}
+
+# find_glue_pockets is what complex-structure-analysis STABILIZE mode is told to
+# call; it existed on the MCP server and in structure_tools but was missing from
+# _TOOL_DEFS, so the in-process transport silently had no such tool.
+_GLUE_TOOL_SKILLS = {"complex-structure-analysis", "binder-target-intel"}
 
 _RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 _RCSB_GRAPHQL_URL = "https://data.rcsb.org/graphql"
@@ -976,6 +1042,10 @@ def _filter_tools(defs: list[dict], skill_name: str) -> list[dict]:
         defs = [d for d in defs if d["name"] not in _GRAPH_TOOLS]
     if skill_name not in _LIGAND_TOOL_SKILLS:
         defs = [d for d in defs if d["name"] not in _LIGAND_TOOLS]
+    if skill_name not in _IDENTIFIER_TOOL_SKILLS:
+        defs = [d for d in defs if d["name"] not in _IDENTIFIER_TOOLS]
+    if skill_name not in _GLUE_TOOL_SKILLS:
+        defs = [d for d in defs if d["name"] != "tool_find_glue_pockets"]
     return defs
 
 
@@ -1111,6 +1181,21 @@ _GEMINI_GENERATE_URL = (
 )
 
 
+class SkillRefusedError(RuntimeError):
+    """A safety classifier declined the request; no content was returned."""
+
+    def __init__(self, *, skill: str, model: str, category: str | None,
+                 iteration: int):
+        self.skill = skill
+        self.model = model
+        self.category = category
+        self.iteration = iteration
+        super().__init__(
+            f"{model} refused the {skill!r} request on call #{iteration}"
+            + (f" (category: {category})" if category else "")
+            + " — no content returned")
+
+
 class SkillRunner:
     """
     Runs one skill against Claude or Gemini via an agentic tool-calling loop.
@@ -1146,12 +1231,17 @@ class SkillRunner:
         self.max_iter = max_iter
         self.max_input_tokens = max_input_tokens
         # Extended thinking: Claude only, ignored silently for Gemini.
-        # Requires max_tokens > thinking_budget; budget_tokens=10000 + 14000 output headroom = 24000.
+        # Adaptive (the model picks its own depth); steered via
+        # output_config.effort.  See _run_claude.
         self.use_extended_thinking = use_extended_thinking and provider == "claude"
 
-        # Token usage tracking — populated during run()
+        # Token usage tracking — populated during run().  The four buckets are
+        # priced differently (cache reads ~0.1x, cache writes ~1.25x), so they
+        # are tracked separately rather than folded into one input total.
         self._total_input_tokens: int = 0
         self._total_output_tokens: int = 0
+        self._total_cache_creation_tokens: int = 0
+        self._total_cache_read_tokens: int = 0
         # Most recent call's input-token count, for interactive-mode warnings.
         self._last_input_tokens: int = 0
 
@@ -1221,7 +1311,31 @@ class SkillRunner:
             )
         return self._store
 
+    # Hard ceiling on a single tool result, in characters (~4 chars/token).
+    # analyze_interface on a large complex returns per-residue contact lists for
+    # every interface residue; on TREM2 and KRAS that grew the conversation
+    # 47k -> 84k -> 134k tokens in three calls and blew the per-call input limit.
+    # A result the model cannot read is worse than a truncated one it can.
+    MAX_TOOL_RESULT_CHARS = 60_000
+
     def _execute_tool(self, name: str, input_dict: dict) -> str:
+        raw = self._execute_tool_inner(name, input_dict)
+        if len(raw) <= self.MAX_TOOL_RESULT_CHARS:
+            return raw
+        kept = raw[: self.MAX_TOOL_RESULT_CHARS]
+        logger.warning(
+            f"tool {name} returned {len(raw):,} chars (~{len(raw) // 4:,} tokens) "
+            f"— truncated to {self.MAX_TOOL_RESULT_CHARS:,}. Narrow the query "
+            f"(fewer chains, a smaller cutoff) for the full result.")
+        return (
+            kept
+            + f"\n\n... [TRUNCATED: this result was {len(raw):,} characters, over "
+              f"the {self.MAX_TOOL_RESULT_CHARS:,} limit. The summary fields above "
+              f"are complete; per-residue detail was cut. Re-run the tool on a "
+              f"single chain pair or a tighter cutoff if you need the rest.]"
+        )
+
+    def _execute_tool_inner(self, name: str, input_dict: dict) -> str:
         try:
             if name == "search_corpus":
                 raw = self._get_store().execute_search_tool(input_dict)
@@ -1273,6 +1387,31 @@ class SkillRunner:
                     fingerprint_dir=self._fingerprint_dir,
                 )
                 return json.dumps(result, ensure_ascii=False, indent=2)
+
+            if name == "resolve_protein_identifier":
+                from src.target_resolve import resolve_target
+                from dataclasses import asdict as _asdict
+                return json.dumps(_asdict(resolve_target(input_dict["name"])),
+                                  indent=2)
+
+            if name == "find_complex_structures":
+                from src.target_resolve import entry_metadata, find_complex_structures
+                ids = find_complex_structures(
+                    input_dict["uniprot"], rows=int(input_dict.get("rows", 25)))
+                return json.dumps(
+                    {"pdb_ids": ids, "entries": entry_metadata(ids[:15])}, indent=2)
+
+            if name == "tool_find_glue_pockets":
+                from src.structure_tools import find_glue_pockets
+                result = find_glue_pockets(
+                    _resolve(input_dict["file_path"]),
+                    input_dict["chain_a"],
+                    input_dict["chain_b"],
+                    periinterface_radius=float(
+                        input_dict.get("periinterface_radius", 10.0)),
+                    top_n=int(input_dict.get("top_n", 3)),
+                )
+                return json.dumps(result, indent=2)
 
             if name == "tool_analyze_interface":
                 from src.structure_tools import analyze_interface
@@ -1532,6 +1671,23 @@ class SkillRunner:
 
         return result
 
+    def usage(self) -> "Usage":
+        """
+        Cumulative token usage for this runner, split by billing bucket.
+
+        The pipeline builds one runner per stage and discards it, so this is the
+        hand-off point for cost accounting — read it before the runner goes out
+        of scope (including on the failure path; a stage that dies on iteration
+        25 of 30 still spent that money).
+        """
+        from src.token_budget import Usage
+        return Usage(
+            input_tokens=self._total_input_tokens,
+            output_tokens=self._total_output_tokens,
+            cache_creation_tokens=self._total_cache_creation_tokens,
+            cache_read_tokens=self._total_cache_read_tokens,
+        )
+
     def reset(self) -> None:
         """Clear conversation history; keeps the loaded system prompt and tool list."""
         self._messages = None
@@ -1748,10 +1904,15 @@ class SkillRunner:
         for iteration in range(self.max_iter):
             logger.info(f"[claude] call #{iteration + 1} — messages={len(messages)}")
 
-            # Extended thinking: budget_tokens must be < max_tokens.
-            # We allocate 10 000 to thinking and leave 14 000 for visible output.
+            # Extended thinking.  `budget_tokens` was REMOVED on claude-sonnet-5
+            # / claude-opus-5 and is rejected with a 400 — adaptive thinking
+            # replaces it and lets the model pick its own depth.  Depth is
+            # steered with output_config.effort instead of a token budget.
             thinking_param = (
-                {"thinking": {"type": "enabled", "budget_tokens": 10000}}
+                {
+                    "thinking": {"type": "adaptive"},
+                    "output_config": {"effort": "high"},
+                }
                 if self.use_extended_thinking
                 else {}
             )
@@ -1801,7 +1962,24 @@ class SkillRunner:
             for block in response.content:
                 if block.type == "thinking":
                     # Preserve in history; never emit to output text.
-                    content_list.append({"type": "thinking", "thinking": block.thinking})
+                    #
+                    # The `signature` is NOT optional: a thinking block replayed
+                    # without it is rejected with
+                    # `messages.N.content.0.thinking.signature: Field required`.
+                    # It is also why the block must be echoed back verbatim
+                    # rather than reconstructed — the signature covers the exact
+                    # text the model produced.
+                    thinking_block: dict[str, Any] = {
+                        "type": "thinking", "thinking": block.thinking}
+                    signature = getattr(block, "signature", None)
+                    if signature:
+                        thinking_block["signature"] = signature
+                    content_list.append(thinking_block)
+                elif block.type == "redacted_thinking":
+                    # Opaque, encrypted reasoning. It carries no readable text
+                    # but must still round-trip or the turn is rejected.
+                    content_list.append({"type": "redacted_thinking",
+                                         "data": getattr(block, "data", "")})
                 elif block.type == "text":
                     text_parts.append(block.text)
                     content_list.append({"type": "text", "text": block.text})
@@ -1820,6 +1998,8 @@ class SkillRunner:
             cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
             self._total_input_tokens += in_tok
             self._total_output_tokens += out_tok
+            self._total_cache_creation_tokens += cache_created
+            self._total_cache_read_tokens += cache_read
             self._last_input_tokens = in_tok
             cache_info = f" | cache_created={cache_created:,} / cache_read={cache_read:,}" if (cache_created or cache_read) else ""
             logger.info(
@@ -1834,13 +2014,20 @@ class SkillRunner:
                     f"({out_tok:,} out) — '### PIPELINE HANDOFF' may be missing."
                 )
             elif response.stop_reason == "refusal":
-                # Safety-filter refusal — model returned no content. Surface
-                # this loudly so the caller doesn't get a silent empty report.
-                logger.warning(
-                    f"Model refused on call #{iteration + 1} "
-                    f"(stop_reason=refusal) — empty response. "
-                    f"Check skill prompt + query for safety triggers."
-                )
+                # A safety classifier declined the request; the response has no
+                # content. Raise rather than warn: the old behaviour wrote an
+                # empty report and the run failed three stages later with a
+                # confusing "no hotspots" error.
+                #
+                # This is strongly model-dependent — measured on the same
+                # structure-analysis prompt, claude-sonnet-5 refuses with
+                # category "bio" where claude-opus-5 and claude-haiku-4-5 answer
+                # normally — so the caller retries on a fallback model.
+                details = getattr(response, "stop_details", None)
+                category = getattr(details, "category", None)
+                raise SkillRefusedError(
+                    skill=self.skill_name, model=self.model_id,
+                    category=category, iteration=iteration + 1)
 
             if in_tok > self.max_input_tokens:
                 raise RuntimeError(
@@ -1917,7 +2104,30 @@ class SkillRunner:
             resp.raise_for_status()
             body = resp.json()
 
-            candidate = body["candidates"][0]
+            # A prompt Gemini declines outright comes back with an EMPTY
+            # candidates list and a top-level promptFeedback.blockReason — no
+            # content to index into. A per-candidate safety stop looks like a
+            # normal candidate but with finishReason SAFETY/PROHIBITED_CONTENT/
+            # BLOCKLIST/RECITATION/SPII and no `content` key. Both must raise
+            # SkillRefusedError, the same signal Claude's refusal produces, so
+            # the caller's fallback chain handles them uniformly rather than
+            # crashing on a raw KeyError/IndexError here.
+            candidates = body.get("candidates") or []
+            block_reason = (body.get("promptFeedback") or {}).get("blockReason")
+            if block_reason or not candidates:
+                raise SkillRefusedError(
+                    skill=self.skill_name, model=self.model_id,
+                    category=block_reason or "blocked_no_candidates",
+                    iteration=iteration + 1)
+
+            candidate = candidates[0]
+            _SAFETY_FINISH_REASONS = {
+                "SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "RECITATION", "SPII"}
+            if candidate.get("finishReason") in _SAFETY_FINISH_REASONS:
+                raise SkillRefusedError(
+                    skill=self.skill_name, model=self.model_id,
+                    category=candidate["finishReason"], iteration=iteration + 1)
+
             parts: list[dict] = candidate["content"]["parts"]
 
             if candidate.get("finishReason") == "MAX_TOKENS":
