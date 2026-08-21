@@ -556,7 +556,7 @@ def run_optimizer_task(self, run_id: int) -> None:
         skill_runner = SkillRunner(
             skill_name="binder-optimizer",
             provider=run.provider if run else "claude",
-            model_id=run.model_id or "claude-sonnet-4-6",
+            model_id=run.model_id or "claude-sonnet-5",
             config=config,
         )
         output_text = skill_runner.run(query)
@@ -658,7 +658,7 @@ def run_binder_optimizer_task(self, binder_id: int, user_id: int, cif_abs_path: 
         skill_runner = SkillRunner(
             skill_name="binder-optimizer",
             provider="claude",
-            model_id="claude-sonnet-4-6",
+            model_id="claude-sonnet-5",
             config=config,
         )
         report_text = skill_runner.run(prompt)

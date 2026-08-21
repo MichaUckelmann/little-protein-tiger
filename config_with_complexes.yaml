@@ -6,7 +6,7 @@ curation:
   max_input_chars: 90000
   max_retries: 3
   max_tokens: 8000
-  model: claude-haiku-4-5-20251001
+  model: claude-haiku-4-5
   prompt_path: curation_prompt.md
   provider: claude
   schema_path: extraction_schema.json

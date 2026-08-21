@@ -883,6 +883,46 @@ def check_mutation_clash(
     }
 
 
+def _is_protein_residue(resname: str) -> bool:
+    info = gemmi.find_tabulated_residue(resname)
+    if info is not None:
+        return info.is_amino_acid()
+    return resname in AA3_TO_1
+
+
+def sequence_identity(a: str, b: str) -> float:
+    """
+    Local-alignment percent identity between two sequences, 0-1.
+
+    Local (Smith-Waterman-style), not global: `a` is typically a trimmed
+    chain fragment (e.g. one Ig domain out of a multi-domain protein) and `b`
+    a full-length reference, so anchoring the whole of `a` end-to-end against
+    `b` would be the wrong question. Percent identity is computed over the
+    ALIGNED region only, matches/aligned-columns, which is what "does this
+    fragment genuinely belong to that reference" asks.
+
+    Returns 0.0 for either empty input rather than raising — a chain with no
+    extractable sequence is a real "no match", not an error here.
+    """
+    if not a or not b:
+        return 0.0
+    from Bio.Align import PairwiseAligner, substitution_matrices
+
+    aligner = PairwiseAligner()
+    aligner.mode = "local"
+    aligner.substitution_matrix = substitution_matrices.load("BLOSUM62")
+    aligner.open_gap_score = -10
+    aligner.extend_gap_score = -0.5
+    alignments = aligner.align(a, b)
+    if not alignments:
+        return 0.0
+    aln = alignments[0]
+    seq_a, seq_b = str(aln[0]), str(aln[1])
+    aligned = sum(1 for x, y in zip(seq_a, seq_b) if x == y and x != "-")
+    length = sum(1 for x, y in zip(seq_a, seq_b) if x != "-" and y != "-")
+    return aligned / length if length else 0.0
+
+
 def get_sequence_map(file_path: str, chain: str) -> dict[str, Any]:
     """
     Returns the full amino acid sequence of a chain plus the numbering maps

@@ -41,7 +41,7 @@ paths:
 
 curation:
   provider: "claude"
-  model: "claude-haiku-4-5-20251001"
+  model: "claude-haiku-4-5"
   gemini_model: "gemini-3.1-flash-lite-preview"
   local_model: "Qwen/Qwen3.5-9B"
   local_endpoint: "http://localhost:8000/v1"

@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import requests
 import yaml
@@ -36,6 +38,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_ROOT / ".env")
 sys.path.insert(0, str(_ROOT))
 
+from src import handoff as _handoff
 from src.design_metrics import (
     enrich_with_hotspot_sasa,
     parse_boltzgen_outputs,
@@ -49,12 +52,32 @@ from src.design_runner import (
     validate_yaml,
 )
 from src.fingerprint_store import load_fingerprint
-from src.skill_runner import SkillRunner
+from src.skill_runner import SkillRefusedError, SkillRunner
+from src.campaign_calibration import MIN_HITS_FOR_ESTIMATE
+from src.token_budget import BudgetExceeded, TokenLedger, Usage, load_pricing
 
 _DEFAULT_MODELS = {
-    "claude": "claude-sonnet-4-6",
+    "claude": "claude-sonnet-5",
     "gemini": "gemini-3.1-flash-lite-preview",
 }
+
+# Haiku cannot do extended thinking; stages that ask for it get upgraded here.
+_THINKING_UPGRADE_MODEL = "claude-sonnet-5"
+
+# Models to retry on when a safety classifier declines a request, in order.
+#
+# Gemini goes FIRST, not last. Measured across three separate interface-stage
+# refusals on the same target (PD-L1): claude-sonnet-5 refused (category "bio"),
+# then claude-opus-5 ALSO refused (same category) every single time, at a higher
+# per-token cost than the model that follows it — pure wasted spend, ~$0.13 for
+# nothing, three times over. Anthropic's safety classifiers are consistent
+# across the Claude family for a given category, so trying a second Claude
+# model after a categorised refusal is a bet that has not once paid off here.
+# claude-haiku-4-5 is kept as a same-provider fallback in case Gemini itself
+# declines or errors (see SkillRefusedError handling in `_run_gemini`) —
+# reached only when the immediate switch does not resolve it.
+_REFUSAL_FALLBACK_MODELS = ["gemini:gemini-3.7-flash", "claude-opus-5",
+                           "claude-haiku-4-5"]
 
 # Per-stage default model overrides keyed by stage name. Picks up before the
 # global _default_model but after an explicit user override via stage_models.
@@ -63,7 +86,10 @@ _DEFAULT_MODELS = {
 # regardless of prompt wording, and Haiku handles tabular summarisation
 # correctly and cheaply.
 _DEFAULT_STAGE_MODELS = {
-    "claude": {"summary": "claude-haiku-4-5-20251001"},
+    "claude": {
+        "summary": "claude-haiku-4-5",
+        "binder_summary": "claude-haiku-4-5",
+    },
     "gemini": {},
 }
 
@@ -74,7 +100,48 @@ _STAGE_TO_SKILL: dict[str, str] = {
     "literature": "molecular-biology-expert",
     "design":     "protein-design-script",
     "summary":    "design-analyst",
+    # Binder (target-name-first) workflow stages.  Only the LLM stages appear
+    # here; trim / binder_spec / pilot / calibration / production /
+    # binder_scoring are deterministic Python and follow the execution+analysis
+    # convention of having no skill entry.
+    "target_intel":       "binder-target-intel",
+    "interface":          "complex-structure-analysis",
+    "binder_summary":     "design-analyst",
 }
+
+
+class _TrimFromDisk:
+    """
+    The subset of TrimResult the later binder stages use, rebuilt from
+    trim_map.json so a resume does not have to re-run the trim.
+    """
+
+    def __init__(self, mapping: dict):
+        self.kept_segments = [tuple(s) for s in mapping.get("kept_segments", [])]
+        self.n_segments = int(mapping.get("n_segments", len(self.kept_segments)))
+        self.contig = mapping.get("contig", "")
+        self.trimmed_path = Path(mapping.get("trimmed_path")
+                                 or mapping.get("source", ""))
+        self.bsa_retention = float(mapping.get("bsa_retention", 1.0))
+        self.target_chain = mapping.get("target_chain", "")
+        self.partner_chain = mapping.get("partner_chain", "")
+        self.pdb_id = mapping.get("pdb_id", "")
+        self.warnings = list(mapping.get("warnings") or [])
+
+
+def _stage_for_skill(skill_name: str) -> str:
+    """
+    Best-effort inverse of _STAGE_TO_SKILL.
+
+    First match wins, so this is ambiguous for any skill serving more than one
+    stage (complex-structure-analysis -> structure | interface, design-analyst
+    -> summary | binder_summary).  Callers that know their stage must pass it
+    explicitly; this exists only as the legacy fallback.
+    """
+    return next(
+        (s for s, sk in _STAGE_TO_SKILL.items() if sk == skill_name),
+        skill_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -178,11 +245,41 @@ class PipelineRunner:
         extended_thinking_stages: set[str] | None = None,
         pathway_mode: str = "standard",
         capture_traces: bool = False,
+        project: "Project | None" = None,
+        round_id: str | None = None,
+        workflow: str = "ppi",
+        budget_usd: float | None = None,
+        budget_mode: str = "hard",
+        detach: bool = False,
+        n_batches: int | None = None,
+        trial_sites: int = 1,
+        trial_backbones: int = 300,
+        escalate_to: int | None = 1000,
+        stop_after: str | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
-        self._default_model = model_id or _DEFAULT_MODELS[provider]
+        # config.yaml `models:` is the source of truth; the module-level
+        # _DEFAULT_* tables are the fallback when it is absent.
+        self._models_cfg = (config.get("models") or {}).get(provider) or {}
+        self._default_model = (
+            model_id
+            or self._models_cfg.get("default")
+            or _DEFAULT_MODELS[provider]
+        )
+        load_pricing(config)
         self._output_dir_override = output_dir
+        # Optional persistent project (src/project.py). When supplied, stage
+        # files land in project.run_dir(round_id) and stage state is mirrored
+        # into the project manifest. None => legacy outputs/<slug>_<date>/ layout.
+        self._project = project
+        self._round_id = round_id
+        # "ppi" (default binder/inhibitor track) | "binder" (target-name-first).
+        if workflow not in {"ppi", "binder"}:
+            raise ValueError(
+                f"Invalid workflow={workflow!r}; expected 'ppi' or 'binder'."
+            )
+        self._workflow = workflow
         self.max_iter = max_iter
         self.max_tokens = max_tokens
         # Per-stage overrides: {stage_name: model_id}. Empty = uniform default.
@@ -195,6 +292,21 @@ class PipelineRunner:
         # only way to audit the full conversation including thinking blocks
         # and tool call/response chains after a run.
         self._capture_traces = capture_traces
+        # API dollar budget. The ledger is constructed in run(), once run_dir
+        # is known; deterministic (non-LLM) stages never consume from it.
+        self._budget_usd = budget_usd
+        self._budget_mode = budget_mode
+        self._ledger: TokenLedger | None = None
+        # Binder track: whether GPU stages block or return immediately, and an
+        # optional override of the RFD3 batch count.
+        self._detach = detach
+        self._n_batches = n_batches
+        # Site trials: how many epitopes to compare, at what size, and where to
+        # escalate when a trial is too small to measure a rate.
+        self._trial_sites = max(1, int(trial_sites))
+        self._trial_backbones = int(trial_backbones)
+        self._escalate_to = escalate_to
+        self._stop_after = stop_after
         # "standard" = pathway-expert | "wildcard" = wildcard-expert.
         # CLI / explicit kwarg overrides config; if caller passed the default
         # "standard" verbatim, fall back to whatever config says so users can
@@ -229,6 +341,7 @@ class PipelineRunner:
         structure_next_step: str | None = None,
         target_complex: str | None = None,
         force_production: bool = False,
+        target: str | None = None,
     ) -> PipelineResult:
         """
         Run the pipeline from `start_from` onwards.
@@ -253,6 +366,9 @@ class PipelineRunner:
             Injected on resume from a structure_choice pause.
             "literature_and_design" | "design_only" | "stop".
             Ignored when auto_mode=True.
+        target : str | None
+            Binder workflow only: the protein to design against, e.g. "KRAS".
+            Skips discovery — the target is a given, not something to find.
         target_complex : str | None
             Explicitly-set target complex from the user's choice (e.g.
             "EapH2 / Cathepsin-G").  Takes precedence over the target_complex
@@ -269,8 +385,25 @@ class PipelineRunner:
         )
         run_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Pipeline run dir: {run_dir}")
+        self._init_ledger(run_dir)
 
         result = PipelineResult(run_dir=run_dir, pdb_id=pdb_id, target_complex=target_complex)
+
+        # ── Binder workflow: target-name-first track ─────────────────────────
+        # Skips pathway/literature discovery entirely: the target is already
+        # named, so stage 0 is a structural choice, not a biological search.
+        # Runs foundry (RFD3 -> solubleMPNN -> RF3) on the local GPU rather than
+        # BoltzGen, and sizes the production run from a measured calibration.
+        if self._workflow == "binder":
+            if start_from in ("pathway", "structure", "literature", "design"):
+                start_from = "target_intel"
+            return self._run_binder_track(
+                query, run_dir, result,
+                start_from=start_from, context_file=context_file,
+                auto_mode=auto_mode, target=target,
+                attach=not self._detach, n_batches=self._n_batches,
+            )
+
         handoff: dict[str, str] = {}
 
         # Seed handoff from a pre-existing context file when resuming.
@@ -473,6 +606,1387 @@ class PipelineRunner:
 
         return result
 
+    # ==================================================================
+    # Binder workflow (target-name-first)
+    # ==================================================================
+    # A second track alongside PPI. The target is named by the user, so
+    # there is no discovery stage: stage 0 chooses a structure and an interface
+    # from a deterministically pre-computed candidate table. Design runs on the
+    # local GPU through foundry (RFD3 -> solubleMPNN -> RF3), detached and
+    # resumable, and the production scale is MEASURED by a calibration run rather
+    # than guessed. Only three stages call an LLM.
+
+    BINDER_STAGE_ORDER = [
+        "target_intel", "interface", "trim", "binder_spec",
+        "pilot", "calibration", "production", "binder_scoring", "binder_summary",
+    ]
+    _BINDER_STAGE_FILES = {
+        "target_intel":   "20_target_intel.md",
+        "interface":      "21_interface.md",
+        "trim":           "22_trim.md",
+        "binder_spec":    "23_binder_spec.md",
+        "pilot":          "24_pilot.md",
+        "calibration":    "25_calibration.md",
+        "production":     "26_production.md",
+        "binder_scoring": "27_scoring.md",
+        "binder_summary": "28_summary.md",
+    }
+    # Deterministic stages have no skill; they still record into the manifest.
+    _BINDER_DETERMINISTIC = {
+        "trim", "binder_spec", "pilot", "calibration", "production", "binder_scoring",
+    }
+
+    def _binder_dirs(self, run_dir: Path) -> dict[str, Path]:
+        binder = run_dir / "binder"
+        dirs = {
+            "binder": binder,
+            "candidates": binder / "candidates",
+            "trim": binder / "trim",
+            "spec": binder / "spec",
+            "campaign": binder / "campaign",
+            "calibration": binder / "calibration",
+            "scoring": binder / "scoring",
+            "sites": binder / "sites",
+        }
+        for d in dirs.values():
+            d.mkdir(parents=True, exist_ok=True)
+        return dirs
+
+    def _load_binder_handoff(self, binder_dir: Path, stage: str) -> dict[str, str]:
+        """Parse a prior binder stage's handoff from its .md, for resume."""
+        f = binder_dir / self._BINDER_STAGE_FILES.get(stage, "")
+        if f.exists():
+            return self._parse_handoff(f.read_text(encoding="utf-8"))
+        return {}
+
+    def _binder_checkpoint(self, cp_id: str, stage: str, kind: str,
+                           payload: dict) -> None:
+        if self._project is None or self._round_id is None:
+            return
+        try:
+            self._project.set_checkpoint(cp_id, self._round_id, stage, kind,
+                                         payload=payload)
+        except Exception as exc:
+            logger.warning(f"manifest checkpoint {cp_id} failed: {exc}")
+
+    def _binder_cfg(self) -> dict:
+        return self.config.get("design") or {}
+
+    def _write_binder_report(self, path: Path, title: str, body: str,
+                             handoff: dict[str, Any] | None = None) -> None:
+        """Deterministic stages write their own report + handoff block."""
+        text = [f"# {title}", "", body]
+        if handoff:
+            text += ["", "### PIPELINE HANDOFF"]
+            text += [f"- {k}: {v}" for k, v in handoff.items()]
+        path.write_text("\n".join(text) + "\n", encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # Binder stages
+    # ------------------------------------------------------------------
+
+    def _binder_prepare_candidates(self, target_name: str,
+                                   dirs: dict[str, Path]) -> tuple[str, dict]:
+        """
+        Deterministic pre-pass: name -> ranked interface table. Costs no tokens.
+
+        The table is what keeps the target-intel skill to a handful of tool
+        calls instead of ~15; the skill's job is the judgement, not the lookup.
+        """
+        from src.target_resolve import (
+            TargetResolutionError, build_candidate_table, render_candidate_table,
+            write_candidates,
+        )
+
+        structures_dir = _ROOT / (
+            (self.config.get("paths") or {}).get("structures_dir", "data/structures"))
+        try:
+            target, candidates = build_candidate_table(
+                target_name, structures_dir=structures_dir)
+        except TargetResolutionError as exc:
+            raise PipelineBlockedError(str(exc)) from exc
+        paths = write_candidates(target, candidates, dirs["candidates"])
+        logger.info(f"candidate table -> {paths['markdown']}")
+        return render_candidate_table(candidates), {
+            "gene": target.gene, "uniprot": target.uniprot,
+            "n_candidates": len(candidates),
+        }
+
+    def _stage_target_intel(self, query: str, target_name: str,
+                            dirs: dict[str, Path],
+                            result: PipelineResult) -> dict[str, str]:
+        table, meta = self._binder_prepare_candidates(target_name, dirs)
+        topo_note = ""
+        if meta.get("uniprot"):
+            from src.membrane_topology import fetch_topology
+
+            topo = fetch_topology(meta["uniprot"])
+            if topo.is_membrane:
+                topo_note = (
+                    f"\n\nTOPOLOGY: {topo.describe()}. This is a membrane "
+                    f"protein — design against the EXTRACELLULAR region unless "
+                    f"the objective explicitly says otherwise, and never pick an "
+                    f"interface inside the transmembrane helix (in an isolated "
+                    f"structure it is an exposed hydrophobic slab that attracts "
+                    f"binders which cannot work in a membrane).")
+            elif topo.fetched:
+                topo_note = "\n\nTOPOLOGY: soluble protein, no membrane restriction."
+            (dirs["candidates"] / "topology.json").write_text(
+                json.dumps(topo.as_dict(), indent=2), encoding="utf-8")
+        constraints = (self._binder_cfg().get("constraints") or {})
+        sizes = constraints.get("binder_sizes") or {}
+        budget = (self._binder_cfg().get("foundry") or {}).get(
+            "target_residue_budget", 220)
+
+        full_query = "\n\n".join([
+            f"Design objective: {query}",
+            f"Target: {target_name} ({meta['gene']} / {meta['uniprot']})",
+            f"Candidate interfaces ({meta['n_candidates']} above 500 A^2), "
+            f"measured on biological assembly 1:",
+            table,
+            f"Constraints: the target chain will be trimmed to at most {budget} "
+            f"residues. Binder sizes: cyclic_peptide "
+            f"{sizes.get('cyclic_peptide', {}).get('min', 12)}-"
+            f"{sizes.get('cyclic_peptide', {}).get('max', 15)}, mini_protein "
+            f"{sizes.get('mini_protein', {}).get('min', 70)}-"
+            f"{sizes.get('mini_protein', {}).get('max', 86)}.",
+        ]) + topo_note
+        out = dirs["binder"] / self._BINDER_STAGE_FILES["target_intel"]
+        handoff = self._run_stage("binder-target-intel", full_query, [], out,
+                                  stage="target_intel")
+        result.pdb_id = handoff.get("pdb_id") or result.pdb_id
+        result.target_complex = (
+            f"{handoff.get('target_gene', target_name)} / "
+            f"{handoff.get('partner_name', '?')}")
+        result.stage_files["target_intel"] = out
+        result.stages_completed.append("target_intel")
+        return handoff
+
+    @staticmethod
+    def _binder_sites(intel: dict[str, str], limit: int = 1) -> list[dict]:
+        """
+        Candidate sites to trial, primary first.
+
+        `sites_json` is the skill's list of genuinely competitive epitopes. When
+        more than one is trialled, the comparison is made on measured success
+        rates rather than on argument — which is the only way to settle it.
+        """
+        primary = {
+            "site_id": "primary",
+            "pdb_id": intel.get("pdb_id"),
+            "target_chain": intel.get("target_chain"),
+            "partner_chain": intel.get("partner_chain"),
+            "partner_name": intel.get("partner_name", ""),
+            "rationale": intel.get("interface_rationale", ""),
+        }
+        def valid_chain(value: Any) -> bool:
+            """
+            An auth chain id, not a placeholder.
+
+            The skill has emitted things like "TBD (PD-L1)"; passing that through
+            fails four stages later inside gemmi with an unhelpful "chain not
+            found". Real ids are short alphanumeric tokens.
+            """
+            text = str(value or "").strip()
+            return bool(text) and len(text) <= 4 and text.isalnum()
+
+        sites: list[dict] = []
+        raw = intel.get("sites_json")
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    for i, entry in enumerate(parsed):
+                        if not isinstance(entry, dict) or not entry.get("pdb_id"):
+                            continue
+                        if not (valid_chain(entry.get("target_chain"))
+                                and valid_chain(entry.get("partner_chain"))):
+                            logger.warning(
+                                f"site {entry.get('site_id', i + 1)!r} names "
+                                f"chain(s) {entry.get('target_chain')!r}/"
+                                f"{entry.get('partner_chain')!r} which are not "
+                                f"auth chain ids — skipping it")
+                            continue
+                        entry.setdefault("site_id", f"site{i + 1}")
+                        sites.append(entry)
+            except json.JSONDecodeError as exc:
+                logger.warning(f"sites_json is not valid JSON ({exc}); using the "
+                               f"primary handoff fields only")
+        if not sites:
+            if not (valid_chain(primary["target_chain"])
+                    and valid_chain(primary["partner_chain"])):
+                raise PipelineBlockedError(
+                    f"target-intel did not name usable chains "
+                    f"(target={primary['target_chain']!r}, "
+                    f"partner={primary['partner_chain']!r}). Chain ids must come "
+                    f"from the candidate table; re-run, or pass --pdb and the "
+                    f"chains explicitly.")
+            sites = [primary]
+        # De-duplicate on the actual interface, not the label.
+        seen, unique = set(), []
+        for site in sites:
+            key = (site.get("pdb_id"), site.get("target_chain"),
+                   site.get("partner_chain"))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(site)
+        if len(unique) > limit:
+            logger.info(
+                f"{len(unique)} candidate site(s) proposed; trialling the first "
+                f"{limit}. Raise --trial-sites to compare more.")
+        return unique[:limit]
+
+    def _stage_binder_interface(self, intel: dict[str, str], dirs: dict[str, Path],
+                                result: PipelineResult) -> tuple[dict[str, str], str]:
+        """Reuse complex-structure-analysis to pick model-ready hotspots."""
+        pdb = intel.get("pdb_id")
+        if not pdb or pdb == "NOT_FOUND":
+            raise PipelineBlockedError(
+                "target-intel did not choose a PDB entry. Re-run with an explicit "
+                "--pdb, or check the candidate table for a usable complex.")
+        self._ensure_structure(pdb)
+
+        q = intel.get("structure_query") or (
+            f"Analyse the interface between {intel.get('target_gene')} and "
+            f"{intel.get('partner_name')} in {pdb} and select model-ready "
+            f"hotspots for a {intel.get('modality', 'mini_protein')} binder "
+            f"({intel.get('design_intent', 'disrupt')} mode).")
+        out = dirs["binder"] / self._BINDER_STAGE_FILES["interface"]
+        handoff = self._run_stage("complex-structure-analysis", q, [], out,
+                                  stage="interface")
+        text = out.read_text(encoding="utf-8")
+        hotspots = self._parse_hotspot_residues(text, handoff)
+        if not hotspots:
+            raise PipelineError(
+                "the interface stage produced no MODEL-READY HOTSPOTS table; the "
+                "RFD3 spec cannot be built without atom-level hotspots")
+        self._verify_target_chain_assignment(intel, handoff, result.pdb_id or pdb)
+        self._verify_hotspot_grounding(hotspots, result.pdb_id or pdb)
+        result.hotspot_residues_json = hotspots
+        result.stage_files["interface"] = out
+        result.stages_completed.append("interface")
+        return handoff, hotspots
+
+    # Local-alignment identity above this is "same protein, engineered
+    # variant" (point mutants, tags, species orthologs land ~90%+ over the
+    # aligned region); unrelated proteins land well under it — BLOSUM62 local
+    # alignment of two random sequences rarely clears ~30% over any
+    # significant aligned length.
+    _CHAIN_SEQ_IDENTITY_THRESHOLD = 0.85
+
+    def _binder_structure_path(self, pdb_id: str) -> Path:
+        """Biological assembly 1 if already downloaded, else the ASU."""
+        structures_dir = _ROOT / (
+            (self.config.get("paths") or {}).get("structures_dir", "data/structures"))
+        ba1 = structures_dir / f"{pdb_id.upper()}_ba1.cif"
+        return ba1 if ba1.exists() else structures_dir / f"{pdb_id.upper()}.cif"
+
+    def _chain_identity_to_uniprot(self, structure_path: Path, chain: str,
+                                   uniprot_seq: str) -> float | None:
+        """% identity of a chain's MODELLED sequence to a UniProt sequence, or
+        None if the chain's sequence could not be extracted."""
+        from src.structure_tools import get_sequence_map, sequence_identity
+
+        try:
+            observed = get_sequence_map(str(structure_path), chain).get("sequence", "")
+        except Exception as exc:
+            logger.debug(f"could not extract chain {chain} sequence: {exc}")
+            return None
+        if not observed:
+            return None
+        return sequence_identity(observed, uniprot_seq)
+
+    def _verify_target_chain_assignment(self, intel: dict[str, str],
+                                        handoff: dict[str, str],
+                                        pdb_id: str) -> None:
+        """
+        Confirm the interface stage assigned target_chain to the TARGET, not
+        the partner.
+
+        `_verify_hotspot_grounding` confirms a hotspot's residue is real; this
+        confirms it is on the right MOLECULE. The two are independent: a chain
+        swap produces perfectly-grounded hotspots — real, correctly-numbered
+        residues — on the wrong protein, so grounding alone cannot catch it.
+
+        Caught in practice: for PD-L1 (7CZD, PD-L1 on chains B/D per RCSB), the
+        interface stage assigned target_chain=A and wrote hotspots on the
+        anti-PD-L1 VHH nanobody's own CDR loop (Tyr32/Trp33/Tyr35/Trp47) instead
+        of PD-L1's IgV domain — its own summary even said "Target chain A
+        (VHH)". Chain letters, entity descriptions and the hotspot atoms were
+        all internally consistent, so validate_spec and hotspot grounding both
+        passed cleanly; a full multi-hour campaign ran against the wrong
+        molecule before anyone noticed.
+
+        Two independent signals, primary first:
+
+        1. SEQUENCE — align the chain's actual MODELLED residues (from the
+           structure file already on disk) against UniProt's canonical
+           sequence for the target. This is ground truth: it asks what the
+           atoms in the file actually are, not what a metadata field claims
+           about them, so it is immune to a curation error and works even when
+           RCSB has no cross-reference for that entity at all. Cheap — one
+           small UniProt FASTA fetch (cached per accession) plus a local
+           alignment over a ~100-500 residue chain, milliseconds.
+        2. METADATA — RCSB's per-chain entity description / SIFTS-derived
+           UniProt accession. Used only as the fallback when a sequence
+           comparison isn't possible (no uniprot accession resolved, the
+           structure file or chain sequence isn't available, or the fetch
+           fails) — the case this incident actually hit, since PD-L1's
+           accession WAS resolved and metadata alone would have sufficed here,
+           but the fallback exists for entries where it doesn't.
+        """
+        target_chain = handoff.get("target_chain")
+        partner_chain = handoff.get("partner_chain")
+        if not target_chain or not partner_chain:
+            return
+        gene = (intel.get("target_gene") or "").upper()
+        uniprot = (intel.get("target_uniprot") or "").upper()
+        if not gene and not uniprot:
+            return   # nothing to check the assignment against
+
+        # -- 1. Sequence, when we have a UniProt accession and the structure --
+        if uniprot:
+            structure_path = self._binder_structure_path(pdb_id)
+            if structure_path.exists():
+                from src.target_resolve import fetch_uniprot_sequence
+
+                ref_seq = fetch_uniprot_sequence(uniprot)
+                if ref_seq:
+                    target_id = self._chain_identity_to_uniprot(
+                        structure_path, target_chain, ref_seq)
+                    if target_id is not None:
+                        if target_id >= self._CHAIN_SEQ_IDENTITY_THRESHOLD:
+                            logger.info(
+                                f"  chain assignment OK — target_chain "
+                                f"{target_chain} is {target_id:.0%} identical "
+                                f"to {uniprot}")
+                            return
+                        partner_id = self._chain_identity_to_uniprot(
+                            structure_path, partner_chain, ref_seq)
+                        if partner_id is not None and \
+                                partner_id >= self._CHAIN_SEQ_IDENTITY_THRESHOLD:
+                            raise PipelineError(
+                                f"the interface stage assigned target_chain="
+                                f"{target_chain} and partner_chain={partner_chain} "
+                                f"BACKWARDS in {pdb_id}: by sequence, chain "
+                                f"{partner_chain} is {partner_id:.0%} identical "
+                                f"to {gene or uniprot}, but chain {target_chain} "
+                                f"(labelled 'target') is only {target_id:.0%} "
+                                f"identical. Designing against target_chain as "
+                                f"stated would build binders against the wrong "
+                                f"molecule.")
+                        raise PipelineError(
+                            f"target_chain={target_chain} in {pdb_id} is only "
+                            f"{target_id:.0%} identical to {gene or uniprot} "
+                            f"({uniprot})"
+                            + (f", and partner_chain={partner_chain} is only "
+                               f"{partner_id:.0%}" if partner_id is not None
+                               else "")
+                            + " — neither chain looks like the intended target "
+                              "by sequence. The interface stage may have picked "
+                              "the wrong entry or chains entirely.")
+                    logger.debug(
+                        f"could not extract a sequence for chain {target_chain} "
+                        f"in {structure_path}; falling back to metadata")
+                else:
+                    logger.debug(
+                        f"no UniProt sequence for {uniprot}; falling back to "
+                        f"metadata for the chain-assignment check")
+
+        # -- 2. Metadata fallback: entity description / SIFTS accession -------
+        from src.target_resolve import entry_metadata
+
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper())
+        except Exception as exc:
+            logger.warning(f"could not verify chain assignment for {pdb_id}: {exc}")
+            return
+        if not meta:
+            logger.warning(
+                f"could not verify chain assignment for {pdb_id}: no RCSB "
+                f"metadata returned")
+            return
+        chains = meta.get("chains") or {}
+
+        def is_target(chain: str) -> bool:
+            info = chains.get(chain) or {}
+            accs = {str(a).upper() for a in (info.get("uniprots") or [])}
+            if uniprot and uniprot in accs:
+                return True
+            return bool(gene) and gene in (info.get("description") or "").upper()
+
+        target_ok = is_target(target_chain)
+        if target_ok:
+            return
+        partner_is_target = is_target(partner_chain)
+        target_desc = (chains.get(target_chain) or {}).get("description", "?")
+        if partner_is_target:
+            raise PipelineError(
+                f"the interface stage assigned target_chain={target_chain} and "
+                f"partner_chain={partner_chain} BACKWARDS in {pdb_id}: chain "
+                f"{partner_chain} is {gene or uniprot}, and chain {target_chain} "
+                f"(labelled 'target') is actually {target_desc!r}. Designing "
+                f"against target_chain as stated would build binders against "
+                f"the wrong molecule.")
+        logger.warning(
+            f"could not confirm target_chain={target_chain} in {pdb_id} is "
+            f"{gene or uniprot} (RCSB describes it as {target_desc!r}) — "
+            f"proceeding, but verify the design target manually if results "
+            f"look wrong")
+
+    def _verify_hotspot_grounding(self, hotspots_json: str, pdb_id: str) -> None:
+        """
+        Confirm every hotspot's stated residue NAME matches the real structure.
+
+        `_verify_pdb_identity` checks that the downloaded file is the right
+        PROTEIN; this checks that the auth_seq_id/residue-name pairs in the
+        hotspot table are actually grounded in THAT FILE'S numbering, not in
+        textbook numbering the model recalls from training.
+
+        Caught in practice on a well-studied target: the interface stage was
+        asked to analyse 8ZNL and returned PD-L1's canonical literature numbering
+        (Tyr56, Gln66, Arg113, ...) verbatim, but chain B residue 56 in 8ZNL is
+        actually VAL — a different numbering offset from the structure the model
+        clearly had memorised. `validate_spec` caught THIS case only by luck (the
+        stated atoms happened not to exist on VAL); a mismatch that happened to
+        share atom names would have silently trimmed and designed against the
+        wrong residues. Fail loud here, before a design spec is even built.
+        """
+        from src.structure_tools import get_sequence_map
+
+        data = json.loads(hotspots_json)
+        chain = data.get("target_chain")
+        residues = data.get("residues") or []
+        if not chain or not residues:
+            return
+        structures_dir = _ROOT / (
+            (self.config.get("paths") or {}).get("structures_dir", "data/structures"))
+        ba1 = structures_dir / f"{pdb_id.upper()}_ba1.cif"
+        path = ba1 if ba1.exists() else structures_dir / f"{pdb_id.upper()}.cif"
+        try:
+            seq_map = get_sequence_map(str(path), chain)
+        except Exception as exc:
+            logger.warning(
+                f"could not verify hotspot grounding against {path}: {exc}")
+            return
+        by_auth = {r["auth_seq_id"]: r["three_letter"] for r in seq_map["residues"]}
+
+        mismatches = []
+        for h in residues:
+            auth = h.get("auth_seq_id")
+            claimed = str(h.get("residue", "")).upper()
+            actual = by_auth.get(auth)
+            if auth is None or not claimed or actual is None:
+                continue
+            if actual != claimed:
+                mismatches.append(f"{claimed}{auth} (structure has {actual}{auth})")
+        if mismatches:
+            raise PipelineError(
+                f"hotspot table is not grounded in {pdb_id}'s actual numbering: "
+                f"{', '.join(mismatches)}. The interface stage likely reported "
+                f"textbook/literature numbering for a well-known protein instead "
+                f"of reading this specific structure's residues — re-run the "
+                f"stage, or pick a different structure.")
+
+    def _stage_trim(self, intel: dict[str, str], hotspots_json: str,
+                    dirs: dict[str, Path],
+                    result: PipelineResult) -> dict[str, Any]:
+        from src.structure_trim import TrimBudgetError, TrimError, trim_target
+
+        hs = json.loads(hotspots_json)
+        # The hotspot table is parsed out of markdown, so a malformed table
+        # yields an empty chain id that only fails four stages later, inside
+        # gemmi, as "chain '' not found".
+        for key in ("target_chain", "partner_chain"):
+            value = str(hs.get(key) or "").strip()
+            if not value or len(value) > 4 or not value.isalnum():
+                raise PipelineError(
+                    f"the interface stage's MODEL-READY HOTSPOTS table gave "
+                    f"{key}={hs.get(key)!r}, which is not an auth chain id — the "
+                    f"table is malformed and the RFD3 spec cannot be built")
+        if not hs.get("residues"):
+            raise PipelineError(
+                "the MODEL-READY HOTSPOTS table listed no residues")
+        cfg = self._binder_cfg()
+        trim_cfg = cfg.get("trim") or {}
+        budget = int((cfg.get("foundry") or {}).get("target_residue_budget", 220))
+        # Biological assembly 1, not the ASU: the ASU can split a biological
+        # dimer across symmetry copies, so the pair you measure is not the one
+        # that exists in solution. _ensure_structure is a cheap no-op if
+        # already on disk; it guarantees the ASU and attempts BA1 as a side
+        # effect, so re-resolve afterwards to pick BA1 up if it just landed.
+        self._ensure_structure(result.pdb_id)
+        structure = self._binder_structure_path(result.pdb_id)
+
+        # Membrane topology: keep the design target on the reachable side and
+        # always drop transmembrane residues. An exposed TM helix is a
+        # hydrophobic slab that preferentially attracts binders which cannot
+        # work in a cell, where that surface is buried in lipid.
+        restrict = None
+        side = (intel.get("membrane_side") or "extracellular").strip()
+        uniprot = intel.get("target_uniprot")
+        if uniprot and side != "not_applicable":
+            from src.membrane_topology import fetch_topology, restriction_for
+
+            topo = fetch_topology(uniprot)
+            restrict = restriction_for(result.pdb_id, hs["target_chain"], uniprot,
+                                       side=side, topology=topo)
+            logger.info(f"topology: {restrict.note}")
+            if restrict.applies:
+                bad = [h for h in hs["residues"]
+                       if int(h["auth_seq_id"]) not in restrict.allowed_auth]
+                if bad:
+                    raise PipelineError(
+                        f"hotspot(s) "
+                        f"{[h.get('auth_seq_id') for h in bad]} lie outside the "
+                        f"{side} region of {intel.get('target_gene')} — the chosen "
+                        f"interface is not reachable by a binder. Pick a different "
+                        f"site, or pass membrane_side explicitly if this is "
+                        f"deliberate.")
+
+        try:
+            res = trim_target(
+                structure,
+                target_chain=hs["target_chain"],
+                partner_chain=hs.get("partner_chain"),
+                hotspots=hs["residues"],
+                allowed_auth=(restrict.allowed_auth
+                              if restrict and restrict.applies else None),
+                budget=budget,
+                out_dir=dirs["trim"],
+                pdb_id=result.pdb_id,
+                binder_min=int(intel.get("binder_length_min", 70)),
+                binder_max=int(intel.get("binder_length_max", 86)),
+                chainsaw_cmd=trim_cfg.get("chainsaw_cmd"),
+                min_bsa_retention=float(trim_cfg.get("min_bsa_retention", 0.90)),
+            )
+        except (TrimError, TrimBudgetError) as exc:
+            raise PipelineError(f"target trimming failed: {exc}") from exc
+
+        if res.bsa_retention < 0.95 or res.warnings:
+            self._binder_checkpoint(
+                "trim_gate", "trim", "gate",
+                {"bsa_retention": res.bsa_retention,
+                 "kept_segments": [list(s) for s in res.kept_segments],
+                 "warnings": res.warnings})
+
+        out = dirs["binder"] / self._BINDER_STAGE_FILES["trim"]
+        body = "\n".join([
+            f"Method: **{res.method}**",
+            *( [f"Topology: {restrict.note}"] if restrict else [] ),
+            f"Residues: {res.n_residues_before} -> {res.n_residues_after} "
+            f"in {res.n_segments} segment(s) {res.kept_segments}",
+            f"Interface area of the kept residues retained: {res.bsa_retention:.1%}",
+            f"Hotspots kept: {len(res.hotspots_retained)}/"
+            f"{len(res.hotspots_retained) + len(res.hotspots_lost)}",
+            "",
+            *(f"- warning: {w}" for w in res.warnings),
+        ])
+        self._write_binder_report(out, "Target trimming", body, {
+            "trimmed_structure": str(res.trimmed_path),
+            "trim_map": str(res.mapping_path),
+            "contig": res.contig,
+            "n_segments": res.n_segments,
+            "n_residues": res.n_residues_after,
+        })
+        if self._project is not None:
+            try:
+                self._project.add_shared_asset("structures", res.trimmed_path)
+            except Exception as exc:
+                logger.warning(f"could not register the trimmed structure: {exc}")
+        self._record_stage("trim", "complete", out, stage="trim")
+        result.stage_files["trim"] = out
+        result.stages_completed.append("trim")
+        return {"result": res, "report": out}
+
+    def _stage_binder_spec(self, intel: dict[str, str], hotspots_json: str,
+                           trim, dirs: dict[str, Path],
+                           result: PipelineResult) -> Path:
+        from src.foundry_spec import build_rfd3_spec
+
+        hs = json.loads(hotspots_json)
+        kept = {a for lo, hi in trim.kept_segments for a in range(lo, hi + 1)}
+        hotspots = [h for h in hs["residues"] if int(h["auth_seq_id"]) in kept]
+        name = f"{(intel.get('target_gene') or 'target').lower()}_binder_001"
+        # RFD3 reads the target from a PDB; the trim writes both formats.
+        pdb_input = Path(str(trim.trimmed_path)).with_suffix(".pdb")
+        spec = build_rfd3_spec(
+            name=name,
+            structure_path=pdb_input if pdb_input.exists() else trim.trimmed_path,
+            contig=trim.contig, hotspots=hotspots,
+            target_chain=hs["target_chain"],
+            out_path=dirs["spec"] / f"{name}.json",
+            binder_min=int(intel.get("binder_length_min", 70)),
+            binder_max=int(intel.get("binder_length_max", 86)),
+        )
+        out = dirs["binder"] / self._BINDER_STAGE_FILES["binder_spec"]
+        self._write_binder_report(
+            out, "RFD3 design specification",
+            f"Contig `{spec.contig}` with {len(spec.hotspots)} atom-level "
+            f"hotspot(s): {', '.join(sorted(spec.hotspots))}.",
+            {"spec_path": str(spec.path), "design_name": name})
+        self._record_stage("binder_spec", "complete", out, stage="binder_spec")
+        result.stage_files["binder_spec"] = out
+        result.stages_completed.append("binder_spec")
+        return spec.path
+
+    def _binder_paths(self, dirs: dict[str, Path], mode: str):
+        from src.foundry_runner import FoundryPaths
+
+        return FoundryPaths.under(dirs["campaign"] / mode)
+
+    def _run_gpu_stage(self, mode: str, spec_path: Path, trim, dirs: dict[str, Path],
+                       result: PipelineResult, *, attach: bool,
+                       n_batches: int | None = None) -> dict:
+        """
+        Launch (or re-attach to) one foundry stage and optionally wait for it.
+
+        Detached by default: RF3 alone runs for days at production scale, and a
+        blocking call inside a Celery task would hit the visibility timeout and
+        be redelivered to a second worker — two campaigns racing one GPU.
+        """
+        from src.foundry_runner import (
+            collect, plan_campaign, prefilter_rate_observed, progress,
+            render_progress, resume, run_design, wait_for_campaign,
+        )
+
+        cfg = self._binder_cfg()
+        paths = self._binder_paths(dirs, mode)
+        paths.mkdirs()
+        observed = prefilter_rate_observed(paths)
+        plan = plan_campaign(cfg, paths, mode=mode, n_batches=n_batches,
+                             prefilter_rate=observed or 0.59)
+
+        if paths.driver_path.exists():
+            job = resume(paths, cfg, plan)
+        else:
+            job = run_design(spec_path, paths, cfg=cfg, plan=plan,
+                             n_target_segments=trim.n_segments,
+                             kept_segments=trim.kept_segments)
+        self._binder_checkpoint(
+            f"{mode}_running", mode, "job",
+            {"job_id": job.job_id, "pid": job.pid,
+             "campaign_dir": str(paths.campaign_dir),
+             "expected_rfd3": plan.expected_rfd3,
+             "expected_rf3": plan.expected_rf3,
+             "resume_stage": mode})
+
+        out = dirs["binder"] / self._BINDER_STAGE_FILES[mode]
+        if not attach:
+            self._write_binder_report(
+                out, f"{mode.title()} campaign launched",
+                render_progress(progress(paths, plan)),
+                {"campaign_dir": str(paths.campaign_dir), "pid": str(job.pid),
+                 "resume_stage": mode})
+            self._record_stage(mode, "awaiting_user", out, stage=mode)
+            raise PipelinePausedError(f"{mode}_running", {
+                "campaign_dir": str(paths.campaign_dir),
+                "pid": job.pid,
+                "expected_rf3": plan.expected_rf3,
+                "status_command":
+                    f"scripts/campaign_status.py {paths.campaign_dir}",
+                "resume": f"--workflow binder --start-from {mode}",
+            })
+
+        final = wait_for_campaign(
+            paths, plan,
+            poll_s=float((cfg.get("foundry") or {}).get("poll_interval_s", 120)))
+        summary = collect(paths)
+        self._write_binder_report(
+            out, f"{mode.title()} campaign", render_progress(final), summary)
+        self._record_stage(mode, "complete", out, stage=mode)
+        result.stage_files[mode] = out
+        result.stages_completed.append(mode)
+        return {"paths": paths, "plan": plan, "summary": summary}
+
+    def _score_campaign(self, paths, dirs: dict[str, Path], out_dir: Path,
+                        limit: int = 0):
+        """Score every refold of one campaign; returns the scored rows."""
+        from src.binder_metrics import (
+            ScoreConfig, hotspots_from_rfd3, score_campaign, write_scores,
+        )
+        from src.foundry_runner import find_design_sidecar
+
+        sidecar = find_design_sidecar(paths)
+        if sidecar is None:
+            raise PipelineError(
+                f"no RFD3 design sidecar under {paths.rfd3_dir}; hotspots cannot "
+                f"be remapped into the refolds' numbering")
+        # From a SIDECAR, never the input spec: only the sidecar carries
+        # diffused_index_map, and the spec's numbers silently address the wrong
+        # residues.
+        hotspots = hotspots_from_rfd3(sidecar, "B")
+        mcfg = (self._binder_cfg().get("binder_metrics") or {})
+        rows = score_campaign(
+            paths.rf3_dir, paths.rfd3_dir, hotspots=hotspots,
+            cfg=ScoreConfig(contact_cutoff=float(mcfg.get("contact_cutoff", 8.0)),
+                            ipsae_pae_cutoff=float(
+                                mcfg.get("ipsae_pae_cutoff", 10.0))),
+            workers=max(1, (os.cpu_count() or 4) - 2), limit=limit)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        write_scores(rows, out_dir / "refold_scores.csv")
+        return rows
+
+    def _stage_calibration(self, spec_path: Path, trim, dirs: dict[str, Path],
+                           result: PipelineResult, *, attach: bool,
+                           n_batches: int | None = None) -> dict:
+        """
+        Refold a small sample, then MEASURE the scale production needs.
+
+        A production run is a multi-day, ~100 GB commitment. Sizing it by guess
+        is how you spend four days to learn the target was wrong.
+        """
+        from src.binder_ranking import EXCELLENT_IPSAE_MIN
+        from src.campaign_calibration import calibrate, render_report
+        from src.foundry_runner import prefilter_rate_observed
+
+        run = self._run_gpu_stage("calibration", spec_path, trim, dirs, result,
+                                  attach=attach, n_batches=n_batches)
+        paths, plan = run["paths"], run["plan"]
+        rows = self._score_campaign(paths, dirs, dirs["calibration"])
+
+        cfg = self._binder_cfg()
+        rcfg = cfg.get("binder_ranking") or {}
+        fcfg = cfg.get("foundry") or {}
+        # Which metric SIZES the campaign. iPTM > 0.7 is 5-20x more common than
+        # ipsae_min > 0.5, so it is the one a trial-sized sample can measure;
+        # ipsae_min is computed on every design regardless and carries the
+        # heaviest weight in the ranking.
+        metric = rcfg.get("success_metric", "iptm")
+        bar = rcfg.get("excellence_bar")
+        if bar is None and metric == "ipsae_min":
+            bar = rcfg.get("excellence_ipsae_min", EXCELLENT_IPSAE_MIN)
+        res = calibrate(
+            rows,
+            success_metric=metric,
+            target_designs=rcfg.get("target_designs"),
+            excellence_bar=(float(bar) if bar is not None else None),
+            thresholds=rcfg.get("thresholds"),
+            n_seq=int((fcfg.get("mpnn") or {}).get("n_seq", 4)),
+            prefilter_rate=prefilter_rate_observed(paths) or plan.prefilter_rate,
+            disk_budget_gb=float(fcfg.get("disk_budget_gb", 120)),
+            max_campaign_days=float(fcfg.get("max_campaign_days", 5)),
+            adaptive_bar=bool(rcfg.get("adaptive_bar", True)),
+        )
+        out = dirs["binder"] / self._BINDER_STAGE_FILES["calibration"]
+        out.write_text(render_report(res) + "\n", encoding="utf-8")
+        (dirs["calibration"] / "calibration.json").write_text(
+            json.dumps(res.as_dict(), indent=2), encoding="utf-8")
+
+        # Always a checkpoint: how much GPU to spend is the user's call.
+        self._binder_checkpoint("calibration_verdict", "calibration", "gate", {
+            "verdict": res.verdict, "reason": res.verdict_reason,
+            "required_refolds": res.pessimistic.required_refolds,
+            "est_gpu_hours": res.pessimistic.est_gpu_hours,
+            "est_disk_gb": res.pessimistic.est_disk_gb,
+            "suggested_bar": res.suggested_bar,
+        })
+        self._record_stage("calibration", "complete", out, stage="calibration")
+        result.stage_files["calibration"] = out
+        if "calibration" not in result.stages_completed:
+            result.stages_completed.append("calibration")
+        logger.info(f"calibration verdict: {res.verdict} — {res.verdict_reason}")
+        return {"result": res, "n_batches": self._batches_for(res, cfg)}
+
+    @staticmethod
+    def _batches_for(res, cfg: dict) -> int | None:
+        """Production batch count implied by the calibration, if any."""
+        fcfg = cfg.get("foundry") or {}
+        dbs = int((fcfg.get("rfd3") or {}).get("diffusion_batch_size", 4))
+        designs = res.pessimistic.required_backbones
+        if res.verdict not in ("SCALE_UP", "SCALE_UP_PARTIAL") or not designs:
+            return None
+        return max(1, int(designs / max(dbs, 1)))
+
+    def _stage_binder_scoring(self, dirs: dict[str, Path],
+                              result: PipelineResult) -> dict:
+        from src.binder_ranking import (
+            rank_designs, read_scores, write_ranking_outputs,
+        )
+
+        cfg = self._binder_cfg()
+        rcfg = cfg.get("binder_ranking") or {}
+        # Prefer production output; fall back to calibration when production was
+        # never run (a pilot-only or ITERATE round still deserves a ranking).
+        rows, source = None, None
+        for mode in ("production", "calibration", "pilot"):
+            paths = self._binder_paths(dirs, mode)
+            if paths.rf3_dir.is_dir():
+                from src.foundry_runner import count_rf3
+
+                if count_rf3(paths.rf3_dir):
+                    rows = self._score_campaign(paths, dirs, dirs["scoring"])
+                    source = mode
+                    break
+        if rows is None:
+            scores = dirs["calibration"] / "refold_scores.csv"
+            if not scores.exists():
+                raise PipelineError(
+                    "no refolds found to score — run the campaign first")
+            rows, source = read_scores(scores), "calibration (cached)"
+
+        # Gate FIRST, then Rosetta. A mis-docked or low-confidence model is
+        # still a physical pose, so relax and InterfaceAnalyzer return
+        # well-defined, meaningless numbers for it; ranking on those promotes
+        # confident nonsense. Gating first also makes the cost affordable —
+        # PyRosetta is ~10-30 s per design, and the gate removes >99% of them.
+        gated = rank_designs(
+            rows, thresholds=rcfg.get("thresholds"), weights=rcfg.get("weights"),
+            mmr=rcfg.get("mmr"), top_k=int(rcfg.get("top_k", 20)),
+            max_per_backbone=int(rcfg.get("max_per_backbone", 1)))
+
+        rosetta_note = ""
+        rcfg_ros = rcfg.get("rosetta") or {}
+        if rcfg_ros.get("enabled", True) and gated.survivors:
+            from src.rosetta_metrics import (
+                merge_into, score_designs, select_for_rosetta,
+            )
+
+            shortlist = select_for_rosetta(
+                gated.survivors, limit=int(rcfg_ros.get("max_designs", 300)))
+            ros = score_designs(
+                [r["refold_cif"] for r in shortlist],
+                dirs["scoring"] / "rosetta_metrics.csv", cfg=cfg,
+                relax=bool(rcfg_ros.get("relax", True)))
+            if ros.ok:
+                merge_into(gated.survivors, ros)
+                rosetta_note = (
+                    f"\n\nRosetta interface metrics computed for "
+                    f"{ros.n_scored:,} of {len(gated.survivors):,} gated designs "
+                    f"({ros.n_failed} failed). They enter the composite only "
+                    f"here — never the gate.")
+                # Re-rank with the Rosetta terms folded in.
+                weights = {**(rcfg.get("weights") or {}),
+                           **(rcfg_ros.get("weights") or {})}
+                ranking = rank_designs(
+                    gated.survivors, thresholds={}, weights=weights,
+                    mmr=rcfg.get("mmr"), top_k=int(rcfg.get("top_k", 20)),
+                    max_per_backbone=int(rcfg.get("max_per_backbone", 1)))
+                ranking.filter_stats = gated.filter_stats
+            else:
+                rosetta_note = f"\n\nRosetta metrics skipped: {ros.skipped_reason}"
+                ranking = gated
+        else:
+            ranking = gated
+        paths_out = write_ranking_outputs(ranking, dirs["scoring"])
+
+        out = dirs["binder"] / self._BINDER_STAGE_FILES["binder_scoring"]
+        self._write_binder_report(
+            out, "Design scoring and ranking",
+            f"Scored **{len(rows):,}** refolds from the {source} campaign.\n\n"
+            f"```\n{ranking.filter_stats.render()}\n```\n\n"
+            f"{len(gated.survivors):,} survivors across "
+            f"{gated.n_backbones:,} distinct backbones; "
+            f"top {len(ranking.top_k)} selected.{rosetta_note}",
+            {"scores_csv": str(dirs["scoring"] / "refold_scores.csv"),
+             "top_k_csv": str(paths_out["top_k"]),
+             "n_scored": len(rows), "n_survivors": len(ranking.survivors)})
+        self._record_stage("binder_scoring", "complete", out,
+                           stage="binder_scoring")
+        result.stage_files["binder_scoring"] = out
+        result.stages_completed.append("binder_scoring")
+        return {"ranking": ranking, "top_k": paths_out["top_k"]}
+
+    # Columns the analyst actually needs. `binder_seq` is deliberately ABSENT:
+    # the sequences are not needed to review a ranking, and including them
+    # reliably triggers a biosecurity refusal. `binder_len` is stamped instead,
+    # and the orderable FASTA is written deterministically alongside.
+    _BINDER_SUMMARY_COLS = (
+        "name", "mmr_rank", "composite_rank", "composite_score",
+        "ipsae_min", "ipsae_max", "iptm", "iface_pae", "binder_plddt",
+        "binder_rmsd_dock", "binder_rmsd_fold", "binder_tm",
+        "epitope_recall", "hotspot_engagement", "clash_severe", "binder_len",
+        "design_family", "mmr_max_similarity",
+    )
+
+    @classmethod
+    def _slim_binder_top_k(cls, top_k_csv: Path) -> str:
+        import csv as _csv
+        import io as _io
+
+        rows = list(_csv.DictReader(Path(top_k_csv).open(encoding="utf-8")))
+        if not rows:
+            return "(no designs survived ranking)"
+        cols = [c for c in cls._BINDER_SUMMARY_COLS if c in rows[0]]
+        buf = _io.StringIO()
+        w = _csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+        return buf.getvalue()
+
+    @staticmethod
+    def _write_binder_fasta(top_k_csv: Path, dest: Path) -> Path | None:
+        """
+        Write the orderable FASTA deterministically.
+
+        Not via the LLM: the sequences are withheld from its context on purpose,
+        and a transcription slip in an ordered construct is expensive.
+        """
+        import csv as _csv
+
+        rows = list(_csv.DictReader(Path(top_k_csv).open(encoding="utf-8")))
+        entries = [r for r in rows if r.get("binder_seq")]
+        if not entries:
+            return None
+        lines = []
+        for i, r in enumerate(entries, 1):
+            lines.append(
+                f">rank{i:03d}_{r.get('name', '')} "
+                f"ipsae_min={r.get('ipsae_min', '')} "
+                f"dock_rmsd={r.get('binder_rmsd_dock', '')}")
+            lines.append(r["binder_seq"])
+        dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return dest
+
+    def _stage_binder_summary(self, top_k_csv: Path, intel: dict[str, str],
+                              dirs: dict[str, Path],
+                              result: PipelineResult) -> dict[str, str]:
+        fasta = self._write_binder_fasta(top_k_csv, dirs["scoring"] / "top_k.fasta")
+        if fasta:
+            logger.info(f"orderable sequences -> {fasta}")
+        slim = self._slim_binder_top_k(top_k_csv)
+        q = (f"Review the top designed binders against "
+             f"{intel.get('target_gene', 'the target')} "
+             f"({intel.get('partner_name', 'partner')} interface, "
+             f"{intel.get('design_intent', 'disrupt')} mode).\n\n{slim}")
+        out = dirs["binder"] / self._BINDER_STAGE_FILES["binder_summary"]
+        handoff = self._run_stage("design-analyst", q, [], out,
+                                  stage="binder_summary")
+        result.stage_files["binder_summary"] = out
+        result.stages_completed.append("binder_summary")
+        result.go_recommendation = handoff.get("go_recommendation",
+                                               result.go_recommendation)
+        return handoff
+
+    def _run_site_trials(
+        self,
+        intel: dict[str, str],
+        sites: list[dict],
+        dirs: dict[str, Path],
+        result: PipelineResult,
+        *,
+        attach: bool,
+        trial_backbones: int,
+        escalate_to: int | None,
+    ) -> list[dict]:
+        """
+        Run one design trial per candidate site and compare measured yields.
+
+        Reasoning cannot settle which of two defensible epitopes is more
+        designable; a few hundred backbones can. Each site gets its own
+        interface / trim / spec / trial under `binder/sites/<site_id>/`.
+
+        Escalation: at the reference campaign's rate a 300-backbone trial yields
+        ~1-3 hits, below the 5 needed for a usable estimate (measured: 0/10 seeds
+        gave one at 300, 8/10 at 1000). So a trial that comes back "enlarge the
+        sample" is automatically re-run at `escalate_to` rather than reported as
+        a failure.
+        """
+        from src.foundry_runner import count_rf3
+
+        trials: list[dict] = []
+        for site in sites:
+            site_id = str(site.get("site_id") or "primary")
+            logger.info(
+                f"=== site {site_id}: {site.get('pdb_id')} "
+                f"{site.get('target_chain')}/{site.get('partner_chain')} "
+                f"({site.get('partner_name', '?')}) ===")
+            site_dirs = self._binder_dirs(dirs["sites"] / site_id)
+            site_intel = {**intel, **{
+                "pdb_id": site.get("pdb_id"),
+                "target_chain": site.get("target_chain"),
+                "partner_chain": site.get("partner_chain"),
+                "partner_name": site.get("partner_name", ""),
+                "interface_rationale": site.get("rationale", ""),
+            }}
+            site_result = PipelineResult(run_dir=site_dirs["binder"],
+                                         pdb_id=site.get("pdb_id"))
+            try:
+                # Reuse an already-prepared site. The interface stage is the
+                # expensive and refusal-prone one, so a resumed run must not
+                # re-run it just to reach the GPU — and a campaign that takes
+                # days will be resumed.
+                prepared = self._prepared_site(site_dirs)
+                if prepared is not None:
+                    trim, spec = prepared
+                    # validate_spec (inside _prepared_site) only confirms the
+                    # atoms/residues named are real — it has no opinion on
+                    # which MOLECULE they belong to. A stale spec generated
+                    # before this check existed could carry a target/partner
+                    # swap forever without this re-verification on every
+                    # resume, not just at fresh generation.
+                    self._verify_target_chain_assignment(
+                        site_intel,
+                        {"target_chain": trim.target_chain,
+                         "partner_chain": trim.partner_chain},
+                        trim.pdb_id or site.get("pdb_id", ""))
+                    logger.info(
+                        f"site {site_id}: reusing the prepared spec "
+                        f"({spec.name}, contig {trim.contig})")
+                else:
+                    _, hotspots_json = self._stage_binder_interface(
+                        site_intel, site_dirs, site_result)
+                    trim = self._stage_trim(site_intel, hotspots_json, site_dirs,
+                                            site_result)["result"]
+                    spec = self._stage_binder_spec(site_intel, hotspots_json,
+                                                   trim, site_dirs, site_result)
+                if self._stop_after == "spec":
+                    # Everything up to the GPU is prepared and validated; stop
+                    # here so the specs can be reviewed before committing days
+                    # of compute to them.
+                    trials.append({
+                        "site_id": site_id, "site": site, "calibration": None,
+                        "dirs": site_dirs, "spec": spec, "trim": trim,
+                        "contig": trim.contig, "n_refolds": 0,
+                        "error": None, "prepared_only": True,
+                    })
+                    continue
+                calib = self._stage_calibration(
+                    spec, trim, site_dirs, site_result, attach=attach,
+                    n_batches=self._backbones_to_batches(trial_backbones))
+                res = calib["result"]
+
+                if (escalate_to and escalate_to > trial_backbones
+                        and res.backbone_rate.k < MIN_HITS_FOR_ESTIMATE):
+                    logger.info(
+                        f"site {site_id}: {res.backbone_rate.k} hit(s) in "
+                        f"{res.backbone_rate.n} backbones is too few to size a "
+                        f"campaign — escalating to {escalate_to}")
+                    calib = self._stage_calibration(
+                        spec, trim, site_dirs, site_result, attach=attach,
+                        n_batches=self._backbones_to_batches(escalate_to))
+                    res = calib["result"]
+
+                paths = self._binder_paths(site_dirs, "calibration")
+                trials.append({
+                    "site_id": site_id, "site": site, "calibration": res,
+                    "n_batches": calib.get("n_batches"),
+                    "dirs": site_dirs, "spec": spec, "trim": trim,
+                    "n_refolds": count_rf3(paths.rf3_dir),
+                    "contig": trim.contig, "error": None,
+                })
+            except (PipelineError, PipelineBlockedError) as exc:
+                # One unusable site must not abandon the others.
+                logger.error(f"site {site_id} failed: {exc}")
+                trials.append({"site_id": site_id, "site": site,
+                               "calibration": None, "error": str(exc),
+                               "dirs": site_dirs})
+        return trials
+
+    @staticmethod
+    def _prepared_site(site_dirs: dict[str, Path]):
+        """
+        The (trim, spec) a previous run left on disk, or None.
+
+        Both must be present and consistent: a spec without its trim map cannot
+        be cross-checked against the segments it claims to target.
+        """
+        from src.foundry_spec import SpecError, validate_spec
+        from src.structure_trim import load_mapping
+
+        mapping_path = site_dirs["trim"] / "trim_map.json"
+        specs = sorted(site_dirs["spec"].glob("*.json"))
+        if not (mapping_path.exists() and specs):
+            return None
+        try:
+            trim = _TrimFromDisk(load_mapping(mapping_path))
+            validate_spec(specs[0], kept_segments=trim.kept_segments)
+        except (SpecError, OSError, ValueError, KeyError) as exc:
+            logger.warning(
+                f"prepared site at {site_dirs['spec']} is unusable ({exc}); "
+                f"rebuilding it")
+            return None
+        return trim, specs[0]
+
+    @staticmethod
+    def _backbones_to_batches(n_backbones: int,
+                              diffusion_batch_size: int = 4) -> int:
+        """
+        RFD3 batches needed to end up with roughly `n_backbones` refolded.
+
+        Backbones are the sampling unit that matters, but `n_batches` is the
+        knob — and the prefilter drops ~40% in between, so ask for more.
+        """
+        # The prefilter's survival rate is target-dependent and cannot be known
+        # before the first RFD3 run: measured 53% (8TAC), 59% (CD79b), 82%
+        # (PD-L1). 0.55 is the conservative end, so a trial tends to over-sample
+        # rather than come back too small to measure — which is the failure that
+        # costs a whole extra run.
+        prefilter_rate = 0.55
+        return max(1, int(round(n_backbones / prefilter_rate
+                                / max(diffusion_batch_size, 1))))
+
+    def _write_trial_comparison(self, trials: list[dict], dirs: dict[str, Path],
+                                result: PipelineResult) -> Path:
+        """A table comparing the sites, and which one to take forward."""
+        rows = ["| site | interface | contig | refolds | hits/backbones | "
+                "rate | required refolds | verdict |",
+                "|---|---|---|---|---|---|---|---|"]
+        best, best_rate = None, -1.0
+        for t in trials:
+            site = t["site"]
+            label = (f"{site.get('pdb_id')} {site.get('target_chain')}/"
+                     f"{site.get('partner_chain')} ({site.get('partner_name', '')})")
+            if t.get("prepared_only"):
+                rows.append(f"| {t['site_id']} | {label} | `{t.get('contig','')}` "
+                            f"| — | — | — | — | PREPARED (no GPU run) |")
+                continue
+            if t.get("error") or t["calibration"] is None:
+                rows.append(f"| {t['site_id']} | {label} | — | — | — | — | — | "
+                            f"FAILED: {str(t.get('error'))[:60]} |")
+                continue
+            c = t["calibration"]
+            br = c.backbone_rate
+            need = (f"{c.pessimistic.required_refolds:,.0f}"
+                    if c.pessimistic.required_refolds else "—")
+            rows.append(
+                f"| {t['site_id']} | {label} | `{t.get('contig', '')}` | "
+                f"{t.get('n_refolds', 0):,} | {br.k}/{br.n} | "
+                f"{br.p_hat:.2%} | {need} | {c.verdict} |")
+            if br.p_hat > best_rate:
+                best, best_rate = t, br.p_hat
+
+        body = ["\n".join(rows), ""]
+        if best is not None and best_rate > 0:
+            c = best["calibration"]
+            body.append(
+                f"**Most promising site: `{best['site_id']}`** — "
+                f"{c.backbone_rate.k}/{c.backbone_rate.n} backbones produced a "
+                f"design clearing {c.excellence_bar} "
+                f"({c.backbone_rate.p_hat:.2%}).")
+            if len(trials) > 1:
+                body.append(
+                    "\nRates this small carry wide intervals; treat a small "
+                    "difference between sites as a tie rather than a ranking.")
+        elif all(t.get("prepared_only") for t in trials):
+            body.append(
+                "**Prepared only** — specs written and validated, no GPU run yet.")
+        else:
+            body.append(
+                "**No site produced a design clearing the bar.** Either the "
+                "trials are too small to measure the rate, or these epitopes are "
+                "not designable as specified — the per-site gate attribution "
+                "says which.")
+
+        out = dirs["binder"] / "29_site_comparison.md"
+        self._write_binder_report(
+            out, "Site trial comparison", "\n".join(body),
+            {"best_site": (best or {}).get("site_id", "none"),
+             "n_sites": len(trials)})
+        self._record_stage("site_trials", "complete", out, stage="site_trials")
+        result.stage_files["site_trials"] = out
+        logger.info(f"site comparison -> {out}")
+        return out
+
+    def _generate_binder_report(self, binder_dir: Path) -> Path | None:
+        """Best-effort illustrated HTML report for one binder run directory.
+
+        Deterministic (no LLM, no GPU) — see src/binder_report.py. Called at
+        every natural stopping point in the binder track (after a trial, and
+        after scoring) so a report is always available for whatever data
+        actually exists, without gating the campaign on it: report generation
+        is a side effect of a completed stage, never a stage of its own, so a
+        bug here must never fail — or even pause — a real campaign.
+        """
+        from src.binder_report import ReportError, build_report
+
+        try:
+            out = build_report(binder_dir, cfg=self.config)
+        except ReportError as exc:
+            logger.info(f"campaign report not generated yet for {binder_dir}: {exc}")
+            return None
+        except Exception as exc:  # noqa: BLE001 - reporting must never fail the run
+            logger.warning(f"campaign report generation failed for {binder_dir}: {exc}")
+            return None
+        logger.info(f"campaign report -> {out}")
+        return out
+
+    def _run_binder_track(
+        self,
+        query: str,
+        run_dir: Path,
+        result: PipelineResult,
+        *,
+        start_from: str = "target_intel",
+        context_file: Path | None = None,
+        auto_mode: bool = True,
+        target: str | None = None,
+        attach: bool = True,
+        n_batches: int | None = None,
+    ) -> PipelineResult:
+        """
+        Target name -> ranked binders, on the local GPU.
+
+        Positional guards live inside this method, so `run()`'s PPI state
+        machine is untouched.
+        """
+        from src.structure_trim import load_mapping
+
+        try:
+            start_idx = self.BINDER_STAGE_ORDER.index(start_from)
+        except ValueError:
+            raise PipelineError(
+                f"Unknown binder start_from {start_from!r}; must be one of "
+                f"{self.BINDER_STAGE_ORDER}")
+
+        dirs = self._binder_dirs(run_dir)
+        binder_dir = dirs["binder"]
+        H = {s: self._load_binder_handoff(binder_dir, s)
+             for s in self.BINDER_STAGE_ORDER}
+        target_name = target or H["target_intel"].get("target_gene") or query
+
+        try:
+            # ── B0: target intelligence ─────────────────────────────────────
+            if start_idx <= 0:
+                H["target_intel"] = self._stage_target_intel(
+                    query, target_name, dirs, result)
+                if H["target_intel"].get("go_recommendation") == "NO_GO":
+                    result.go_recommendation = "NO_GO"
+                    result.go_rationale = H["target_intel"].get("go_rationale", "")
+                    logger.warning(f"target-intel says NO_GO: {result.go_rationale}")
+                    return result
+                if not auto_mode:
+                    raise PipelinePausedError("target_choice", {
+                        "pdb_id": H["target_intel"].get("pdb_id"),
+                        "partner": H["target_intel"].get("partner_name"),
+                        "rationale": H["target_intel"].get("interface_rationale"),
+                        "alternatives": H["target_intel"].get("alternatives_json"),
+                    })
+            intel = H["target_intel"]
+            result.pdb_id = result.pdb_id or intel.get("pdb_id")
+
+            # ── Site trials: compare epitopes by measured yield ─────────────
+            # Reasoning cannot settle which of two defensible sites is more
+            # designable; a few hundred backbones each can.
+            if self._trial_sites > 1 or self._stop_after in ("trial", "spec"):
+                sites = self._binder_sites(intel, limit=self._trial_sites)
+                trials = self._run_site_trials(
+                    intel, sites, dirs, result, attach=attach,
+                    trial_backbones=self._trial_backbones,
+                    escalate_to=self._escalate_to)
+                self._write_trial_comparison(trials, dirs, result)
+                result.stages_completed.append("site_trials")
+                for t in trials:
+                    if t.get("calibration") is not None:
+                        self._generate_binder_report(t["dirs"]["binder"])
+                if self._stop_after in ("trial", "spec"):
+                    logger.info("stopping after the design trial, as requested")
+                    return result
+                ok = [t for t in trials if t.get("calibration") is not None]
+                if not ok:
+                    result.go_recommendation = "NO_GO"
+                    result.go_rationale = "every site trial failed"
+                    return result
+                best = max(ok, key=lambda t: t["calibration"].backbone_rate.p_hat)
+                logger.info(f"carrying site {best['site_id']} forward")
+                intel = {**intel, **{
+                    "pdb_id": best["site"].get("pdb_id"),
+                    "target_chain": best["site"].get("target_chain"),
+                    "partner_chain": best["site"].get("partner_chain"),
+                }}
+                dirs = best["dirs"]
+                result.pdb_id = best["site"].get("pdb_id")
+                start_idx = 6           # straight to production for the winner
+                spec_path = best["spec"]
+                trim = best["trim"]
+                calib = {"result": best["calibration"],
+                         "n_batches": best.get("n_batches")}
+
+            # ── B1: interface + model-ready hotspots ────────────────────────
+            if start_idx <= 1:
+                H["interface"], hotspots_json = self._stage_binder_interface(
+                    intel, dirs, result)
+            else:
+                text_path = binder_dir / self._BINDER_STAGE_FILES["interface"]
+                hotspots_json = (
+                    self._parse_hotspot_residues(
+                        text_path.read_text(encoding="utf-8"), H["interface"])
+                    if text_path.exists() else None)
+                if not hotspots_json:
+                    raise PipelineError(
+                        f"resuming at {start_from!r} needs the hotspot table from "
+                        f"{text_path}, which is missing or unparseable")
+                result.hotspot_residues_json = hotspots_json
+
+            # ── B2: domain-aware trim ───────────────────────────────────────
+            if start_idx <= 2:
+                trim = self._stage_trim(intel, hotspots_json, dirs, result)["result"]
+            else:
+                trim = _TrimFromDisk(load_mapping(dirs["trim"] / "trim_map.json"))
+
+            # ── B3: RFD3 spec ───────────────────────────────────────────────
+            if start_idx <= 3:
+                spec_path = self._stage_binder_spec(
+                    intel, hotspots_json, trim, dirs, result)
+            else:
+                specs = sorted(dirs["spec"].glob("*.json"))
+                if not specs:
+                    raise PipelineError(f"no RFD3 spec in {dirs['spec']}")
+                spec_path = specs[0]
+
+            # ── B4: pilot — proves the spec runs before anything big ────────
+            if start_idx <= 4:
+                self._run_gpu_stage("pilot", spec_path, trim, dirs, result,
+                                    attach=attach, n_batches=n_batches)
+
+            # ── B5: calibration — MEASURE the scale production needs ────────
+            calib = locals().get("calib")
+            if start_idx <= 5:
+                calib = self._stage_calibration(spec_path, trim, dirs, result,
+                                                attach=attach,
+                                                n_batches=n_batches)
+                verdict = calib["result"].verdict
+                if verdict in ("ITERATE", "STOP"):
+                    result.go_recommendation = "NO_GO"
+                    result.go_rationale = calib["result"].verdict_reason
+                    logger.warning(
+                        f"calibration says {verdict}; not scaling up. "
+                        f"{calib['result'].verdict_reason}")
+                    # Still score and rank what the calibration produced — an
+                    # ITERATE round has real designs worth looking at.
+                    scored = self._stage_binder_scoring(dirs, result)
+                    self._stage_binder_summary(scored["top_k"], intel, dirs, result)
+                    self._generate_binder_report(dirs["binder"])
+                    return result
+                if not auto_mode:
+                    raise PipelinePausedError("calibration_verdict", {
+                        "verdict": verdict,
+                        "reason": calib["result"].verdict_reason,
+                        "est_gpu_hours": calib["result"].pessimistic.est_gpu_hours,
+                        "est_disk_gb": calib["result"].pessimistic.est_disk_gb,
+                    })
+
+            # ── B6: production, sized by the calibration ────────────────────
+            if start_idx <= 6:
+                self._run_gpu_stage(
+                    "production", spec_path, trim, dirs, result, attach=attach,
+                    n_batches=(calib or {}).get("n_batches") or n_batches)
+
+            # ── B7: score + rank ────────────────────────────────────────────
+            if start_idx <= 7:
+                scored = self._stage_binder_scoring(dirs, result)
+            else:
+                scored = {"top_k": dirs["scoring"] / "top_k.csv"}
+
+            # ── B8: analyst review ──────────────────────────────────────────
+            if start_idx <= 8:
+                H["binder_summary"] = self._stage_binder_summary(
+                    scored["top_k"], intel, dirs, result)
+
+            self._generate_binder_report(dirs["binder"])
+
+        except PipelinePausedError:
+            raise
+        except PipelineBlockedError:
+            raise
+        except Exception as exc:
+            result.error = str(exc)
+            logger.error(f"Binder pipeline error: {exc}")
+            raise
+
+        return result
+
     # ------------------------------------------------------------------
     # Stage implementations
     # ------------------------------------------------------------------
@@ -481,7 +1995,7 @@ class PipelineRunner:
         output_file = run_dir / "00_pathway.md"
         skill = "wildcard-expert" if self._pathway_mode == "wildcard" else "pathway-expert"
         logger.info(f"Stage 0: {skill}")
-        handoff = self._run_stage(skill, query, [], output_file)
+        handoff = self._run_stage(skill, query, [], output_file, stage="pathway")
         result.stages_completed.append("pathway")
         result.stage_files["pathway"] = output_file
         result.pathway_handoff = handoff       # persist so later stages can read structure_query, etc.
@@ -634,7 +2148,8 @@ class PipelineRunner:
         logger.info("Stage 1: complex-structure-analysis")
         # Don't pass prior stage context: structure_query already contains everything
         # the skill needs, and the full pathway.md adds ~8k tokens per LLM call.
-        handoff = self._run_stage("complex-structure-analysis", query, [], output_file)
+        handoff = self._run_stage("complex-structure-analysis", query, [], output_file,
+                                  stage="structure")
         result.stages_completed.append("structure")
         result.stage_files["structure"] = output_file
         result.target_complex = handoff.get("target_complex") or result.target_complex
@@ -693,7 +2208,8 @@ class PipelineRunner:
         # cross-reference. Pass the pathway report only — it has the disease/pathway
         # context the mol-bio queries need.
         pathway_ctx = [f for f in [result.stage_files.get("pathway")] if f and f.exists()]
-        handoff = self._run_stage("molecular-biology-expert", query, pathway_ctx, output_file)
+        handoff = self._run_stage("molecular-biology-expert", query, pathway_ctx, output_file,
+                                  stage="literature")
         result.stages_completed.append("literature")
         result.stage_files["literature"] = output_file
         result.literature_handoff = handoff
@@ -740,7 +2256,8 @@ class PipelineRunner:
             )
 
         logger.info("Stage 4: protein-design-script")
-        design_handoff = self._run_stage("protein-design-script", query, context_files, design_report)
+        design_handoff = self._run_stage("protein-design-script", query, context_files,
+                                         design_report, stage="design")
         result.stages_completed.append("design")
         result.stage_files["design"] = design_report
         result.design_files = [f for f in design_dir.iterdir() if f.is_file()]
@@ -1231,7 +2748,7 @@ class PipelineRunner:
 
         output_file = run_dir / "06_summary.md"
         # Empty context_files — the data lives inline in the query above.
-        handoff = self._run_stage("design-analyst", query, [], output_file)
+        handoff = self._run_stage("design-analyst", query, [], output_file, stage="summary")
         result.stage_files["summary"] = output_file
         result.stages_completed.append("summary")
 
@@ -1417,7 +2934,9 @@ class PipelineRunner:
     # Core helpers
     # ------------------------------------------------------------------
 
-    def _resolve_stage(self, skill_name: str) -> tuple[str, bool]:
+    def _resolve_stage(
+        self, skill_name: str, stage: str | None = None
+    ) -> tuple[str, bool, str]:
         """
         Return (model_id, use_extended_thinking) for a given skill.
 
@@ -1425,26 +2944,42 @@ class PipelineRunner:
         literature / design).  Extended thinking is silently ignored for Gemini.
         If an override specifies Haiku but extended thinking is requested, the
         model is auto-upgraded to Sonnet with a warning.
+
+        `stage` should be passed explicitly whenever the caller knows it.  The
+        skill -> stage inversion below is first-match-wins, so a skill reused by
+        two stages (complex-structure-analysis serves both the PPI `structure`
+        stage and the binder track's `interface` stage) would otherwise always
+        resolve to whichever stage is declared first in _STAGE_TO_SKILL.
         """
-        # Invert the skill name back to a stage name for lookup
-        stage = next(
-            (s for s, sk in _STAGE_TO_SKILL.items() if sk == skill_name),
-            skill_name,
+        if stage is None:
+            stage = _stage_for_skill(skill_name)
+        # Lookup order: explicit user override → config models.<provider>.stages
+        # → module fallback table → global default.
+        per_stage_default = (
+            (self._models_cfg.get("stages") or {}).get(stage)
+            or _DEFAULT_STAGE_MODELS.get(self.provider, {}).get(stage)
         )
-        # Lookup order: explicit user override → per-stage default → global default.
-        per_stage_default = _DEFAULT_STAGE_MODELS.get(self.provider, {}).get(stage)
         model_id = self._stage_models.get(stage, per_stage_default or self._default_model)
         use_thinking = (
             self.provider == "claude"
             and stage in self._ext_thinking
         )
+        # A per-stage override may name a different PROVIDER as "gemini:model".
+        # That is how a stage whose prompt one provider's safety classifier
+        # declines gets routed elsewhere without moving the whole pipeline.
+        provider = self.provider
+        if ":" in model_id:
+            provider, model_id = model_id.split(":", 1)
+            use_thinking = use_thinking and provider == "claude"
+
         if use_thinking and "haiku" in model_id.lower():
+            upgrade = self._models_cfg.get("thinking_upgrade") or _THINKING_UPGRADE_MODEL
             logger.warning(
-                f"Extended thinking requires Sonnet — auto-upgrading {stage} "
-                f"stage from {model_id} to claude-sonnet-4-6"
+                f"Extended thinking requires a Sonnet-class model — auto-upgrading "
+                f"{stage} stage from {model_id} to {upgrade}"
             )
-            model_id = "claude-sonnet-4-6"
-        return model_id, use_thinking
+            model_id = upgrade
+        return model_id, use_thinking, provider
 
     def _run_stage(
         self,
@@ -1452,16 +2987,24 @@ class PipelineRunner:
         query: str,
         context_files: list[Path],
         output_file: Path,
+        *,
+        stage: str | None = None,
     ) -> dict[str, str]:
-        """Invoke one skill and return the parsed PIPELINE HANDOFF fields."""
+        """
+        Invoke one skill and return the parsed PIPELINE HANDOFF fields.
+
+        `stage` names the pipeline stage this invocation belongs to.  Pass it
+        whenever a skill is shared between stages; it defaults to the (ambiguous)
+        skill -> stage inversion for backwards compatibility.
+        """
         context_text: str | None = None
         if context_files:
             context_text = self._merge_context(*context_files)
 
-        model_id, use_thinking = self._resolve_stage(skill_name)
+        model_id, use_thinking, provider = self._resolve_stage(skill_name, stage)
         runner = SkillRunner(
             skill_name=skill_name,
-            provider=self.provider,
+            provider=provider,
             model_id=model_id,
             config=self.config,
             max_iter=self.max_iter,
@@ -1470,7 +3013,77 @@ class PipelineRunner:
         )
 
         logger.info(f"  [{skill_name}] {query[:100]}{'...' if len(query) > 100 else ''}")
-        output_text = runner.run(query, context_text=context_text)
+
+        # Budget guard. Refuse to START a stage whose projected cost would pass
+        # the cap; record what it actually spent in `finally`, because a stage
+        # that dies on iteration 25 of 30 still burned that money.
+        stage_key = stage or _stage_for_skill(skill_name)
+        projected_usd = 0.0
+        if self._ledger is not None:
+            from src.token_budget import price
+
+            estimate = self._estimate_stage_usage(
+                runner, query, context_text, model_id)
+            projected_usd = price(model_id, estimate)
+            try:
+                self._ledger.preflight(stage=stage_key, model=model_id,
+                                       estimated=estimate)
+            except BudgetExceeded as exc:
+                self._budget_pause(exc)
+        try:
+            try:
+                output_text = runner.run(query, context_text=context_text)
+            except SkillRefusedError as first_refusal:
+                # Work down the fallback chain. A refusal is model- AND
+                # query-dependent, so "another model declined too" is real
+                # information and worth reporting rather than retrying forever.
+                chain = [m for m in (self._models_cfg.get("refusal_fallbacks")
+                                     or _REFUSAL_FALLBACK_MODELS)
+                         if m != model_id]
+                output_text, refusals = None, [first_refusal]
+                for fallback in chain:
+                    logger.warning(f"{refusals[-1]}. Retrying on {fallback}.")
+                    if self._ledger is not None:
+                        self._ledger.record(
+                            stage=stage_key, skill=skill_name,
+                            provider=provider, model=model_id,
+                            usage=runner.usage(),
+                            note=f"refused (category={refusals[-1].category})")
+                    fb_provider, fb_model = (
+                        fallback.split(":", 1) if ":" in fallback
+                        else (provider, fallback))
+                    runner = SkillRunner(
+                        skill_name=skill_name, provider=fb_provider,
+                        model_id=fb_model, config=self.config,
+                        max_iter=self.max_iter, max_input_tokens=self.max_tokens,
+                        use_extended_thinking=use_thinking,
+                    )
+                    model_id, provider = fb_model, fb_provider
+                    try:
+                        output_text = runner.run(query, context_text=context_text)
+                        break
+                    except SkillRefusedError as again:
+                        refusals.append(again)
+                if output_text is None:
+                    tried = ", ".join(sorted({r.model for r in refusals}))
+                    raise SkillRefusedError(
+                        skill=skill_name, model=tried,
+                        category=refusals[-1].category,
+                        iteration=refusals[-1].iteration,
+                    ) from first_refusal
+        finally:
+            if self._ledger is not None:
+                entry = self._ledger.record(
+                    stage=stage_key, skill=skill_name, provider=self.provider,
+                    model=model_id, usage=runner.usage(),
+                )
+                if projected_usd:
+                    ratio = projected_usd / max(entry.usd, 1e-9)
+                    logger.info(
+                        f"  [{stage_key}] estimate ${projected_usd:.4f} vs actual "
+                        f"${entry.usd:.4f} ({ratio:.1f}x) — tune "
+                        f"_STAGE_CALL_PRIOR / _HISTORY_GROWTH_PER_CALL if this "
+                        f"is consistently off")
 
         # Verify corpus citations and append a summary section to the output.
         # This runs after every stage so hallucinated DOIs are flagged before
@@ -1500,7 +3113,185 @@ class PipelineRunner:
                 f"  [{skill_name}] No '### PIPELINE HANDOFF' block found — "
                 "next stage will use a fallback query"
             )
+
+        # Mirror stage completion into the persistent project manifest, if one
+        # is attached. The manifest is the filesystem/CLI source of truth for
+        # stage state + artifact pointers (web.db stays authoritative for the
+        # web UI). Best-effort: a manifest hiccup must never fail the pipeline.
+        self._record_stage(skill_name, "complete", output_file, handoff, stage=stage)
+
+        # A stage that overshot its own estimate should pause cleanly here
+        # rather than mid-flight in the next one.
+        if self._ledger is not None:
+            try:
+                self._ledger.check_cap(next_stage=f"after:{stage_key}")
+            except BudgetExceeded as exc:
+                self._budget_pause(exc)
         return handoff
+
+    # Typical number of API calls a skill's agentic loop makes. Used only to
+    # project a stage's cost BEFORE it runs; the recorded actuals are the truth.
+    # Log the estimate/actual ratio over a few runs and re-tune these.
+    _STAGE_CALL_PRIOR: dict[str, int] = {
+        "pathway-expert": 12,
+        "wildcard-expert": 18,
+        "molecular-biology-expert": 10,
+        "complex-structure-analysis": 14,
+        "binder-target-intel": 4,
+        "protein-design-script": 8,
+        "design-analyst": 2,
+    }
+    # Observed mean visible output per call. Deliberately NOT max_tokens
+    # (24 000) — projecting off the ceiling would refuse almost every stage.
+    _OUTPUT_TOKENS_PER_CALL = 2500
+    # How much the resent conversation grows per turn (the model's own output
+    # plus the tool result that provoked it). The loop resends everything each
+    # call, so total input is quadratic in the number of calls and this constant
+    # dominates the projection. 3000 is calibrated against observed stage spend;
+    # an earlier 8000 projected $3.14 for a single structure stage and refused
+    # runs that in fact cost well under a dollar.
+    _HISTORY_GROWTH_PER_CALL = 3000
+
+    def _estimate_stage_usage(
+        self,
+        runner: SkillRunner,
+        query: str,
+        context_text: str | None,
+        model_id: str,
+    ) -> Usage:
+        """
+        Project a stage's token usage for the pre-flight budget check.
+
+        Call 1 pays full price for the system prompt (and writes it to cache);
+        calls 2..n read it back at ~0.1x while the message history grows. This
+        is a guard, not accounting — any failure degrades to a rough character
+        heuristic rather than blocking the run.
+        """
+        n_calls = self._STAGE_CALL_PRIOR.get(runner.skill_name, 8)
+        first_input = context_text and len(context_text) or 0
+        system_tokens = 0
+        try:
+            import anthropic
+
+            client = anthropic.Anthropic()
+            system_tokens = client.messages.count_tokens(
+                model=model_id,
+                system=[{"type": "text", "text": runner.system_prompt}],
+                messages=[{"role": "user", "content": (context_text or "") + query}],
+            ).input_tokens
+        except Exception as exc:
+            # ~4 chars/token is close enough for a ceiling check.
+            system_tokens = (len(runner.system_prompt) + first_input + len(query)) // 4
+            logger.debug(f"count_tokens unavailable ({exc}); using char heuristic")
+
+        # Each turn re-sends every prior turn, so the total input across a stage
+        # is quadratic in the call count. Per-call input is capped at the same
+        # ceiling the runner enforces, so a long loop is projected as expensive
+        # but not unboundedly so.
+        history_growth = sum(
+            min(self._HISTORY_GROWTH_PER_CALL * i, self.max_tokens)
+            for i in range(1, n_calls)
+        )
+        return Usage(
+            input_tokens=history_growth,
+            cache_creation_tokens=system_tokens,
+            cache_read_tokens=system_tokens * max(0, n_calls - 1),
+            output_tokens=self._OUTPUT_TOKENS_PER_CALL * n_calls,
+        )
+
+    def _budget_pause(self, exc: BudgetExceeded) -> "NoReturn":
+        """
+        Convert a budget overrun into a resumable pause.
+
+        Writes a manifest checkpoint carrying a working resume command, then
+        raises PipelinePausedError.  A budget overrun must never abandon work
+        already paid for, and must never kill a GPU campaign already running.
+        """
+        led = self._ledger
+        resume_stage = exc.stage.removeprefix("after:")
+        payload = {
+            "spent_usd": round(exc.spent_usd, 6),
+            "projected_usd": round(exc.projected_usd, 6),
+            "cap_usd": exc.cap_usd,
+            "next_stage": resume_stage,
+            "by_stage": led.by_stage() if led else {},
+            "resume": (
+                f"scripts/run_pipeline.py --workflow {self._workflow} "
+                + (f"--project {self._project.slug} " if self._project else "")
+                + f"--start-from {resume_stage} --budget <a-larger-number>"
+            ),
+        }
+        if self._project is not None and self._round_id is not None:
+            try:
+                self._project.set_checkpoint(
+                    "budget_exceeded", self._round_id, resume_stage, "gate",
+                    payload=payload,
+                )
+            except Exception as cp_exc:
+                logger.warning(f"budget checkpoint failed: {cp_exc}")
+        logger.error(str(exc))
+        raise PipelinePausedError("budget_exceeded", payload) from exc
+
+    def _init_ledger(self, run_dir: Path) -> None:
+        """
+        Attach the API-spend ledger.
+
+        Lives at the PROJECT root when there is one, so the cap spans every
+        round rather than resetting each time; otherwise beside the run output.
+        Replaying the existing JSONL is what makes `--budget` cumulative across
+        a resume instead of handing the run a fresh allowance.
+        """
+        if self._ledger is not None:
+            return
+        if self._project is not None:
+            path = self._project.root / "ledger.jsonl"
+            sink = self._project.set_budget
+        else:
+            path = run_dir / "ledger.jsonl"
+            sink = None
+        self._ledger = TokenLedger(
+            path, cap_usd=self._budget_usd, mode=self._budget_mode,
+            manifest_sink=sink,
+        )
+        if self._budget_usd is not None:
+            logger.info(
+                f"API budget: ${self._budget_usd:.2f} cap ({self._budget_mode} mode), "
+                f"${self._ledger.spent_usd:.4f} already spent on this project"
+            )
+
+    def _record_stage(
+        self,
+        skill_name: str,
+        status: str,
+        output_file: Path | None = None,
+        handoff: dict | None = None,
+        *,
+        stage: str | None = None,
+        artifacts: list[Path] | None = None,
+    ) -> None:
+        """
+        Mirror a stage's state into the project manifest (no-op without one).
+
+        `stage` overrides the ambiguous skill -> stage inversion; `artifacts`
+        overrides the single-output-file default so deterministic stages (which
+        have no skill at all) can record several artifacts.  Deterministic
+        stages should pass ``skill_name=stage``.
+        """
+        if self._project is None or self._round_id is None:
+            return
+        stage_name = stage or _stage_for_skill(skill_name)
+        if artifacts is None:
+            artifacts = [output_file] if output_file else None
+        try:
+            self._project.update_stage(
+                self._round_id,
+                stage_name,
+                status,
+                artifacts=artifacts,
+                handoff=handoff,
+            )
+        except Exception as exc:
+            logger.warning(f"  [{skill_name}] manifest update failed: {exc}")
 
     def _verify_citations(self, output_text: str, skill_name: str) -> str:
         """
@@ -1557,100 +3348,20 @@ class PipelineRunner:
         return "\n".join(lines)
 
     def _parse_handoff(self, text: str) -> dict[str, str]:
-        """
-        Extract key:value fields from a '### PIPELINE HANDOFF' block.
+        """Extract key:value fields from a '### PIPELINE HANDOFF' block.
 
-        Accepts both canonical format ('- key: value') and bare format
-        ('key: value'), and strips markdown code fences that models
-        sometimes wrap the block in.
-
-        Stops at the next markdown heading or end of string.
-        Returns {} if no block is found (non-fatal).
+        See :func:`src.handoff.parse_handoff` — logic lives there so
+        ``src/binder_report.py`` can reuse it without depending on this class.
         """
-        match = re.search(
-            r"###\s+PIPELINE HANDOFF\s*\n(.*?)(?=\n##|\Z)",
-            text,
-            re.DOTALL | re.IGNORECASE,
-        )
-        if not match:
-            return {}
-        fields: dict[str, str] = {}
-        for line in match.group(1).splitlines():
-            # Strip code-fence lines (``` or ~~~)
-            if re.match(r"^\s*```", line) or re.match(r"^\s*~~~", line):
-                continue
-            # Accept '- key: value' (canonical) or 'key: value' (bare)
-            m = re.match(r"^\s*(?:-\s+)?(\w+):\s*(.+)$", line)
-            if m:
-                fields[m.group(1).strip()] = m.group(2).strip()
-        return fields
+        return _handoff.parse_handoff(text)
 
     def _parse_hotspot_residues(self, text: str, handoff: dict) -> str | None:
+        """Parse the MODEL-READY HOTSPOTS table(s) from structure stage output.
+
+        See :func:`src.handoff.parse_hotspot_residues` — logic lives there so
+        ``src/binder_report.py`` can reuse it without depending on this class.
         """
-        Parse the MODEL-READY HOTSPOTS table(s) from structure stage output.
-
-        Returns a JSON string:
-            {"target_chain": "A", "partner_chain": "B",
-             "residues": [{"residue": "LEU", "auth_seq_id": 245,
-                           "label_seq_id": 245, "rfd3_atoms": "CD1,CG2"}, ...]}
-
-        Returns None if the section is absent (non-fatal).
-        """
-        # target_chain / partner_chain were added to the PIPELINE HANDOFF
-        # template after some runs were created.  Fall back to chain_a / chain_b
-        # for older runs that only emitted those fields.
-        target_chain = handoff.get("target_chain", "") or handoff.get("chain_a", "")
-        partner_chain = handoff.get("partner_chain", "") or handoff.get("chain_b", "")
-
-        sections = re.findall(
-            r"###\s+MODEL.READY HOTSPOTS.*?(?=\n###|\Z)",
-            text,
-            re.DOTALL | re.IGNORECASE,
-        )
-        if not sections:
-            return None
-
-        # label_seq_id is allowed to be non-integer (e.g. "UNVERIFIED" or
-        # similar when tool_get_sequence_map could not be called). Match any
-        # non-pipe content and try to parse as int; fall back to auth_seq_id
-        # if it isn't a number. Only auth_seq_id is required to be an int.
-        row_pat = re.compile(
-            r"^\|\s*([A-Z]+)\d*\s*\|\s*(\d+)\s*\|\s*([^|]*?)\s*\|\s*([^|]+?)\s*\|",
-            re.MULTILINE,
-        )
-        residues: list[dict] = []
-        seen: set[tuple] = set()
-        for section in sections:
-            for m in row_pat.finditer(section):
-                residue, auth_id, label_raw, atoms = m.groups()
-                auth_id_int = int(auth_id)
-                try:
-                    label_id_int = int(label_raw.strip())
-                except (ValueError, AttributeError):
-                    # Non-numeric label (e.g. "**UNVERIFIED**") — fall back to
-                    # auth_seq_id. Downstream SASA enrichment uses auth_seq_id
-                    # anyway; label_seq_id is only needed for BoltzGen YAML
-                    # `binding:` lines, and those are written by the
-                    # design-script skill from its own copy of the table.
-                    label_id_int = auth_id_int
-                key = (residue, auth_id_int)
-                if key not in seen:
-                    seen.add(key)
-                    residues.append({
-                        "residue": residue,
-                        "auth_seq_id": auth_id_int,
-                        "label_seq_id": label_id_int,
-                        "rfd3_atoms": atoms.strip(),
-                    })
-
-        if not residues:
-            return None
-
-        return json.dumps({
-            "target_chain": target_chain,
-            "partner_chain": partner_chain,
-            "residues": residues,
-        })
+        return _handoff.parse_hotspot_residues(text, handoff)
 
     def _ensure_structure(self, pdb_id: str) -> Path:
         """Return local ASU CIF path, downloading from RCSB if absent.

@@ -19,9 +19,14 @@ dependencies = [
     "networkx>=3.0",
     "gemmi>=0.7",
     "biopython>=1.85",
+    "biotite>=1.7.1",
+    "markdown>=3.6",
 ]
 
 [project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
 web = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.29",
