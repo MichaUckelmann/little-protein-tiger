@@ -161,6 +161,61 @@ class CalibrationResult:
         return asdict(self)
 
 
+@dataclass
+class ComputeChoice:
+    """
+    Where a SCALE_UP / SCALE_UP_PARTIAL campaign should actually run.
+
+    `est_gpu_hours` on the pessimistic `ScaleEstimate` is already a
+    single-GPU wall-clock estimate (the SEC_PER_* constants above are
+    measured on one local GPU) — `local_hours` below IS that number, not a
+    recomputation. `cluster_hours` is that same total compute divided across
+    `n_gpus_cluster` GPUs running in parallel; it is a rough estimate (a
+    cluster refold backend like Protenix has different per-design timing
+    than local RF3), not a guarantee — see CLAUDE.md's cluster section for
+    what's actually been measured there.
+    """
+
+    compute: str  # "local" | "cluster"
+    local_hours: float
+    cluster_hours: float
+    n_gpus_cluster: int
+    max_local_hours: float
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def choose_compute(res: CalibrationResult, *, max_local_hours: float = 48.0,
+                   n_gpus_cluster: int = 8) -> ComputeChoice | None:
+    """
+    Decide local vs. cluster for a SCALE_UP / SCALE_UP_PARTIAL campaign, and
+    report the numbers either way.
+
+    Purely a TIME decision: if the pessimistic-bound estimate fits within
+    `max_local_hours` on this workstation's one GPU, stay local — that is
+    simpler, and cluster GPU-hours are not actually free (compute cost is
+    identical, cluster only buys wall-clock parallelism). Otherwise, a
+    cluster package should be staged so the campaign completes in a
+    reasonable window instead of running for days unattended.
+
+    Returns None when the verdict isn't a scale-up at all (ITERATE/STOP) —
+    there is nothing to place on either compute path.
+    """
+    if res.verdict not in ("SCALE_UP", "SCALE_UP_PARTIAL"):
+        return None
+    local_hours = res.pessimistic.est_gpu_hours or 0.0
+    cluster_hours = local_hours / max(1, n_gpus_cluster)
+    compute = "local" if local_hours <= max_local_hours else "cluster"
+    return ComputeChoice(
+        compute=compute,
+        local_hours=round(local_hours, 1),
+        cluster_hours=round(cluster_hours, 1),
+        n_gpus_cluster=n_gpus_cluster,
+        max_local_hours=max_local_hours,
+    )
+
+
 # ----------------------------------------------------------------------
 # Core
 # ----------------------------------------------------------------------
@@ -521,7 +576,7 @@ def _decide(res: CalibrationResult, *, disk_budget_gb: float,
 # Reporting
 # ----------------------------------------------------------------------
 
-def render_report(res: CalibrationResult) -> str:
+def render_report(res: CalibrationResult, compute: "ComputeChoice | None" = None) -> str:
     def scale_line(s: ScaleEstimate) -> str:
         if s.required_refolds is None:
             return f"  {s.basis:<26} (no finite estimate)"
@@ -606,4 +661,22 @@ def render_report(res: CalibrationResult) -> str:
         "",
         res.verdict_reason,
     ]
+    if compute is not None:
+        lines += [
+            "",
+            "### Where to run it",
+            "",
+            f"  local  (1 GPU)              ~{compute.local_hours:,.1f} h",
+            f"  cluster ({compute.n_gpus_cluster} GPUs, parallel)   "
+            f"~{compute.cluster_hours:,.1f} h (rough — different refold "
+            f"backend/hardware)",
+            "",
+            (f"**Decision: {compute.compute}.** "
+             + (f"Fits the {compute.max_local_hours:g} h local budget — "
+                f"running on this workstation's GPU."
+                if compute.compute == "local" else
+                f"Exceeds the {compute.max_local_hours:g} h local budget — "
+                f"staging a cluster package instead of running for "
+                f"{compute.local_hours:,.0f} h unattended.")),
+        ]
     return "\n".join(lines)

@@ -74,6 +74,17 @@ paths:
 # NOTE: extended thinking on these models is ADAPTIVE — `budget_tokens` was
 # removed on claude-sonnet-5 / claude-opus-5 and is rejected with a 400.
 models:
+  # Default provider for every pipeline stage (PipelineRunner's `provider`
+  # constructor default and --provider CLI default) is now "gemini" —
+  # gemini-3.7-flash below. Not just cost (~4x cheaper input than Sonnet):
+  # this run's own live evidence is claude-sonnet-5 refusing (category
+  # "bio") on BOTH the target_intel and interface stages for a routine
+  # antagonist-design query, each refusal burning real spend (one cost
+  # $1.10 for nothing — see `refusal_fallbacks` below) before falling
+  # through to Gemini, which then answered cleanly every time. Going
+  # straight to Gemini skips paying for that failure. `--provider claude`
+  # still selects the Claude path in full, `models.claude.*` below is
+  # unchanged and still authoritative for it.
   claude:
     default: "claude-sonnet-5"
     # Haiku cannot do extended thinking; stages requesting it upgrade to this.
@@ -114,7 +125,15 @@ models:
       # parses. Gemini answers and is ~4x cheaper on input.
       # interface: "gemini:gemini-3.7-flash"   # force it; normally a fallback
   gemini:
-    default: "gemini-3.1-flash-lite-preview"
+    default: "gemini-3.7-flash"
+    # If gemini-3.7-flash itself declines (SkillRefusedError from
+    # `_run_gemini` — an empty-candidates / promptFeedback.blockReason /
+    # per-candidate SAFETY-class finishReason), fall through to Claude
+    # rather than retrying Gemini itself; this is the primary chain now
+    # that gemini is the default provider, mirroring the claude block's
+    # own refusal_fallbacks above (which still leads with Gemini for the
+    # `--provider claude` path).
+    refusal_fallbacks: ["claude-opus-5", "claude-haiku-4-5"]
 
   # USD per 1M tokens.  Cache multipliers apply to the INPUT rate:
   # cache writes bill at ~1.25x (5-minute TTL; use 2.0 for a 1h TTL) and cache
@@ -125,6 +144,7 @@ models:
     claude-sonnet-5:    {input: 3.00,  output: 15.00}   # $2/$10 intro rate through 2026-08-31
     claude-haiku-4-5:   {input: 1.00,  output: 5.00}
     claude-fable-5:     {input: 10.00, output: 50.00}
+    gemini-3.7-flash:              {input: 0.75, output: 3.75}   # intro rate through 2026-12-31; 1.50/7.50 after
     gemini-3.1-flash-lite-preview: {input: 0.10, output: 0.40}
 
 curation:
@@ -261,6 +281,83 @@ design:
     pilot:       {n_batches: 25}      # 100 designs — proves the spec runs
     calibration: {n_batches: 145}     # ~300 prefilter survivors x 4 seq
     production:  {n_batches: 3000}    # 12,000 designs
+
+    # Hours threshold for the calibration stage's local-vs-cluster decision
+    # (src/campaign_calibration.choose_compute): if the pessimistic single-GPU
+    # estimate for the production run fits this many hours, production stays
+    # on this workstation's GPU; otherwise a cluster package is staged
+    # instead. Overridable per invocation via --max-local-hours.
+    max_local_hours: 48
+
+  # Cluster compute path (src/cluster_runner.py): an ALTERNATIVE to the local
+  # `foundry` GPU path above, for campaigns too big for one workstation. LPT
+  # cannot reach the SLURM scheduler directly (no login-node access from this
+  # machine), so this path only *prepares* a campaign — spec, trimmed
+  # structure, target MSA, and a ready-to-run launch script staged onto shared
+  # storage — then pauses with the exact command for a human to run on the
+  # cluster. Resuming re-attaches and reads results back once they exist on
+  # disk. Modelled directly on, and REUSES,
+  # g-groups/group_sahtoe/muckelmann/binder_pipeline (RFD3 -> solubleMPNN ->
+  # {RF3 | Protenix/IntelliFold2/...} refold, SLURM array jobs, apptainer
+  # containers) rather than reimplementing it — that pipeline's own
+  # `config/site.sh` is the actual source of truth for partition/account/
+  # container paths; the keys below are only what LPT itself needs to decide
+  # (which cluster, how many GPUs, which refold backend) plus enough of an
+  # override surface that a future user pointed at a DIFFERENT cluster can
+  # adapt this block without touching src/cluster_runner.py.
+  cluster:
+    enabled: false
+    # Absolute path to a `binder_pipeline`-shaped checkout, reachable from
+    # THIS machine for staging inputs (its bin/ scripts run on the cluster,
+    # not here — this path is read/write, not executed).
+    pipeline_root: "/home/m.uckelmann_cbs-niob.local/g-groups/group_sahtoe/muckelmann/binder_pipeline"
+    # Where campaign inputs get staged, relative to pipeline_root: mirrors its
+    # own examples/<name>/ convention so `bin/run_pipeline.sh` needs no
+    # changes to find them.
+    stage_subdir: "examples"
+    # Free text shown verbatim in the pause instructions — this is the one
+    # thing genuinely specific to "which human, which login node" and cannot
+    # be inferred from the filesystem.
+    submit_instructions: |
+      ssh <cluster-login-node>
+      cd <pipeline_root-as-seen-from-the-cluster>
+    # Refold backend for the cluster path. "protenix" co-folds the target
+    # de novo from sequence (no template support LPT's RF3 path relies on),
+    # so `use_msa: true` is NOT optional — an unMSA'd target refolds ~11 A
+    # wrong on CD79b (docs/refold_backends.md in pipeline_root), which lands
+    # straight in binder_rmsd_bb. "rf3" is also valid here (identical spec,
+    # same driver) if MSA fetching isn't set up yet.
+    refold_backend: protenix
+    use_msa: true
+    # How the target MSA is fetched. "protenix_hosted" calls a SEPARATE,
+    # machine-specific Protenix checkout's own hosted-MMseqs2 script (fast,
+    # free, no local ColabFold DB) via subprocess — same pattern as the
+    # PyRosetta/BoltzGen/foundry backends: a foreign venv, never imported.
+    # Produces a standard .a3m the cluster pipeline's generic
+    # `build_fold_yaml.py --target-msa` already accepts for ANY folding
+    # backend, protenix included. "cluster_colabfold" instead defers to the
+    # cluster's own bin/make_msa.sh (local ColabFold DB, blocking srun) —
+    # use this if no local Protenix install exists; LPT then adds the two
+    # extra manual commands to the pause instructions instead of running them.
+    msa_source: protenix_hosted
+    protenix_repo: "/home/m.uckelmann_cbs-niob.local/code/protenix"
+    protenix_venv: ".venv"
+    # GPUs available to a campaign at once. Maps to the cluster pipeline's
+    # NARRAY (one array task = one GPU, stages 01/02); refold sharding
+    # (SHARDS) is derived from this and n_batches so ~all GPUs stay busy.
+    # Also the divisor `choose_compute()` uses to estimate cluster wall-clock
+    # against `foundry.max_local_hours` — 8 is this group's current max
+    # shared-node allocation; the gem_vegf_a campaign ran on 6 because that's
+    # what was free that week, not a hard ceiling.
+    n_gpus: 8
+    # Same shape as design.foundry.{pilot,calibration,production} — reused
+    # for sizing, not duplicated as separate math.
+    pilot:       {n_batches: 25}
+    calibration: {n_batches: 145}
+    production:  {n_batches: 3000}
+    diffusion_batch_size: 4
+    n_seq: 4
+    poll_hint_s: 1800   # how often campaign_status.py suggests re-checking
 
   # Scoring + ranking for the foundry backend (src/binder_metrics.py,
   # src/binder_ranking.py). Independent of the BoltzGen-oriented `thresholds`

@@ -76,6 +76,38 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
   (`assets/vendor/molstar/`, MIT-licensed, ~5 MB) is vendored and inlined at
   build time — a generated report has no runtime network dependency.
 
+  **`src/ppi_report.py`** is the same idea for the PPI track: one
+  illustrated `report.html` over `00_pathway.md` .. `06_summary.md` (target
+  rationale, prior art, hotspots, the BoltzGen design-generation stats,
+  filter-gate funnel, top-K design cards, and the design-analyst's final
+  verdict rendered verbatim), plus a Mol* explorer over the top boltzgen
+  refolds. `_run_binder_track`'s sibling `run()` calls it as a best-effort
+  side effect after `analysis` and after `summary`; regenerate by hand with
+  `scripts/generate_ppi_report.py`. It shares its whole design system with
+  the binder report — see the "Two reports, one design system" note below —
+  and shares `src/report_common.py`'s markdown/citation-section readers
+  rather than re-parsing `### PIPELINE HANDOFF` / `## CITATION
+  VERIFICATION` blocks a second way. It re-derives nothing about *what
+  passed*: `_parse_filter_stats` deserializes the run's own frozen
+  `05_ranking/filter_stats.txt` (written by `design_ranking.
+  write_ranking_outputs` at analysis time) instead of re-running
+  `filter_records` against today's `config.yaml` thresholds, which may have
+  changed since the run executed — the one place this report's numbers
+  could otherwise silently drift from what the pipeline actually decided.
+
+  **Two reports, one design system.** `src/report_templates/_shared/`
+  (`base.css` + `base.js`) holds the palette, typography, and every layout
+  primitive (rail nav, hero, stat grid, blocks, prose, callouts, tables,
+  chart primitives, verdict banner, design cards) plus the Mol* structure-
+  explorer harness (`createStructureExplorer` — structure loading, hotspot
+  highlighting, water/ion hiding), used by both `binder_report`'s and
+  `ppi_report`'s `shell.html`/`app.js`. A track's own `app.js` holds only
+  what's genuinely track-specific (which sections exist, what the funnel/
+  scatter axes mean, what a design card shows). Extend the shared files
+  when a new report needs a layout primitive that's already generic;
+  extend a track's own `app.js` when the content is genuinely specific to
+  that track — don't grow one at the expense of the other's readability.
+
 ## Non-obvious facts the binder track depends on
 
 These were each established by reproducing a real campaign; changing code near
@@ -201,6 +233,95 @@ them without re-reading this list is how they get silently reverted.
   be `["A"]`. `foundry_spec.build_mpnn_configs` always emits a list now
   (`_as_chain_list`).
 
+## Non-obvious facts the cluster compute path depends on
+
+`src/cluster_runner.py` stages a campaign onto
+`g-groups/.../binder_pipeline` for a human to submit (this workstation has no
+SLURM login-node access) and reads results back on resume. Every fact below
+was established by staging a real campaign, not by reading that pipeline's
+own docs — the docs described a narrower/different shape than what the code
+actually does in two separate places, and both cost a full campaign before
+being caught.
+
+- **`NB` in that pipeline is designs PER GPU ARRAY TASK, not a campaign
+  total.** Its own diagnostic line says so (`NARRAY x NB x DBS = designs`,
+  `bin/run_pipeline.sh`), but `plan_campaign()` first read it like the local
+  foundry convention (where `n_batches` *is* the total) and silently
+  undercounted an actual campaign's size by exactly `n_gpus`: reported
+  ~8,600 refolds for a campaign that was staged for, ran, and completed at
+  ~59,000. Fixed by multiplying `expected_rfd3` by `cluster_cfg.n_gpus`.
+- **Protenix (and every other folding-repo backend there) writes a
+  per-design SUBDIRECTORY, not flat files** — `run_N/protenix/<id>/<id>.pdb`
+  + `<id>_scores.json` [+ `<id>_pae.npy`], the same shape as RF3's own
+  `<id>/<id>_summary_confidences.json`. An earlier reading of that
+  pipeline's own scorer said flat; `iter_protenix_refolds` and
+  `cluster_runner.refold_counts` both scanned for files directly inside the
+  backend dir and counted zero refolds against a campaign that had already
+  finished and sat idle for over a day.
+- **`<id>_scores.json`'s real schema** (confirmed against a live file): only
+  `plddt_mean`, `plddt_per_residue`, `ptm`, `iptm`, `pae_mean`, `runtime_s`,
+  `iptm_per_chain_pair`. No `binder_ptm`/`target_ptm`, no
+  `iface_pae`/`iface_pae_min`, no `has_clash`, no `ranking_score` — an
+  earlier revision of `protenix_confidence_adapter` guessed at all of those
+  keys from that pipeline's docs/scorer description, and none of them exist.
+  `iface_pae` is computed from the raw `<id>_pae.npy` matrix's
+  binder-target block instead of trusting a nonexistent field; the file's
+  own `pae_mean` is whole-structure and would dilute the interface signal
+  with two mostly-unrelated intra-chain blocks. Protenix's PDB B-factor
+  column IS the 0–100 scale `binder_metrics.read_structure`'s
+  `plddt_scale=100.0` assumes — confirmed against real atom records.
+- **A production-scale run's sizing — and its compute placement — must
+  survive a process restart.** `_stage_calibration`'s `n_batches`
+  recommendation only lived in that process's memory; resuming `--start-from
+  production` in a fresh process (the normal case for a multi-hour campaign)
+  silently fell back to `config.yaml`'s raw default (3000 batches, ~87 GPU-h)
+  instead of the measured ~18 GPU-h recommendation. `_resolve_production_plan`
+  (successor to the old `_resolve_production_batches`) re-derives both the
+  batch count *and* the local-vs-cluster decision from the persisted
+  `calibration.json` on any resume — the same file also stores
+  `n_batches_local` and `n_batches_cluster` (they differ by `n_gpus`, per the
+  `NB`-is-per-GPU fact above) so re-attaching after `--compute auto` chose
+  cluster doesn't need to redo the choice, and can't accidentally undo it by
+  reading the local number.
+- **`--compute auto` (the default) is a TIME decision, made once, at the
+  calibration gate — not a per-stage toggle.** `pilot` and `calibration`
+  themselves always run locally (they're deliberately small); only
+  `production` is placed by `campaign_calibration.choose_compute()`, which
+  compares the pessimistic single-GPU estimate
+  (`res.pessimistic.est_gpu_hours` — already single-GPU wall-clock, since the
+  `SEC_PER_*` constants it's built from are local-GPU-calibrated) against
+  `--max-local-hours` (default 48, `design.foundry.max_local_hours` in
+  config.yaml). `cluster_hours = local_hours / design.cluster.n_gpus` is
+  explicitly a rough estimate, not a promise — Protenix on the cluster and
+  local RF3 have different per-design timing. `--compute local` / `--compute
+  cluster` still force every GPU stage onto one path unconditionally, exactly
+  as before `auto` existed; `auto` only changes the *default*.
+- **GPU hardware faults happen at this scale and look identical to a bug at
+  first glance.** A real campaign hit two independent `CUDA error:
+  uncorrectable ECC error encountered` failures — one killed an entire
+  array task's RFD3 stage (0 designs from that 1/6 of the campaign), one
+  killed one of two refold shards for another task (50% yield on that 1/6).
+  Both are node-level GPU memory hardware faults, not anything to debug in
+  this codebase; the fix is resubmitting the specific failed array index,
+  and persistent recurrence is a signal for the cluster administrators, not
+  for this pipeline.
+- **The cluster pipeline's RFD3 output subdirectory is named `diffuse`, not
+  `rfd3`.** Same binary, same design-sidecar filenames (`*_model_*.json`,
+  same `diffused_index_map` remap), different parent directory name than
+  the local foundry convention. `_cluster_hotspots`'s glob assumed `rfd3/`
+  and found nothing against a fully-scored, real campaign.
+- **`scripts/resume_cluster_calibration.py` exists only because per-site
+  resume has no CLI path.** `--start-from <stage>` operates on the
+  TOP-LEVEL `binder/` stage files; a multi-site trial's real data lives
+  under `binder/sites/<site_id>/binder/`, and `_run_site_trials` only
+  re-enters through `--trial-sites N` (N>1) or `--stop-after trial`, which
+  recomputes `n_batches` from `--trial-backbones` — it must be passed the
+  exact original value or the completion check silently targets the wrong
+  count. The script bypasses this by calling `_stage_calibration` directly
+  with the real `site_dirs` and `n_batches`; it is the officially-supported
+  way to resume a cluster campaign staged against one specific site until
+  the CLI gap is closed.
+
 ## API cost accounting
 
 `src/token_budget.py` prices every LLM stage and enforces `--budget` as a hard cap.
@@ -227,17 +348,35 @@ retry after a categorised refusal has not once succeeded here, and it is not
 free: ~$0.13 spent for nothing per attempt. `claude-haiku-4-5` eventually
 answered in that same run.
 
-So `models.claude.refusal_fallbacks` is a **chain**, and an entry may name another
-provider as `"provider:model"` (`_resolve_stage` returns a provider alongside the
-model) — and **Gemini goes first**, not last: crossing providers immediately on
-the first refusal is cheaper and faster than walking same-family models that
-share the same classifier verdict. `gemini-3.7-flash` answers reliably and costs
-~4× less on input than Sonnet. `claude-opus-5` / `claude-haiku-4-5` stay in the
-chain only as a fallback for the rare case Gemini itself declines or errors —
-`_run_gemini` raises the same `SkillRefusedError` for a Gemini-side safety block
-(empty `candidates`, a `promptFeedback.blockReason`, or a per-candidate
-`finishReason` of `SAFETY`/`PROHIBITED_CONTENT`/`BLOCKLIST`/`RECITATION`/`SPII`),
-so the chain degrades the same way regardless of which provider declines.
+**This is why `provider` defaults to `"gemini"` (`gemini-3.7-flash`), not
+`"claude"`, for every pipeline stage** (`PipelineRunner.__init__`'s
+`provider` default, `run_pipeline.py --provider`, `run_skill.py --model`) —
+not only ~4× cheaper on input than Sonnet, but a real IL7RA end-to-end run
+refused on **both** `target_intel` and `interface` under the old
+claude-first default, the `interface` refusal alone burning $1.10 by the
+time it fired: the refusal happens on whichever call the model finally
+drafts substantive content (here, call #7 of an agentic tool-use loop —
+calls #1–6 were pure tool orchestration with nothing for a classifier to
+catch), and token usage is billed for that call *before* the
+`stop_reason == "refusal"` check in `skill_runner.py` — the compute already
+happened. Gemini answered cleanly both times. `--provider claude` still
+selects the Claude path in full; nothing about the fallback mechanics below
+changed, only which provider a run starts on.
+
+So `models.<provider>.refusal_fallbacks` is a **chain**, and an entry may name
+another provider as `"provider:model"` (`_resolve_stage` returns a provider
+alongside the model). For the (now non-default) `claude` provider, **Gemini
+goes first**, not last: crossing providers immediately on the first refusal is
+cheaper and faster than walking same-family models that share the same
+classifier verdict; `claude-opus-5` / `claude-haiku-4-5` stay in that chain only
+as a fallback for the rare case Gemini itself declines or errors. For the
+default `gemini` provider, `models.gemini.refusal_fallbacks` leads straight to
+`claude-opus-5` / `claude-haiku-4-5` — there is no same-family model to burn a
+wasted attempt on first. Either direction, `_run_gemini` raises the same
+`SkillRefusedError` for a Gemini-side safety block (empty `candidates`, a
+`promptFeedback.blockReason`, or a per-candidate `finishReason` of
+`SAFETY`/`PROHIBITED_CONTENT`/`BLOCKLIST`/`RECITATION`/`SPII`), so the chain
+degrades the same way regardless of which provider declines.
 
 A refusal raises `SkillRefusedError` rather than returning "". The old behaviour
 wrote a 0-byte stage report and the run failed three stages later with a
@@ -303,11 +442,19 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
   `config.yaml design.binder_ranking` — a renamed column silently drops out of the
   composite (it warns, but the run continues).
 - `src/handoff.py` (`parse_handoff` / `parse_hotspot_residues`) ⇄ `src/pipeline_runner.py`
-  (`_parse_handoff` / `_parse_hotspot_residues`, now thin wrappers) ⇄ `src/binder_report.py` —
-  extracted so the deterministic report generator can read the same "### PIPELINE
-  HANDOFF" / "### MODEL-READY HOTSPOTS" blocks the pipeline itself parses, without
-  depending on `PipelineRunner`. Both call sites must keep using the module, not a
-  re-implementation, or the two will silently drift on the next skill-prompt edit.
+  (`_parse_handoff` / `_parse_hotspot_residues`, now thin wrappers) ⇄ `src/binder_report.py`
+  ⇄ `src/ppi_report.py` — extracted so both deterministic report generators can read the
+  same "### PIPELINE HANDOFF" / "### MODEL-READY HOTSPOTS" blocks the pipeline itself
+  parses, without depending on `PipelineRunner`. All call sites must keep using the
+  module, not a re-implementation, or they will silently drift on the next skill-prompt edit.
+- `src/report_common.py` (markdown rendering, `### PIPELINE HANDOFF` section splitting,
+  `## CITATION VERIFICATION` extraction, histogram binning) ⇄ `src/binder_report.py` ⇄
+  `src/ppi_report.py` — same reasoning as the `handoff.py` pairing above, one level up:
+  both report generators read the SAME shape of markdown-plus-handoff stage output, so the
+  reading logic lives once. `src/report_templates/_shared/{base.css,base.js}` is the
+  matching pairing on the rendered side — both reports' `shell.html`/`app.js` source their
+  palette, layout primitives, and Mol* explorer harness from there; see the binder-track
+  section above ("Two reports, one design system").
 - Configs: alternates passed via `--config` to `fetch_papers.py` (and now `curate_papers.py`).
 
 ## Frontend

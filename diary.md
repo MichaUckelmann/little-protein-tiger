@@ -3070,3 +3070,430 @@ verdict) — none have been scaled yet; everything so far is calibration-only.
 5. Web layer: surface the binder track's campaign/calibration/site-trial pauses.
 6. Nothing in this session's work is committed — 25+ new files, several dozen
    modified. Worth a review + commit pass once the trial data settles.
+
+## 2026-08-22/23 — Merge to main, cluster compute path, and a full end-to-end
+validation run that earned its keep by finding seven real bugs
+
+Three connected pieces of work, in order: (1) merged the binder track into
+`main` while keeping the still-experimental enzyme track isolated on its own
+branch, (2) built a cluster compute path so a campaign can scale past one
+workstation GPU, (3) ran a from-scratch end-to-end binder campaign (PD-L1)
+specifically to stress-test the pipeline, and it found problems the earlier
+trial-comparison work never touched because those trials never resumed a
+production run in a fresh process, never hit a genuine hardware fault, and
+never actually read a live cluster-produced file.
+
+### 1. main now has the binder track; enzyme stays on its own branch
+
+The two tracks shared infrastructure at the code level (`src/project.py`,
+`skill_runner.py`'s tool gating, `pipeline_runner.py`'s stage dispatch) in a
+way that made a plain "merge everything then delete enzyme files" approach
+attractive but wrong — enzyme and binder additions were interleaved inside
+the same functions/dicts, not separated by file. Resolved by rebasing just
+the binder commit onto `main` and hand-resolving every conflict to keep
+binder-only content: dropped enzyme skills/stages/tool defs, kept
+`src/project.py` in full (it's generic persistence, not enzyme-specific,
+just picked up two enzyme-only bits — `enzyme_dir()`, an `orca` shared-asset
+kind — that got stripped). One real cross-track dependency found and fixed:
+`structure_trim.py` (binder) called a function that only the enzyme commit
+had ever added to `structure_tools.py`; backported the ~15-line
+`_is_protein_residue`, which is generic, not enzyme logic. 236 tests green
+on `main` after the merge; `enzyme-design-workflow` branch untouched.
+
+### 2. Cluster compute path — `src/cluster_runner.py`
+
+Compute model = "LPT stages, a human submits, LPT reads results back" — this
+workstation has no SLURM login-node access. Reuses an existing, working
+SLURM pipeline (`g-groups/.../binder_pipeline`) entirely rather than
+reimplementing RFD3/MPNN/refold orchestration: stages the RFD3 spec +
+trimmed structure + a real fetched target MSA onto that pipeline's own
+`examples/` convention, writes a `launch.sh`, pauses with instructions,
+and on resume reads results off shared storage and scores them with LPT's
+own full metrics (not that pipeline's own narrower 4-column scorer).
+
+The MSA fetch reuses a *different*, machine-specific Protenix checkout's own
+free hosted-MMseqs2 search (subprocessed, never imported — same pattern as
+PyRosetta/BoltzGen/foundry) and caches by sequence hash, so a repeat trial
+against the same target costs nothing. Generalized `binder_metrics.py`'s
+ipSAE math to work off a plain PAE matrix + a chain-length boundary
+(`ipsae_from_pae_matrix`) instead of only RF3's token-labeled JSON, so the
+same well-tested formula serves both backends without a second
+implementation — see `src/binder_metrics.py`'s ipSAE section for the exact
+derivation.
+
+Added `--stop-after calibration` (didn't exist before) so a campaign can
+pause for a verdict review before committing to a multi-day production run,
+reusing the existing `stop_after` plumbing rather than touching `auto_mode`
+(which also gates an earlier, unrelated pause and would have changed
+existing default behaviour).
+
+**Everything below was wrong on the first pass and only caught by staging a
+real campaign, not by reading that pipeline's own docs:**
+
+- `bin/run_pipeline.sh` prepends `$PKG/examples/` to a relative `SPEC` itself
+  — including that prefix when generating `launch.sh` doubled it
+  (`examples/examples/...`), caught the moment the user actually ran the
+  script on the cluster.
+- `NB` there is designs **per GPU array task**, not a campaign total
+  (`NARRAY x NB x DBS = designs`, that pipeline's own diagnostic line).
+  `plan_campaign()` read it like local foundry's `n_batches` (a true total)
+  and undercounted a real campaign by exactly `n_gpus` — reported ~8,600
+  refolds for a campaign that was staged, ran, and finished at ~59,000.
+- Protenix (and every folding-repo backend there) writes a per-design
+  SUBDIRECTORY (`run_N/protenix/<id>/<id>.pdb` + `<id>_scores.json` +
+  `<id>_pae.npy`), not flat files. `iter_protenix_refolds` and
+  `cluster_runner.refold_counts` both scanned for files directly inside the
+  backend dir and found zero refolds against a campaign that had already
+  finished and sat idle for over a day — looked exactly like "still
+  running slowly" from the outside.
+- `<id>_scores.json`'s real schema (only `plddt_mean`, `plddt_per_residue`,
+  `ptm`, `iptm`, `pae_mean`, `runtime_s`, `iptm_per_chain_pair`) has none of
+  the fields an earlier reading of that pipeline's docs/scorer suggested
+  (`binder_ptm`, `iface_pae`, `has_clash`, `ranking_score`). `iface_pae` is
+  now computed from the raw PAE matrix's binder-target block instead of a
+  field that doesn't exist.
+- Resuming `--start-from production` in a fresh process silently lost the
+  calibration's `n_batches` recommendation (it only ever lived in that
+  process's memory) and fell back to `config.yaml`'s raw default — an
+  86 GPU-h / 71 GB campaign instead of the measured ~18 GPU-h / 15 GB one.
+  Caught within a minute of real RFD3 runtime. `n_batches` now round-trips
+  through the persisted `calibration.json` on any resume.
+- Two independent `CUDA error: uncorrectable ECC error encountered`
+  failures hit one real campaign — a genuine node-level GPU hardware fault,
+  not a bug: one killed an entire array task before it produced anything,
+  one killed one of two refold shards on another task (50% yield on that
+  1/6). Worth knowing this class of failure is a real operational fact at
+  cluster scale, indistinguishable from "still running" without checking
+  the SLURM logs.
+- The cluster pipeline's RFD3 output lands under a subdirectory named
+  `diffuse`, not `rfd3` (same binary, same sidecar filenames, different
+  parent dir than the local foundry convention). `_cluster_hotspots`'s glob
+  assumed `rfd3/` and raised "no sidecar found" against a campaign that had
+  already been fully scored by the cluster's own pipeline days earlier —
+  the sixth naming-mismatch bug this cluster path turned up, all from
+  reading that pipeline's docs/behaviour once and not re-checking against
+  what it actually wrote to disk.
+
+### 3. PD-L1 end-to-end validation run — four more bugs, all in the parts of
+the pipeline the trial-comparison sessions never actually exercised
+
+Purpose: confirm the full binder track (`target_intel` through
+`binder_summary` + `report.html`) works unattended, end to end, for a
+"relatively easy" target, and get a real cost/time number. $10 budget,
+~48h GPU window. Landed at $2.12 spent, ~27h wall clock (most of it one
+clean unattended production run), 20 top-K designs, best iPTM 0.92 /
+ipSAE_min 0.82 — GO. But getting there needed:
+
+- The interface stage's query text, when target-intel supplied its own
+  freeform `structure_query`, never stated the PDB accession the
+  orchestrator had *already downloaded* — the skill, given only a
+  description and no accession, twice concluded no structure existed and
+  asked for one instead of running `tool_analyze_interface` on the file
+  sitting right there. Fixed by always stating `pdb_id`/chains explicitly
+  in the constructed query, regardless of what `structure_query` says.
+- A hotspot table cell can carry legitimate prose alongside a real atom name
+  (`"CA (no sidechain — backbone contact only)"` for a glycine) — a
+  reasonable thing for a model to write, and a real parsing gap:
+  `rfd3_atoms` was taken as-is and RFD3 saw a malformed atom name. Fixed
+  with `_clean_atom_list` in `src/handoff.py`, which strips everything
+  from the first `(` and keeps only tokens that look like atom names.
+- `--project` resumes never actually pointed `output_dir` at the project's
+  round directory — `scripts/run_pipeline.py` computed `round_id` and
+  logged it, but the value that reached `PipelineRunner` was still
+  `args.output_dir` (`None` unless given explicitly). Any `--start-from`
+  resume silently started a disconnected fresh `outputs/<slug>_<date>/`
+  tree and immediately failed to find the prior stage's handoff.
+- Same production-sizing-doesn't-survive-a-resume bug as the cluster path
+  above, independently rediscovered on the local foundry path — same fix.
+
+None of these four are one-off flukes specific to PD-L1; all are structural
+gaps that any future campaign would hit. The lesson underneath both halves
+of this session: the trial-comparison work from 08-20/08-21 measured design
+*quality* thoroughly (real iPTM/ipSAE distributions, chain-swap/hotspot-
+grounding guards) but never exercised full unattended multi-stage resumption
+or a genuine multi-day/multi-GPU scale-up — and that's exactly where seven
+of these bugs were hiding. Verified-against-real-data is the standing bar in
+this repo; this session's addition is that "verified" has to include
+*resuming a stopped process*, not just the first pass through.
+
+### Verification
+236 tests green throughout (added none new this session — every fix here
+was caught by, and verified against, live process runs and real cluster
+files, not new unit tests; worth backfilling regression tests for at least
+the production-sizing-survives-a-resume case and the atom-list cleanup,
+since both are the kind of thing that regresses silently).
+
+### Punch list
+1. Backfill regression tests for `_resolve_production_batches`,
+   `_clean_atom_list`, and the `iter_protenix_refolds` subdirectory layout —
+   all caught live, none guarded by a test yet.
+2. `_stage_binder_scoring` (the production-stage final ranking) still only
+   knows the local `FoundryPaths` shape — cluster-mode production would need
+   the same `cluster_cfg` threading `_score_campaign` already got for
+   calibration. Not yet needed (calibration-scale cluster runs only so far).
+3. Per-site cluster/production resume still has no CLI path — see the
+   `scripts/resume_cluster_calibration.py` note in CLAUDE.md.
+4. The design-analyst summary stage expects "liability" (developability /
+   cleavage-site) columns in `top_k.csv` that the foundry-track ranking
+   never produces — real prompt/rubric mismatch (inherited from the
+   BoltzGen track?) or a genuinely missing feature; undecided which.
+5. gem_vegf_a's cluster campaign: real full-metric scoring in progress as
+   of this writing (52,788 real refolds, two GPU tasks lost to hardware
+   faults) — verdict not yet known.
+
+## 2026-08-23 — Local-vs-cluster compute is now a decision, not a flag
+
+Everything up to this point required the operator to already know whether a
+campaign belonged on this workstation or on the cluster before calibration
+ever ran — `--compute local|cluster` picked the path for the *whole* binder
+track up front. That's backwards: the entire point of calibration is that
+nobody knows the real scale until the trial measures it, so the choice of
+where to run it should be made from that measurement, not guessed before it
+exists.
+
+### What changed
+
+- `src/campaign_calibration.choose_compute(res, *, max_local_hours=48.0,
+  n_gpus_cluster=8) -> ComputeChoice | None`: purely a TIME decision.
+  `res.pessimistic.est_gpu_hours` is already single-GPU wall-clock (the
+  `SEC_PER_*` constants `_cost()` uses are local-GPU-calibrated), so
+  `local_hours` is that value directly and `cluster_hours = local_hours /
+  n_gpus_cluster` — explicitly documented as rough, since Protenix on the
+  cluster and local RF3 time differently. Returns `None` for ITERATE/STOP —
+  there's nothing to place. `render_report()` grew an optional `compute`
+  param that appends a "Where to run it" section with both numbers and the
+  decision + reason, so `25_calibration.md` reads as a recommendation, not
+  just a verdict.
+- `PipelineRunner.__init__`'s `compute` default changed from `"local"` to
+  `"auto"` (still validates against `{"auto","local","cluster"}`), plus a new
+  `max_local_hours: float | None` param. `"auto"` only affects the
+  *production* stage — pilot and calibration always run locally regardless,
+  matching how small they're deliberately kept.
+- `_stage_calibration()` now calls `choose_compute()` right after `calibrate()`,
+  computes `_batches_for(res, cfg, n_gpus=1)` AND `n_gpus=cluster_cfg.n_gpus`
+  (both — not just whichever compute won), and persists all of it —
+  `n_batches_local`, `n_batches_cluster`, `compute_choice` — into
+  `calibration.json` alongside the existing verdict fields.
+- `_resolve_production_plan()` (replaces `_resolve_production_batches`)
+  returns `(n_batches, compute)` instead of just a count: in-memory `calib`
+  first, `calibration.json` on disk second (the fresh-resume path — see the
+  08-22/23 entry above for why that file has to be the source of truth, not
+  process memory), and only falls back to `--n-batches`/`"local"` when
+  neither exists. `_run_gpu_stage()` grew a `compute_override` param so B6's
+  call site can hand it the *resolved* compute for this one stage without
+  changing `self._compute` (which stays `"auto"` for the run's own record).
+- `config.yaml`: `design.foundry.max_local_hours: 48` (documents the
+  fallback the code already had), `design.cluster.n_gpus` bumped 6 → 8 to
+  match "assume max 8 GPUs available" — the gem_vegf_a campaign's 6 was that
+  week's availability, not a hard ceiling.
+- `scripts/run_pipeline.py`: `--compute` gained the `auto` choice as default;
+  new `--max-local-hours FLOAT` flag threaded straight through.
+
+### Verification
+
+15 new tests (236 → 252 passing): `TestChooseCompute` in
+`test_campaign_calibration.py` covers the local/cluster split at the
+threshold boundary (same result, thresholds either side of its own hours,
+must flip purely on the threshold — not two independently-tuned fixtures
+that happen to differ), the GPU-count division, and both `render_report`
+branches. `test_pipeline_stages.py` covers `_batches_for`'s cluster-vs-local
+division (a duck-typed `SimpleNamespace` stand-in for `CalibrationResult` —
+no need to run a real calibration to test the arithmetic) and
+`_resolve_production_plan`'s three paths (in-memory, disk resume, no
+calibration yet) including the case where the on-disk verdict is a stale
+ITERATE and must be ignored rather than misread as a stale SCALE_UP. This
+also closes punch-list item 1 from the previous entry for the
+production-sizing/compute-choice piece specifically; `_clean_atom_list` and
+the `iter_protenix_refolds` subdirectory layout are still unguarded.
+
+### Punch list (updated)
+1. ~~Backfill regression tests for `_resolve_production_batches`~~ — done
+   above (now `_resolve_production_plan` + `choose_compute`). Still open:
+   `_clean_atom_list`, `iter_protenix_refolds`'s subdirectory layout.
+2. `_stage_binder_scoring` still only knows the local `FoundryPaths` shape —
+   unchanged by this session, still needed before an `auto`-routed cluster
+   production run can be scored end-to-end by the same code path as local.
+3. Per-site cluster/production resume still has no CLI path — unchanged.
+4. The design-analyst "liability columns" prompt/rubric mismatch — unchanged,
+   still undecided whether it's a real gap or dead prompt language.
+
+## 2026-08-23 — A shared report design system, and the PPI track's first HTML report
+
+The binder track's `report.html` (08-22/23 entry) was good enough that the
+obvious next question was why the PPI track — the older, more-used
+track — still ends at a plain markdown file. Asked to bring the rest of the
+framework's summaries up to the same bar.
+
+### Scope decision
+
+Two things needed deciding before writing code: which track(s), and how the
+styling gets shared. Landed on PPI-track only (enzyme stays isolated,
+per the 08-20 merge decision) with a real shared component library rather
+than a copy-paste clone — the binder report's `shell.html`/`app.js` were
+~750 lines and almost none of the CSS was actually binder-specific once
+looked at closely.
+
+### The refactor
+
+`src/report_templates/_shared/{base.css,base.js}`: extracted the ENTIRE
+CSS custom-property/layout system out of the binder report's `shell.html`
+verbatim (palette, rail nav, hero, stat grid, blocks, prose, callouts,
+tables, viewer panel, charts, verdict banner, design cards, footer) — only
+two lines turned out to be genuinely binder-specific (`#chart-ipsae`/
+`#chart-funnel`/`#chart-scatter` height rules), and those stayed local to
+binder's own shell. `base.js` got the DOM utils (`el`/`fmt`/`pct`/`esc`),
+`renderRail`/`renderHero`/`renderFooter` (already generic given the same
+`REPORT.rail`/`REPORT.hero` shape both reports build), the histogram chart
+primitive, a generalized `renderBarRows` (binder's old `renderFunnel`,
+parametrized on plain `{label, pct, note}` rows instead of
+`REPORT.funnel`-specific fields), and — the biggest single extraction — the
+whole Mol* viewer harness (`createStructureExplorer`: structure loading,
+hotspot highlighting, water/ion hiding, viewer options) as a factory over
+callbacks instead of module-level state, so a second report can create its
+own instance without fighting over global mutable viewer/viewerReady/
+currentKey variables the original code had.
+
+Deliberately did NOT try to generalize design-card rendering or the
+structure-picker into shared helpers — those differ enough in content
+(binder shows hotspot engagement; PPI shows composite score + ipTM +
+interface PAE + hotspot SASA occlusion) that forcing a shared abstraction
+would have meant a callback-heavy generic function harder to read than the
+~30 lines duplicated per report. Matches the project's standing
+no-premature-abstraction bias.
+
+Python side got the same treatment: `src/report_common.py` holds
+`markdown_html`, `section_before_handoff`, `extract_citation_section`,
+`histogram`, `as_float`, and `ReportError` — moved out of
+`binder_report.py` (which now imports them under their old private names
+for zero call-site churn) and reused directly by the new `ppi_report.py`.
+
+### `src/ppi_report.py` + `src/report_templates/ppi_report/`
+
+Seven sections mirroring the PPI stage machine: pathway/target rationale
+(with the `choices_json` tier table — every alternative target the pathway
+stage weighed, not just the winner), prior art & tractability, structure &
+hotspots, design generation (BoltzGen spec + pilot/production stats,
+rendered as the stage's own prose rather than re-derived), a ranking
+section (iPTM + hotspot-SASA histograms, a first-failure drop-reason bar
+chart), top-K design cards with the same Mol* explorer, and the
+design-analyst's final verdict rendered in full with a GO/NO_GO banner
+parsed off its own "Executive verdict" markdown (no PIPELINE HANDOFF exists
+on that stage, unlike every earlier one — first free-text verdict
+extraction in either report, `_extract_verdict`).
+
+One real bug caught building this, same "verify against real data" pattern
+as the whole session: `_resolve_designs` initially re-derived the hard-gate
+funnel by re-running `design_ranking.filter_records` against **today's**
+`config.yaml` thresholds — against the real `outputs/e2e_cgas_sting` ENPP1
+run this produced "0/100 survivors, funnel dominated by hotspot_sasa" when
+the run's own frozen `05_ranking/filter_stats.txt` says 100/100 survived,
+no drops. Config thresholds had simply changed since that run executed.
+Fixed by parsing the frozen `filter_stats.txt` `design_ranking.
+write_ranking_outputs` wrote at run time instead of recomputing anything —
+the same "read what the stage actually produced, don't re-score it" rule
+`binder_report.py` already followed for `refold_scores.csv`, just not yet
+applied here. The gate *marker line* on the iPTM/SASA histograms still uses
+today's config (there's no per-run persisted threshold record for the PPI
+track, unlike the binder track's `calibration.json`) — documented in a
+code comment as a known, minor, cosmetic-only limitation.
+
+Verified against three real runs on disk with meaningfully different
+shapes: `outputs/e2e_cgas_sting` (full run, all 7 stages, 100/100 survivors,
+GO verdict), `outputs/e2e_mesothelioma` (full run, different target/PDB),
+and `outputs/stress_test_chunk3` (missing stages 0–3 entirely — pathway/
+literature/structure narratives all genuinely absent) — the last one is
+exactly the kind of partial-run genericity case a single fixture can't
+exercise, and confirmed the report degrades to empty sections rather than
+crashing. `outputs/epigenetics_wildcard` (no analysis output at all)
+correctly raises `ReportError` instead of a stack trace.
+
+Wired into `_run_binder_track`'s sibling — `run()`'s PPI branch — as a
+best-effort side effect after stage 5 (analysis) and again after stage 6
+(summary), exactly matching `_generate_binder_report`'s placement
+philosophy: generated at every natural stopping point, wrapped so a report
+bug can never fail a real run, never a gate. `scripts/generate_ppi_report.py`
+mirrors `scripts/generate_binder_report.py` for manual regeneration.
+
+### Verification
+268 tests green (252 → 268): 16 new in `tests/test_ppi_report.py`, same
+two-tier shape as `test_binder_report.py` — real-data end-to-end against
+`outputs/e2e_cgas_sting` (skipped if absent from the checkout), synthetic
+genericity fixtures (no analysis output yet → clean `ReportError`; analysis
+output with nothing upstream → degrades gracefully; a fixture with real
+drop reasons → funnel populates correctly), and pure-function unit tests
+for the three new text extractors (`_text_before`, `_extract_choices`,
+`_extract_verdict`, `_parse_filter_stats`). The binder report's own 22
+tests still pass unchanged after the shared-shell refactor — confirmed both
+by the test suite and by regenerating a real campaign report
+(`projects/trial_kras/...`) and diffing for leftover template placeholders.
+
+### Punch list
+1. PPI reports have no persisted per-run threshold record (unlike the
+   binder track's `calibration.json`), so the histogram gate-marker lines
+   reflect current `config.yaml`, not necessarily what the run was actually
+   scored against. Cosmetic only — the funnel/survivor counts themselves
+   are read from the run's own frozen `filter_stats.txt` and cannot drift.
+2. Enzyme track (separate branch) still has no HTML report — out of scope
+   per this session's scope decision, revisit if that branch matures past
+   "experimental".
+3. Carried over, unchanged: `_stage_binder_scoring`'s cluster-mode gap,
+   per-site cluster/production resume's missing CLI path, the
+   design-analyst "liability columns" prompt/rubric mismatch.
+
+## 2026-08-23 (later) — Gemini becomes the pipeline-wide default provider
+
+Mid-way through a fresh end-to-end binder-track run (IL7RA antagonist,
+`il7ra_e2e`), the live ledger made the case better than any synthetic
+example could: **both** `target_intel` and `interface` got refused by
+`claude-sonnet-5` (category `bio`) before falling through to Gemini per the
+documented `refusal_fallbacks` chain — the `interface` refusal alone
+burned **$1.10** for nothing (252,624 input tokens across a 7-call agentic
+tool-use loop, refused on the exact call where the model finally drafted
+the substantive hotspot-rationale content — calls #1–6 were pure tool
+orchestration with nothing for a classifier to catch). Gemini answered
+cleanly both times, at $0.0086 and $0.18 respectively.
+
+Asked to just make Gemini the default everywhere rather than keep paying
+for that first-call failure on every run. Changed:
+
+- `PipelineRunner.__init__`'s `provider` default: `"claude"` → `"gemini"`.
+- `_DEFAULT_MODELS["gemini"]` (the code-level fallback used when
+  `config.yaml` has no `models` block): `gemini-3.1-flash-lite-preview` →
+  `gemini-3.7-flash` — matches what the refusal chain was already falling
+  back to, just now as the *starting* model instead of a rescue.
+- `config.yaml`: `models.gemini.default` → `gemini-3.7-flash`; added
+  `models.gemini.refusal_fallbacks: ["claude-opus-5", "claude-haiku-4-5"]`
+  (mirrors `models.claude.refusal_fallbacks`, which still leads with Gemini
+  for the now-non-default `--provider claude` path) and a `gemini-3.7-flash`
+  entry in the `pricing` block (was already priced as a code-level fallback
+  in `token_budget.py`, just not visible in config).
+- `scripts/run_pipeline.py --provider` and `scripts/run_skill.py --model`:
+  both default to `gemini` now. `--provider claude` / `--model claude`
+  still select the Claude path in full — nothing about the fallback
+  mechanics changed, only which provider a run starts on.
+
+Left untouched, deliberately: `curation.provider`/`curation.model` (a
+separate pipeline — literature fingerprint extraction, not design), the
+explicit `provider="claude"` pins in `scripts/test_e2e*.py` /
+`stress_test_chunk3.py` (deliberate regression coverage for the Claude
+path specifically), and `web/backend/tasks.py`'s two hardcoded
+`claude-sonnet-5` fallbacks (a different deployment surface — BYOK web
+platform — not asked about, flagged for a future pass if wanted).
+
+### Verification
+269 tests green (268 → 269): fixed three tests that had baked in "claude is
+the default provider" as an assumption rather than an explicit choice —
+`test_refusal_is_retried_on_the_fallback_model`,
+`test_a_stage_can_be_routed_to_another_provider`, and
+`test_gemini_is_the_immediate_fallback_no_other_claude_model_is_tried` all
+now construct their `PipelineRunner` with `provider="claude"` explicitly,
+since they're testing Claude-specific refusal-fallback mechanics that still
+work identically, just aren't the default path anymore. Same fix for the
+`runner` fixture (backs two more Claude-default-resolution tests) and
+`test_extended_thinking_upgrades_off_haiku` (extended thinking is a
+Claude-only mechanic, gated on `provider == "claude"` in `_resolve_stage`).
+Added `test_pipeline_defaults_to_gemini` as direct regression coverage for
+the new default itself. `test_falls_back_to_the_code_table_without_a_models_block`
+needed no `provider=` change — it was already testing "no explicit provider",
+so it now correctly exercises the gemini fallback instead of the claude one,
+which is a cleaner test of its original intent than before.

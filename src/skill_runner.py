@@ -27,62 +27,19 @@ load_dotenv(_ROOT / ".env")
 sys.path.insert(0, str(_ROOT))
 
 
+from src._path_resolve import resolve as _resolve_path
+
+
 def _resolve(file_path: str) -> str:
-    """Resolve a file path against the project root, with recovery for
-    model-emitted absolute paths that point outside the repo.
+    """Resolve a file path against the project root (`_ROOT`).
 
-    Resolution order:
-    1. If the path exists as-is (relative or absolute), return it.
-    2. If it's absolute but doesn't exist, walk the path components left-
-       to-right and try `_ROOT / <suffix>` for each successive tail. This
-       recovers `/app/data/structures/x.cif`, `/workspace/code/data/x.cif`,
-       and root-relative `/data/x.cif` (Linux-priors the model emits even
-       when the prompt provided a relative path).
-    3. As a last resort, try the basename under `data/structures/` (the
-       canonical structures directory) and under `_ROOT`.
-    4. If nothing matches, fall back to the original `_ROOT / stripped`
-       behaviour so the caller sees a consistent error path.
-
-    The leading-slash strip in the relative branch is also critical on
-    Windows: pathlib's `/` operator interprets a slash-prefixed path as
-    drive-relative, producing `C:\\data\\...` instead of `_ROOT\\data\\...`.
+    Thin wrapper around `src._path_resolve.resolve` — see that function's
+    docstring for the full resolution order (existing-path fast path with
+    root confinement, absolute-path tail-walk recovery, canonical-directory
+    fallback, final rejoin-under-root). Kept as a local wrapper so call
+    sites in this module don't need to thread `_ROOT` through everywhere.
     """
-    p = Path(file_path)
-    if p.exists():
-        return str(p)
-
-    is_real_absolute = p.is_absolute() and (sys.platform != "win32" or bool(p.drive))
-    if is_real_absolute:
-        recovered = _recover_under_root(p)
-        if recovered is not None:
-            return str(recovered)
-        # Fall through to the strip-and-rejoin branch — same effect as
-        # the relative case, so the caller sees a path under _ROOT in
-        # the error message rather than a wholly external absolute path.
-    return str(_ROOT / Path(file_path.lstrip("/\\")))
-
-
-def _recover_under_root(p: Path) -> "Path | None":
-    """Find an existing file under `_ROOT` whose tail matches `p`.
-
-    Strategy: drop leading path components one at a time and test
-    whether the remaining suffix exists under `_ROOT`. Then try the
-    basename under common canonical directories. Returns `None` if no
-    clean match is found.
-    """
-    parts = list(p.parts)
-    # Drop the root marker ("/", "\\", or "C:\\") so we can join cleanly.
-    if parts and (parts[0] in ("/", "\\") or parts[0].endswith(":\\") or parts[0].endswith(":/")):
-        parts = parts[1:]
-    for i in range(len(parts)):
-        candidate = _ROOT.joinpath(*parts[i:])
-        if candidate.exists():
-            return candidate
-    basename = p.name
-    for canonical in (_ROOT / "data" / "structures" / basename, _ROOT / basename):
-        if canonical.exists():
-            return canonical
-    return None
+    return _resolve_path(file_path, root=_ROOT)
 
 
 # ---------------------------------------------------------------------------

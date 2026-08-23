@@ -15,6 +15,13 @@ build/
 web/runs/
 outputs/
 tmp/
+logs/
+projects/
+
+# Ad hoc structure/test-output debris that tends to land at repo root during
+# manual testing (real outputs belong under data/, outputs/, or projects/)
+/*.cif
+/*.cyjs
 
 # SQLite DB (runtime state, not source)
 web/web.db

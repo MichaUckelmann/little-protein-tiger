@@ -58,7 +58,7 @@ from src.token_budget import BudgetExceeded, TokenLedger, Usage, load_pricing
 
 _DEFAULT_MODELS = {
     "claude": "claude-sonnet-5",
-    "gemini": "gemini-3.1-flash-lite-preview",
+    "gemini": "gemini-3.7-flash",
 }
 
 # Haiku cannot do extended thinking; stages that ask for it get upgraded here.
@@ -219,7 +219,14 @@ class PipelineRunner:
     config : dict
         Loaded config.yaml content.
     provider : str
-        LLM provider — "claude" or "gemini".
+        LLM provider — "claude" or "gemini". Default "gemini"
+        (gemini-3.7-flash): ~4x cheaper input than claude-sonnet-5, and
+        this pipeline's own ledger shows it reliably answering the same
+        target-intel/interface prompts claude-sonnet-5 refuses (category
+        "bio") — see `models.claude.refusal_fallbacks` in config.yaml,
+        which leads with Gemini for exactly that reason. Gemini can still
+        decline in principle; `models.gemini.refusal_fallbacks` covers
+        that case by falling through to Claude.
     model_id : str | None
         Override model ID; defaults to provider default.
     output_dir : Path | None
@@ -236,7 +243,7 @@ class PipelineRunner:
     def __init__(
         self,
         config: dict,
-        provider: str = "claude",
+        provider: str = "gemini",
         model_id: str | None = None,
         output_dir: Path | None = None,
         max_iter: int = 30,
@@ -252,6 +259,8 @@ class PipelineRunner:
         budget_mode: str = "hard",
         detach: bool = False,
         n_batches: int | None = None,
+        compute: str = "auto",
+        max_local_hours: float | None = None,
         trial_sites: int = 1,
         trial_backbones: int = 300,
         escalate_to: int | None = 1000,
@@ -301,6 +310,24 @@ class PipelineRunner:
         # optional override of the RFD3 batch count.
         self._detach = detach
         self._n_batches = n_batches
+        # "auto" (default) | "local" (foundry on this workstation's GPU) |
+        # "cluster" (src/cluster_runner.py: LPT stages inputs + a launch
+        # script onto shared storage, a human submits, LPT reads results back
+        # on resume — this machine has no SLURM login-node access).
+        # "auto" only affects the *production* stage: calibration's estimated
+        # single-GPU wall-clock is compared against `max_local_hours` and the
+        # decision (local vs. cluster) is persisted into calibration.json so
+        # it survives a resume in a fresh process. Every other GPU stage
+        # (pilot, calibration itself) always runs locally regardless of this
+        # setting — they're deliberately small.
+        if compute not in {"auto", "local", "cluster"}:
+            raise ValueError(
+                f"Invalid compute={compute!r}; expected 'auto', 'local', or 'cluster'.")
+        self._compute = compute
+        # Hours threshold for choose_compute()'s local-vs-cluster call at the
+        # calibration stage. None => fall back to
+        # config.yaml design.foundry.max_local_hours (default 48.0).
+        self._max_local_hours = max_local_hours
         # Site trials: how many epitopes to compare, at what size, and where to
         # escalate when a trial is too small to measure a rate.
         self._trial_sites = max(1, int(trial_sites))
@@ -589,6 +616,7 @@ class PipelineRunner:
             # ── Stage 5: analysis (deterministic; no LLM) ────────────────────
             if start_idx <= 5:
                 self._stage_analysis(run_dir, result)
+                self._generate_ppi_report(run_dir)
 
             # ── Stage 6: summary (terminal LLM stage) ────────────────────────
             # Pass the literature handoff so _stage_summary can read modality /
@@ -596,6 +624,7 @@ class PipelineRunner:
             # falls back to parsing 03_design_report.md if needed.
             if start_idx <= 6:
                 self._stage_summary(lit_handoff, run_dir, result)
+                self._generate_ppi_report(run_dir)
 
         except PipelineBlockedError:
             raise
@@ -847,11 +876,26 @@ class PipelineRunner:
                 "--pdb, or check the candidate table for a usable complex.")
         self._ensure_structure(pdb)
 
-        q = intel.get("structure_query") or (
-            f"Analyse the interface between {intel.get('target_gene')} and "
-            f"{intel.get('partner_name')} in {pdb} and select model-ready "
-            f"hotspots for a {intel.get('modality', 'mini_protein')} binder "
+        # The concrete PDB id/chains are ALWAYS stated up front, even when
+        # target-intel supplied its own structure_query — that field is a
+        # freeform analytical goal ("map the front β-sheet epitope..."), not a
+        # grounding statement, and has no reason to mention the accession at
+        # all. Leaving it to imply the structure risked exactly what it did on
+        # PD-L1/7CZD twice in a row: the interface skill, given only a
+        # description and no stated accession, decided no structure existed
+        # and asked for one instead of running tool_analyze_interface on the
+        # file _ensure_structure had already resolved right above.
+        goal = intel.get("structure_query") or (
+            f"select model-ready hotspots for a "
+            f"{intel.get('modality', 'mini_protein')} binder "
             f"({intel.get('design_intent', 'disrupt')} mode).")
+        q = (
+            f"Structure: PDB {pdb} (already downloaded to data/structures/), "
+            f"{intel.get('target_gene')} = chain {intel.get('target_chain', '?')}, "
+            f"{intel.get('partner_name', 'partner')} = chain "
+            f"{intel.get('partner_chain', '?')}. Analyse this interface directly "
+            f"with the structure tools — do not search for a different "
+            f"structure or ask for one. Goal: {goal}")
         out = dirs["binder"] / self._BINDER_STAGE_FILES["interface"]
         handoff = self._run_stage("complex-structure-analysis", q, [], out,
                                   stage="interface")
@@ -1236,16 +1280,107 @@ class PipelineRunner:
 
         return FoundryPaths.under(dirs["campaign"] / mode)
 
+    def _run_cluster_stage(self, mode: str, spec_path: Path, trim,
+                           dirs: dict[str, Path], result: PipelineResult, *,
+                           n_batches: int | None = None) -> dict:
+        """
+        Cluster-compute counterpart of `_run_gpu_stage`.
+
+        Always pauses: this machine has no SLURM login-node access, so a
+        human must run the generated launch script. Re-entering this stage
+        (--start-from <mode> after that) checks whether the results already
+        landed on shared storage; if not, it pauses again with the same
+        instructions rather than re-staging (idempotent, like foundry's
+        `resume()` — a second `stage_campaign()` call would just overwrite an
+        already-submitted run's inputs with identical content, which is
+        harmless, but re-scoring an in-progress run is not what "resume"
+        should mean here).
+        """
+        from src.cluster_runner import (
+            ClusterConfig, collect_campaign, is_complete, refold_counts,
+            stage_campaign,
+        )
+        from src.foundry_spec import parse_contig
+
+        ccfg = ClusterConfig.from_cfg(self.config)
+        _, spans = parse_contig(trim.contig)
+        target_chain = spans[0][0]
+        slug = dirs["binder"].parent.name or "campaign"
+
+        paths, plan = stage_campaign(
+            spec_path, trim, dirs, ccfg, mode=mode, slug=slug,
+            target_chain=target_chain, n_batches=n_batches)
+
+        out = dirs["binder"] / self._BINDER_STAGE_FILES[mode]
+        if not is_complete(paths, plan, ccfg.refold_backend):
+            counts = refold_counts(paths, ccfg.refold_backend)
+            self._binder_checkpoint(
+                f"{mode}_cluster_pending", mode, "job",
+                {"run_dir": str(paths.run_dir), "launch_script": str(paths.launch_script),
+                 "expected_rf3": plan.expected_rf3, **counts})
+            self._write_binder_report(
+                out, f"{mode.title()} campaign staged for the cluster",
+                f"Launch script: `{paths.launch_script}`\n\n"
+                f"{ccfg.submit_instructions}\n\n"
+                f"    bash {paths.launch_script.relative_to(ccfg.pipeline_root)}\n\n"
+                f"Expecting {plan.expected_rf3:,} refolds under "
+                f"`{paths.refold_dir}` (currently {counts['n_refolds']:,}). "
+                f"Resume with the command below once the SLURM jobs finish.",
+                {"run_dir": str(paths.run_dir), "resume_stage": mode})
+            self._record_stage(mode, "awaiting_user", out, stage=mode)
+            resume_cmd = (
+                f"python scripts/resume_cluster_calibration.py "
+                f"--project {self._project.slug if self._project else '<slug>'} "
+                f"--site {slug} --n-batches {plan.n_batches} --n-gpus {plan.n_gpus}"
+                if mode == "calibration" else
+                # No standalone resume script for other modes yet — this is
+                # the one the current workflow needs; ask if production ever
+                # needs the same treatment.
+                f"--workflow binder --start-from {mode}  # NOTE: only works "
+                f"for a top-level (non-site-trial) campaign"
+            )
+            raise PipelinePausedError(f"{mode}_cluster_pending", {
+                "launch_script": str(paths.launch_script),
+                "submit_instructions": ccfg.submit_instructions,
+                "expected_rf3": plan.expected_rf3,
+                "progress": counts,
+                "resume": resume_cmd,
+            })
+
+        self._write_binder_report(
+            out, f"{mode.title()} campaign (cluster)",
+            f"{plan.expected_rf3:,} refolds complete under `{paths.refold_dir}`.",
+            {"run_dir": str(paths.run_dir)})
+        self._record_stage(mode, "complete", out, stage=mode)
+        result.stage_files[mode] = out
+        result.stages_completed.append(mode)
+        return {"paths": paths, "plan": plan, "cluster": True, "cluster_cfg": ccfg}
+
     def _run_gpu_stage(self, mode: str, spec_path: Path, trim, dirs: dict[str, Path],
                        result: PipelineResult, *, attach: bool,
-                       n_batches: int | None = None) -> dict:
+                       n_batches: int | None = None,
+                       compute_override: str | None = None) -> dict:
         """
         Launch (or re-attach to) one foundry stage and optionally wait for it.
+
+        `compute_override` (falling back to `self._compute`) `== "cluster"`
+        dispatches to `_run_cluster_stage` instead — a completely different
+        compute path (stage + human-submits + resume, never a local
+        subprocess), but the same call shape so callers (`_stage_calibration`
+        etc.) don't need to know which one ran. The override lets a single run
+        mix compute per stage — e.g. `self._compute == "auto"` with
+        calibration deciding production should go to the cluster while pilot
+        and calibration itself always run locally.
 
         Detached by default: RF3 alone runs for days at production scale, and a
         blocking call inside a Celery task would hit the visibility timeout and
         be redelivered to a second worker — two campaigns racing one GPU.
         """
+        effective_compute = compute_override or self._compute
+        if effective_compute == "cluster":
+            return self._run_cluster_stage(mode, spec_path, trim, dirs, result,
+                                           n_batches=n_batches)
+
         from src.foundry_runner import (
             collect, plan_campaign, prefilter_rate_observed, progress,
             render_progress, resume, run_design, wait_for_campaign,
@@ -1301,10 +1436,32 @@ class PipelineRunner:
         return {"paths": paths, "plan": plan, "summary": summary}
 
     def _score_campaign(self, paths, dirs: dict[str, Path], out_dir: Path,
-                        limit: int = 0):
-        """Score every refold of one campaign; returns the scored rows."""
+                        limit: int = 0, cluster_cfg=None):
+        """
+        Score every refold of one campaign; returns the scored rows.
+
+        `cluster_cfg` (from a cluster `_run_gpu_stage` result's
+        `run["cluster_cfg"]`) switches to `src.cluster_runner.collect_campaign`
+        — Protenix's differently-shaped output, scored with
+        `binder_metrics.score_campaign_protenix` — instead of the local RF3
+        path. Same FIELDS, same `refold_scores.csv` shape either way, so every
+        downstream consumer (ranking, calibration) is unaware which ran.
+        """
+        from src.binder_metrics import write_scores
+
+        if cluster_cfg is not None:
+            from src.cluster_runner import collect_campaign
+
+            hotspots = self._cluster_hotspots(paths)
+            rows = collect_campaign(
+                paths, dirs, hotspots, dirs["binder"], cluster_cfg,
+                limit=limit, workers=max(1, (os.cpu_count() or 4) - 2))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            write_scores(rows, out_dir / "refold_scores.csv")
+            return rows
+
         from src.binder_metrics import (
-            ScoreConfig, hotspots_from_rfd3, score_campaign, write_scores,
+            ScoreConfig, hotspots_from_rfd3, score_campaign,
         )
         from src.foundry_runner import find_design_sidecar
 
@@ -1328,6 +1485,27 @@ class PipelineRunner:
         write_scores(rows, out_dir / "refold_scores.csv")
         return rows
 
+    def _cluster_hotspots(self, paths) -> list[int]:
+        """
+        Hotspot residue ids (OUTPUT/RFD3 numbering) for a cluster campaign.
+
+        The cluster path's RFD3 stage writes the same design sidecars
+        (`*_model_*.json`) as the local foundry path — same binary, same
+        checkpoint — so the identical diffused_index_map remap applies, but
+        under a subdirectory named `diffuse`, not `rfd3` (confirmed against
+        a real cluster campaign; the two pipelines share the binary but not
+        this naming). Reads the first sidecar found under any completed run,
+        since the map is per-target, not per-design.
+        """
+        from src.binder_metrics import hotspots_from_rfd3
+
+        sidecars = sorted(paths.refold_dir.glob("run_*/diffuse/*_model_*.json"))
+        if not sidecars:
+            raise PipelineError(
+                f"no RFD3 design sidecar found under {paths.refold_dir} yet — "
+                f"the cluster's diffuse stage likely hasn't produced output.")
+        return hotspots_from_rfd3(sidecars[0], "B")
+
     def _stage_calibration(self, spec_path: Path, trim, dirs: dict[str, Path],
                            result: PipelineResult, *, attach: bool,
                            n_batches: int | None = None) -> dict:
@@ -1338,13 +1516,15 @@ class PipelineRunner:
         is how you spend four days to learn the target was wrong.
         """
         from src.binder_ranking import EXCELLENT_IPSAE_MIN
-        from src.campaign_calibration import calibrate, render_report
+        from src.campaign_calibration import calibrate, choose_compute, render_report
+        from src.cluster_runner import ClusterConfig
         from src.foundry_runner import prefilter_rate_observed
 
         run = self._run_gpu_stage("calibration", spec_path, trim, dirs, result,
                                   attach=attach, n_batches=n_batches)
         paths, plan = run["paths"], run["plan"]
-        rows = self._score_campaign(paths, dirs, dirs["calibration"])
+        rows = self._score_campaign(paths, dirs, dirs["calibration"],
+                                    cluster_cfg=run.get("cluster_cfg"))
 
         cfg = self._binder_cfg()
         rcfg = cfg.get("binder_ranking") or {}
@@ -1364,15 +1544,43 @@ class PipelineRunner:
             excellence_bar=(float(bar) if bar is not None else None),
             thresholds=rcfg.get("thresholds"),
             n_seq=int((fcfg.get("mpnn") or {}).get("n_seq", 4)),
-            prefilter_rate=prefilter_rate_observed(paths) or plan.prefilter_rate,
+            prefilter_rate=(plan.prefilter_rate if run.get("cluster_cfg")
+                           else (prefilter_rate_observed(paths) or plan.prefilter_rate)),
             disk_budget_gb=float(fcfg.get("disk_budget_gb", 120)),
             max_campaign_days=float(fcfg.get("max_campaign_days", 5)),
             adaptive_bar=bool(rcfg.get("adaptive_bar", True)),
         )
+        # Local-vs-cluster: purely a TIME decision against this workstation's
+        # one GPU. `design.foundry.max_local_hours` (CLI: --max-local-hours)
+        # is the threshold; design.cluster.n_gpus is the cluster size assumed
+        # available (default 8). None when the verdict isn't a scale-up.
+        cluster_cfg_for_choice = ClusterConfig.from_cfg(self.config)
+        compute_choice = choose_compute(
+            res,
+            max_local_hours=(self._max_local_hours
+                             if self._max_local_hours is not None
+                             else float(fcfg.get("max_local_hours", 48.0))),
+            n_gpus_cluster=cluster_cfg_for_choice.n_gpus,
+        )
+        if compute_choice is not None:
+            logger.info(
+                f"compute choice: {compute_choice.compute} "
+                f"(local ~{compute_choice.local_hours:,.1f} h, "
+                f"cluster ~{compute_choice.cluster_hours:,.1f} h on "
+                f"{compute_choice.n_gpus_cluster} GPUs)")
+
         out = dirs["binder"] / self._BINDER_STAGE_FILES["calibration"]
-        out.write_text(render_report(res) + "\n", encoding="utf-8")
+        out.write_text(render_report(res, compute_choice) + "\n", encoding="utf-8")
+        n_batches_local = self._batches_for(res, cfg, n_gpus=1)
+        n_batches_cluster = self._batches_for(res, cfg, n_gpus=cluster_cfg_for_choice.n_gpus)
+        persisted = {
+            **res.as_dict(),
+            "n_batches_local": n_batches_local,
+            "n_batches_cluster": n_batches_cluster,
+            "compute_choice": compute_choice.as_dict() if compute_choice else None,
+        }
         (dirs["calibration"] / "calibration.json").write_text(
-            json.dumps(res.as_dict(), indent=2), encoding="utf-8")
+            json.dumps(persisted, indent=2), encoding="utf-8")
 
         # Always a checkpoint: how much GPU to spend is the user's call.
         self._binder_checkpoint("calibration_verdict", "calibration", "gate", {
@@ -1381,23 +1589,84 @@ class PipelineRunner:
             "est_gpu_hours": res.pessimistic.est_gpu_hours,
             "est_disk_gb": res.pessimistic.est_disk_gb,
             "suggested_bar": res.suggested_bar,
+            "compute_choice": compute_choice.as_dict() if compute_choice else None,
         })
         self._record_stage("calibration", "complete", out, stage="calibration")
         result.stage_files["calibration"] = out
         if "calibration" not in result.stages_completed:
             result.stages_completed.append("calibration")
         logger.info(f"calibration verdict: {res.verdict} — {res.verdict_reason}")
-        return {"result": res, "n_batches": self._batches_for(res, cfg)}
+        compute = compute_choice.compute if compute_choice else "local"
+        n_batches_chosen = n_batches_cluster if compute == "cluster" else n_batches_local
+        return {"result": res, "n_batches": n_batches_chosen, "compute": compute,
+               "n_batches_local": n_batches_local, "n_batches_cluster": n_batches_cluster}
 
     @staticmethod
-    def _batches_for(res, cfg: dict) -> int | None:
-        """Production batch count implied by the calibration, if any."""
+    def _batches_for(res, cfg: dict, *, n_gpus: int = 1) -> int | None:
+        """
+        Production batch count implied by the calibration, if any.
+
+        `n_gpus=1` (default) is the local single-GPU sizing: `n_batches` is a
+        campaign TOTAL there. `n_gpus>1` sizes for the cluster path instead,
+        where the underlying pipeline's own `NB` knob runs independently on
+        EVERY GPU array task (`NARRAY x NB x DBS = total designs`, that
+        pipeline's own diagnostic line) — dividing the full pessimistic
+        target by n_gpus here gives the per-GPU count it actually expects.
+        Getting this backwards once undercounted a real campaign by exactly
+        `n_gpus` (see CLAUDE.md's cluster section).
+        """
         fcfg = cfg.get("foundry") or {}
         dbs = int((fcfg.get("rfd3") or {}).get("diffusion_batch_size", 4))
         designs = res.pessimistic.required_backbones
         if res.verdict not in ("SCALE_UP", "SCALE_UP_PARTIAL") or not designs:
             return None
-        return max(1, int(designs / max(dbs, 1)))
+        return max(1, int(designs / max(dbs, 1) / max(n_gpus, 1)))
+
+    def _resolve_production_plan(self, calib: dict | None, dirs: dict[str, Path],
+                                  n_batches: int | None) -> tuple[int | None, str]:
+        """
+        (n_batches, compute) for the production stage, surviving a resume.
+
+        `calib`'s fields only exist in the SAME process that ran calibration
+        — resuming with `--start-from production` in a fresh process (the
+        whole point of `--stop-after calibration`, and of any multi-day
+        resume) starts with `calib is None`, and production would silently
+        fall back to config.yaml's raw default instead of what the trial
+        actually measured AND which compute path it was sized for (observed
+        once on real PD-L1 data: an 18 GPU-h / 15 GB pessimistic-bound
+        recommendation silently became an 87 GPU-h local run).
+        `calibration.json` (written by `_stage_calibration`, next to the
+        report) is the on-disk record of both `n_batches_{local,cluster}`
+        and the compute decision — reload it rather than trusting values
+        that only lived in memory.
+        """
+        default_compute = self._compute if self._compute != "auto" else "local"
+        if calib:
+            compute = calib.get("compute", default_compute)
+            got = calib.get(f"n_batches_{compute}") or calib.get("n_batches")
+            if got:
+                return got, compute
+        path = dirs["calibration"] / "calibration.json"
+        if not path.exists():
+            return n_batches, default_compute
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            verdict = data.get("verdict")
+            if verdict not in ("SCALE_UP", "SCALE_UP_PARTIAL"):
+                return n_batches, default_compute
+            cc = data.get("compute_choice") or {}
+            compute = cc.get("compute", default_compute)
+            resolved = data.get(f"n_batches_{compute}")
+            if not resolved:
+                return n_batches, compute
+            logger.info(
+                f"production plan recovered from {path} (fresh resume, no "
+                f"in-memory calibration result): compute={compute} "
+                f"n_batches={resolved}")
+            return resolved, compute
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.warning(f"could not recover production plan from {path}: {exc}")
+            return n_batches, default_compute
 
     def _stage_binder_scoring(self, dirs: dict[str, Path],
                               result: PipelineResult) -> dict:
@@ -1779,6 +2048,29 @@ class PipelineRunner:
         logger.info(f"site comparison -> {out}")
         return out
 
+    def _generate_ppi_report(self, run_dir: Path) -> Path | None:
+        """Best-effort illustrated HTML report for one PPI-track run.
+
+        Deterministic (no LLM, no GPU) — see src/ppi_report.py. Called at
+        every natural stopping point in the PPI track (after analysis, and
+        after the final summary) so a report is always available for
+        whatever data actually exists, without gating the run on it: report
+        generation is a side effect of a completed stage, never a stage of
+        its own, so a bug here must never fail — or even pause — a real run.
+        """
+        from src.ppi_report import ReportError, build_report
+
+        try:
+            out = build_report(run_dir, cfg=self.config)
+        except ReportError as exc:
+            logger.info(f"run report not generated yet for {run_dir}: {exc}")
+            return None
+        except Exception as exc:  # noqa: BLE001 - reporting must never fail the run
+            logger.warning(f"run report generation failed for {run_dir}: {exc}")
+            return None
+        logger.info(f"run report -> {out}")
+        return out
+
     def _generate_binder_report(self, binder_dir: Path) -> Path | None:
         """Best-effort illustrated HTML report for one binder run directory.
 
@@ -1949,19 +2241,22 @@ class PipelineRunner:
                     self._stage_binder_summary(scored["top_k"], intel, dirs, result)
                     self._generate_binder_report(dirs["binder"])
                     return result
-                if not auto_mode:
+                if not auto_mode or self._stop_after == "calibration":
                     raise PipelinePausedError("calibration_verdict", {
                         "verdict": verdict,
                         "reason": calib["result"].verdict_reason,
                         "est_gpu_hours": calib["result"].pessimistic.est_gpu_hours,
                         "est_disk_gb": calib["result"].pessimistic.est_disk_gb,
+                        "resume": "--start-from production",
                     })
 
             # ── B6: production, sized by the calibration ────────────────────
             if start_idx <= 6:
+                prod_n_batches, prod_compute = self._resolve_production_plan(
+                    calib, dirs, n_batches)
                 self._run_gpu_stage(
                     "production", spec_path, trim, dirs, result, attach=attach,
-                    n_batches=(calib or {}).get("n_batches") or n_batches)
+                    n_batches=prod_n_batches, compute_override=prod_compute)
 
             # ── B7: score + rank ────────────────────────────────────────────
             if start_idx <= 7:

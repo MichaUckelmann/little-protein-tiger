@@ -12,4 +12,7 @@ lancedb>=0.20
 sentence-transformers>=3.0
 fastmcp>=2.0
 networkx>=3.0
+gemmi>=0.7
+biopython>=1.85
+biotite>=1.7.1
 markdown>=3.6

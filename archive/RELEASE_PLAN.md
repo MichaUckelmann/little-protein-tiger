@@ -1,3 +1,9 @@
+> **ARCHIVED — OUTDATED (2026-08-23).** This plan assumed a community-hosted
+> web platform (Hetzner VPS, GitHub OAuth, public corpus contribution flow,
+> etc.). Current direction: no hosted frontend for the foreseeable future —
+> the project is CLI- and coding-agent-driven. Kept for historical context
+> only; do not treat anything below as current planning.
+
 # Open-Science Release Plan — Corpus + Expert Skills
 
 Reference document for turning the literature-corpus pipeline and corpus-explorer

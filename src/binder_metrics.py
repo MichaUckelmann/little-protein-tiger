@@ -54,30 +54,46 @@ IPSAE_VARIANT = "d0res_max_pae10"
 # Structure IO
 # ----------------------------------------------------------------------
 
-def read_structure(path: Path):
+def read_structure(path: Path, plddt_scale: float = 1.0):
     """
-    Parse a CIF (optionally .gz) and drop NaN-coordinate atoms.
+    Parse a CIF (optionally .gz) or PDB and drop NaN-coordinate atoms.
 
     MPNN writes terminal OXT atoms it never placed as NaN; left in, they poison
     every distance and superposition downstream.
+
+    `plddt_scale` normalises the B-factor column to RF3's 0-1 convention at the
+    source, so every downstream consumer (mean_plddt, thresholds calibrated on
+    0-1 values) needs no per-backend awareness. RF3 already writes 0-1
+    (scale=1.0, a no-op); Protenix writes 0-100 (scale=100.0).
     """
     import biotite.structure as struc  # noqa: F401  (needed for the array API)
-    from biotite.structure.io.pdbx import CIFFile, get_structure
 
     path = Path(path)
-    if path.suffix == ".gz":
-        with gzip.open(path, "rt") as fh:
-            cif = CIFFile.read(fh)
+    if path.suffix == ".pdb":
+        from biotite.structure.io.pdb import PDBFile, get_structure as pdb_get_structure
+        pdb = PDBFile.read(str(path))
+        try:
+            a = pdb_get_structure(pdb, model=1, extra_fields=["b_factor"])
+        except Exception:
+            a = pdb_get_structure(pdb, model=1)
     else:
-        cif = CIFFile.read(path)
-    # b_factor is not a default annotation, and RF3 stores per-atom pLDDT there.
-    # Fall back gracefully for inputs that carry no B-factor column at all
-    # (RFD3 design CIFs) so geometry-only scoring still works.
-    try:
-        a = get_structure(cif, model=1, extra_fields=["b_factor"])
-    except Exception:
-        a = get_structure(cif, model=1)
-    return a[~np.isnan(a.coord).any(axis=1)]
+        from biotite.structure.io.pdbx import CIFFile, get_structure
+        if path.suffix == ".gz":
+            with gzip.open(path, "rt") as fh:
+                cif = CIFFile.read(fh)
+        else:
+            cif = CIFFile.read(path)
+        # b_factor is not a default annotation, and RF3 stores per-atom pLDDT
+        # there. Fall back gracefully for inputs with no B-factor column at all
+        # (RFD3 design CIFs) so geometry-only scoring still works.
+        try:
+            a = get_structure(cif, model=1, extra_fields=["b_factor"])
+        except Exception:
+            a = get_structure(cif, model=1)
+    a = a[~np.isnan(a.coord).any(axis=1)]
+    if plddt_scale != 1.0 and "b_factor" in a.get_annotation_categories():
+        a.b_factor = a.b_factor / plddt_scale
+    return a
 
 
 def ca(atoms, chain: str):
@@ -338,6 +354,37 @@ def ipsae_from_confidences(
     )
 
 
+def ipsae_from_pae_matrix(
+    pae: np.ndarray,
+    n_binder: int,
+    binder_chain: str = "A",
+    target_chain: str = "B",
+    pae_cutoff: float = IPSAE_PAE_CUTOFF,
+) -> IpsaeResult | None:
+    """
+    ipSAE from a plain N x N PAE matrix plus a chain-boundary token count.
+
+    Same math as :func:`ipsae_from_confidences` (RF3's `<id>_confidences.json`,
+    which instead carries per-token chain labels) — built for cluster-path
+    backends (e.g. Protenix's `<id>_pae.npy`) that write the PAE as a bare
+    array with no per-token metadata. `n_binder` is the binder's token count;
+    tokens [0, n_binder) are assumed chain A (binder), [n_binder, N) chain B
+    (target) — the convention every backend in the cluster pipeline's
+    `build_fold_yaml.py` uses (binder listed first). Delegates to
+    `ipsae_from_confidences` by synthesising the token_chain_ids it expects,
+    so the two stay identical by construction rather than by copied logic.
+    """
+    pae = np.asarray(pae, dtype=float)
+    if pae.ndim != 2 or pae.shape[0] != pae.shape[1] or not (0 < n_binder < pae.shape[0]):
+        return None
+    n = pae.shape[0]
+    chain_ids = [binder_chain] * n_binder + [target_chain] * (n - n_binder)
+    return ipsae_from_confidences(
+        {"pae": pae, "token_chain_ids": chain_ids},
+        binder_chain, target_chain, pae_cutoff,
+    )
+
+
 # ----------------------------------------------------------------------
 # Hotspot remapping
 # ----------------------------------------------------------------------
@@ -455,8 +502,17 @@ def score_one(
     cfg: ScoreConfig = ScoreConfig(),
     conf: dict | None = None,
     sidecar: dict | None = None,
+    plddt_scale: float = 1.0,
 ) -> dict:
-    """Score one refold. Raises on unreadable structures; the caller records it."""
+    """
+    Score one refold. Raises on unreadable structures; the caller records it.
+
+    `plddt_scale` is the only backend-specific knob: RF3 (default 1.0, B-factor
+    already 0-1) vs Protenix (100.0, B-factor is 0-100). Everything else here —
+    RMSD, TM-score, epitope/hotspot geometry, clashes — reads structure
+    coordinates only and is backend-agnostic; `summary`/`conf` carry whatever
+    confidence numbers the caller's backend produced.
+    """
     import biotite.structure as struc
 
     B, T = cfg.binder_chain, cfg.target_chain
@@ -506,7 +562,8 @@ def score_one(
                                or {}).get("sampled_contig"),
         })
 
-    des, prd = read_structure(design_path), read_structure(pred_path)
+    des = read_structure(design_path)
+    prd = read_structure(pred_path, plddt_scale=plddt_scale)
 
     dA, pA = matched_ca(des, prd, B)
     dT, pT = matched_ca(des, prd, T)
@@ -564,6 +621,203 @@ def score_one(
     row["binder_seq"] = binder_sequence(prd, B)
     row["binder_plddt"] = mean_plddt(prd, B)
     return row
+
+
+# ----------------------------------------------------------------------
+# Protenix (cluster refold backend) adapter
+# ----------------------------------------------------------------------
+#
+# The cluster pipeline's folding-repo backends (Protenix, IntelliFold2, ...)
+# write a differently-SHAPED output than RF3: `<id>.pdb` (pLDDT 0-100 in
+# B-factor, vs RF3's `<id>_model.cif` at 0-1), `<id>_scores.json` (vs RF3's
+# `<id>_summary_confidences.json`), and `<id>_pae.npy` — a bare N x N array,
+# written by some backends and not others, rather than RF3's
+# `<id>_confidences.json` with its own token_chain_ids/token_res_ids.
+#
+# NOT independently verified against a real cluster-produced Protenix run
+# (this workstation has no SLURM access) — `_scores.json`'s exact key names
+# below are the best reading of g-groups/.../binder_pipeline's own
+# `score_designs.py` + `docs/refold_backends.md` at the time this was written.
+# Confirmed keys: `iptm_per_chain_pair` (dict, "A_B"/"B_A"), `plddt_mean`
+# (whole-complex, NOT used here — see mean_plddt for the binder-only value).
+# Everything else degrades to `None`/missing rather than raising, exactly like
+# `score_one`'s own handling of an RF3 summary missing a field, so a first
+# real run will show up as thinner rows (still scored on RMSD/epitope/
+# hotspot/ipSAE) rather than a crash — smoke-test one real campaign's rows
+# before trusting `iptm`/`ptm` columns from this path.
+
+def protenix_confidence_adapter(
+    scores: dict,
+    n_binder: int,
+    n_target: int,
+    pae: np.ndarray | None,
+) -> tuple[dict, dict | None]:
+    """
+    Translate one Protenix `<id>_scores.json` (+ optional `<id>_pae.npy`) into
+    the RF3-shaped `(summary, conf)` dicts `score_one` already knows how to
+    read, so the RMSD/epitope/clash logic and ipSAE never need a second
+    implementation.
+
+    Schema CONFIRMED against a real cluster-produced file (2026-08-23,
+    g-groups/.../binder_pipeline gem_vegf_a calibration run): a flat dict —
+    `plddt_mean`, `plddt_per_residue`, `ptm`, `iptm`, `pae_mean`, `runtime_s`,
+    `iptm_per_chain_pair` (e.g. `{"A_B": 0.31}`). No `binder_ptm`/`target_ptm`,
+    no `iface_pae`/`iface_pae_min`, no `has_clash`, no `ranking_score` —
+    earlier revisions of this adapter guessed at those keys (this pipeline's
+    own docs describe a narrower, differently-shaped score file than what it
+    actually writes); they are computed here instead of guessed:
+    `iface_pae` from the raw PAE matrix's binder-target block, the rest left
+    absent exactly like an RF3 summary missing a field. `pae_mean` (whole-
+    structure) is deliberately NOT used for `iface_pae` — it dilutes the
+    interface signal with two mostly-unrelated intra-chain blocks.
+    """
+    def _iptm_pair(d: dict) -> float | None:
+        ipc = d.get("iptm_per_chain_pair") or {}
+        for key in ("A_B", "B_A"):
+            if key in ipc:
+                return ipc[key]
+        return d.get("iptm")
+
+    iface_pae = None
+    if pae is not None and pae.shape[0] == n_binder + n_target and n_binder and n_target:
+        block = np.asarray(pae, dtype=float)[:n_binder, n_binder:]
+        iface_pae = float(block.mean())
+
+    iptm = _iptm_pair(scores)
+    summary = {
+        "iptm": iptm,
+        "ptm": scores.get("ptm"),
+        "overall_plddt": scores.get("plddt_mean"),
+        "chain_ptm": [None, None],
+        "chain_pair_pae": [[None, iface_pae], [None, None]],
+        "chain_pair_pae_min": [[None, None], [None, None]],
+        "chain_pair_pde_min": [[None, None], [None, None]],
+        "has_clash": None,
+        "ranking_score": iptm,
+    }
+    conf = None
+    if pae is not None:
+        n = pae.shape[0]
+        if n == n_binder + n_target:
+            conf = {"pae": pae, "token_chain_ids": ["A"] * n_binder + ["B"] * n_target}
+    return summary, conf
+
+
+def score_one_protenix(
+    name: str,
+    pred_path: Path,
+    design_path: Path,
+    scores: dict,
+    hotspots: Sequence[int],
+    cfg: ScoreConfig = ScoreConfig(),
+    pae: np.ndarray | None = None,
+    sidecar: dict | None = None,
+) -> dict:
+    """
+    Score one Protenix (or other folding-repo backend) refold.
+
+    `n_binder`/`n_target` for the PAE chain boundary come from the PREDICTION
+    structure itself (its own chain A / chain B CA counts) rather than a
+    caller-supplied guess, so a design whose binder length varies design-to-
+    design (RFD3 samples length per design) is always read correctly.
+    """
+    prd = read_structure(pred_path, plddt_scale=100.0)
+    n_binder = ca(prd, cfg.binder_chain).array_length()
+    n_target = ca(prd, cfg.target_chain).array_length()
+    summary, conf = protenix_confidence_adapter(scores, n_binder, n_target, pae)
+    return score_one(name, pred_path, design_path, summary, hotspots, cfg,
+                     conf=conf, sidecar=sidecar, plddt_scale=100.0)
+
+
+def iter_protenix_refolds(refold_dir: Path) -> Iterable[Path]:
+    """
+    Yield every `<id>_scores.json` under a Protenix (folding-repo) output tree.
+
+    Per-design SUBDIRECTORY layout, same shape as RF3's own
+    `<id>/<id>_summary_confidences.json` (see `iter_refolds`): `<id>/<id>.pdb`
+    + `<id>/<id>_scores.json` [+ `<id>/<id>_pae.npy`] — NOT flat, despite an
+    earlier secondhand read of that pipeline's own docs/scorer suggesting
+    otherwise. Confirmed by direct inspection of a real cluster-produced
+    campaign (g-groups/.../binder_pipeline/outputs/<run>/run_N/protenix/).
+    `os.scandir` for the same reason as `iter_refolds` — a production-scale
+    directory is large.
+    """
+    import os
+
+    refold_dir = Path(refold_dir)
+    if not refold_dir.is_dir():
+        return
+    with os.scandir(refold_dir) as top:
+        for entry in top:
+            if not entry.is_dir():
+                continue
+            cand = Path(entry.path) / f"{entry.name}_scores.json"
+            if cand.exists():
+                yield cand
+
+
+def _score_task_protenix(args: tuple) -> dict:
+    """Worker entry point — must be module-level and picklable."""
+    (scores_path, design_dir, hotspots, cfg) = args
+    scores_path = Path(scores_path)
+    name = scores_path.name[: -len("_scores.json")]
+    pred = scores_path.with_name(f"{name}.pdb")
+    design = find_design(Path(design_dir), name)
+    pae_path = scores_path.with_name(f"{name}_pae.npy")
+    pae = np.load(pae_path) if pae_path.exists() else None
+    sidecar_path = Path(design_dir) / f"{design_family(name)}.json"
+    sidecar = _load_json(sidecar_path) if sidecar_path.exists() else None
+    try:
+        scores = json.loads(scores_path.read_text(encoding="utf-8"))
+        row = score_one_protenix(name, pred, design, scores, hotspots, cfg,
+                                 pae=pae, sidecar=sidecar)
+        row["error"] = ""
+    except Exception as exc:
+        row = {
+            "name": name, "design_family": design_family(name),
+            "refold_cif": str(pred), "design_cif": str(design),
+            "error": f"{type(exc).__name__}: {' '.join(str(exc).split())}"[:200],
+        }
+    return row
+
+
+def score_campaign_protenix(
+    refold_dir: Path,
+    design_dir: Path,
+    *,
+    hotspots: Sequence[int],
+    cfg: ScoreConfig = ScoreConfig(),
+    workers: int = 1,
+    limit: int = 0,
+    progress_every: int = 2000,
+) -> list[dict]:
+    """Protenix-backend counterpart of `score_campaign`; same shape, same FIELDS."""
+    files = sorted(iter_protenix_refolds(refold_dir))
+    if limit:
+        files = files[:limit]
+    if not files:
+        logger.warning(f"No Protenix outputs found under {refold_dir}")
+        return []
+    logger.info(f"Scoring {len(files):,} Protenix refolds | hotspots "
+               f"{list(hotspots) or 'none'} | contact cutoff {cfg.contact_cutoff} A")
+
+    tasks = [(str(s), str(design_dir), tuple(hotspots), cfg) for s in files]
+    rows: list[dict] = []
+    if workers > 1:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            for i, row in enumerate(pool.map(_score_task_protenix, tasks, chunksize=32), 1):
+                rows.append(row)
+                if progress_every and i % progress_every == 0:
+                    logger.info(f"  scored {i:,}/{len(tasks):,}")
+    else:
+        for i, task in enumerate(tasks, 1):
+            rows.append(_score_task_protenix(task))
+            if progress_every and i % progress_every == 0:
+                logger.info(f"  scored {i:,}/{len(tasks):,}")
+
+    n_err = sum(1 for r in rows if r.get("error"))
+    logger.info(f"Scored {len(rows):,} Protenix refolds ({n_err} errors)")
+    return rows
 
 
 # ----------------------------------------------------------------------

@@ -23,7 +23,12 @@ def config() -> dict:
 
 @pytest.fixture
 def runner(config) -> PipelineRunner:
-    return PipelineRunner(config, workflow="ppi")
+    # Explicit provider="claude": this fixture backs tests that specifically
+    # validate Claude-path model resolution (haiku/thinking upgrades, the
+    # structure/interface stage inversion under the claude default model) —
+    # not "whatever the pipeline's overall default provider happens to be".
+    # See test_pipeline_defaults_to_gemini for that.
+    return PipelineRunner(config, workflow="ppi", provider="claude")
 
 
 # ----------------------------------------------------------------------
@@ -89,11 +94,27 @@ def test_explicit_model_id_overrides_config(config):
 
 def test_falls_back_to_the_code_table_without_a_models_block(config):
     stripped = {k: v for k, v in config.items() if k != "models"}
-    assert PipelineRunner(stripped)._default_model == _DEFAULT_MODELS["claude"]
+    # No explicit provider -> exercises the actual default (gemini).
+    assert PipelineRunner(stripped)._default_model == _DEFAULT_MODELS["gemini"]
+
+
+def test_pipeline_defaults_to_gemini(config):
+    """gemini-3.7-flash is the pipeline-wide default now: cheaper, and this
+    pipeline's own ledger shows it answering target-intel/interface prompts
+    claude-sonnet-5 routinely refuses (category 'bio')."""
+    r = PipelineRunner(config)
+    assert r.provider == "gemini"
+    assert r._default_model == "gemini-3.7-flash"
+    model, _, provider = r._resolve_stage("pathway-expert", "pathway")
+    assert provider == "gemini"
+    assert model == "gemini-3.7-flash"
 
 
 def test_extended_thinking_upgrades_off_haiku(config):
-    r = PipelineRunner(config, extended_thinking_stages={"summary"})
+    # Extended thinking is a Claude-only mechanic (use_thinking is gated on
+    # provider == "claude" in _resolve_stage) — explicit provider here tests
+    # that mechanic specifically, not the pipeline's overall default.
+    r = PipelineRunner(config, provider="claude", extended_thinking_stages={"summary"})
     model, thinking, _ = r._resolve_stage("design-analyst", "summary")
     assert thinking is True
     assert "haiku" not in model.lower()
@@ -306,7 +327,7 @@ def test_refusal_is_retried_on_the_fallback_model(config, tmp_path, monkeypatch)
     monkeypatch.setattr(SkillRunner, "usage", lambda self: __import__(
         "src.token_budget", fromlist=["Usage"]).Usage())
 
-    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder")
+    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder", provider="claude")
     handoff = r._run_stage("complex-structure-analysis", "q", [],
                            tmp_path / "out.md", stage="interface")
     assert handoff.get("go_recommendation") == "GO"
@@ -427,7 +448,7 @@ def test_a_stage_can_be_routed_to_another_provider(config):
     """
     cfg = json.loads(json.dumps(config))
     cfg["models"]["claude"]["stages"]["interface"] = "gemini:gemini-3.7-flash"
-    r = PipelineRunner(cfg, workflow="binder")
+    r = PipelineRunner(cfg, workflow="binder", provider="claude")
 
     model, thinking, provider = r._resolve_stage("complex-structure-analysis",
                                                  "interface")
@@ -481,7 +502,7 @@ def test_gemini_is_the_immediate_fallback_no_other_claude_model_is_tried(
     monkeypatch.setattr(SkillRunner, "usage", lambda self: __import__(
         "src.token_budget", fromlist=["Usage"]).Usage())
 
-    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder")
+    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder", provider="claude")
     handoff = r._run_stage("complex-structure-analysis", "q", [],
                            tmp_path / "o.md", stage="interface")
     assert handoff.get("go_recommendation") == "GO"
@@ -787,3 +808,98 @@ def test_sequence_identity_separates_same_protein_from_unrelated(config):
     assert ref and len(ref) > 100
     assert sequence_identity(ref[19:130], ref) > 0.95     # a real fragment
     assert sequence_identity("MKV" * 40, ref) < 0.4        # nonsense sequence
+
+
+# ----------------------------------------------------------------------
+# Production sizing: local-vs-cluster batch counts, and surviving a resume
+# ----------------------------------------------------------------------
+
+def _fake_calib(verdict: str, required_backbones: float | None):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        verdict=verdict,
+        pessimistic=SimpleNamespace(required_backbones=required_backbones),
+    )
+
+
+def test_batches_for_returns_none_when_not_scaling_up(config):
+    res = _fake_calib("ITERATE", 1000.0)
+    assert PipelineRunner._batches_for(res, config) is None
+
+
+def test_batches_for_local_is_a_campaign_total(config):
+    res = _fake_calib("SCALE_UP", 4000.0)
+    dbs = config["design"]["foundry"]["rfd3"]["diffusion_batch_size"] \
+        if "rfd3" in config["design"]["foundry"] else 4
+    n = PipelineRunner._batches_for(res, config, n_gpus=1)
+    assert n == max(1, int(4000.0 / max(dbs, 1)))
+
+
+def test_batches_for_cluster_divides_by_gpu_count(config):
+    """NB is per-GPU-array-task on the cluster pipeline, not a campaign
+    total — dividing here (not multiplying) is what CLAUDE.md's cluster
+    section documents as the fix for a real undercount bug."""
+    res = _fake_calib("SCALE_UP", 4000.0)
+    local = PipelineRunner._batches_for(res, config, n_gpus=1)
+    cluster = PipelineRunner._batches_for(res, config, n_gpus=8)
+    assert cluster == max(1, int(local / 8))
+
+
+def test_resolve_production_plan_prefers_in_memory_result(config, tmp_path):
+    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder")
+    dirs = {"calibration": tmp_path}
+    calib = {"compute": "cluster", "n_batches_cluster": 42, "n_batches_local": 99}
+    n_batches, compute = r._resolve_production_plan(calib, dirs, None)
+    assert (n_batches, compute) == (42, "cluster")
+
+
+def test_resolve_production_plan_survives_a_fresh_process_resume(config, tmp_path):
+    """`calib` is None (a genuinely fresh process, per `--start-from
+    production`) — the plan must come back from calibration.json on disk,
+    not silently fall back to config.yaml's raw default."""
+    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder")
+    calib_dir = tmp_path / "calibration"
+    calib_dir.mkdir()
+    (calib_dir / "calibration.json").write_text(json.dumps({
+        "verdict": "SCALE_UP",
+        "n_batches_local": 55,
+        "n_batches_cluster": 7,
+        "compute_choice": {"compute": "cluster"},
+    }), encoding="utf-8")
+    dirs = {"calibration": calib_dir}
+    n_batches, compute = r._resolve_production_plan(None, dirs, None)
+    assert (n_batches, compute) == (7, "cluster")
+
+
+def test_resolve_production_plan_ignores_a_non_scale_up_verdict_on_disk(config, tmp_path):
+    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder")
+    calib_dir = tmp_path / "calibration"
+    calib_dir.mkdir()
+    (calib_dir / "calibration.json").write_text(json.dumps({
+        "verdict": "ITERATE", "n_batches_local": 55,
+    }), encoding="utf-8")
+    dirs = {"calibration": calib_dir}
+    n_batches, compute = r._resolve_production_plan(None, dirs, 12)
+    assert n_batches == 12
+    assert compute == "local"
+
+
+def test_resolve_production_plan_falls_back_when_no_calibration_json(config, tmp_path):
+    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder", compute="local")
+    dirs = {"calibration": tmp_path / "nowhere"}
+    n_batches, compute = r._resolve_production_plan(None, dirs, 9)
+    assert (n_batches, compute) == (9, "local")
+
+
+def test_compute_defaults_to_auto_and_accepts_local_cluster(config):
+    assert PipelineRunner(config, workflow="binder")._compute == "auto"
+    assert PipelineRunner(config, workflow="binder", compute="local")._compute == "local"
+    assert PipelineRunner(config, workflow="binder", compute="cluster")._compute == "cluster"
+    with pytest.raises(ValueError):
+        PipelineRunner(config, workflow="binder", compute="nonsense")
+
+
+def test_max_local_hours_is_stored_and_defaults_to_none(config):
+    assert PipelineRunner(config, workflow="binder")._max_local_hours is None
+    r = PipelineRunner(config, workflow="binder", max_local_hours=12.0)
+    assert r._max_local_hours == 12.0

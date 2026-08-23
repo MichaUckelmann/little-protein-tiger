@@ -1,3 +1,10 @@
+> **ARCHIVED — OUTDATED (2026-08-23).** Written 2026-05-03 when this work was
+> "planning only, Sprint 1 in progress." DepMap co-dependency wiring has
+> since shipped into `wildcard-expert` (multi-hub codependency + candidate-
+> edge sweep, per git history and CLAUDE.md's wildcard-expert notes) — this
+> document no longer reflects the current implementation. Kept for
+> historical context on the original design rationale only.
+
 # DepMap & Cluster Enrichment of the Literature Graph — Project Plan
 
 Reference document for the multi-sprint effort to enrich the existing

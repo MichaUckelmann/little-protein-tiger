@@ -45,6 +45,26 @@ def parse_handoff(text: str) -> dict[str, str]:
     return fields
 
 
+def _clean_atom_list(raw: str) -> str:
+    """
+    Strip explanatory prose from a "RFD3 sidechain atoms" table cell.
+
+    A backbone-only hotspot (GLY, or a residue contacted only via CA/CB) is
+    real and legitimate, and the model sometimes annotates it inline —
+    "CA (no sidechain — backbone contact only)" — rather than leaving the
+    cell as a bare atom list. RFD3's select_hotspots takes that string
+    verbatim as an atom name, so "CA (no sidechain..." reaches validate_spec
+    as a single malformed atom and fails a real design (observed on a PD-L1
+    GLY119/ALA121 hotspot). Keep only the leading comma-separated token(s)
+    that look like atom names; drop everything from the first non-atom-name
+    character on.
+    """
+    head = raw.split("(")[0]
+    tokens = [t.strip() for t in head.split(",")]
+    atoms = [t for t in tokens if re.fullmatch(r"[A-Z][A-Z0-9]{0,3}", t)]
+    return ",".join(atoms) if atoms else raw.strip()
+
+
 def parse_hotspot_residues(text: str, handoff: dict) -> str | None:
     """
     Parse the MODEL-READY HOTSPOTS table(s) from structure stage output.
@@ -100,7 +120,7 @@ def parse_hotspot_residues(text: str, handoff: dict) -> str | None:
                     "residue": residue,
                     "auth_seq_id": auth_id_int,
                     "label_seq_id": label_id_int,
-                    "rfd3_atoms": atoms.strip(),
+                    "rfd3_atoms": _clean_atom_list(atoms),
                 })
 
     if not residues:

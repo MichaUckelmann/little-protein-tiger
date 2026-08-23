@@ -33,8 +33,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import markdown as _markdown_lib
-
 from src import handoff as handoff_mod
 from src.binder_ranking import (
     DEFAULT_MAX_PER_BACKBONE,
@@ -44,34 +42,21 @@ from src.binder_ranking import (
     rank_designs,
     read_scores,
 )
+from src.report_common import (
+    ReportError,
+    as_float as _as_float,
+    extract_citation_section as _extract_citation_section,
+    histogram as _histogram,
+    markdown_html as _markdown_html,
+    read_json as _read_json,
+    read_text as _read_text,
+    section_before_handoff as _section_before_handoff,
+)
 
 _ROOT = Path(__file__).resolve().parent.parent
 _MOLSTAR_DIR = _ROOT / "assets" / "vendor" / "molstar"
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "report_templates" / "binder_report"
-
-_MD_EXTENSIONS = ["tables", "fenced_code", "sane_lists"]
-
-
-class ReportError(RuntimeError):
-    """Report generation failed for a reason worth surfacing, not swallowing."""
-
-
-# ---------------------------------------------------------------------
-# small file helpers
-# ---------------------------------------------------------------------
-
-def _read_text(path: Path) -> str | None:
-    return path.read_text(encoding="utf-8") if path.exists() else None
-
-
-def _read_json(path: Path) -> Any | None:
-    text = _read_text(path)
-    if text is None:
-        return None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
+_SHARED_DIR = Path(__file__).resolve().parent / "report_templates" / "_shared"
 
 
 def _find_up(start: Path, name: str, max_levels: int = 4) -> Path | None:
@@ -92,18 +77,6 @@ def _find_up(start: Path, name: str, max_levels: int = 4) -> Path | None:
     return None
 
 
-def _markdown_html(text: str) -> str:
-    text = text.strip()
-    if not text:
-        return ""
-    return _markdown_lib.markdown(text, extensions=_MD_EXTENSIONS)
-
-
-def _section_before_handoff(text: str) -> str:
-    idx = text.find("### PIPELINE HANDOFF")
-    return text[:idx] if idx >= 0 else text
-
-
 def _extract_hotspot_narrative(text: str) -> str:
     """HOTSPOT REGIONS / GLUE POCKETS through DESIGN RECOMMENDATIONS.
 
@@ -114,19 +87,6 @@ def _extract_hotspot_narrative(text: str) -> str:
         r"###\s+(?:HOTSPOT REGIONS|GLUE POCKETS).*?(?=\n###\s+MODEL.READY HOTSPOTS|\Z)",
         text, re.DOTALL | re.IGNORECASE)
     return m.group(0) if m else ""
-
-
-def _extract_citation_section(text: str) -> str | None:
-    m = re.search(r"##\s+CITATION VERIFICATION\s*\n(.*)\Z", text, re.DOTALL | re.IGNORECASE)
-    if not m:
-        return None
-    body = m.group(1)  # heading itself is rendered by the callout's own <div class="tag">
-    # Only worth surfacing when something actually failed verification.
-    if re.search(r"NOT IN CORPUS\s*\(\s*0\s*\)", body, re.IGNORECASE):
-        return None
-    if "NOT IN CORPUS" not in body.upper() and "citations checked: 0" in body.lower():
-        return None
-    return _markdown_html(body)
 
 
 # ---------------------------------------------------------------------
@@ -242,15 +202,6 @@ def _resolve_designs(binder_dir: Path, rcfg: dict) -> tuple[list[dict], str, lis
         "calibration trial (--stop-after trial) before generating a report.")
 
 
-def _as_float(row: dict, key: str) -> float | None:
-    v = row.get(key)
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        return None
-    return None if f != f else f  # NaN check without importing math for one use
-
-
 def _design_summary(row: dict) -> dict:
     binder_len = _as_float(row, "binder_len")
     return {
@@ -266,16 +217,6 @@ def _design_summary(row: dict) -> dict:
         "seq": row.get("binder_seq"),
         "refold_cif": row.get("refold_cif"),
     }
-
-
-def _histogram(values: list[float], lo: float, hi: float, nbins: int) -> dict:
-    width = (hi - lo) / nbins
-    counts = [0] * nbins
-    for v in values:
-        idx = int((v - lo) / width)
-        idx = max(0, min(nbins - 1, idx))
-        counts[idx] += 1
-    return {"edges": [round(lo + i * width, 4) for i in range(nbins + 1)], "counts": counts}
 
 
 def _scatter_sample(rows: list[dict], survivor_ids: set[int], success_metric: str,
@@ -521,6 +462,8 @@ def build_report(binder_dir: Path, out_path: Path | None = None,
 
 def _render(report_data: dict, structures: dict, title: str) -> str:
     shell = (_TEMPLATE_DIR / "shell.html").read_text(encoding="utf-8")
+    base_css = (_SHARED_DIR / "base.css").read_text(encoding="utf-8")
+    base_js = (_SHARED_DIR / "base.js").read_text(encoding="utf-8")
     app_js = (_TEMPLATE_DIR / "app.js").read_text(encoding="utf-8")
     molstar_js = (_MOLSTAR_DIR / "molstar.js").read_text(encoding="utf-8")
     molstar_css = (_MOLSTAR_DIR / "molstar.css").read_text(encoding="utf-8")
@@ -530,9 +473,10 @@ def _render(report_data: dict, structures: dict, title: str) -> str:
 
     html = shell
     html = html.replace("@@TITLE@@", title)
+    html = html.replace("/*@@BASE_CSS@@*/", base_css)
     html = html.replace("/*@@MOLSTAR_CSS@@*/", molstar_css)
     html = html.replace("/*@@MOLSTAR_JS@@*/", molstar_js)
     html = html.replace("/*@@REPORT_DATA@@*/", safe_json(report_data))
     html = html.replace("/*@@STRUCTURES_DATA@@*/", safe_json(structures))
-    html = html.replace("/*@@APP_JS@@*/", app_js)
+    html = html.replace("/*@@APP_JS@@*/", base_js + "\n" + app_js)
     return html

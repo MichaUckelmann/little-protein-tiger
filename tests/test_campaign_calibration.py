@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from src.campaign_calibration import (
-    MIN_HITS_FOR_ESTIMATE, SUCCESS_METRICS, render_report, rule_of_three,
-    wilson_interval,
+    MIN_HITS_FOR_ESTIMATE, SUCCESS_METRICS, choose_compute, render_report,
+    rule_of_three, wilson_interval,
 )
 from src.campaign_calibration import calibrate as _calibrate
 from tests.test_binder_ranking import rec
@@ -396,3 +396,67 @@ class TestAdaptiveBar:
         assert "Bar raised" in report
         assert "0.8" in report
         assert "raised" in res.verdict_reason.lower()
+
+
+# ----------------------------------------------------------------------
+# choose_compute: local vs. cluster placement for a SCALE_UP campaign
+# ----------------------------------------------------------------------
+
+class TestChooseCompute:
+    def test_no_scale_up_means_nothing_to_place(self):
+        res = calibrate(_sample(300, 4, 0), target_designs=100, excellence_bar=0.7)
+        assert res.verdict != "SCALE_UP"
+        assert choose_compute(res) is None
+
+    def test_a_cheap_campaign_stays_local(self):
+        """Healthy rate, modest target -> a few hours, well under the default
+        48h -> stays on this workstation's GPU."""
+        res = calibrate(_sample(100, 4, 40), target_designs=100, excellence_bar=0.7,
+                        disk_budget_gb=10_000, max_campaign_days=100)
+        assert res.verdict == "SCALE_UP"
+        assert res.pessimistic.est_gpu_hours < 48
+        choice = choose_compute(res)
+        assert choice is not None
+        assert choice.compute == "local"
+        assert choice.local_hours <= choice.max_local_hours
+
+    def test_an_expensive_campaign_goes_to_the_cluster(self):
+        """A rare rate against a big target blows past the local-hours budget,
+        so it must be staged for the cluster instead of run unattended for days."""
+        res = calibrate(_sample(300, 4, 5), target_designs=100, excellence_bar=0.7,
+                        disk_budget_gb=10**9, max_campaign_days=10**6)
+        assert res.verdict == "SCALE_UP"
+        assert res.pessimistic.est_gpu_hours > 48
+        choice = choose_compute(res)
+        assert choice is not None
+        assert choice.compute == "cluster"
+        assert choice.local_hours > choice.max_local_hours
+
+    def test_cluster_hours_divide_by_gpu_count(self):
+        res = calibrate(_sample(100, 4, 40), target_designs=100, excellence_bar=0.7,
+                        disk_budget_gb=10_000, max_campaign_days=100)
+        choice = choose_compute(res, n_gpus_cluster=8)
+        assert choice.cluster_hours == pytest.approx(choice.local_hours / 8, rel=0.02)
+
+    def test_max_local_hours_is_the_threshold_not_a_fixed_verdict(self):
+        """Same result, evaluated at two thresholds either side of its hours,
+        must flip local <-> cluster purely on the threshold."""
+        res = calibrate(_sample(300, 4, 5), target_designs=100, excellence_bar=0.7,
+                        disk_budget_gb=10**9, max_campaign_days=10**6)
+        hours = res.pessimistic.est_gpu_hours
+        assert choose_compute(res, max_local_hours=hours + 1).compute == "local"
+        assert choose_compute(res, max_local_hours=max(hours - 1, 0)).compute == "cluster"
+
+    def test_render_report_includes_the_compute_section(self):
+        res = calibrate(_sample(100, 4, 40), target_designs=100, excellence_bar=0.7,
+                        disk_budget_gb=10_000, max_campaign_days=100)
+        choice = choose_compute(res)
+        report = render_report(res, choice)
+        assert "Where to run it" in report
+        assert "Decision: local" in report
+
+    def test_render_report_without_compute_omits_the_section(self):
+        res = calibrate(_sample(100, 4, 40), target_designs=100, excellence_bar=0.7,
+                        disk_budget_gb=10_000, max_campaign_days=100)
+        report = render_report(res)
+        assert "Where to run it" not in report

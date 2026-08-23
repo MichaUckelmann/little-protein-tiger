@@ -1,0 +1,108 @@
+<meta charset="utf-8">
+<title>@@TITLE@@</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/*@@BASE_CSS@@*/
+
+#chart-iptm-hist, #chart-sasa-hist{ height:170px; }
+#chart-funnel{ height:230px; }
+
+/*@@MOLSTAR_CSS@@*/
+</style>
+
+<div class="shell">
+  <aside class="railnav" id="railnav"></aside>
+
+  <main class="main">
+    <header class="hero" id="hero"></header>
+
+    <section class="block" id="pathway">
+      <div class="blockhead"><span class="num">01</span><h2>Why this pathway, why this target</h2></div>
+      <p class="blockdek">Disease context and pathway biology as the pathway-expert reasoned it, plus every alternative target it weighed before this one.</p>
+      <div class="prose" id="pathway-narrative"></div>
+      <div class="tablewrap"><table class="data" id="choices-table"></table></div>
+    </section>
+
+    <section class="block tint" id="literature">
+      <div class="blockhead"><span class="num">02</span><h2>Prior art and tractability</h2></div>
+      <p class="blockdek">Known inhibitors/binders, druggability evidence, and the go/no-go call exactly as the molecular-biology-expert reported it.</p>
+      <div class="prose" id="literature-narrative"></div>
+      <div class="callout" id="literature-decision-callout"></div>
+      <div id="literature-citation-callout"></div>
+    </section>
+
+    <section class="block" id="structure">
+      <div class="blockhead"><span class="num">03</span><h2>Structure and hotspots</h2></div>
+      <p class="blockdek">Which structure was chosen, the interface geometry, and the model-ready hotspot residues handed to the design stage.</p>
+      <div class="prose" id="structure-narrative"></div>
+      <div class="tablewrap"><table class="data" id="hotspot-table"></table></div>
+      <div id="structure-citation-callout"></div>
+    </section>
+
+    <section class="block tint" id="generation">
+      <div class="blockhead"><span class="num">04</span><h2>Design generation</h2></div>
+      <p class="blockdek">The BoltzGen spec that came out of the hotspot table, and how the pilot/production run actually went.</p>
+      <div class="prose" id="design-narrative"></div>
+      <div class="prose" id="execution-narrative" style="margin-top:22px;"></div>
+    </section>
+
+    <section class="block" id="confidence">
+      <div class="blockhead"><span class="num">05</span><h2>What survived the hard gates</h2></div>
+      <p class="blockdek" id="confidence-dek"></p>
+      <div class="chartgrid">
+        <div class="chartcard">
+          <h4>ipTM distribution</h4>
+          <div class="cap" id="chart-iptm-cap"></div>
+          <svg id="chart-iptm-hist" viewBox="0 0 320 170"></svg>
+        </div>
+        <div class="chartcard">
+          <h4>Hotspot SASA occlusion</h4>
+          <div class="cap" id="chart-sasa-cap"></div>
+          <svg id="chart-sasa-hist" viewBox="0 0 320 170"></svg>
+        </div>
+        <div class="chartcard wide">
+          <h4>First-failure drop reason</h4>
+          <div class="cap">each design counted once, at the first hard gate it failed — order shows which gate is doing the killing</div>
+          <svg id="chart-funnel" viewBox="0 0 640 210"></svg>
+        </div>
+      </div>
+    </section>
+
+    <section class="block tint" id="designs">
+      <div class="blockhead"><span class="num">06</span><h2>Top designs</h2></div>
+      <p class="blockdek">The MMR-diversified top-K by composite score (ipTM + interface PAE + hotspot SASA occlusion + complex pLDDT, z-scored).</p>
+      <div class="designgrid" id="design-cards"></div>
+
+      <h4 id="explorer" style="margin-top:44px; margin-bottom:4px; font-size:15px; scroll-margin-top:20px;">Structure explorer</h4>
+      <p style="color:var(--ink-muted); font-size:13.5px; margin:0 0 4px; max-width:70ch;" id="explorer-dek"></p>
+
+      <div class="viewerpanel">
+        <div class="viewer-toolbar">
+          <div class="grp" id="structure-picker"></div>
+        </div>
+        <div id="molstar-stage"></div>
+        <div class="viewer-caption" id="explorer-caption">Loading…</div>
+      </div>
+    </section>
+
+    <section class="block" id="verdict">
+      <div class="blockhead"><span class="num">07</span><h2>Analyst verdict</h2></div>
+      <p class="blockdek">The design-analyst's own review of the top-K — quality, red flags, and recommended next steps — rendered verbatim.</p>
+      <div class="verdictbanner" id="verdict-banner"></div>
+      <div class="prose" id="verdict-body" style="margin-top:22px;"></div>
+    </section>
+
+    <footer class="report" id="methods"></footer>
+  </main>
+</div>
+
+<script>/*@@MOLSTAR_JS@@*/</script>
+<script>
+const REPORT = /*@@REPORT_DATA@@*/;
+const STRUCTS = /*@@STRUCTURES_DATA@@*/;
+</script>
+<script>
+/*@@APP_JS@@*/
+</script>

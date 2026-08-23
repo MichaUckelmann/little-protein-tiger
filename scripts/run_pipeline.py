@@ -183,6 +183,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Binder workflow: override the RFD3 batch count for GPU stages.",
     )
     p.add_argument(
+        "--compute",
+        choices=["auto", "local", "cluster"],
+        default="auto",
+        help=(
+            "Binder workflow GPU stages: 'auto' (default) runs pilot/"
+            "calibration locally, then at the calibration gate compares the "
+            "pessimistic single-GPU production estimate against "
+            "--max-local-hours and picks 'local' or 'cluster' for the "
+            "production stage only. 'local' forces every GPU stage onto "
+            "this workstation's GPU regardless of size; 'cluster' forces "
+            "every GPU stage to stage inputs + a launch script onto shared "
+            "storage (src/cluster_runner.py, design.cluster in "
+            "config.yaml) and pause for a human to submit — this machine "
+            "cannot reach a SLURM scheduler directly."
+        ),
+    )
+    p.add_argument(
+        "--max-local-hours",
+        type=float,
+        default=None,
+        dest="max_local_hours",
+        help=(
+            "--compute auto only: max estimated single-GPU production hours "
+            "before the pipeline stages a cluster package instead of running "
+            "locally (default: design.foundry.max_local_hours in "
+            "config.yaml, currently 48)."
+        ),
+    )
+    p.add_argument(
+        "--n-gpus",
+        type=int,
+        default=None,
+        dest="n_gpus",
+        help=(
+            "Cluster compute only: GPUs available to the campaign at once "
+            "(overrides design.cluster.n_gpus). Also used by --compute auto "
+            "to estimate cluster wall-clock. Ignored for --compute local."
+        ),
+    )
+    p.add_argument(
         "--trial-sites",
         type=int, default=1, metavar="N", dest="trial_sites",
         help=(
@@ -211,12 +251,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--stop-after",
-        choices=["spec", "trial"], default=None, dest="stop_after",
+        choices=["spec", "trial", "calibration"], default=None, dest="stop_after",
         help=(
             "Binder workflow: 'spec' prepares and validates everything up to "
             "the GPU and stops, so specs can be reviewed before committing "
             "days of compute; 'trial' stops after the design trial and site "
-            "comparison, before a production campaign."
+            "comparison, before a production campaign; 'calibration' stops "
+            "after the calibration verdict (SCALE_UP/SCALE_UP_PARTIAL) on a "
+            "plain single-target run — resume with --start-from production "
+            "once the verdict and estimated GPU-hours/disk look right."
         ),
     )
     p.add_argument(
@@ -253,8 +296,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--provider",
         choices=["claude", "gemini"],
-        default="claude",
-        help="LLM provider. Default: claude.",
+        default="gemini",
+        help="LLM provider. Default: gemini (gemini-3.7-flash) — cheaper "
+             "and does not hit the 'bio'-category safety refusals "
+             "claude-sonnet-5 routinely triggers on target-intel/interface.",
     )
     p.add_argument(
         "--model-id",
@@ -329,6 +374,9 @@ def main() -> int:
     if is_binder and args.success_metric:
         config.setdefault("design", {}).setdefault(
             "binder_ranking", {})["success_metric"] = args.success_metric
+    if is_binder and args.n_gpus:
+        config.setdefault("design", {}).setdefault(
+            "cluster", {})["n_gpus"] = args.n_gpus
 
     from src.pipeline_runner import (
         PipelineBlockedError,
@@ -340,6 +388,7 @@ def main() -> int:
     # (start-from pathway); a resume reuses the latest round.
     project = None
     round_id = None
+    output_dir = args.output_dir
     if args.project:
         from src.project import Project
         project = Project.create(args.project, query=query, workflow=args.workflow)
@@ -349,16 +398,20 @@ def main() -> int:
         else:
             rnd = project.latest_round()
         round_id = rnd["run_id"]
+        # Stage files must land where every earlier stage of this round wrote
+        # theirs, or a resume silently starts a fresh, disconnected
+        # outputs/<slug>_<date>/ tree and immediately fails to find the prior
+        # stage's handoff. --output-dir still wins when explicitly given.
+        output_dir = output_dir or project.run_dir(round_id)
         logger.info(
-            f"Project: {project.slug}  round: {round_id}  "
-            f"dir: {project.run_dir(round_id)}"
+            f"Project: {project.slug}  round: {round_id}  dir: {output_dir}"
         )
 
     runner = PipelineRunner(
         config=config,
         provider=args.provider,
         model_id=args.model_id,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         max_iter=args.max_iter,
         max_tokens=args.max_tokens,
         project=project,
@@ -368,6 +421,8 @@ def main() -> int:
         budget_mode=args.budget_mode,
         detach=args.detach,
         n_batches=args.n_batches,
+        compute=args.compute,
+        max_local_hours=args.max_local_hours,
         trial_sites=args.trial_sites,
         trial_backbones=args.trial_backbones,
         escalate_to=(args.escalate_to or None),

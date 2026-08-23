@@ -4,7 +4,7 @@ CLI entry point for running little_protein_tiger skills via Claude or Gemini API
 
 Examples
 --------
-# Pathway analysis (Claude, default model)
+# Pathway analysis (Gemini, default provider)
 python scripts/run_skill.py \\
     --skill pathway-expert \\
     --query "Hippo pathway in mesothelioma — which node should we target?"
@@ -15,12 +15,12 @@ python scripts/run_skill.py \\
     --query "Analyze interface between chain A (TEAD4) and chain B (YAP) in /tmp/7D9M.cif." \\
     --output /tmp/ppi_report.md
 
-# Binder optimization with prior report as context (Gemini)
+# Binder optimization with prior report as context (explicit Claude)
 python scripts/run_skill.py \\
     --skill binder-optimizer \\
     --query "Suggest 4 point mutations on chain B to improve affinity. Structure source is AF3." \\
     --context /tmp/ppi_report.md \\
-    --model gemini \\
+    --model claude \\
     --output /tmp/mutations.md
 
 # Query from a text file
@@ -42,7 +42,7 @@ from src.skill_runner import SkillRunner
 
 _DEFAULT_MODELS = {
     "claude": "claude-sonnet-5",
-    "gemini": "gemini-3.1-flash-lite-preview",
+    "gemini": "gemini-3.7-flash",
 }
 
 
@@ -82,8 +82,10 @@ def main() -> None:
     parser.add_argument(
         "--model",
         choices=["claude", "gemini"],
-        default="claude",
-        help="LLM provider (default: claude)",
+        default="gemini",
+        help="LLM provider (default: gemini — gemini-3.7-flash, cheaper "
+             "and less prone to safety-classifier refusals on these "
+             "prompts than claude-sonnet-5)",
     )
     parser.add_argument(
         "--model-id",

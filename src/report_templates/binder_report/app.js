@@ -1,40 +1,6 @@
-/* ---------------------------------------------------------------- utils */
-function el(tag, cls, html) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (html !== undefined) e.innerHTML = html;
-  return e;
-}
-function fmt(x, d) { return (typeof x === 'number') ? x.toFixed(d === undefined ? 2 : d) : x; }
-function pct(x, d) { return (typeof x === 'number') ? (x * 100).toFixed(d === undefined ? 1 : d) + '%' : '—'; }
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
-
-/* ---------------------------------------------------------------- hero + rail */
-function renderRail() {
-  const r = REPORT.rail;
-  const nav = r.nav.map(n => `<a href="${n.href}">${esc(n.label)}</a>`).join('');
-  const stats = r.stats.map(s => `<div class="railstat"><div class="k">${esc(s.k)}</div><div class="v"${s.color ? ` style="color:${s.color}"` : ''}>${esc(s.v)}${s.unit ? `<small>${esc(s.unit)}</small>` : ''}</div></div>`).join('');
-  document.getElementById('railnav').innerHTML = `
-    <div class="brand">${esc(r.brand)}</div>
-    <div class="target">${esc(r.target)}</div>
-    <div class="pdb mono">${esc(r.pdb_line)}</div>
-    <nav>${nav}</nav>
-    ${stats}
-  `;
-}
-
-function renderHero() {
-  const h = REPORT.hero;
-  const pills = h.pills.map(p => `<span class="pill ${p.kind || ''} ${p.kind === 'good' ? 'dot' : ''}">${esc(p.label)}</span>`).join('');
-  const stats = h.stats.map(s => `<div class="statcell"><div class="k">${esc(s.k)}</div><div class="v">${esc(s.v)}${s.unit ? `<span class="unit">${esc(s.unit)}</span>` : ''}</div>${s.sub ? `<div class="sub">${esc(s.sub)}</div>` : ''}</div>`).join('');
-  document.getElementById('hero').innerHTML = `
-    <div class="eyebrow">${esc(h.eyebrow)}</div>
-    <h1>${esc(h.title)}</h1>
-    <p class="lede">${esc(h.subtitle)}</p>
-    <div class="pillrow">${pills}</div>
-    <div class="statgrid">${stats}</div>
-  `;
-}
+/* Binder-track-specific rendering. Shared dom utils, rail/hero/footer,
+ * histogram chart, and the Mol* structure-explorer harness live in
+ * src/report_templates/_shared/base.js (injected before this file). */
 
 /* ---------------------------------------------------------------- site narrative + candidates */
 function renderSiteSection() {
@@ -156,62 +122,14 @@ function renderConfidenceSection() {
   renderScatter();
 }
 
-function renderHistogram(svgId, hist, opts) {
-  const svg = document.getElementById(svgId);
-  const W = 320, H = 170, padL = 26, padR = 8, padT = 10, padB = 24;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
-  const maxCount = Math.max(...hist.counts, 1);
-  const n = hist.counts.length;
-  const barW = plotW / n;
-  const threshold = opts && opts.threshold;
-  let s = '';
-  for (let gy = 0; gy <= 4; gy++) {
-    const y = padT + plotH - (gy / 4) * plotH;
-    s += `<line class="gridline" x1="${padL}" x2="${W - padR}" y1="${y}" y2="${y}"/>`;
-    s += `<text class="axislabel" x="${padL - 4}" y="${y + 3}" text-anchor="end">${Math.round(maxCount * gy / 4)}</text>`;
-  }
-  hist.counts.forEach((c, i) => {
-    const h = (c / maxCount) * plotH;
-    const x = padL + i * barW;
-    const y = padT + plotH - h;
-    const binMid = (hist.edges[i] + hist.edges[i + 1]) / 2;
-    const hot = threshold !== undefined && binMid >= threshold;
-    s += `<rect class="bar ${hot ? 'bar-hot' : ''}" x="${(x + 0.6).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(barW - 1.2, 0.5).toFixed(1)}" height="${Math.max(h, 0).toFixed(1)}"/>`;
-  });
-  if (threshold !== undefined) {
-    const tx = padL + ((threshold - hist.edges[0]) / (hist.edges[hist.edges.length - 1] - hist.edges[0])) * plotW;
-    s += `<line class="thresholdline" x1="${tx}" x2="${tx}" y1="${padT}" y2="${padT + plotH}"/>`;
-  }
-  [0, 0.25, 0.5, 0.75, 1].forEach(f => {
-    const x = padL + f * plotW;
-    s += `<text class="axislabel" x="${x}" y="${H - 6}" text-anchor="middle">${f}</text>`;
-  });
-  svg.innerHTML = s;
-}
-
 function renderFunnel() {
-  const svg = document.getElementById('chart-funnel');
-  const rows = REPORT.funnel.passing_alone;
-  if (!rows.length) { svg.innerHTML = ''; return; }
-  const W = 640, padL = 160, padR = 60, padT = 6, rowH = 24, gap = 3;
   const dropMap = {};
   REPORT.funnel.dropped_by.forEach(d => dropMap[d.criterion] = d.n);
-  const plotW = W - padL - padR;
-  let s = '';
-  rows.forEach((r, i) => {
-    const y = padT + i * (rowH + gap);
-    const w = (r.pct / 100) * plotW;
-    const dropped = dropMap[r.criterion];
-    s += `<text class="axislabel" x="${padL - 8}" y="${y + rowH / 2 + 3}" text-anchor="end" style="font-size:10.5px">${esc(r.criterion)}</text>`;
-    s += `<rect class="bar-track" x="${padL}" y="${y}" width="${plotW}" height="${rowH}"/>`;
-    s += `<rect class="bar" x="${padL}" y="${y}" width="${w.toFixed(1)}" height="${rowH}"/>`;
-    s += `<text class="axislabel" x="${padL + plotW + 6}" y="${y + rowH / 2 + 3}" text-anchor="start" style="font-size:10.5px; font-weight:600;">${r.pct.toFixed(1)}%</text>`;
-    if (dropped !== undefined) {
-      s += `<text class="axislabel on-bar" x="${padL + Math.min(w, plotW) - 6}" y="${y + rowH / 2 + 3}" text-anchor="end" style="font-size:9.5px">−${dropped} first</text>`;
-    }
-  });
-  svg.setAttribute('viewBox', `0 0 ${W} ${padT + rows.length * (rowH + gap) + 4}`);
-  svg.innerHTML = s;
+  const rows = REPORT.funnel.passing_alone.map(r => ({
+    label: r.criterion, pct: r.pct,
+    note: dropMap[r.criterion] !== undefined ? `−${dropMap[r.criterion]} first` : undefined,
+  }));
+  renderBarRows('chart-funnel', rows);
 }
 
 function renderScatter() {
@@ -247,7 +165,7 @@ function renderScatter() {
 /* ---------------------------------------------------------------- design cards + explorer */
 function designKeys() { return REPORT.top_designs.map((_, i) => 'design_' + i); }
 
-function renderDesignCards() {
+function renderDesignCards(explorer) {
   const wrap = document.getElementById('design-cards');
   wrap.innerHTML = '';
   const nHotspots = (REPORT.hotspots || []).length || 1;
@@ -269,7 +187,8 @@ function renderDesignCards() {
     `);
     card.dataset.key = key;
     card.addEventListener('click', () => {
-      loadStructure(key);
+      explorer.loadStructure(key);
+      setActiveStructure(key);
       const target = document.getElementById('explorer');
       if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
@@ -280,7 +199,7 @@ function renderDesignCards() {
   }
 }
 
-function renderStructurePicker() {
+function renderStructurePicker(explorer) {
   const wrap = document.getElementById('structure-picker');
   wrap.innerHTML = '';
   const keys = [];
@@ -291,7 +210,7 @@ function renderStructurePicker() {
       : 'Design · ' + (REPORT.top_designs[parseInt(key.split('_')[1], 10)].family || key);
     const btn = el('button', 'chip', label);
     btn.dataset.key = key;
-    btn.addEventListener('click', () => loadStructure(key));
+    btn.addEventListener('click', () => { explorer.loadStructure(key); setActiveStructure(key); });
     wrap.appendChild(btn);
   });
 
@@ -302,7 +221,7 @@ function renderStructurePicker() {
       btn.addEventListener('click', () => {
         toggle.querySelectorAll('.chip').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        if (viewerReady) loadStructure('native');
+        if (explorer.ready) explorer.loadStructure('native');
       });
     });
   }
@@ -313,44 +232,15 @@ function setActiveStructure(key) {
   document.querySelectorAll('#design-cards .designcard').forEach(c => c.classList.toggle('active', c.dataset.key === key));
 }
 
-/* ---------------------------------------------------------------- mol* (single shared viewer) */
-let viewer, viewerReady = false, currentKey = 'native';
-
-function b64ToText(b64) { return atob(b64); }
-
-function hideWaterIon(v) {
-  try {
-    const structs = v.plugin.managers.structure.hierarchy.current.structures;
-    if (!structs || !structs.length) return;
-    const struct = structs[0];
-    const hide = struct.components.filter(c => /water|ion/i.test((c.cell.obj && c.cell.obj.label) || ''));
-    if (hide.length) v.plugin.managers.structure.component.toggleVisibility(hide);
-  } catch (e) { console.warn('hideWaterIon failed', e); }
-}
-
-function commonViewerOptions() {
-  return {
-    layoutIsExpanded: false,
-    layoutShowControls: true,
-    layoutShowRemoteState: false,
-    layoutShowSequence: true,
-    layoutShowLog: false,
-    layoutShowLeftPanel: false,
-    collapseRightPanel: false,
-    disabledExtensions: ['pdbe-structure-quality-report', 'dnatco-ntcs', 'assembly-symmetry', 'rcsb-validation-report', 'zenodo-import', 'mvs'],
-    viewportShowAnimation: false,
-  };
-}
-
 function hotspotResidueIds() { return (REPORT.hotspots || []).map(h => h.auth_seq_id); }
 
-function updateCaption() {
+function updateCaption(key) {
   const cap = document.getElementById('explorer-caption');
   const nHotspots = hotspotResidueIds().length;
-  if (currentKey === 'native') {
+  if (key === 'native') {
     cap.innerHTML = `<b>Native ${esc(REPORT.site_decision.pdb_id)}</b> — ${nHotspots} hotspot residue(s) highlighted on the target chain (teal), with the native partner (copper).`;
   } else {
-    const i = parseInt(currentKey.split('_')[1], 10);
+    const i = parseInt(key.split('_')[1], 10);
     const d = REPORT.top_designs[i];
     const engaged = Math.round((d.hotspot_engagement || 0) * nHotspots);
     cap.innerHTML = `<b>${esc(d.family || d.name)}</b> (${d.binder_len} aa de novo binder, chain A / copper) refolded against the trimmed target (chain B / teal). ` +
@@ -359,52 +249,21 @@ function updateCaption() {
   }
 }
 
-async function loadStructure(key) {
-  currentKey = key;
-  setActiveStructure(key);
-  document.getElementById('explorer-caption').textContent = 'Loading…';
-  const s = STRUCTS[key];
-  if (!s) { document.getElementById('explorer-caption').textContent = 'Structure not available.'; return; }
-  viewer.plugin.clear();
-  await viewer.loadStructureFromData(b64ToText(s.b64), 'mmcif', { dataLabel: key });
-  hideWaterIon(viewer);
-  const ids = hotspotResidueIds();
-  if (ids.length) {
-    viewer.structureInteractivity({
-      elements: { prefix: { auth_asym_id: s.target_chain }, items: { auth_seq_id: ids } },
-      action: ['select', 'focus'],
-    });
-  } else {
-    viewer.plugin.managers.camera.reset();
-  }
-  viewer.plugin.managers.camera.reset();
-  updateCaption();
-}
-
-async function initViewer() {
-  const startKey = STRUCTS.native ? 'native' : (designKeys().find(k => STRUCTS[k]) || null);
-  if (!startKey) {
-    document.getElementById('explorer-caption').textContent = 'No structures available to display.';
-    return;
-  }
-  viewer = await molstar.Viewer.create('molstar-stage', commonViewerOptions());
-  viewerReady = true;
-  await loadStructure(startKey);
-}
-
-/* ---------------------------------------------------------------- footer */
-function renderFooter() {
-  document.getElementById('methods').innerHTML = REPORT.footer_html;
-}
-
 /* ---------------------------------------------------------------- boot */
 renderRail();
 renderHero();
 renderSiteSection();
 renderHotspotSection();
 renderConfidenceSection();
-renderDesignCards();
-renderStructurePicker();
+
+const explorer = createStructureExplorer({
+  structs: STRUCTS,
+  hotspotResidueIds,
+  onLoaded: (key) => { setActiveStructure(key); updateCaption(key); },
+});
+renderDesignCards(explorer);
+renderStructurePicker(explorer);
 renderFooter();
 
-initViewer().catch(e => { console.error('viewer failed', e); document.getElementById('explorer-caption').textContent = 'Viewer failed to load: ' + e; });
+const startKey = STRUCTS.native ? 'native' : (designKeys().find(k => STRUCTS[k]) || null);
+explorer.initViewer(startKey).catch(e => { console.error('viewer failed', e); document.getElementById('explorer-caption').textContent = 'Viewer failed to load: ' + e; });

@@ -143,6 +143,21 @@ Configuration lives under `design:` in `config.yaml` (workstation
 executable, pilot/production batch sizes, hard filters, ranking weights,
 pyrosetta env path).
 
+**Reports.** Every run that reaches stage 5 gets an illustrated,
+self-contained `report.html` — pathway/target rationale, prior art and
+tractability, hotspot evidence, the design-generation stats, the hard-gate
+funnel, top-K design cards, and an interactive [Mol*](https://molstar.org)
+viewer over the top-ranked designs' actual BoltzGen refolds, plus the
+design-analyst's final verdict rendered in full. Generated automatically as
+a side effect (never a gate) after `analysis` and again after `summary`;
+regenerate by hand with `scripts/generate_ppi_report.py outputs/<slug>` (or
+`--project <slug> --round round-1`). No LLM and no GPU: it reads the same
+markdown/CSV files the pipeline already writes. Shares its whole visual
+design system — palette, layout, the Mol* explorer — with the binder
+track's `report.html` (`src/binder_report.py`) via
+`src/report_templates/_shared/`, so a run from either track reads as the
+same product.
+
 ---
 
 ## Usage
@@ -265,11 +280,11 @@ python scripts/run_skill.py \
     --context reports/ppi_analysis.md \
     --output reports/mutations.md
 
-# Use Gemini instead of Claude
+# Use Claude instead of the default Gemini
 python scripts/run_skill.py \
     --skill molecular-biology-expert \
     --query "What is known about the YAP-TEAD interaction interface and hotspot residues?" \
-    --model gemini
+    --model claude
 
 # Load a long query from a file
 python scripts/run_skill.py --skill pathway-expert --query @queries/my_query.txt
@@ -285,7 +300,7 @@ python scripts/run_skill.py \
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | `claude` | Provider: `claude` or `gemini` |
+| `--model` | `gemini` | Provider: `claude` or `gemini` |
 | `--model-id` | provider default | Override model (e.g. `claude-opus-4-6`) |
 | `--context` | — | Path to a prior report `.md` to include as context |
 | `--output` | stdout | Write final report to this file |
@@ -294,7 +309,8 @@ python scripts/run_skill.py \
 | `--interactive`, `-i` | off | After the initial query (or with no `--query`), drop into a REPL for multi-turn follow-ups |
 | `--trace` | — | Write a conversation trace (raw JSON + rendered Markdown) to this directory |
 
-Default models: `claude-sonnet-5` for Claude, `gemini-3.1-flash-lite-preview` for Gemini.
+Default models: `gemini-3.7-flash` for Gemini (the pipeline-wide default provider — see
+"Safety-classifier refusals" in CLAUDE.md for why), `claude-sonnet-5` for Claude.
 
 Token usage is logged after every LLM call. If the per-call input token count exceeds `--max-tokens`, the run is aborted with a clear error showing cumulative usage.
 
@@ -593,13 +609,15 @@ binders which cannot work in a cell, where that surface is buried in lipid.
 tell a real complex from a confidently wrong one, so a mis-docked binder still
 returns a well-defined, meaningless ddG.
 
-**Refusals.** The interface stage is routinely declined by Claude's safety
-classifier with category `bio`. `models.claude.refusal_fallbacks` is a chain and
+**Refusals.** The interface (and sometimes target_intel) stage is routinely
+declined by Claude's safety classifier with category `bio` — this is exactly why
+`--provider`/`--model` defaults to **gemini** (`gemini-3.7-flash`) for every
+pipeline stage now, not claude. `models.claude.refusal_fallbacks` is a chain and
 crosses providers on the FIRST refusal — Gemini goes first, not another Claude
 model: measured across three separate refusals on one target, `claude-opus-5`
 refused right after `claude-sonnet-5` every single time (same category), which
-is pure wasted spend, not a second chance. Same-provider fallbacks stay in the
-chain only for the rare case Gemini itself declines.
+is pure wasted spend, not a second chance. `models.gemini.refusal_fallbacks`
+covers the (rarer) case Gemini itself declines, falling through to Claude.
 
 **Correctness guards.** Two checks run after every interface-stage call, since
 a wrong answer here wastes days of GPU time downstream, not just tokens:
@@ -641,6 +659,92 @@ domain segmentation and add a post-trim fold check. Both are optional: without t
 trimming falls back to RCSB CATH/SCOP2/ECOD annotations and a contact-graph
 partition. Foldseek is a structural *search* tool and cannot parse domains — it is
 not the domain parser here.
+
+### 7c. Scale a campaign onto a SLURM cluster
+
+`--compute auto` (the default) makes the local-vs-cluster call **for you**, once,
+at the calibration gate: `pilot` and `calibration` always run locally (they're
+deliberately small), and once calibration measures how big `production` needs to
+be, `src/campaign_calibration.choose_compute()` compares the pessimistic
+single-GPU estimate against `--max-local-hours` (default 48h,
+`design.foundry.max_local_hours` in `config.yaml`) and picks `local` or `cluster`
+for `production` only. `--compute local` / `--compute cluster` still force every
+GPU stage onto one path unconditionally, exactly as before `auto` existed — use
+these to override the automatic call.
+
+The cluster path itself: this machine cannot reach a SLURM scheduler directly, so
+`src/cluster_runner.py` *stages* the campaign — spec, trimmed structure, a real
+fetched target MSA — onto a `g-groups/.../binder_pipeline`-shaped checkout
+(`design.cluster.pipeline_root` in `config.yaml`), writes a ready-to-run
+`launch.sh`, and pauses. A human runs that script from the cluster; resuming
+reads the results back off shared storage. It reuses that pipeline's own
+SLURM/container machinery entirely (RFD3 → solubleMPNN → refold, one array task
+per GPU) rather than reimplementing it.
+
+```bash
+# Default: let the pipeline decide. Runs pilot + calibration locally; if the
+# measured production estimate exceeds 48h on this GPU, it stages a cluster
+# package for production and pauses with submit instructions instead of
+# running unattended for days. Otherwise production just runs locally.
+python scripts/run_pipeline.py --workflow binder \
+    --target KRAS --project kras --budget 5.00
+
+# Same, but with a tighter local budget (e.g. only free for the weekend) and
+# a known 8-GPU allocation for the cluster estimate:
+python scripts/run_pipeline.py --workflow binder \
+    --target KRAS --project kras --max-local-hours 24 --n-gpus 8
+
+# Force everything onto the cluster regardless of size — e.g. to stage a
+# calibration-scale run across 6 GPUs. Pauses immediately with a
+# launch_script path and submit instructions — this machine cannot run it.
+python scripts/run_pipeline.py --workflow binder \
+    --target KRAS --project kras --start-from calibration \
+    --compute cluster --n-gpus 6 --stop-after calibration
+
+# ... on the cluster login node: ...
+#   bash examples/<run_name>/launch.sh
+
+# Resume once the SLURM jobs finish — reads results off shared storage,
+# scores with LPT's own full metrics (ipSAE, epitope recall, hotspot
+# engagement — not the cluster pipeline's own narrower scorer), writes the
+# same calibration verdict a local run would. --compute cluster here forces
+# the SAME path the campaign was staged on; a resumed --compute auto run
+# instead re-reads the compute decision calibration.json already made.
+python scripts/run_pipeline.py --workflow binder \
+    --target KRAS --project kras --start-from calibration --compute cluster
+
+# A multi-site trial's per-site data has no CLI resume path yet (see
+# CLAUDE.md) — use this script directly instead, with the exact n_batches
+# the campaign was staged with:
+python scripts/resume_cluster_calibration.py --project kras \
+    --site raf1_rbd --n-batches 591 --n-gpus 6
+```
+
+**Refold backend.** `design.cluster.refold_backend` defaults to `protenix`, which
+co-folds the target de novo from sequence — unlike RF3, it has no template
+support at all, so `design.cluster.use_msa: true` (also the default) is not an
+accuracy nice-to-have: an un-MSA'd target refolds ~11 Å wrong on the reference
+campaign (vs. RF3's 0.4 Å with a template), which lands straight in
+`binder_rmsd_bb`. The MSA itself is fetched locally and for free via a separate
+Protenix checkout's own hosted MMseqs2 search (`design.cluster.protenix_repo`,
+subprocessed like every other foreign-venv tool in this codebase — PyRosetta,
+BoltzGen, foundry) and cached forever by sequence hash, not searched on the
+cluster.
+
+**`NB` is per GPU, not a total.** `design.cluster.n_gpus` × the sizing math's
+own batch count both matter: the cluster pipeline's own `n_batches` knob runs
+independently on every one of the `n_gpus` array tasks, so a campaign sized for
+2,000 backbones on 6 GPUs actually produces designs from all 6 × that count.
+`src/cluster_runner.plan_campaign` accounts for this; see CLAUDE.md's cluster
+section for the full story (this was wrong once, silently, against a real
+campaign).
+
+**Hardware faults are a real operational fact at this scale.** A single GPU
+array task or refold shard can die to a node-level CUDA ECC error uncorrelated
+with anything in the staged inputs. `scripts/campaign_status.py`-style progress
+checks won't distinguish "still running" from "one shard failed and the rest
+finished a day ago" — check the SLURM logs under the campaign's `logs/` for
+`CUDA error` when a run looks stalled.
 
 ### 8. Visualise top-K designs in PyMOL
 
