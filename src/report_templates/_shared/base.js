@@ -114,7 +114,11 @@ function renderBarRows(svgId, rows, opts) {
 /* ---------------------------------------------------------------- mol* structure explorer
  * Factory over a shared single viewer instance. `opts`:
  *   structs           - {key: {b64, target_chain, binder_chain, ...}}
- *   hotspotResidueIds - () => [auth_seq_id, ...] to select/focus, or []
+ *   hotspotResidueIds - (key) => [auth_seq_id, ...] to select/focus, or [] —
+ *                        called with the structure key being loaded, since
+ *                        a design's own numbering can differ from the
+ *                        native structure's (e.g. RFD3/BoltzGen renumber
+ *                        the target chain in their output)
  *   onLoaded          - (key) => void, called after a structure loads (caption etc.)
  *   stageId           - container element id (default 'molstar-stage')
  */
@@ -159,7 +163,7 @@ function createStructureExplorer(opts) {
     viewer.plugin.clear();
     await viewer.loadStructureFromData(b64ToText(s.b64), 'mmcif', { dataLabel: key });
     hideWaterIon(viewer);
-    const ids = (opts.hotspotResidueIds && opts.hotspotResidueIds()) || [];
+    const ids = (opts.hotspotResidueIds && opts.hotspotResidueIds(key)) || [];
     if (ids.length && s.target_chain) {
       viewer.structureInteractivity({
         elements: { prefix: { auth_asym_id: s.target_chain }, items: { auth_seq_id: ids } },

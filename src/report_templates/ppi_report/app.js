@@ -152,11 +152,22 @@ function setActiveStructure(key) {
   document.querySelectorAll('#design-cards .designcard').forEach(c => c.classList.toggle('active', c.dataset.key === key));
 }
 
-function hotspotResidueIds() { return (REPORT.hotspots || []).map(h => h.auth_seq_id); }
+// Native-structure numbering is wrong for a BoltzGen design refold —
+// BoltzGen renumbers the target chain in its own output (the original
+// mmCIF label_seq becomes the new auth_seq_id; see the Python-side
+// report_data comment). Falls back to native numbering if the design list
+// wasn't computed (no hotspots at all).
+function hotspotResidueIds(key) {
+  if (key && key !== 'native' && REPORT.design_hotspot_auth_seq_ids) {
+    return REPORT.design_hotspot_auth_seq_ids;
+  }
+  return (REPORT.hotspots || []).map(h => h.auth_seq_id);
+}
 
 function updateCaption(key) {
   const cap = document.getElementById('explorer-caption');
-  const nHotspots = hotspotResidueIds().length;
+  // Always the NATIVE count — same reasoning as binder_report's app.js.
+  const nHotspots = hotspotResidueIds('native').length;
   if (key === 'native') {
     cap.innerHTML = `<b>Native ${esc(REPORT.site_decision.pdb_id)}</b> — ${nHotspots} hotspot residue(s) highlighted on the target chain (teal), with the native partner (copper).`;
   } else {

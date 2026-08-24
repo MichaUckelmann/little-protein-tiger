@@ -232,11 +232,23 @@ function setActiveStructure(key) {
   document.querySelectorAll('#design-cards .designcard').forEach(c => c.classList.toggle('active', c.dataset.key === key));
 }
 
-function hotspotResidueIds() { return (REPORT.hotspots || []).map(h => h.auth_seq_id); }
+// Native-structure numbering is wrong for a refolded design — RFD3
+// renumbers the target chain in its own output (see the Python-side
+// _design_hotspot_auth_seq_ids docstring). Falls back to the native list
+// if no design sidecar could be found (report_data's design list is null).
+function hotspotResidueIds(key) {
+  if (key && key !== 'native' && REPORT.design_hotspot_auth_seq_ids) {
+    return REPORT.design_hotspot_auth_seq_ids;
+  }
+  return (REPORT.hotspots || []).map(h => h.auth_seq_id);
+}
 
 function updateCaption(key) {
   const cap = document.getElementById('explorer-caption');
-  const nHotspots = hotspotResidueIds().length;
+  // Always the NATIVE count here — hotspot_engagement was computed as a
+  // fraction of that same original hotspot list regardless of which
+  // numbering the viewer highlights, so the ratio denominator must match.
+  const nHotspots = hotspotResidueIds('native').length;
   if (key === 'native') {
     cap.innerHTML = `<b>Native ${esc(REPORT.site_decision.pdb_id)}</b> — ${nHotspots} hotspot residue(s) highlighted on the target chain (teal), with the native partner (copper).`;
   } else {

@@ -32,6 +32,7 @@ from src.binder_report import (
 
 _ROOT = Path(__file__).resolve().parents[1]
 _KRAS_DIR = _ROOT / "projects/trial_kras/runs/round-1/binder/sites/raf1_rbd/binder"
+_PDL1_DIR = _ROOT / "projects/pdl1_e2e/runs/round-1/binder"
 
 
 @pytest.fixture(scope="module")
@@ -122,6 +123,47 @@ class TestRealKrasTrial:
         a = out1.read_text(encoding="utf-8").split("Generated 2", 1)[0]
         b = out2.read_text(encoding="utf-8").split("Generated 2", 1)[0]
         assert a == b
+
+
+@pytest.mark.skipif(not _PDL1_DIR.exists(), reason="pdl1_e2e project not present in this checkout")
+class TestRealPdl1Campaign:
+    """
+    Regression for a real bug caught by visual inspection of this exact
+    campaign's report: the structure-explorer highlighted the correct
+    residues on the native structure but the wrong ones on every design —
+    RFD3 renumbers the target chain in its own output (a uniform -17 shift
+    on this campaign's trim), and the viewer was highlighting the NATIVE
+    auth_seq_id list on the design structures too, which silently selects
+    different, unrelated residues once the numbering has shifted.
+    """
+
+    def test_design_hotspot_numbering_differs_from_native_and_is_present(self, config, tmp_path):
+        out = build_report(_PDL1_DIR, out_path=tmp_path / "report.html", cfg=config)
+        html = out.read_text(encoding="utf-8")
+        start = html.index("const REPORT = ") + len("const REPORT = ")
+        end = html.index(";\nconst STRUCTS")
+        report = json.loads(html[start:end])
+
+        native_ids = [h["auth_seq_id"] for h in report["hotspots"]]
+        design_ids = report["design_hotspot_auth_seq_ids"]
+
+        assert native_ids  # sanity: this campaign really has hotspots
+        assert design_ids is not None, (
+            "no design sidecar found — the fix has nothing to remap against")
+        assert len(design_ids) == len(native_ids), (
+            "the remap must carry every native hotspot through, not drop any")
+        assert design_ids != native_ids, (
+            "this campaign's trim genuinely shifts numbering — identical "
+            "lists here would mean the remap silently no-op'd")
+
+    def test_viewer_uses_design_numbering_not_native_numbering(self, config, tmp_path):
+        """The actual bug was in app.js's hotspotResidueIds(), not just the
+        Python data — assert the shared shell wires the key through so the
+        design branch is reachable, not just that the data exists."""
+        out = build_report(_PDL1_DIR, out_path=tmp_path / "report.html", cfg=config)
+        html = out.read_text(encoding="utf-8")
+        assert "hotspotResidueIds(key)" in html  # base.js passes the key through
+        assert "REPORT.design_hotspot_auth_seq_ids" in html  # app.js branches on it
 
 
 # ------------------------------------------------------------------

@@ -30,6 +30,7 @@ from src.ppi_report import (
 
 _ROOT = Path(__file__).resolve().parents[1]
 _ENPP1_DIR = _ROOT / "outputs" / "e2e_cgas_sting"
+_MESO_DIR = _ROOT / "outputs" / "e2e_mesothelioma"
 
 
 @pytest.fixture(scope="module")
@@ -97,6 +98,45 @@ class TestRealEnpp1Run:
         a = out1.read_text(encoding="utf-8").split("Generated 2", 1)[0]
         b = out2.read_text(encoding="utf-8").split("Generated 2", 1)[0]
         assert a == b
+
+
+@pytest.mark.skipif(not _MESO_DIR.exists(), reason="outputs/e2e_mesothelioma not present in this checkout")
+class TestRealMesotheliomaRun:
+    """
+    Regression for a real bug (same class as binder_report's — found by
+    inspecting an actual generated report): the structure-explorer
+    highlighted the correct residues on the native structure but the wrong
+    ones on every BoltzGen design refold. BoltzGen renumbers the target
+    chain in its own output — the original mmCIF label_seq becomes the new
+    auth_seq_id (see pipeline_runner.py's _stage_analysis docstring; this
+    run's target is 3KYS, the exact structure that comment's own example
+    residue, PHE314 -> label_seq 122, is drawn from) — so highlighting a
+    design with the native auth_seq_id list silently selects unrelated
+    residues once the numbering has shifted.
+    """
+
+    def test_design_hotspot_numbering_differs_from_native_and_is_present(self, config, tmp_path):
+        out = build_report(_MESO_DIR, out_path=tmp_path / "report.html", cfg=config)
+        html = out.read_text(encoding="utf-8")
+        start = html.index("const REPORT = ") + len("const REPORT = ")
+        end = html.index(";\nconst STRUCTS")
+        report = json.loads(html[start:end])
+
+        native_ids = [h["auth_seq_id"] for h in report["hotspots"]]
+        design_ids = report["design_hotspot_auth_seq_ids"]
+
+        assert native_ids  # sanity: this run really has hotspots
+        assert 314 in native_ids  # the exact PHE314 example from the docstring
+        assert design_ids is not None
+        assert len(design_ids) == len(native_ids)
+        assert design_ids != native_ids
+        assert design_ids[native_ids.index(314)] == 122  # PHE314 -> label_seq 122
+
+    def test_viewer_uses_design_numbering_not_native_numbering(self, config, tmp_path):
+        out = build_report(_MESO_DIR, out_path=tmp_path / "report.html", cfg=config)
+        html = out.read_text(encoding="utf-8")
+        assert "hotspotResidueIds(key)" in html
+        assert "REPORT.design_hotspot_auth_seq_ids" in html
 
 
 # ------------------------------------------------------------------

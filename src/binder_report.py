@@ -159,6 +159,46 @@ def _native_structure(binder_dir: Path, target_intel: dict, interface_handoff: d
     }
 
 
+def _design_hotspot_auth_seq_ids(binder_dir: Path, mode: str) -> list[int] | None:
+    """
+    Hotspot residue numbers in the REFOLDED designs' own numbering, for
+    highlighting a design structure in the viewer.
+
+    `REPORT.hotspots` (from `_load_hotspots`) is in the *native* structure's
+    numbering — correct for highlighting the native structure, but RFD3
+    renumbers the target chain in its own output (chain B; see CLAUDE.md's
+    "RFD3 output chains are always binder = A, target = B" — the
+    input->output renumbering lives ONLY in a design sidecar's
+    `diffused_index_map`, never in the input spec). Using the native
+    numbering to highlight a refolded design silently selects the wrong
+    residues — same class of bug `src.binder_metrics.hotspots_from_rfd3`
+    exists to prevent for scoring; the viewer needs the identical fix.
+
+    The target-chain remap is the same for every design in one campaign
+    (the target region is copied through unchanged, only renumbered — it
+    isn't itself diffused), so any one sidecar from the mode that was
+    actually scored is enough. Returns `None` if no sidecar can be found
+    (e.g. a cluster-scored campaign, whose RFD3-equivalent output lives
+    under a differently-named `diffuse/` directory this code doesn't
+    search) — callers should fall back to the native numbering rather than
+    highlighting nothing.
+    """
+    from src.binder_metrics import hotspots_from_rfd3
+    from src.foundry_runner import FoundryPaths, find_design_sidecar
+
+    paths = FoundryPaths.under(binder_dir / "campaign" / mode)
+    if not paths.rfd3_dir.is_dir():
+        return None
+    sidecar = find_design_sidecar(paths)
+    if sidecar is None:
+        return None
+    try:
+        ids = hotspots_from_rfd3(sidecar, "B")
+    except (KeyError, ValueError, json.JSONDecodeError):
+        return None
+    return ids or None
+
+
 # ---------------------------------------------------------------------
 # scores / ranking — reuses src.binder_ranking, never re-implements it
 # ---------------------------------------------------------------------
@@ -390,6 +430,12 @@ def build_report(binder_dir: Path, out_path: Path | None = None,
             or excellence_bar)
 
     rows, source_label, top_rows, filter_stats = _resolve_designs(binder_dir, rcfg)
+    # "production campaign" is the only fixed source_label string; every
+    # other label (the calibration-trial one is dynamic, includes counts)
+    # means the calibration campaign was scored instead. Same mode names
+    # _run_gpu_stage/_binder_paths use.
+    resolved_mode = "production" if source_label == "production campaign" else "calibration"
+    design_hotspot_ids = _design_hotspot_auth_seq_ids(binder_dir, resolved_mode)
     survivors, _ = filter_records(rows, rcfg.get("thresholds"))
     survivor_ids = {id(r) for r in survivors}
     top_designs = [_design_summary(r) for r in top_rows[:top_n_structures]]
@@ -417,6 +463,11 @@ def build_report(binder_dir: Path, out_path: Path | None = None,
         "candidates": candidates,
         "hotspot_narrative_html": hotspot_narrative_html,
         "hotspots": hotspots,
+        # Native-structure numbering (see `hotspots` above) is wrong for a
+        # refolded design — RFD3 renumbers the target chain in its own
+        # output. `None` when no design sidecar could be found; the viewer
+        # falls back to the native list (better than highlighting nothing).
+        "design_hotspot_auth_seq_ids": design_hotspot_ids,
         "citation_html": citation_html,
         "calibration": {
             "verdict": calibration.get("verdict"),

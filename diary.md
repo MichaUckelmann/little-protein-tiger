@@ -3497,3 +3497,57 @@ the new default itself. `test_falls_back_to_the_code_table_without_a_models_bloc
 needed no `provider=` change — it was already testing "no explicit provider",
 so it now correctly exercises the gemini fallback instead of the claude one,
 which is a cleaner test of its original intent than before.
+
+## 2026-08-24 — Structure-viewer hotspot highlighting was wrong for every design (both tracks)
+
+Caught by the maintainer visually inspecting the regenerated PD-L1
+report.html: the Mol* viewer highlighted the correct binding-site residues
+on the native structure, but the wrong residues on every design — designs
+clearly bound in the right place, yet the highlighted "hotspots" sat
+elsewhere on the target chain. Real bug, same root cause on both
+`binder_report.py` and `ppi_report.py`, and it's exactly the class of bug
+CLAUDE.md already documents for *scoring* (never highlighting): the design
+engine renumbers the target chain in its own output, and `_load_hotspots`'s
+list is in the ORIGINAL structure's numbering. The viewer was highlighting
+every structure — native and every design alike — with that one native
+numbering.
+
+**Binder track**: RFD3 renumbers the target chain per-campaign
+(`diffused_index_map`, only present in a design sidecar, never the input
+spec — same trap CLAUDE.md already documents for scoring). Fixed by a new
+`_design_hotspot_auth_seq_ids()` in `binder_report.py` that finds any one
+design sidecar from whichever stage was actually scored (production or
+calibration — the target-chain remap is the same for every design in a
+campaign since the target region is copied through unchanged, only
+renumbered) and remaps via `binder_metrics.hotspots_from_rfd3` — the exact
+function real scoring already trusts for this. On the PD-L1 campaign the
+user found this on: a uniform -17 shift (native hotspot 56 -> design 39,
+etc.) — explains both symptoms at once (designs highlighted the wrong
+residues, and only some of the 9 by coincidence, since a shifted number
+occasionally still lands on a valid residue index on a shorter chain).
+
+**PPI track**: BoltzGen's renumbering is a *different* mechanism —
+`_stage_analysis` in `pipeline_runner.py` already documented it precisely:
+"the original mmCIF `label_seq` becomes the new `auth_seq_id`" — and, useful
+coincidence, `handoff.parse_hotspot_residues` already carries `label_seq_id`
+on every hotspot dict (falling back to `auth_seq_id` when the source table's
+value was non-numeric), so the fix needed no new file reads at all: just
+`[h["label_seq_id"] for h in hotspots]` in `ppi_report.py`. Verified against
+`outputs/e2e_mesothelioma` (target 3KYS) — turns out to be the *exact*
+reference example already sitting in that docstring comment (PHE314 ->
+label_seq 122), confirmed byte-for-byte.
+
+Both fixes follow the same shape: the shared Mol* harness
+(`report_templates/_shared/base.js`) now calls
+`hotspotResidueIds(key)` (was `()`, no way to know which structure was
+loading), and each track's own `app.js` branches on `key !== 'native'` to
+pick the right list, falling back to native numbering if no remap is
+available rather than highlighting nothing.
+
+### Verification
+295 tests passing (291 -> 295). Two real-data regression tests added per
+track, pinned against the actual observed numbering shift on real
+campaigns (PD-L1 for binder, mesothelioma/3KYS for PPI) rather than a
+synthetic fixture that could pass with the remap silently no-op'd.
+`projects/pdl1_e2e/runs/round-1/binder/report.html` regenerated in place —
+the exact file the maintainer was looking at when they caught this.

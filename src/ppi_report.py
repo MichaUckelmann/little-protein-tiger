@@ -396,6 +396,19 @@ def build_report(run_dir: Path, out_path: Path | None = None,
         "structure_narrative_html": struct_narrative_html,
         "structure_citation_html": struct_citation_html,
         "hotspots": hotspots,
+        # `hotspots[*].auth_seq_id` is native-structure numbering — correct
+        # for highlighting the native structure, but wrong for a BoltzGen
+        # design refold: BoltzGen renumbers the target chain in its output,
+        # specifically the original mmCIF `label_seq` becomes the new
+        # `auth_seq_id` (see _stage_analysis's docstring in
+        # pipeline_runner.py, and its own hotspot remap before SASA
+        # enrichment — this is the same remap, done once here for the
+        # viewer instead of per-worker-call). `label_seq_id` already falls
+        # back to `auth_seq_id` in handoff.parse_hotspot_residues when the
+        # source table's value was non-numeric, so no extra None-handling
+        # is needed here.
+        "design_hotspot_auth_seq_ids": (
+            [h["label_seq_id"] for h in hotspots] if hotspots else None),
         "design_narrative_html": design_narrative_html,
         "execution_html": execution_html,
         "metrics": {
