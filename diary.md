@@ -3551,3 +3551,113 @@ campaigns (PD-L1 for binder, mesothelioma/3KYS for PPI) rather than a
 synthetic fixture that could pass with the remap silently no-op'd.
 `projects/pdl1_e2e/runs/round-1/binder/report.html` regenerated in place —
 the exact file the maintainer was looking at when they caught this.
+
+## 2026-08-24 (later) — First step of the PPI/binder-track unification: verify-gap fix + opt-in foundry bridge
+
+Scoped in `UNIFY_DESIGN_BACKEND_NOTES.md` (written earlier today under time
+pressure ahead of a forced reboot): the maintainer wants foundry
+(RFD3->solubleMPNN->RF3) to become the design engine for PPI-entered runs
+too, not just `--workflow binder`. Before touching anything bigger, asked
+three scoping questions the notes flagged as genuinely the maintainer's
+call: keep BoltzGen as an opt-in escape hatch (yes), require `--project` for
+a foundry-routed PPI run (yes, matches binder-track convention), ship as an
+opt-in flag first rather than flip `--workflow ppi`'s default outright (yes
+— matches this repo's own compute-auto/provider-default rollout pattern).
+
+**Part 1 — the verify-gap (finding #3 in the notes, done first as the
+notes themselves recommended: small, isolated, no bigger decision
+required).** `_verify_target_chain_assignment` and `_verify_hotspot_grounding`
+existed only on the binder track's `interface`-stage path
+(`_stage_binder_interface`) — PPI's own `_stage_structure` calls the
+IDENTICAL `complex-structure-analysis` skill but never ran either guard, so
+a PPI-entered campaign had zero protection against the exact PD-L1
+chain-swap / 8ZNL hotspot-grounding failure modes CLAUDE.md already
+documents as real, campaign-burning incidents.
+
+`_verify_hotspot_grounding` needed no changes at all — it only needs
+`hotspots_json` + `pdb_id`, already track-agnostic. The chain-assignment
+check was the real gap: binder's target_intel names a single, unambiguous
+target gene up front (`target_gene`/`target_uniprot`), but PPI has no
+equivalent pre-declared "the target" — `target_complex` names BOTH proteins
+("YAP1 / TEAD1"), and either one is a legitimate `target_chain` choice
+decided fresh by the structure stage itself. Wrote
+`_verify_ppi_chain_assignment`, which resolves each named protein (offline,
+`target_resolve.resolve_target`) and reuses `_verify_target_chain_assignment`
+verbatim against each candidate in turn — hard-fails only when target_chain
+matches NEITHER named protein, which is exactly the PD-L1 failure shape
+(chain assigned to a molecule outside the intended pair) and stays silent
+(fail-open, like every other verify check here) when a candidate is
+inconclusive rather than confirmed. Both guards now run in `_stage_structure`
+right after a successful hotspot parse, deliberately OUTSIDE the existing
+try/except that swallows parse failures as warnings — a real mismatch here
+must halt the run.
+
+Verified against real structures already on disk: 3KYS (TEAD1/YAP1, chain
+A/C = TEAD1 P28347, B/D = YAP1 P46937 per RCSB) for the "either order is a
+legitimate target_chain choice" case, and the existing PD-L1 fixture (7CZD)
+reused for both the single-name (`inhibit_active_site`) case and the
+"matches neither named protein" hard-fail case (target_complex says
+TEAD1/YAP1 but the handoff's real chains are PD-L1/nanobody — a stand-in for
+the interface stage having picked the wrong entry entirely).
+
+**Part 2 — the opt-in bridge.** New `design.backend` semantics
+(`config.yaml`, previously a dead key per finding #2 — verified nothing read
+it before this): `"boltzgen"` (default, unchanged) or `"foundry"`, plus a
+matching `--design-engine` CLI flag requiring `--project` when set to
+foundry. `PipelineRunner._design_engine` follows the same
+config-vs-explicit-kwarg precedence `pathway_mode` already established.
+
+`_bridge_ppi_to_foundry` differs from the notes' original sketch in one
+deliberate way: rather than routing into `_run_binder_track(start_from=
+"interface")` (which would re-run `complex-structure-analysis` a second
+time, paying for a redundant LLM call just to re-derive what PPI's own
+`_stage_structure` already produced — now WITH the same verify guards, per
+Part 1), it reuses that stage's output directly: PPI's `02_structure.md` is
+copied verbatim as the binder track's own `21_interface.md` artifact (same
+skill, same `### MODEL-READY HOTSPOTS` / `### PIPELINE HANDOFF` shape), a
+synthetic (deterministic, no-LLM) `20_target_intel.md` is written from the
+literature/structure handoffs so every downstream stage that reads its
+`intel` dict from that specific file (trim, spec, summary) still gets one,
+and `_run_binder_track` is entered at `"trim"` — one stage past its own
+`"interface"`. Everything from `trim` onward runs completely unmodified,
+including calibration's Wilson-interval sizing, the adaptive bar, and
+disk/compute budgeting.
+
+A resumed process (e.g. `--start-from production` after the bridge already
+ran once) has no PPI stage left to re-enter, so `run()` now dispatches
+`--design-engine foundry` + a binder-stage `--start-from` value straight
+into `_run_binder_track`, mirroring how `--workflow binder` already resumes.
+
+### Verification
+310 tests passing (301 -> 310, all green): 6 new tests for
+`_verify_ppi_chain_assignment` (incl. a regression test asserting the actual
+call sites exist in `_stage_structure`'s source, since the bug being fixed
+was "the guard existed but nothing called it" — a pure logic test of the
+helper alone wouldn't have caught that class of gap) and 9 for the bridge
+(config wiring, `--project` enforcement at both the CLI and the
+`PipelineRunner` level — fails before creating a run dir or spending a
+token — field-mapping into the synthetic target_intel artifact verified
+against real offline gene resolution, and the binder-stage resume dispatch,
+all with `_run_binder_track` stubbed out since none of this is a GPU
+integration test).
+
+### Punch list (real gaps, not yet addressed)
+1. `membrane_side` is not resolved for a PPI-bridged target the way
+   binder-target-intel's own LLM reasoning resolves it — `_stage_trim`'s
+   membrane-aware trimming falls back to its "extracellular" default even
+   for a real membrane target discovered via the PPI track. Binder-track
+   parity requires either running the same topology check `_stage_target_intel`
+   does or explicitly documenting the limitation to a user picking
+   `--design-engine foundry` on a membrane target.
+2. `--trial-sites` (compare multiple candidate epitopes by measured yield)
+   is not wired into the bridge — PPI's own structure stage picks exactly
+   one interface, so there is currently no multi-site comparison path for a
+   foundry-routed PPI run.
+3. No real end-to-end GPU run yet — verification above is unit-level only
+   (`_run_binder_track` stubbed). The bridge's actual foundry output quality
+   on a PPI-discovered target is unproven the same way IL7RA/PD-L1/KRAS
+   proved the native binder track; that's the natural next validation step
+   once a real target is picked.
+4. BoltzGen's own `design_metrics`/`design_ranking` path is untouched and
+   remains fully live (the maintainer's explicit choice to keep it as an
+   escape hatch) — no dead-code cleanup there, by design, not oversight.

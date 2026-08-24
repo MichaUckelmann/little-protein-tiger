@@ -9,8 +9,8 @@ import pytest
 import yaml
 
 from src.pipeline_runner import (
-    _DEFAULT_MODELS, _STAGE_TO_SKILL, PipelineError, PipelinePausedError,
-    PipelineRunner, _stage_for_skill, _TrimFromDisk,
+    _DEFAULT_MODELS, _STAGE_TO_SKILL, PipelineBlockedError, PipelineError,
+    PipelinePausedError, PipelineRunner, _stage_for_skill, _TrimFromDisk,
 )
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -284,6 +284,168 @@ def test_target_flag_is_rejected_outside_the_binder_track():
         capture_output=True, text=True)
     assert proc.returncode != 0
     assert "--target applies to --workflow binder only" in proc.stderr
+
+
+# ----------------------------------------------------------------------
+# design_engine: the opt-in PPI -> foundry bridge
+# ----------------------------------------------------------------------
+
+def test_design_engine_defaults_to_boltzgen(config):
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._design_engine == "boltzgen"
+
+
+def test_design_engine_rejects_an_unknown_value(config):
+    with pytest.raises(ValueError, match="design_engine"):
+        PipelineRunner(config, workflow="ppi", design_engine="nonsense")
+
+
+def test_design_engine_foundry_requires_a_project(config, tmp_path):
+    """
+    Fails before creating a run dir or spending any tokens — a foundry
+    hand-off is multi-day GPU work that needs the same round-based,
+    resumable manifest --workflow binder requires (see
+    UNIFY_DESIGN_BACKEND_NOTES.md's --project decision).
+    """
+    r = PipelineRunner(config, workflow="ppi", design_engine="foundry",
+                       output_dir=tmp_path / "should_not_be_created")
+    with pytest.raises(PipelineBlockedError, match="requires --project"):
+        r.run("design binders against KRAS")
+    assert not (tmp_path / "should_not_be_created").exists()
+
+
+def test_design_engine_foundry_requires_a_project_via_the_cli():
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, str(_ROOT / "scripts" / "run_pipeline.py"),
+         "--workflow", "ppi", "--query", "x", "--design-engine", "foundry"],
+        capture_output=True, text=True)
+    assert proc.returncode != 0
+    assert "requires --project" in proc.stderr
+
+
+def test_config_backend_key_is_no_longer_dead(config):
+    """
+    UNIFY_DESIGN_BACKEND_NOTES.md finding #2: design.backend in config.yaml
+    was set but never read anywhere. Confirms the value in the checked-in
+    config.yaml actually reaches PipelineRunner now.
+    """
+    assert config.get("design", {}).get("backend") == "boltzgen"
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._design_engine == "boltzgen"
+
+
+def test_bridge_writes_target_intel_and_interface_then_hands_off_at_trim(
+        config, tmp_path, monkeypatch):
+    """
+    Unit-level check on `_bridge_ppi_to_foundry`'s field mapping and file
+    writes, with `_run_binder_track` stubbed out — this is not a GPU
+    integration test. Confirms: (1) a synthetic target_intel artifact is
+    written with fields the trim/spec/summary stages actually read, (2) the
+    structure stage's own report text is reused verbatim as the interface
+    artifact rather than re-derived, (3) the hand-off enters
+    `_run_binder_track` at "trim", one stage past "interface", since PPI's
+    structure stage already did that analysis.
+    """
+    import src.pipeline_runner as pr
+
+    r = PipelineRunner(config, workflow="ppi", design_engine="foundry")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    structure_md = run_dir / "02_structure.md"
+    structure_md.write_text(
+        "# Structure analysis\n\nbody text\n\n"
+        "### PIPELINE HANDOFF\n"
+        "- target_chain: A\n- partner_chain: B\n- target_complex: TEAD1 / YAP1\n",
+        encoding="utf-8")
+
+    result = pr.PipelineResult(run_dir=run_dir, pdb_id="3KYS",
+                               target_complex="TEAD1 / YAP1")
+    result.stage_files["structure"] = structure_md
+    result.hotspot_residues_json = json.dumps({
+        "target_chain": "A", "partner_chain": "B",
+        "residues": [{"residue": "TYR", "auth_seq_id": 56, "label_seq_id": 39,
+                     "rfd3_atoms": "OH"}],
+    })
+    result.literature_handoff = {"design_intent": "disrupt", "modality": "mini_protein",
+                                 "go_recommendation": "GO", "go_rationale": "clear PPI"}
+    result.go_recommendation = "GO"
+
+    captured = {}
+    def fake_run_binder_track(self, query, run_dir, result, **kwargs):
+        captured.update(kwargs)
+        captured["query"] = query
+        return result
+    monkeypatch.setattr(pr.PipelineRunner, "_run_binder_track", fake_run_binder_track)
+
+    out = r._bridge_ppi_to_foundry("design inhibitors of YAP/TEAD", run_dir,
+                                   result, auto_mode=True)
+    assert out is result
+    assert captured["start_from"] == "trim"
+
+    dirs = r._binder_dirs(run_dir)
+    intel = r._load_binder_handoff(dirs["binder"], "target_intel")
+    assert intel["target_gene"] == "TEAD1"
+    assert intel["partner_name"] == "YAP1"
+    assert intel["pdb_id"] == "3KYS"
+    assert intel["design_intent"] == "disrupt"
+    assert intel["target_uniprot"] == "P28347"   # resolved offline from "TEAD1"
+
+    interface_text = (dirs["binder"] / r._BINDER_STAGE_FILES["interface"]).read_text()
+    assert interface_text == structure_md.read_text()
+
+
+def test_bridge_refuses_without_a_completed_structure_stage(config, tmp_path):
+    import src.pipeline_runner as pr
+
+    r = PipelineRunner(config, workflow="ppi", design_engine="foundry")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    result = pr.PipelineResult(run_dir=run_dir)
+    with pytest.raises(PipelineError, match="structure stage"):
+        r._bridge_ppi_to_foundry("q", run_dir, result, auto_mode=True)
+
+
+def test_bridge_refuses_without_hotspots(config, tmp_path):
+    import src.pipeline_runner as pr
+
+    r = PipelineRunner(config, workflow="ppi", design_engine="foundry")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    structure_md = run_dir / "02_structure.md"
+    structure_md.write_text("# Structure analysis\n", encoding="utf-8")
+    result = pr.PipelineResult(run_dir=run_dir)
+    result.stage_files["structure"] = structure_md
+    with pytest.raises(PipelineError, match="MODEL-READY HOTSPOTS"):
+        r._bridge_ppi_to_foundry("q", run_dir, result, auto_mode=True)
+
+
+def test_resuming_a_binder_stage_under_ppi_foundry_dispatches_to_run_binder_track(
+        config, tmp_path, monkeypatch):
+    """
+    A second process resuming --start-from production after the bridge
+    already ran once has no PPI stage to re-enter — it must go straight into
+    the binder-track stage machine `_bridge_ppi_to_foundry` already handed
+    off to and wrote checkpoints for. `project` only needs to be non-None
+    here (the --project requirement check and the resume dispatch both only
+    test identity); `_run_binder_track` is stubbed so no real project
+    machinery or GPU stage runs.
+    """
+    import src.pipeline_runner as pr
+
+    captured = {}
+    def fake_run_binder_track(self, query, run_dir, result, **kwargs):
+        captured.update(kwargs)
+        return result
+    monkeypatch.setattr(pr.PipelineRunner, "_run_binder_track", fake_run_binder_track)
+    monkeypatch.setattr(pr.PipelineRunner, "_init_ledger", lambda self, run_dir: None)
+
+    r = PipelineRunner(config, workflow="ppi", design_engine="foundry",
+                       project=object(), output_dir=tmp_path / "run")
+    r.run("q", start_from="production")
+    assert captured.get("start_from") == "production"
 
 
 # ----------------------------------------------------------------------
@@ -822,6 +984,81 @@ def test_sequence_identity_separates_same_protein_from_unrelated(config):
     assert ref and len(ref) > 100
     assert sequence_identity(ref[19:130], ref) > 0.95     # a real fragment
     assert sequence_identity("MKV" * 40, ref) < 0.4        # nonsense sequence
+
+
+# ----------------------------------------------------------------------
+# PPI-track chain assignment: same guard, no single pre-declared target
+# ----------------------------------------------------------------------
+# The PPI track's structure stage calls the identical `complex-structure-
+# analysis` skill as the binder track's interface stage, but never ran the
+# chain-assignment / hotspot-grounding guards — a real gap surfaced while
+# unifying the two tracks (UNIFY_DESIGN_BACKEND_NOTES.md, finding #3).
+# `_verify_ppi_chain_assignment` reuses `_verify_target_chain_assignment`
+# verbatim against each of the (up to two) proteins named in `target_complex`,
+# since PPI has no single pre-declared "the target" the way binder's
+# target_intel does.
+
+def test_ppi_check_passes_when_target_chain_matches_the_first_named_protein(config):
+    """3KYS: chain A/C = TEAD1 (P28347), chain B/D = YAP1 (P46937) — real
+    RCSB metadata, confirmed via entry_metadata."""
+    r = PipelineRunner(config, workflow="ppi")
+    r._verify_ppi_chain_assignment(
+        "TEAD1 / YAP1", {"target_chain": "A", "partner_chain": "B"}, "3KYS")
+
+
+def test_ppi_check_passes_when_target_chain_matches_the_second_named_protein(config):
+    """Order in `target_complex` doesn't fix which protein is target_chain —
+    either named protein is a legitimate choice for the PPI track."""
+    r = PipelineRunner(config, workflow="ppi")
+    r._verify_ppi_chain_assignment(
+        "TEAD1 / YAP1", {"target_chain": "B", "partner_chain": "A"}, "3KYS")
+
+
+def test_ppi_check_catches_neither_chain_matching_either_named_protein(config):
+    """target_complex names TEAD1/YAP1 but the handoff's chains are actually
+    PD-L1/nanobody (7CZD) — a stand-in for the interface stage having picked
+    the wrong entry or fabricated chain letters entirely."""
+    r = PipelineRunner(config, workflow="ppi")
+    with pytest.raises(PipelineError, match="matches neither protein"):
+        r._verify_ppi_chain_assignment(
+            "TEAD1 / YAP1", {"target_chain": "B", "partner_chain": "A"}, "7CZD")
+
+
+def test_ppi_check_handles_the_single_name_inhibit_active_site_case(config):
+    """No "/" in target_complex (inhibit_active_site mode) — falls straight
+    through to `_verify_target_chain_assignment` against the one named
+    protein, exactly like the binder track's own check."""
+    r = PipelineRunner(config, workflow="ppi")
+    with pytest.raises(PipelineError, match="BACKWARDS|identical"):
+        r._verify_ppi_chain_assignment(
+            "CD274 (active site)", {"target_chain": "A", "partner_chain": "B"},
+            "7CZD")
+    r._verify_ppi_chain_assignment(   # correct assignment must not raise
+        "CD274 (active site)", {"target_chain": "B", "partner_chain": "A"},
+        "7CZD")
+
+
+def test_ppi_check_is_silent_without_a_target_complex_or_chain(config):
+    """Missing inputs must not block the run — same fail-open policy as
+    every other verify check in this pipeline."""
+    r = PipelineRunner(config, workflow="ppi")
+    r._verify_ppi_chain_assignment("", {"target_chain": "A"}, "3KYS")
+    r._verify_ppi_chain_assignment("TEAD1 / YAP1", {}, "3KYS")
+
+
+def test_ppi_structure_stage_runs_the_same_verify_guards_as_binder(config):
+    """
+    Confirms the wiring, not just the standalone helper: `_stage_structure`
+    must call both guards after a successful hotspot parse, the same way
+    `_stage_binder_interface` already does. Regression test for the actual
+    gap (the guards existed but were binder-only) rather than for the
+    guards' own logic, which the tests above already cover.
+    """
+    import inspect
+
+    src = inspect.getsource(PipelineRunner._stage_structure)
+    assert "_verify_ppi_chain_assignment" in src
+    assert "_verify_hotspot_grounding" in src
 
 
 # ----------------------------------------------------------------------

@@ -210,9 +210,15 @@ design:
   pathway:
     mode: standard
 
-  # Design backend: "boltzgen" (legacy, src/design_runner.py) or "foundry"
-  # (RFD3 -> solubleMPNN -> RF3 on the local GPU, src/foundry_runner.py).
-  backend: foundry
+  # --workflow ppi ONLY (the binder track always runs foundry regardless of
+  # this key). "boltzgen" (default, src/design_runner.py) or "foundry"
+  # (hands off to the same RFD3 -> solubleMPNN -> RF3 stage machine
+  # --workflow binder uses, right after PPI's own structure stage — see
+  # PipelineRunner._bridge_ppi_to_foundry and UNIFY_DESIGN_BACKEND_NOTES.md).
+  # This key was dead until that bridge existed — do not assume any other
+  # value here does anything. CLI --design-engine overrides this value when
+  # explicitly passed; foundry requires --project.
+  backend: boltzgen
 
   foundry:
     root: "/home/m.uckelmann_cbs-niob.local/code/foundry"

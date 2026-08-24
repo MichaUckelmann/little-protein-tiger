@@ -108,6 +108,73 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
   extend a track's own `app.js` when the content is genuinely specific to
   that track — don't grow one at the expense of the other's readability.
 
+## The PPI -> foundry bridge (opt-in `design_engine`)
+
+Scoped in `UNIFY_DESIGN_BACKEND_NOTES.md`, unification work started there.
+`--workflow ppi` still defaults to BoltzGen; `design.backend: foundry` in
+`config.yaml` (or `--design-engine foundry` on the CLI) hands a
+PPI-discovered target off to the SAME RFD3->solubleMPNN->RF3 stage machine
+`--workflow binder` uses, instead of continuing into BoltzGen's
+design/execution/analysis stages. Requires `--project` — same reasoning as
+the binder track's own requirement: the foundry stages downstream are
+multi-day GPU campaigns that need a resumable manifest. `design.backend` was
+a dead config key before this (nothing read it — confirmed by grep); do not
+assume any *other* currently-unread config key in this file does something
+just because it looks wired.
+
+`_bridge_ppi_to_foundry` (`src/pipeline_runner.py`) is entered right after
+the go/no-go decision, once PPI's own pathway/literature/structure stages
+have already run unchanged. It does NOT re-run `_run_binder_track` from its
+own `"interface"` stage — PPI's `_stage_structure` already calls the
+identical `complex-structure-analysis` skill (see the shared-skill note
+below) and, since the verify-gap fix in the same change, runs the same
+`_verify_ppi_chain_assignment` / `_verify_hotspot_grounding` guards
+`_stage_binder_interface` does. Re-running it would just pay for a second,
+redundant LLM call. Instead: PPI's `02_structure.md` is copied verbatim as
+the binder track's `21_interface.md` artifact (byte-identical shape, same
+skill), a synthetic *deterministic* `20_target_intel.md` is written from the
+literature/structure handoffs (translating `target_complex` — "ProteinA /
+ProteinB" — into `target_gene`/`partner_name` via
+`_split_target_complex_names`, and resolving a UniProt accession offline via
+`target_resolve.resolve_target`, best-effort), and `_run_binder_track` is
+entered at `"trim"` — one stage past its own `"interface"`. Everything from
+`trim` onward (spec -> pilot -> calibration -> production -> scoring ->
+summary) runs completely unmodified, inheriting every non-obvious fact in
+the next section for free. A process resuming a later stage
+(`--start-from production`) has no PPI stage to re-enter, so `run()`
+dispatches a binder-stage `--start-from` straight into `_run_binder_track`
+when `design_engine == "foundry"`, exactly like `--workflow binder` resumes.
+
+**Two guards were binder-only until this change, and PPI-track chain
+assignment has no single pre-declared answer to check against the way
+binder's does.** Binder's `target_intel` names one unambiguous target gene
+up front; PPI's `target_complex` names BOTH proteins in a PPI pair, and
+either one is a legitimate `target_chain` choice — the structure stage
+itself decides which, fresh, every run. `_verify_ppi_chain_assignment`
+handles this by resolving each named protein and trying
+`_verify_target_chain_assignment` against each in turn, accepting the
+assignment as soon as one candidate doesn't flag it as backwards; it
+hard-fails only when target_chain matches NEITHER named protein (the actual
+shape of the PD-L1 incident: a chain assigned to a molecule outside the
+intended pair entirely), and stays silent — fail-open, like every other
+verify check here — when a candidate is merely inconclusive. Both guards now
+run inside `_stage_structure` too (previously binder-`interface`-only),
+deliberately outside the try/except that swallows hotspot-parse failures as
+warnings: a real chain-swap or grounding mismatch must halt the run, not
+degrade to a log line.
+
+**Known gaps, not yet addressed** (see `diary.md`'s 2026-08-24 "First step
+of the PPI/binder-track unification" entry for the fuller list): no
+membrane-topology resolution for a PPI-bridged target (falls back to
+`_stage_trim`'s "extracellular" default rather than binder-target-intel's
+own UniProt-topology check); `--trial-sites` multi-epitope comparison isn't
+wired into the bridge (PPI's structure stage picks exactly one interface);
+no real end-to-end GPU run has proven the bridge's output quality yet
+(current tests stub `_run_binder_track` — this is unit-level verification of
+the hand-off, not a campaign). BoltzGen's own `design_metrics`/
+`design_ranking` path is untouched and stays fully live as a deliberate
+escape hatch, not oversight.
+
 ## Non-obvious facts the binder track depends on
 
 These were each established by reproducing a real campaign; changing code near
@@ -458,6 +525,15 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
   palette, layout primitives, and Mol* explorer harness from there; see the binder-track
   section above ("Two reports, one design system").
 - Configs: alternates passed via `--config` to `fetch_papers.py` (and now `curate_papers.py`).
+- `_verify_target_chain_assignment` ⇄ `_verify_ppi_chain_assignment` ⇄ `_verify_hotspot_grounding`
+  — the PD-L1/8ZNL guards. Now called from BOTH `_stage_binder_interface` (binder) and
+  `_stage_structure` (PPI); a future stage that also calls `complex-structure-analysis`
+  needs the same two calls, not a reason to skip them.
+- `_bridge_ppi_to_foundry` ⇄ `_run_binder_track`'s `"target_intel"`/`"interface"` stage-file
+  loading (`_load_binder_handoff`) — the bridge writes synthetic/copied artifacts at those
+  exact paths (`_BINDER_STAGE_FILES`) because `_run_binder_track` always reads them off disk
+  regardless of `start_from`; changing that stage-file format on one side without the other
+  breaks the hand-off silently (a `{}` handoff, not a crash).
 
 ## Frontend
 

@@ -265,6 +265,7 @@ class PipelineRunner:
         trial_backbones: int = 300,
         escalate_to: int | None = 1000,
         stop_after: str | None = None,
+        design_engine: str = "boltzgen",
     ) -> None:
         self.config = config
         self.provider = provider
@@ -348,6 +349,25 @@ class PipelineRunner:
                 f"'standard' or 'wildcard'."
             )
         self._pathway_mode: str = resolved_mode
+        # "boltzgen" (default, unchanged today) | "foundry" — PPI-track only
+        # (the binder track always runs foundry regardless of this key).
+        # Opt-in per UNIFY_DESIGN_BACKEND_NOTES.md: --workflow ppi still
+        # defaults to BoltzGen; --design-engine foundry hands a
+        # PPI-discovered target off to the same RFD3->solubleMPNN->RF3 stage
+        # machine --workflow binder uses, right after PPI's own structure
+        # stage (see `_bridge_ppi_to_foundry`). `design.backend` in
+        # config.yaml was a dead key before this — read here now, the same
+        # override-precedence pattern as `pathway_mode` above: an explicit
+        # non-default kwarg (i.e. what the CLI's --design-engine passed) wins;
+        # otherwise config.yaml sets the project-wide default.
+        cfg_design_engine = (config.get("design") or {}).get("backend", "boltzgen")
+        resolved_engine = design_engine if design_engine != "boltzgen" else cfg_design_engine
+        if resolved_engine not in {"boltzgen", "foundry"}:
+            raise ValueError(
+                f"Invalid design_engine={resolved_engine!r}; expected "
+                f"'boltzgen' or 'foundry'."
+            )
+        self._design_engine = resolved_engine
 
     @property
     def model_id(self) -> str:
@@ -406,6 +426,17 @@ class PipelineRunner:
         if pdb_id and start_from == "pathway":
             start_from = "structure"
 
+        if self._workflow == "ppi" and self._design_engine == "foundry" and self._project is None:
+            # Fail before creating a run dir or spending any tokens — a
+            # foundry hand-off is multi-day GPU work that needs the same
+            # round-based, resumable manifest --workflow binder requires.
+            raise PipelineBlockedError(
+                "--design-engine foundry requires --project: the foundry "
+                "stages this hands off to (pilot/calibration/production) are "
+                "multi-day GPU campaigns that need the manifest to be "
+                "resumable, exactly like --workflow binder."
+            )
+
         safe_slug = re.sub(r"[^a-zA-Z0-9]+", "_", query[:40]).strip("_").lower()
         run_dir = self._output_dir_override or (
             _ROOT / "outputs" / f"{safe_slug}_{date.today().isoformat()}"
@@ -428,6 +459,22 @@ class PipelineRunner:
                 query, run_dir, result,
                 start_from=start_from, context_file=context_file,
                 auto_mode=auto_mode, target=target,
+                attach=not self._detach, n_batches=self._n_batches,
+            )
+
+        # ── PPI-track run resuming INSIDE the foundry hand-off ────────────────
+        # A fresh run always enters below at pathway/literature/structure and
+        # reaches `_bridge_ppi_to_foundry` after the go/no-go decision (see
+        # that block further down). Resuming a later foundry stage in a new
+        # process (e.g. --start-from production) has no PPI stage to
+        # re-enter — go straight into the binder-track stage machine that the
+        # earlier bridge call already handed off to and wrote checkpoints for.
+        if self._workflow == "ppi" and self._design_engine == "foundry" \
+                and start_from in self.BINDER_STAGE_ORDER:
+            return self._run_binder_track(
+                query, run_dir, result,
+                start_from=start_from, context_file=context_file,
+                auto_mode=auto_mode, target=None,
                 attach=not self._detach, n_batches=self._n_batches,
             )
 
@@ -590,6 +637,16 @@ class PipelineRunner:
                 logger.info(f"Decision: GO — {result.go_rationale}")
             else:
                 logger.warning("go_recommendation not in mol-bio handoff — proceeding to design anyway")
+
+            # ── Opt-in hand-off: foundry instead of BoltzGen ─────────────────
+            # PPI's own pathway/literature/structure stages above are
+            # unchanged; from here a foundry-engine run skips BoltzGen's
+            # design/execution/analysis stages entirely and continues inside
+            # the binder track's own stage machine. See
+            # `_bridge_ppi_to_foundry` and UNIFY_DESIGN_BACKEND_NOTES.md.
+            if self._design_engine == "foundry":
+                return self._bridge_ppi_to_foundry(
+                    query, run_dir, result, auto_mode=auto_mode)
 
             # ── Stage 3 skill: protein-design-script ─────────────────────────
             # _stage_design reads modality / design_query / etc. from lit_handoff,
@@ -1132,6 +1189,167 @@ class PipelineRunner:
                 f"textbook/literature numbering for a well-known protein instead "
                 f"of reading this specific structure's residues — re-run the "
                 f"stage, or pick a different structure.")
+
+    def _verify_ppi_chain_assignment(self, target_complex: str,
+                                     handoff: dict[str, str], pdb_id: str) -> None:
+        """
+        PPI-track counterpart to `_verify_target_chain_assignment`.
+
+        Binder's target_intel names a single, unambiguous target gene up
+        front, so its guard can ask "is target_chain THIS gene". PPI's
+        structure stage instead picks target_chain/partner_chain itself out
+        of a `target_complex` naming BOTH proteins (e.g. "YAP1 / TEAD1") —
+        either named protein is a legitimate target_chain choice, so there is
+        no single pre-declared answer to check against. What is still a bug,
+        and exactly the PD-L1 failure mode this guards against, is
+        target_chain resolving to NEITHER named protein. Resolves each name
+        to a gene/UniProt pair and reuses `_verify_target_chain_assignment`'s
+        sequence-first/metadata-fallback check verbatim against each
+        candidate in turn, accepting the assignment as soon as one candidate
+        does not flag it as backwards or unrelated.
+
+        A candidate that comes back silent (inconclusive — no structure
+        downloaded yet, no RCSB metadata, gene not found) is treated the same
+        as a pass rather than tried further: this is deliberately fail-open,
+        matching every other verify check in this pipeline, and it still
+        catches the incident this was built for — a well-characterised target
+        resolves to a UniProt accession and hits the sequence-identity tier,
+        which gives a decisive, non-silent verdict.
+        """
+        from src.target_resolve import resolve_target
+
+        if not target_complex or not handoff.get("target_chain"):
+            return
+        names = self._split_target_complex_names(target_complex)
+        if not names:
+            return
+
+        candidates = []
+        for name in names[:2]:
+            resolved = resolve_target(name)
+            candidates.append({"target_gene": resolved.gene or name,
+                               "target_uniprot": resolved.uniprot or ""})
+
+        if len(candidates) == 1:
+            self._verify_target_chain_assignment(candidates[0], handoff, pdb_id)
+            return
+
+        errors = []
+        for intel in candidates:
+            try:
+                self._verify_target_chain_assignment(intel, handoff, pdb_id)
+                return
+            except PipelineError as exc:
+                errors.append(str(exc))
+        raise PipelineError(
+            f"chain assignment in {pdb_id} matches neither protein named in "
+            f"{target_complex!r} (target_chain={handoff.get('target_chain')!r}, "
+            f"partner_chain={handoff.get('partner_chain')!r}): " + " | ".join(errors))
+
+    @staticmethod
+    def _split_target_complex_names(target_complex: str) -> list[str]:
+        """
+        "ProteinA / ProteinB" -> ["ProteinA", "ProteinB"]; a single-protein
+        inhibit_active_site label like "DPP4 (active site)" -> ["DPP4"].
+        """
+        names = [re.sub(r"\s*\([^)]*\)\s*$", "", n).strip()
+                 for n in re.split(r"\s*/\s*", target_complex or "")]
+        return [n for n in names if n]
+
+    def _bridge_ppi_to_foundry(
+        self, query: str, run_dir: Path, result: PipelineResult, *,
+        auto_mode: bool,
+    ) -> PipelineResult:
+        """
+        Hand a PPI-discovered target off to foundry instead of continuing
+        into BoltzGen's design/execution/analysis stages. Opt-in via
+        --design-engine foundry (config.yaml design.backend); see
+        UNIFY_DESIGN_BACKEND_NOTES.md for the design rationale.
+
+        PPI's own pathway + literature + structure stages already ran
+        unchanged before this is called. `_stage_structure` calls the SAME
+        `complex-structure-analysis` skill the binder track's own `interface`
+        stage calls, and (since the verify-gap fix alongside this bridge)
+        runs the identical `_verify_ppi_chain_assignment` /
+        `_verify_hotspot_grounding` guards — so its output is reused directly
+        as the binder-track's `interface` artifact rather than paying for a
+        second LLM call that would just re-derive the same interface.
+        `_run_binder_track` is entered at "trim", one stage past its own
+        "interface", for exactly that reason.
+
+        A synthetic "target_intel" artifact is still written (deterministic,
+        no LLM call) because every downstream binder stage — trim, spec,
+        summary — reads its `intel` dict from the target_intel stage file on
+        disk, not from the interface stage; skipping that write would leave
+        those stages loading `{}` and falling back to un-derived defaults.
+        """
+        dirs = self._binder_dirs(run_dir)
+        structure_file = result.stage_files.get("structure")
+        if structure_file is None or not structure_file.exists():
+            raise PipelineError(
+                "design_engine=foundry needs a completed structure stage "
+                "before it can hand off to foundry — resume from an earlier "
+                "PPI stage first.")
+        if not result.hotspot_residues_json:
+            raise PipelineError(
+                "the structure stage produced no MODEL-READY HOTSPOTS table; "
+                "foundry cannot build an RFD3 spec without atom-level "
+                "hotspots (this should already have failed inside "
+                "_stage_structure — check 02_structure.md).")
+
+        lit = result.literature_handoff or {}
+        pathway = result.pathway_handoff or {}
+        target_complex = result.target_complex or "the target"
+        names = self._split_target_complex_names(target_complex)
+        primary_name = names[0] if names else target_complex
+        partner_name = names[1] if len(names) > 1 else ""
+
+        from src.target_resolve import resolve_target
+        resolved = resolve_target(primary_name)
+
+        design_intent = (lit.get("design_intent") or pathway.get("design_intent")
+                         or "disrupt")
+        modality = lit.get("modality") or "mini_protein"
+        sizes = (self._binder_cfg().get("constraints") or {}).get("binder_sizes") or {}
+        size = sizes.get(modality) or sizes.get("mini_protein") or {}
+
+        intel_handoff = {
+            "pdb_id": result.pdb_id or "",
+            "target_gene": primary_name,
+            "target_uniprot": resolved.uniprot or "",
+            "partner_name": partner_name,
+            "design_intent": design_intent,
+            "modality": modality,
+            "binder_length_min": size.get("min", 70),
+            "binder_length_max": size.get("max", 86),
+            "interface_rationale": lit.get("go_rationale", ""),
+            "go_recommendation": result.go_recommendation or "GO",
+        }
+        target_intel_out = dirs["binder"] / self._BINDER_STAGE_FILES["target_intel"]
+        self._write_binder_report(
+            target_intel_out, "Target intelligence (bridged from PPI literature)",
+            f"Bridged from the PPI track's pathway/literature/structure stages "
+            f"for {target_complex} — see 00_pathway.md / 01_literature.md / "
+            f"02_structure.md for the full reasoning. This file exists only "
+            f"so foundry's own stage machine has a target_intel artifact to "
+            f"resume from; no LLM call was made to produce it.",
+            intel_handoff)
+        result.stage_files["target_intel"] = target_intel_out
+        result.stages_completed.append("target_intel")
+
+        interface_out = dirs["binder"] / self._BINDER_STAGE_FILES["interface"]
+        interface_out.write_text(
+            structure_file.read_text(encoding="utf-8"), encoding="utf-8")
+        result.stage_files["interface"] = interface_out
+        result.stages_completed.append("interface")
+
+        logger.info(
+            f"design_engine=foundry: handing {target_complex} ({result.pdb_id}) "
+            f"off to foundry at the trim stage")
+        return self._run_binder_track(
+            query, run_dir, result, start_from="trim", context_file=None,
+            auto_mode=auto_mode, target=None, attach=not self._detach,
+            n_batches=self._n_batches)
 
     def _stage_trim(self, intel: dict[str, str], hotspots_json: str,
                     dirs: dict[str, Path],
@@ -2582,6 +2800,7 @@ class PipelineRunner:
         # gemmi (e.g. when the structure-tools tool_get_sequence_map call
         # failed inside the skill) and run a residue-name sanity check that
         # surfaces mouse/human numbering mismatches.
+        hotspots_json = None
         try:
             structure_text = output_file.read_text(encoding="utf-8")
             target_chain = (handoff.get("target_chain", "")
@@ -2602,6 +2821,20 @@ class PipelineRunner:
                 logger.info(f"  hotspot residues parsed: {len(json.loads(hotspots_json).get('residues', []))} residues")
         except Exception as exc:
             logger.warning(f"  could not parse hotspot residues from structure report: {exc}")
+
+        # Same guards the binder track's interface stage runs after this
+        # identical skill call (see CLAUDE.md's PD-L1 chain-swap / 8ZNL
+        # hotspot-grounding incidents) — PPI's own structure stage never ran
+        # them, leaving PPI-entered campaigns with no protection against the
+        # exact failure modes that already burned a full binder-track
+        # campaign once. Deliberately OUTSIDE the try/except above: a real
+        # mismatch here must halt the run, not degrade to a warning the way a
+        # missing hotspot table does.
+        if hotspots_json:
+            verify_pdb = result.pdb_id or pdb_id
+            self._verify_ppi_chain_assignment(
+                result.target_complex or target_complex, handoff, verify_pdb)
+            self._verify_hotspot_grounding(hotspots_json, verify_pdb)
 
         return handoff
 

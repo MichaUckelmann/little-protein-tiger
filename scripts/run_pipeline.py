@@ -167,6 +167,22 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--design-engine",
+        choices=["boltzgen", "foundry"],
+        default=None,
+        dest="design_engine",
+        help=(
+            "--workflow ppi only (--workflow binder always runs foundry "
+            "regardless of this). 'boltzgen' (default) is today's PPI design/"
+            "execution/analysis path unchanged. 'foundry' hands the "
+            "PPI-discovered target off to the same RFD3->solubleMPNN->RF3 "
+            "stage machine --workflow binder uses, right after the PPI "
+            "structure stage — requires --project, since it enters multi-day "
+            "GPU stages. Default without this flag: design.backend in "
+            "config.yaml (itself 'boltzgen' unless changed)."
+        ),
+    )
+    p.add_argument(
         "--detach",
         action="store_true",
         help=(
@@ -365,6 +381,16 @@ def main() -> int:
     if not query.strip():
         parser.error("Query is empty.")
 
+    config = _load_config()
+    # Effective design engine: an explicit --design-engine wins; otherwise
+    # config.yaml's design.backend decides (itself "boltzgen" unless changed —
+    # see PipelineRunner.__init__ for the same precedence applied again on
+    # the runner side, which is what actually matters for a library caller
+    # that skips this CLI).
+    design_engine = args.design_engine or (config.get("design") or {}).get(
+        "backend", "boltzgen")
+    is_foundry_bridge = (not is_binder) and design_engine == "foundry"
+
     if is_binder:
         if not args.project:
             parser.error(
@@ -379,6 +405,12 @@ def main() -> int:
                 f"choose one of {', '.join(_BINDER_STAGES)}.")
     elif args.target:
         parser.error("--target applies to --workflow binder only.")
+
+    if is_foundry_bridge and not args.project:
+        parser.error(
+            "--design-engine foundry requires --project: the foundry stages "
+            "it hands off to are multi-day GPU campaigns that need the same "
+            "round-based, resumable manifest --workflow binder requires.")
 
     if args.site:
         if not is_binder:
@@ -399,15 +431,18 @@ def main() -> int:
                 f"{args.compute!r}.")
         args.compute = "cluster"
 
-    # Validate resume arguments
-    if (not is_binder and args.start_from != "pathway"
-            and not args.pdb and not args.context):
+    # Validate resume arguments. A binder-stage --start-from needs neither
+    # --pdb nor --context regardless of workflow: --workflow binder always
+    # resumes this way, and a --design-engine foundry ppi run resumes the
+    # same way once the bridge has already handed off once (see
+    # PipelineRunner._bridge_ppi_to_foundry / _run_binder_track).
+    if (not is_binder and args.start_from not in _BINDER_STAGES
+            and args.start_from != "pathway" and not args.pdb and not args.context):
         parser.error(
             f"--start-from {args.start_from!r} requires either --pdb or --context "
             "(a path to a prior stage output file)."
         )
 
-    config = _load_config()
     if is_binder and args.success_metric:
         config.setdefault("design", {}).setdefault(
             "binder_ranking", {})["success_metric"] = args.success_metric
@@ -465,6 +500,7 @@ def main() -> int:
         trial_backbones=args.trial_backbones,
         escalate_to=(args.escalate_to or None),
         stop_after=args.stop_after,
+        design_engine=design_engine,
     )
 
     logger.info(f"Query: {query[:120]}{'...' if len(query) > 120 else ''}")
