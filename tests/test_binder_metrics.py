@@ -11,7 +11,8 @@ import pytest
 
 from src.binder_metrics import (
     calc_d0, calc_d0_array, design_family, hotspots_from_rfd3,
-    ipsae_from_confidences, iter_refolds, score_campaign, ScoreConfig,
+    ipsae_from_confidences, iter_protenix_refolds, iter_refolds, score_campaign,
+    ScoreConfig,
 )
 
 
@@ -134,6 +135,40 @@ def test_input_spec_without_a_map_warns_and_passes_numbers_through(tmp_path):
 def test_iter_refolds_finds_nothing_in_an_empty_tree(tmp_path):
     assert list(iter_refolds(tmp_path)) == []
     assert list(iter_refolds(tmp_path / "missing")) == []
+
+
+def test_iter_protenix_refolds_finds_per_design_subdirectories(tmp_path):
+    """
+    The real cluster pipeline's Protenix backend writes
+    run_N/protenix/<id>/<id>_scores.json — a per-design SUBDIRECTORY, the
+    same shape as RF3's own <id>/<id>_summary_confidences.json. An earlier
+    revision assumed flat files directly under the backend dir and silently
+    scored zero refolds against a campaign that had already finished.
+    """
+    protenix_dir = tmp_path / "run_0" / "protenix"
+    ids = ["design_0001_dldesign_0", "design_0002_dldesign_0", "design_0003_dldesign_1"]
+    for design_id in ids:
+        design_dir = protenix_dir / design_id
+        design_dir.mkdir(parents=True)
+        (design_dir / f"{design_id}_scores.json").write_text("{}", encoding="utf-8")
+        # A sibling file that isn't the scores file — should never be yielded.
+        (design_dir / f"{design_id}.pdb").write_text("", encoding="utf-8")
+
+    found = sorted(p.name for p in iter_protenix_refolds(protenix_dir))
+    assert found == sorted(f"{design_id}_scores.json" for design_id in ids)
+
+
+def test_iter_protenix_refolds_ignores_flat_files_at_the_backend_root(tmp_path):
+    """
+    Negative case for the same bug: files sitting flat in the backend dir
+    (the old, wrong assumption) must NOT be picked up, since no design
+    directory actually holds them in the real layout.
+    """
+    protenix_dir = tmp_path / "run_0" / "protenix"
+    protenix_dir.mkdir(parents=True)
+    (protenix_dir / "design_0001_dldesign_0_scores.json").write_text("{}", encoding="utf-8")
+
+    assert list(iter_protenix_refolds(protenix_dir)) == []
 
 
 # ----------------------------------------------------------------------

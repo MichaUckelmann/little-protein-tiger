@@ -1,12 +1,16 @@
 {
   "mcpServers": {
     "literature-db": {
-      "command": "C:\\Users\\micha\\Documents\\little_protein_tiger\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\Users\\micha\\Documents\\little_protein_tiger\\scripts\\launch_mcp.py"]
+      "command": "/home/m.uckelmann_cbs-niob.local/code/little-protein-tiger/.venv/bin/python3",
+      "args": [
+        "/home/m.uckelmann_cbs-niob.local/code/little-protein-tiger/scripts/launch_mcp.py"
+      ]
     },
     "structure-tools": {
-      "command": "C:\\Users\\micha\\Documents\\little_protein_tiger\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\Users\\micha\\Documents\\little_protein_tiger\\scripts\\launch_structure_tools.py"]
+      "command": "/home/m.uckelmann_cbs-niob.local/code/little-protein-tiger/.venv/bin/python3",
+      "args": [
+        "/home/m.uckelmann_cbs-niob.local/code/little-protein-tiger/scripts/launch_structure_tools.py"
+      ]
     }
   }
 }

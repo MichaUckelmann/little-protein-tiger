@@ -27,8 +27,11 @@ load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from web.backend.db import init_db
+from web.backend.rate_limit import limiter
 from web.backend.routers import auth, projects, runs, structures
 from web.backend.routers import binders
 
@@ -57,6 +60,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     app.include_router(auth.router)
     app.include_router(projects.router)

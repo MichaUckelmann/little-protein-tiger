@@ -10,8 +10,14 @@ instead — `_run_site_trials` only re-enters through `--trial-sites N` with
 N > 1 (or `--stop-after trial`), and even then recomputes `n_batches` from
 `--trial-backbones`, which must exactly match what was originally staged or
 the completion check (`plan.expected_rf3`) silently checks against the wrong
-target. Calling the same stage method directly, with the same n_batches,
-sidesteps both gaps until the CLI grows real per-site resume support.
+target.
+
+The CLI has since grown real per-site resume support
+(`run_pipeline.py --start-from calibration --site <id> --n-batches <n>`) —
+this script and that flag are now both thin callers of the same
+`PipelineRunner.resume_site_stage`, so a fix to the underlying logic never
+has to be made twice. This script remains for backward compatibility and
+for anyone scripting around it directly.
 
 Safe to run repeatedly: if the cluster run hasn't finished, this pauses again
 (same PipelinePausedError as the original staging call) without touching
@@ -24,10 +30,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
@@ -65,7 +69,9 @@ def main(argv: list[str] | None = None) -> int:
         config.setdefault("design", {}).setdefault("cluster", {})["n_gpus"] = args.n_gpus
 
     from src.project import Project
-    from src.pipeline_runner import PipelineRunner, PipelinePausedError, PipelineResult
+    from src.pipeline_runner import (
+        PipelineError, PipelinePausedError, PipelineRunner,
+    )
 
     project = Project.create(args.project, query=args.target or f"Resume {args.project}",
                              workflow="binder")
@@ -74,29 +80,10 @@ def main(argv: list[str] | None = None) -> int:
 
     runner = PipelineRunner(config=config, project=project, round_id=round_id,
                             workflow="binder", compute="cluster")
-    dirs = runner._binder_dirs(run_dir)
-    site_dirs = runner._binder_dirs(dirs["sites"] / args.site)
 
-    spec_files = sorted(site_dirs["spec"].glob("*.json"))
-    if not spec_files:
-        logger.error(f"no spec found under {site_dirs['spec']}")
-        return 1
-    spec_path = spec_files[0]
-
-    trim_map_path = site_dirs["trim"] / "trim_map.json"
-    if not trim_map_path.exists():
-        logger.error(f"no trim_map.json under {site_dirs['trim']}")
-        return 1
-    trim_map = json.loads(trim_map_path.read_text(encoding="utf-8"))
-    trim = SimpleNamespace(
-        contig=trim_map["contig"], n_segments=trim_map["n_segments"],
-        kept_segments=trim_map["kept_segments"],
-    )
-
-    result = PipelineResult(run_dir=run_dir)
     try:
-        calib = runner._stage_calibration(
-            spec_path, trim, site_dirs, result, attach=True, n_batches=args.n_batches)
+        calib = runner.resume_site_stage(
+            run_dir, args.site, args.stage, args.n_batches, attach=True)
     except PipelinePausedError as exc:
         print()
         print("=" * 60)
@@ -106,7 +93,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {key}: {val}")
         print("=" * 60)
         return 3
+    except PipelineError as exc:
+        logger.error(str(exc))
+        return 1
 
+    dirs = runner._binder_dirs(run_dir)
+    site_dirs = runner._binder_dirs(dirs["sites"] / args.site)
     res = calib["result"]
     print()
     print("=" * 60)

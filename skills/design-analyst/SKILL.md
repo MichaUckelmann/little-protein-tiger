@@ -55,9 +55,22 @@ The query body contains a CSV table with the MMR-selected top-K. Columns:
 | `complex_plddt` | overall complex pLDDT (0-1) | higher = better |
 | `binder_length` | residue count of the designed binder | — |
 | `mmr_max_similarity` | sequence identity to the most similar already-picked design | lower = better |
-| `liability_score` | BoltzGen composite developability score (cleavage motifs, oxidation, etc.) | **lower = better** |
-| `liability_high_severity_violations` | count of severe synthesis / stability risks (DPP4 cleavage, Asp-Pro, ProtTryp, etc.) | **0 strongly preferred** |
-| `liability_num_violations` | total liability hits (all severities) | lower = better |
+| `liability_score` | BoltzGen composite developability score (cleavage motifs, oxidation, etc.) — **PPI track only, see note below** | **lower = better** |
+| `liability_high_severity_violations` | count of severe synthesis / stability risks (DPP4 cleavage, Asp-Pro, ProtTryp, etc.) — **PPI track only** | **0 strongly preferred** |
+| `liability_num_violations` | total liability hits (all severities) — **PPI track only** | lower = better |
+
+**This skill serves two pipeline tracks.** It runs as the `summary` stage
+of the PPI/binder-design track (BoltzGen execution) AND as the
+`binder_summary` stage of the target-name-first binder track (RFD3/RF3
+execution) — see `CLAUDE.md`'s "Two design workflows" section. Only the
+PPI track's top-K table carries the `liability_*` columns above (sourced
+from BoltzGen); the binder track's table has no equivalent column, because
+that pipeline has no developability scorer yet. **Treat column presence,
+not track labels, as ground truth**: if `liability_score` /
+`liability_high_severity_violations` / `liability_num_violations` are not
+in the CSV you were given, developability was never computed for this run
+— do not assess it, and do not assume its absence means anything about
+the designs themselves.
 
 **You do not see protein sequences.** That is deliberate — sequences are
 withheld from this stage. Reference designs by `design_id`, not by
@@ -91,10 +104,12 @@ didn't land on the patch the structure stage identified.
 
 ### 2. Quality of the top-K
 
-A short markdown table for the top 5 by `mmr_rank`. Include the
-`design_id` and `liability_high_severity_violations` columns — the
-former so a human can map rank → CIF without consulting the CSV, the
-latter so liability is visible at first glance:
+A short markdown table for the top 5 by `mmr_rank`. Always include the
+`design_id` column so a human can map rank → CIF without consulting the
+CSV. Include a `liab_HS` column (from `liability_high_severity_violations`)
+**only if that column is present in the data you were given (PPI track)**
+— on a binder-track run, drop it from the table entirely rather than
+leaving it blank:
 
 | mmr | design_id | comp | iptm | ipae (Å) | sasa_Δ (Å²) | plddt | liab_HS | strongest | weakest |
 |----:|:----------|----:|----:|----:|----------:|----:|------:|:---------|:---------|
@@ -129,9 +144,9 @@ compute or follow-up effort. Look for any of:
 - **Empty or sparse top-K** — if fewer than 5 rows survived, the hard
   filters were too tight or the campaign too small. Recommend re-run
   before any further analysis.
-- **Developability liabilities** — any candidate with
-  `liability_high_severity_violations ≥ 1` is at risk for serum
-  degradation (DPP4 / ProtTryp / aspartate cleavage) or synthesis
+- **Developability liabilities (PPI track only — see note below)** — any
+  candidate with `liability_high_severity_violations ≥ 1` is at risk for
+  serum degradation (DPP4 / ProtTryp / aspartate cleavage) or synthesis
   problems (disulfide misassembly, Met / Trp oxidation hotspots).
   `liability_score ≥ 20` is a yellow flag; `≥ 30` with multiple
   high-severity hits is a red flag for ordering. Note it in this
@@ -142,13 +157,19 @@ compute or follow-up effort. Look for any of:
 State "No red flags identified" if none apply. Don't manufacture concerns
 to fill space.
 
-**Liability statement is mandatory.** Even when no other red flags apply,
-section 3 MUST contain at least one sentence on the liability picture of
-the top-5: how many rows have `liability_high_severity_violations ≥ 1`,
-what the worst violation is, and whether the rank-1 pick is clean or
-flagged. Writing "No red flags identified" without a liability sentence
-is incomplete — liability is a separate developability axis from binding
-metrics and cannot be silently waived.
+**Liability statement is conditional on the data, not always mandatory.**
+If `liability_score` / `liability_high_severity_violations` columns are
+present in the provided data (PPI track), section 3 MUST contain at
+least one sentence on the liability picture of the top-5: how many rows
+have `liability_high_severity_violations ≥ 1`, what the worst violation
+is, and whether the rank-1 pick is clean or flagged. Writing "No red
+flags identified" without a liability sentence is incomplete in that
+case — liability is a separate developability axis from binding metrics
+and cannot be silently waived. If those columns are absent (binder
+track), omit the liability statement entirely — do not speculate about
+developability from metrics that were never computed, and do not
+apologise for or flag the absence in the report; it is simply not part
+of that track's assessment.
 
 **Multi-region runs.** If the orchestrator's run-input section mentions a
 `multi_region_skipped.txt` file or a list of unexecuted design YAMLs,
@@ -167,12 +188,15 @@ bulleted list, each line:
   composite_score with tight iPAE and high hotspot occlusion").
 
 **Selection rule**: prefer designs that combine good binding metrics
-(composite_score, iPTM, iPAE, hotspot SASA) with **low liability_score**
-and **zero high-severity violations**. A design with the best
+(composite_score, iPTM, iPAE, hotspot SASA) with, **when liability
+columns are present in the data (PPI track)**, low `liability_score`
+and zero high-severity violations. A design with the best
 composite_score but `liability_high_severity_violations ≥ 2` should
-NOT be the rank-1 pick — call this out explicitly and recommend a
-clean-liability alternative as the lead, with the high-binding-but-
-risky design as a secondary option for re-engineering or comparison.
+NOT be the rank-1 pick in that case — call this out explicitly and
+recommend a clean-liability alternative as the lead, with the
+high-binding-but-risky design as a secondary option for re-engineering
+or comparison. On a binder-track run with no liability columns, rank
+purely on the binding/structural metrics available.
 
 If the campaign genuinely produced no candidates worth pursuing, output
 the literal line `_None — see Recommended next steps for re-run guidance._`

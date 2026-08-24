@@ -423,6 +423,8 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 
 `.mcp.json` paths are absolute and **machine-specific** (currently pointing at `C:\Users\micha\Documents\little_protein_tiger\...`, which differs from this checkout's path). When working on this machine, expect MCP servers to potentially be stale until paths are reconciled — `README.md` "Migrating to a new machine" §4 has the canonical fix.
 
+`scripts/setup_mcp_json.py` automates that fix: it regenerates `.mcp.json` for the current checkout's venv Python and launcher paths (backing up the previous file to `.mcp.json.bak`), as an alternative to hand-editing.
+
 ## Common file pairs to keep in sync
 
 - `extraction_schema.json` ⇄ `src/models.py` (Pydantic) ⇄ `curation_prompt.md` — schema, validator, and prompt must agree.

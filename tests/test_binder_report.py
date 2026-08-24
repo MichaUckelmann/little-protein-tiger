@@ -315,3 +315,47 @@ class TestHandoffParsing:
 
     def test_parse_hotspot_residues_none_when_absent(self):
         assert handoff.parse_hotspot_residues("nothing here", {}) is None
+
+
+class TestCleanAtomList:
+    """
+    src.handoff._clean_atom_list strips explanatory prose the LLM sometimes
+    inlines into the "RFD3 sidechain atoms" table cell — RFD3's select_hotspots
+    takes the cell verbatim as an atom name, so unstripped prose reaches
+    validate_spec as a malformed atom and fails a real design (observed on a
+    PD-L1 GLY119/ALA121 hotspot).
+    """
+
+    def test_strips_trailing_parenthetical_prose(self):
+        raw = "CA (no sidechain — backbone contact only)"
+        assert handoff._clean_atom_list(raw) == "CA"
+
+    def test_clean_multi_atom_list_passes_through_unchanged(self):
+        assert handoff._clean_atom_list("CA,CB,CG") == "CA,CB,CG"
+
+    def test_empty_string_returns_empty_string(self):
+        assert handoff._clean_atom_list("") == ""
+
+    def test_single_atom_name_passes_through(self):
+        assert handoff._clean_atom_list("CA") == "CA"
+
+    def test_prose_with_multiple_leading_atoms_keeps_only_the_atoms(self):
+        raw = "CA,CB (backbone contact only, no sidechain reach)"
+        assert handoff._clean_atom_list(raw) == "CA,CB"
+
+    def test_no_recognisable_atom_tokens_falls_back_to_stripped_raw(self):
+        # Nothing before the first "(" looks like an atom name at all — the
+        # function has no salvageable atom list, so it returns the raw text
+        # (stripped) rather than silently emitting an empty cell.
+        raw = "  no atoms specified  "
+        assert handoff._clean_atom_list(raw) == "no atoms specified"
+
+    def test_end_to_end_through_parse_hotspot_residues(self):
+        """The table parser must apply the same cleanup, not just the unit fn."""
+        text = (
+            "### MODEL-READY HOTSPOTS\n"
+            "| GLY | 119 | 120 | CA (no sidechain — backbone contact only) |\n"
+        )
+        raw = handoff.parse_hotspot_residues(text, {"target_chain": "A", "partner_chain": "B"})
+        residue = json.loads(raw)["residues"][0]
+        assert residue["rfd3_atoms"] == "CA"

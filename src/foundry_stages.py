@@ -214,7 +214,10 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--omit", default="CYS")
     m.add_argument("--chunk-size", type=int, default=250)
     m.add_argument("--seed", type=int, default=0)
-    m.add_argument("--foundry", default="/home/m.uckelmann_cbs-niob.local/code/foundry")
+    m.add_argument("--foundry", required=True,
+                   help="Path to the foundry checkout (containing .venv-blackwell). "
+                        "No machine-specific default; the campaign driver always "
+                        "passes this explicitly, derived from design.foundry.root.")
     m.add_argument("--mpnn-bin", default=".venv-blackwell/bin/mpnn")
     m.add_argument("--launcher", default=None)
     m.add_argument("--skip-existing", action="store_true")
@@ -229,7 +232,10 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--template", default="target")
     r.add_argument("--diffusion-batch-size", type=int, default=1)
     r.add_argument("--seed", type=int, default=0)
-    r.add_argument("--foundry", default="/home/m.uckelmann_cbs-niob.local/code/foundry")
+    r.add_argument("--foundry", required=True,
+                   help="Path to the foundry checkout (containing .venv-blackwell). "
+                        "No machine-specific default; the campaign driver always "
+                        "passes this explicitly, derived from design.foundry.root.")
     r.add_argument("--rf3-bin", default=".venv-blackwell/bin/rf3")
     r.add_argument("--launcher", default=None)
     r.add_argument("--skip-existing", action="store_true")

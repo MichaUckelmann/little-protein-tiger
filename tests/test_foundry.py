@@ -23,8 +23,12 @@ from src.job_registry import (
 )
 
 _ROOT = Path(__file__).resolve().parents[1]
-_BCR_INPUTS = Path("/home/m.uckelmann_cbs-niob.local/data/BCR/inputs")
-_BCR_RFD3 = Path("/home/m.uckelmann_cbs-niob.local/data/BCR/outputs/production/CD79b/rfd3")
+# LPT_BCR_REFERENCE_DIR points at the root of the reference campaign's data;
+# see tests/conftest.py for the shared default and rationale.
+_BCR_ROOT = Path(os.environ.get(
+    "LPT_BCR_REFERENCE_DIR", "/home/m.uckelmann_cbs-niob.local/data/BCR"))
+_BCR_INPUTS = _BCR_ROOT / "inputs"
+_BCR_RFD3 = _BCR_ROOT / "outputs" / "production" / "CD79b" / "rfd3"
 
 
 @pytest.fixture(scope="module")

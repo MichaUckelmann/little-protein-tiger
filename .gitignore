@@ -23,6 +23,9 @@ projects/
 /*.cif
 /*.cyjs
 
+# Backup written by scripts/setup_mcp_json.py before it regenerates .mcp.json
+.mcp.json.bak
+
 # SQLite DB (runtime state, not source)
 web/web.db
 

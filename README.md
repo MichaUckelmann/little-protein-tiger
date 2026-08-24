@@ -8,15 +8,20 @@ An end-to-end pipeline for PPI drug target discovery. Covers automated paper dis
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12+
 - Virtual environment (`.venv` recommended)
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Linux/macOS
-pip install -r requirements.txt
+pip install -e .              # core dependencies
+pip install -e ".[web,dev]"   # + web backend and test tooling, if needed
 ```
+
+Or run `scripts/setup.sh` to do all of the above (venv creation, dependency
+install, `.env` bootstrap, PDB metadata cache fetch, and a GPU-tool
+diagnostic) in one step — see [Bootstrap script](#bootstrap-script) below.
 
 Copy `.env.example` to `.env` and fill in your API keys:
 
@@ -31,6 +36,26 @@ cp .env.example .env
 | `GEMINI_API_KEY` | CLI skills with `--model gemini` |
 | `NCBI_EMAIL` | Polite crawling (NCBI rate limits) |
 | `NCBI_API_KEY` | Higher NCBI rate limit (optional) |
+
+---
+
+## Bootstrap script
+
+`scripts/setup.sh` automates the manual steps above for a fresh checkout:
+creates `.venv` if it doesn't exist, installs the project with dev extras
+(`pip install -e ".[dev]"`), copies `.env.example` to `.env` (without
+overwriting an existing one), fetches the RCSB PDB metadata cache, and
+prints a diagnostic of which external GPU tools (BoltzGen, PyRosetta,
+foundry) are configured and actually found on this machine.
+
+```bash
+./scripts/setup.sh
+```
+
+It's optional — everything it does is also documented step-by-step in this
+README — but it's the fastest way to get a new checkout usable. GPU tools
+still need manual installation per their own setup docs; the script only
+reports what it finds, it never fails because one is missing.
 
 ---
 
@@ -258,6 +283,10 @@ usage: run_skill.py --skill SKILL --query QUERY
 | `protein-design-script` | Generates RFDiffusion / BoltzDesign run scripts from a hotspot spec |
 | `chimerax-visualization` | Generates a ChimeraX `.cxc` script to visualise the interface: target in focus, binder washed out, hotspot patches highlighted |
 | `orchestrator` | End-to-end multi-stage run: pathway → interface → design → optimization |
+| `binder-target-intel` | Stage 0 of the binder-track pipeline: given a named target and design intent plus a pre-computed candidate-interface table, picks which structure/chain-pair/interface to design a binder against. Invoke only when the target is already named and no literature discovery is wanted |
+| `design-analyst` | Terminal stage of the design pipeline: reviews a ranked top-K of computationally designed binders against the design intent and hotspots, flags methodological red flags, and issues a GO / CONDITIONAL_GO / NO_GO recommendation. Summarisation over a metrics table — no MCP tools, no generative work |
+
+The `.zip` next to each skill directory is a packaged artifact for distribution — regenerate it after editing a `SKILL.md`, don't hand-edit the zip: `python scripts/package_skills.py`.
 
 **Examples:**
 
@@ -301,7 +330,7 @@ python scripts/run_skill.py \
 | Flag | Default | Description |
 |---|---|---|
 | `--model` | `gemini` | Provider: `claude` or `gemini` |
-| `--model-id` | provider default | Override model (e.g. `claude-opus-4-6`) |
+| `--model-id` | provider default | Override model (e.g. `claude-opus-5`) |
 | `--context` | — | Path to a prior report `.md` to include as context |
 | `--output` | stdout | Write final report to this file |
 | `--max-iter` | 30 | Max LLM calls per run |
@@ -456,7 +485,7 @@ Configuration lives under `design:` in `config.yaml`:
   `mini_protein` 70..86 by default).
 - `design.pyrosetta.python_executable` — absolute path to a conda env where
   PyRosetta imports cleanly (typically Python 3.11; see
-  `/home/.../pyrosetta/SETUP_NOTES.md`).
+  `docs/pyrosetta_setup.md`).
 
 Run outputs land under `outputs/<slug>/`:
 
@@ -488,7 +517,7 @@ python scripts/fetch_pdb_metadata.py   # writes data/pdb_metadata.json
 The pipeline expects BoltzGen and PyRosetta envs already configured. For
 BoltzGen, install per its README (`pip install boltzgen` or `uv pip install`)
 and set the absolute path in `config.yaml`. For PyRosetta, see
-`/home/m.uckelmann_cbs-niob.local/pyrosetta/SETUP_NOTES.md` — the LPT venv
+`docs/pyrosetta_setup.md` — the LPT venv
 itself does NOT need PyRosetta installed; the orchestrator subprocesses out
 to a dedicated env via `scripts/_sasa_worker.py`.
 
@@ -873,7 +902,7 @@ little_protein_tiger/
 ├── config.yaml                  # Main config: keywords, limits, paths, curation settings
 ├── curation_prompt.md           # System prompt for Claude curation
 ├── extraction_schema.json       # Target JSON schema for fingerprints (v2.0)
-├── requirements.txt
+├── pyproject.toml               # Single source of truth for dependencies (pip install -e .)
 ├── .env.example
 ├── .mcp.json                    # MCP server registration for Claude Code
 │
@@ -949,7 +978,8 @@ cd little_protein_tiger
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Linux/macOS
-pip install -r requirements.txt
+pip install -e .              # core dependencies
+pip install -e ".[web,dev]"   # + web backend and test tooling, if needed
 ```
 
 **2. Copy data directories**

@@ -4,7 +4,17 @@ version = "0.1.0"
 description = "Literature corpus pipeline and expert skill execution for protein/structure research."
 readme = "README.md"
 license = "MIT"
+authors = [
+    {name = "Michael Uckelmann", email = "micha.uckelmann@gmail.com"},
+]
 requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 dependencies = [
     "requests>=2.31",
     "pyyaml>=6.0",
@@ -43,9 +53,23 @@ web = [
     "httpx>=0.27",
 ]
 
+[project.urls]
+Repository = "https://github.com/MichaUckelmann/little-protein-tiger"
+
+[project.scripts]
+lpt-run-pipeline = "scripts.run_pipeline:main"
+lpt-run-skill = "scripts.run_skill:main"
+lpt-fetch-papers = "scripts.fetch_papers:main"
+lpt-curate-papers = "scripts.curate_papers:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]

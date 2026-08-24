@@ -24,13 +24,14 @@ import requests as _requests
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 from sse_starlette.sse import EventSourceResponse
 
 from web.backend.auth import get_current_user_id
 from web.backend.db import engine, get_session
 from web.backend.models_db import AuditEvent, ExperimentalMeasurement, Project, Run
+from web.backend.rate_limit import limiter
 
 router = APIRouter(tags=["runs"])
 
@@ -93,7 +94,11 @@ def _stage_contents(run_id: int) -> dict[str, str]:
 
 class RunCreate(BaseModel):
     query: str
-    pdb_id: Optional[str] = None
+    # 4-char alnum PDB accession — same pattern enforced everywhere else a
+    # PDB id is accepted (see structures.py's get_structure), applied here
+    # too so a malformed id fails fast at request validation instead of
+    # reaching _ensure_structure's filesystem path construction.
+    pdb_id: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9]{4}$")
     provider: str = "claude"
     model_id: Optional[str] = None
     # Per-stage model overrides, e.g. {"pathway": "claude-haiku-4-5", "structure": "claude-sonnet-5"}
@@ -110,6 +115,7 @@ class RunCreate(BaseModel):
 
 
 @router.post("/projects/{project_id}/runs", status_code=201)
+@limiter.limit("5/minute")
 def create_run(
     project_id: int,
     body: RunCreate,

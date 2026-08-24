@@ -183,6 +183,13 @@ export const api = {
   auth: {
     me: () => apiFetch<User>("/auth/me"),
     logout: () => apiFetch<void>("/auth/logout", { method: "POST" }),
+    // Trade the short-lived, single-use code from the OAuth redirect (?code=)
+    // for the real JWT — keeps the token out of the URL/browser history.
+    exchangeCode: (code: string) =>
+      apiFetch<{ access_token: string; token_type: string }>("/auth/token-exchange", {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      }),
     setApiKey: (key: string) =>
       apiFetch<void>("/auth/me/api-key", {
         method: "PUT",

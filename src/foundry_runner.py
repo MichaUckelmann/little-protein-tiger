@@ -367,10 +367,10 @@ _DRIVER_TEMPLATE = '''#!/usr/bin/env bash
 # The science lives in Python (src/foundry_stages.py); only orchestration is here.
 set -uo pipefail
 
-FOUNDRY={foundry}
-CAMPAIGN={campaign}
-LPT={lpt}
-PY={py}
+FOUNDRY="{foundry}"
+CAMPAIGN="{campaign}"
+LPT="{lpt}"
+PY="{py}"
 
 RFD3_DIR="$CAMPAIGN/rfd3"
 FILTERED="$CAMPAIGN/designs_filtered"
@@ -414,8 +414,8 @@ log "prefilter kept $(find "$FILTERED" -maxdepth 1 -name '*.cif.gz' | wc -l)"
 # ---- Stage 2: solubleMPNN --------------------------------------------------
 log "MPNN"
 $PY "$LPT/src/foundry_stages.py" mpnn "$FILTERED" "$MPNN_OUT" \\
-    --checkpoint {mpnn_ckpt} --n-seq {n_seq} --chunk-size {mpnn_chunk} \\
-    --foundry "$FOUNDRY" --mpnn-bin {mpnn_bin} --skip-existing \\
+    --checkpoint "{mpnn_ckpt}" --n-seq {n_seq} --chunk-size {mpnn_chunk} \\
+    --foundry "$FOUNDRY" --mpnn-bin "{mpnn_bin}" --skip-existing \\
     >> "$LOGS/mpnn.log" 2>&1
 EXPECTED_RF3=$(count_mpnn)
 log "MPNN produced $EXPECTED_RF3 sequences"
@@ -430,9 +430,9 @@ for attempt in $(seq 1 $MAX_RF3_ATTEMPTS); do
   fi
   log "RF3 attempt $attempt ($done_n/$EXPECTED_RF3 so far)"
   $PY "$LPT/src/foundry_stages.py" rf3 "$MPNN_OUT" "$RF3_OUT" \\
-      --checkpoint {rf3_ckpt} --template {rf3_template} \\
+      --checkpoint "{rf3_ckpt}" --template "{rf3_template}" \\
       --diffusion-batch-size {rf3_dbs} --seed {rf3_seed} \\
-      --foundry "$FOUNDRY" --rf3-bin {rf3_bin} --skip-existing \\
+      --foundry "$FOUNDRY" --rf3-bin "{rf3_bin}" --skip-existing \\
       >> "$LOGS/rf3.log" 2>&1
   log "RF3 attempt $attempt exited $?"
   sleep 30
@@ -449,13 +449,14 @@ def _rfd3_command(cfg: dict, spec_path: Path, paths: FoundryPaths,
     sampler = rfd3.get("inference_sampler") or {}
     bin_ = f.get("rfd3_bin", ".venv-blackwell/bin/rfd3")
     launcher = " ".join(f.get("launcher") or ["uv", "run"])
+    rfd3_ckpt = f.get("ckpt", {}).get("rfd3", "rfd3")
     parts = [
         f"{launcher} {bin_}",
-        f"out_dir={paths.rfd3_dir}",
-        f"inputs={spec_path}",
+        f'out_dir="{paths.rfd3_dir}"',
+        f'inputs="{spec_path}"',
         f"n_batches={plan.n_batches}",
         f"diffusion_batch_size={plan.diffusion_batch_size}",
-        f"ckpt_path={f.get('ckpt', {}).get('rfd3', 'rfd3')}",
+        f'ckpt_path="{rfd3_ckpt}"',
     ]
     # IPD's documented PPI-designability settings. The reference campaign did not
     # use them; its hit rate was 44/28,420.
@@ -484,8 +485,15 @@ def write_campaign_driver(
     if max_cb is None:
         max_cb = n_target_segments
 
+    foundry_root = f.get("root")
+    if not foundry_root:
+        raise FoundryValidationError(
+            "design.foundry.root is not set in config.yaml — it must point at "
+            "this machine's foundry checkout (the directory containing "
+            ".venv-blackwell). There is no cross-machine default.")
+
     text = _DRIVER_TEMPLATE.format(
-        foundry=f.get("root", "/home/m.uckelmann_cbs-niob.local/code/foundry"),
+        foundry=foundry_root,
         campaign=paths.campaign_dir,
         lpt=Path(__file__).resolve().parents[1],
         py=sys.executable,

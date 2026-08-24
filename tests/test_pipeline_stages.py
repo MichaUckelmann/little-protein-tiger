@@ -130,6 +130,20 @@ def test_no_stale_model_ids_in_the_config():
         assert "claude-haiku-4-5-20251001" not in text, name
 
 
+def test_no_stale_model_ids_in_docs_and_cli_help():
+    """
+    Same stale-id ban as test_no_stale_model_ids_in_the_config, extended to
+    README.md and the run_pipeline.py --model-id help text — an example
+    model id in prose/CLI help goes stale exactly like a config value does,
+    and users copy-paste from both.
+    """
+    for name in ("README.md", "scripts/run_pipeline.py"):
+        text = (_ROOT / name).read_text(encoding="utf-8")
+        assert "claude-sonnet-4-6" not in text, name
+        assert "claude-opus-4-6" not in text, name
+        assert "claude-haiku-4-5-20251001" not in text, name
+
+
 def test_thinking_uses_adaptive_not_a_removed_token_budget():
     """
     `budget_tokens` is rejected with a 400 on claude-sonnet-5 / claude-opus-5.

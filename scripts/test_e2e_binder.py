@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -31,7 +32,11 @@ if str(_ROOT) not in sys.path:
 import yaml  # noqa: E402
 from loguru import logger  # noqa: E402
 
-BCR = Path("/home/m.uckelmann_cbs-niob.local/data/BCR/outputs/production/CD79b")
+# LPT_BCR_REFERENCE_DIR points at the root of the reference campaign's data;
+# see tests/conftest.py for the shared default and rationale.
+_BCR_ROOT = Path(os.environ.get(
+    "LPT_BCR_REFERENCE_DIR", "/home/m.uckelmann_cbs-niob.local/data/BCR"))
+BCR = _BCR_ROOT / "outputs" / "production" / "CD79b"
 STRUCT = _ROOT / "data" / "structures" / "7XQ8_ba1.cif"
 
 TARGET_INTEL_MD = """# Target intel (stub)

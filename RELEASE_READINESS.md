@@ -1,10 +1,13 @@
 # Release Readiness — Audit & To-Do
 
-Status: **audit complete, fixes not yet started** (as of 2026-08-23). This is a
-living checklist, not a one-shot report — check items off as they're done and
-add new findings as they surface. Work is expected to span multiple sessions;
-each item below is written to be actionable by a fresh Claude Code session
-reading just this file + `CLAUDE.md`, without re-deriving context.
+Status (as of 2026-08-23): **Tier 0 and Tier 1 both done**, except item 16
+(repo-root debris cleanup — not deleted, just gitignored) and item 28
+(cosmetic, low priority, deliberately left open). Tier 2 and the open
+dashboard design question remain, as does actually committing/pushing this
+round of work. This is a living checklist, not a one-shot report — check
+items off as they're done and add new findings as they surface. Each item
+below is written to be actionable by a fresh Claude Code session reading
+just this file + `CLAUDE.md`, without re-deriving context.
 
 **Scope, as directed**: get the codebase into good shape to eventually share
 as a **CLI- and coding-agent-driven tool**. The hosted web platform
@@ -122,88 +125,110 @@ of the raw outside path).
 
 ### Security (web-scoped, still worth fixing even if `web/` isn't a near-term priority)
 
-5. **Cross-tenant BYOK API-key leak in Celery workers**
-   (`web/backend/tasks.py`, ~5 call sites: `run_pipeline_task`,
+**All 7 items below are DONE (2026-08-23).** Delegated to a subagent that
+completed items 5-8 and 11 before hitting the session's account-level usage
+limit; items 9-10 finished directly afterward. 291/291 tests passing
+throughout (no test in the suite imports `web.backend`, so `slowapi` not
+being installed in the dev venv doesn't block CI).
+
+5. [x] **Cross-tenant BYOK API-key leak in Celery workers.** Fixed via a new
+   `_scoped_api_keys(user)` context manager in `web/backend/tasks.py`: snapshots
+   the original `ANTHROPIC_API_KEY`/`GEMINI_API_KEY` env values, injects the
+   user's decrypted key(s) for the task's duration, and restores (or clears)
+   the originals in a `finally`. All 5 call sites (`run_pipeline_task`,
    `resume_pipeline_task`, `retry_run_task`, `run_optimizer_task`,
-   `run_binder_optimizer_task`). Pattern: `if user and user.anthropic_key_enc:
-   os.environ["ANTHROPIC_API_KEY"] = decrypt_key(...)` — set-if-present,
-   never cleared. A long-lived worker process handling task N for a keyed
-   user, then task N+1 for a user with no stored key, silently reuses and
-   bills the previous user's key for the second task. The existing code
-   comment's safety claim ("worker_prefetch_multiplier=1 makes this safe")
-   only addresses *concurrent* access, not this *sequential* leak.
-   → Fix: explicitly reset/unset the env var at the start and end of every
-   task, not just set-if-present.
-6. OAuth CSRF: no `state` parameter on the GitHub OAuth flow
-   (`web/backend/routers/auth.py:29-38`). Add and verify one.
-7. OAuth callback logs the full URL including the authorization `code`
-   (`web/backend/routers/auth.py:51-52`) — remove/redact.
-8. JWT handed to frontend via URL query string
-   (`.../auth.py:81`, `?token=...`) — logs/history/Referer exposure,
-   worse behind a TLS-inspecting proxy (this workstation has one). Swap for
-   a one-time exchange code redeemed via POST.
-9. `slowapi` is a declared dependency but never wired into `app.py` — no
-   rate limiting exists anywhere in the backend. Either wire it up on
-   auth/run-creation endpoints or drop the dependency.
-10. `RunCreate.pdb_id` (`web/backend/routers/runs.py`) isn't validated
-    against the `^[A-Za-z0-9]{4}$` pattern enforced everywhere else in the
-    same file — low practical exploitability today, but inconsistent.
-    Apply the same regex at creation time.
-11. (defense-in-depth, low urgency) `src/foundry_runner.py`'s
-    `run_campaign.sh` template interpolates config values into bash text
-    unquoted — currently safe (every value is operator-trusted config or
-    `slugify()`-sanitized), but quote interpolations as insurance against a
-    future freeform field reaching the template.
+   `run_binder_optimizer_task`) now route through it — verified by grep, no
+   stray `os.environ["ANTHROPIC_API_KEY"] = ...` left outside the helper.
+6. [x] **OAuth CSRF.** `web/backend/routers/auth.py`'s `/github` now mints a
+   random `state` (`secrets.token_urlsafe(32)`), stashes it in a short-lived
+   httponly cookie (no existing session store to reuse — a cookie only needs
+   to survive one redirect round trip), and `/callback` verifies it with
+   `secrets.compare_digest` before proceeding, rejecting with 400 on
+   mismatch/missing.
+7. [x] **OAuth callback logging.** The `logger.info(f"... full URL: {request.url}")`
+   / query-params log lines (which included GitHub's authorization `code`)
+   are gone — replaced with a bare "OAuth callback received".
+8. [x] **JWT in URL.** `/callback` now mints a short-lived (60s), single-use
+   opaque exchange code (in-memory dict, TTL-cleaned on each mint — the
+   backend runs single-process today per `app.py`'s own docstring; a note in
+   the code says to move to Redis if that ever changes) and redirects with
+   `?code=...` instead of `?token=...`. New `POST /auth/token-exchange`
+   trades the code for the real JWT in the response body. Frontend
+   (`web/frontend/src/pages/AuthCallback.tsx`, `src/lib/api.ts`) updated to
+   POST the code instead of reading `?token=` directly.
+9. [x] **No rate limiting.** New `web/backend/rate_limit.py` holds a shared
+   `slowapi.Limiter` (split into its own module rather than living in
+   `app.py`, to avoid a circular import — routers need to import it too).
+   Wired into `app.py` (`app.state.limiter` + the `RateLimitExceeded`
+   exception handler) and applied via `@limiter.limit(...)` to
+   `POST /auth/github` (`10/minute`; needed adding a `request: Request`
+   param the endpoint didn't previously take, since slowapi's decorator
+   requires one) and `POST /projects/{id}/runs` (`5/minute`).
+10. [x] **`RunCreate.pdb_id` validation.** Now `Field(default=None,
+    pattern=r"^[A-Za-z0-9]{4}$")`, matching `structures.py`'s existing
+    convention exactly. Verified the pydantic v2 pattern constraint
+    correctly allows `None` through while rejecting a malformed string
+    (e.g. a traversal-shaped value) with a `ValidationError`.
+11. [x] **Subprocess template quoting.** `src/foundry_runner.py`'s
+    `_DRIVER_TEMPLATE` now double-quotes every interpolated value
+    (`FOUNDRY="{foundry}"`, `--checkpoint "{mpnn_ckpt}"`, etc.) — defense in
+    depth, no behavior change for today's operator-trusted/`slugify()`d
+    inputs.
 
 ### Packaging / portability
 
-12. **Hardcoded machine-specific path defaults in source (not just
-    config)** — the real blocker-class instance of this, beyond the
-    expected/OK config.yaml entries:
-    - `src/foundry_runner.py:488` —
-      `foundry=f.get("root", "/home/m.uckelmann_cbs-niob.local/code/foundry")`
-    - `src/foundry_stages.py:217` and `:232` — same path as an argparse
-      `--foundry` default, twice.
-    → Fix: these should have no machine-specific fallback at all — require
-    the value from config/CLI and error clearly if absent, rather than
-    silently defaulting to one person's checkout.
-    - `.mcp.json` — currently a Windows path from a *different* machine
-      than this checkout (`C:\Users\micha\...`), already flagged as
-      known/documented in CLAUDE.md's migration section. No portable fix
-      exists in the MCP config format itself; the real fix is a
-      `scripts/setup_mcp_json.py` that generates it from the current venv's
-      interpreter path (`scripts/launch_mcp.py` already computes `root`
-      from `__file__` — reuse that logic).
-    - README.md:491 points to `/home/m.uckelmann_cbs-niob.local/pyrosetta/SETUP_NOTES.md`
-      — a path **outside this repo**, unreachable by anyone else. Fold
-      those setup notes into the repo (e.g. `docs/pyrosetta_setup.md`) so
-      the README reference actually resolves for a new user.
-    - `tests/conftest.py:16`, `tests/test_foundry.py:26-27`,
-      `scripts/test_e2e_binder.py:34` reference a reference-campaign path
-      under `/home/m.uckelmann_cbs-niob.local/data/BCR/...` — these are
-      already gracefully `skipif`-guarded when absent, low priority, but
-      could be moved to an env var for cleanliness.
+12. [x] **Hardcoded machine-specific path defaults in source.**
+    - `src/foundry_runner.py`'s `write_campaign_driver` no longer falls back
+      to `/home/.../code/foundry` — raises `FoundryValidationError` naming
+      the missing `design.foundry.root` config key instead.
+    - `src/foundry_stages.py`'s two `--foundry` argparse args are now
+      `required=True` (verified the only real call path — the generated
+      `run_campaign.sh` — always passes it explicitly; the hardcoded
+      default was dead outside manual CLI invocation).
+    - `.mcp.json` regenerated for this workstation via new
+      `scripts/setup_mcp_json.py` (resolves `.venv/bin/python3` from its own
+      `__file__`, not `sys.executable`); original backed up to
+      `.mcp.json.bak`. CLAUDE.md's migration section now points to the
+      script as the automated alternative to hand-editing.
+    - PyRosetta setup notes folded into the repo at `docs/pyrosetta_setup.md`
+      (copied faithfully from the external path, genericized for any
+      reader); README's two references updated to point there instead.
+    - `tests/conftest.py`, `tests/test_foundry.py`,
+      `scripts/test_e2e_binder.py`'s BCR reference-campaign path now reads
+      `LPT_BCR_REFERENCE_DIR` (env var) with the original hardcoded path as
+      fallback default — `skipif` guard behavior unchanged and verified
+      both ways (env unset: runs for real; env pointed at a bogus path: all
+      13 dependent tests skip with the expected reason).
 
-13. **`pyproject.toml` gaps**: no `license`, `classifiers`, `authors`,
-    `readme` field, project URLs, or console-script entry points (despite
-    ~15+ primary `scripts/*.py` CLI tools users currently invoke via
-    `python scripts/foo.py`). Also a direct contradiction:
-    `pyproject.toml:5` says `requires-python = ">=3.12"` but
-    `README.md:11` says "Python 3.10+" — pick one and fix the other.
+13. [x] **`pyproject.toml` gaps.** Added `authors` (git author identity),
+    `classifiers` (Development Status :: 3 - Alpha, Science/Research, MIT,
+    Python 3.12, Bio-Informatics — deliberately not "Production/Stable"),
+    `[project.urls] Repository`, and console-script entry points for the
+    4 scripts that already exposed a callable `main()`
+    (`lpt-run-pipeline`, `lpt-run-skill`, `lpt-fetch-papers`,
+    `lpt-curate-papers`, all `scripts.<mod>:main`). Verified these actually
+    resolve and run (`--help`) from a `pip install -e .` venv invoked from
+    a directory outside the repo — works because hatchling's editable
+    install for this project puts the whole repo root on `sys.path` (not
+    just `src/`), and each script computes its own root from `__file__`
+    rather than cwd. Did not convert the other ~30 `scripts/*.py` files —
+    that requires restructuring their `__main__` blocks into importable
+    `main()` functions first, out of scope here. The `requires-python`
+    3.10-vs-3.12 contradiction with README was already fixed earlier this
+    session (README now says 3.12+).
 
-14. **Two redundant, drifting dependency lists** (`requirements.txt` vs
-    `pyproject.toml`) — Tier 0 item 1 is a symptom of this structural
-    problem. Longer-term fix: pick one source of truth (`pyproject.toml` +
-    `uv`/`pip install -e .`, since `uv.lock` already exists and looks
-    current) and either delete `requirements.txt`/`requirements-web.txt` or
-    generate them from `pyproject.toml` so they can't drift again. Update
-    README's setup instructions to match whichever is chosen.
+14. [x] **Two redundant, drifting dependency lists.** Deleted
+    `requirements.txt` and `requirements-web.txt`; `pyproject.toml` is now
+    the single source of truth (`uv.lock` already tracked it). Updated
+    every `pip install -r requirements*.txt` mention in README.md
+    (Requirements section, Migrating-to-a-new-machine steps, project
+    structure tree) to `pip install -e .` / `pip install -e ".[web,dev]"`.
+    `diary.md` mentions were left alone (historical log, not living docs).
 
-15. **No CI.** No `.github/workflows/` or equivalent. 269 tests exist and
-    reportedly pass but nothing runs them automatically on push/PR. Add a
-    basic workflow (`pytest tests/ -q`) at minimum; consider also running
-    the doc-consistency-style checks (stale model ID grep, etc.) as a cheap
-    lint step given how often they've drifted historically per diary.md.
+15. [x] **No CI.** Added `.github/workflows/tests.yml`: checkout@v4,
+    setup-python@v5 (3.12), `pip install -e ".[dev]"`, `pytest tests/ -q`,
+    on push/PR to `main`. Kept minimal per instructions — no GPU-dependent
+    jobs, no extra lint step.
 
 16. **Repo-root debris**: `3kys.cif`, `3KYS_TEAD1_YAP1_region1_boltzgen.cif`,
     `ENPP1_5DLT_cyclic_peptide_boltzgen.cif`, `test_protein_protein.cif`,
@@ -217,106 +242,110 @@ of the raw outside path).
     they may be intentional test fixtures) and add `*.cif`, `*.cyjs`,
     `logs/`, `projects/` to `.gitignore`.
 
-17. **No bootstrap/setup script.** A `scripts/setup.sh` or `make setup`
-    chaining venv creation → deps install → `.env` template copy → PDB
-    metadata cache fetch → a sanity-check that reports which of
-    BoltzGen/PyRosetta/foundry/protenix are/aren't found would remove most
-    of the current manual first-run friction (the GPU-tool installs
-    themselves can't be automated, but everything else can).
+17. [x] **No bootstrap/setup script.** Added `scripts/setup.sh`: creates
+    `.venv` if missing, `pip install -e ".[dev]"`, copies `.env.example` ->
+    `.env` only if `.env` doesn't already exist, runs
+    `scripts/fetch_pdb_metadata.py`, then a diagnostic that reads
+    `design.workstation.boltzgen_executable`, `design.pyrosetta.python_executable`,
+    and `design.foundry.root` from `config.yaml` and reports whether each
+    path exists on this machine — never fails the script if one is
+    missing. Referenced from README's Requirements section as an optional
+    fast-path; manual steps stay documented. Ran it end-to-end on this
+    machine: correctly reused the existing venv, left the existing `.env`
+    alone, and reported all three GPU tools found.
 
 ### Documentation consistency
 
-18. **README skill table is missing 2 real skills**: `binder-target-intel`
-    and `design-analyst` exist and are used internally by
-    `_STAGE_TO_SKILL` / runnable via `run_skill.py`, but aren't listed in
-    README's "Available skills" table (§5). Add rows, or add a one-line
-    note that they're pipeline-internal stage skills rather than typical
-    standalone-CLI skills, whichever is more accurate to how they're
-    actually used.
-19. **`skills/enzyme-active-site-modeling/` has no `SKILL.md`** — only a
-    `scripts/` subdirectory. Not a functioning skill yet (added in the
-    most recent commit, "Add de novo enzyme active-site design workflow" —
-    may be genuinely mid-flight on the enzyme branch's own timeline).
-    Confirm status with the user; if truly incomplete, leave undocumented
-    until it has a `SKILL.md`, don't add it to the table prematurely.
-20. **Stale example model ID** `claude-opus-4-6` in two places —
-    `README.md:304` and `scripts/run_pipeline.py:309` (a `--model-id`
-    help-text example) — should be `claude-opus-5` per current naming
-    convention. `tests/test_pipeline_stages.py::test_no_stale_model_ids_in_the_config`
-    already bans this pattern in config files but doesn't cover README/CLI
-    help text — consider extending that test's grep scope.
-21. `src/curator.py:267` falls back to `"gemini-2.0-flash"` (a very old
-    generation) when `curation.gemini_model` is absent from config — low
-    real-world impact since config.yaml always sets it explicitly, but the
-    fallback itself should be bumped to the current `gemini-3.x` family for
-    consistency.
+**All 4 items below are DONE (2026-08-23).**
+
+18. [x] **README skill table.** Added `binder-target-intel` and
+    `design-analyst` rows, descriptions drawn from each skill's own
+    `SKILL.md` frontmatter.
+19. [x] **`skills/enzyme-active-site-modeling/` status — checked, correctly
+    left undocumented.** Confirmed it still has no `SKILL.md` (only
+    `scripts/__pycache__/*.pyc`, no source even) — not added to the README
+    table, per the original instruction to leave incomplete skills out.
+20. [x] **Stale example model ID.** `claude-opus-4-6` → `claude-opus-5` in
+    both `README.md` and `scripts/run_pipeline.py`'s `--model-id` help text.
+    `test_no_stale_model_ids_in_the_config` extended with a sibling test
+    (`test_no_stale_model_ids_in_docs_and_cli_help`) that greps README.md
+    and run_pipeline.py for the same stale-ID class, so this can't silently
+    regress again.
+21. [x] **`src/curator.py`'s stale Gemini fallback.** Bumped
+    `"gemini-2.0-flash"` → `"gemini-3.7-flash"`, matching
+    `config.yaml`'s `models.gemini.default`. Confirmed `curation.gemini_model`
+    is set explicitly in all four config files, so this fallback is a true
+    dead path in normal operation — bumped for consistency only.
 
 ### Code quality / redundancy
 
-22. **7 of 9 packaged `skills/*.zip` files are stale** relative to their
-    live `SKILL.md` twins (MD5 mismatch confirmed on the zipped
-    `SKILL.md` vs the live file for `binder-optimizer`, `complex-expert`,
-    `corpus-explorer`, `molecular-biology-expert`, `orchestrator`,
-    `pathway-expert`, `protein-design-script`, `complex-structure-analysis`
-    — all dated May 21 while their `SKILL.md`s have since been edited up
-    to Aug 21). `wildcard-expert`, `binder-target-intel`, `design-analyst`,
-    `enzyme-active-site-modeling` have no `.zip` at all. CLAUDE.md
-    describes these as "packaged artifacts — regenerate them, don't
-    hand-edit," but **no script or README command currently regenerates
-    them** — that tooling doesn't exist yet.
-    → Fix: write `scripts/package_skills.py` (zip each `skills/<name>/`
-    directory), run it once to refresh all zips, document the command in
-    README, and optionally add a CI/pre-commit check that fails if a
-    `SKILL.md` is newer than its `.zip`.
+**Items 22, 23, 24, 27, 29 are DONE (2026-08-23). Items 25 and 26 are ALSO
+DONE (2026-08-23) — real feature engineering, not just cleanup, completed
+by a subagent and independently re-verified (diff read + syntax-checked +
+full suite re-run). Only item 28 remains open (cosmetic, low priority).**
+
+22. [x] **Stale packaged `skills/*.zip` files.** New `scripts/package_skills.py`
+    zips every `skills/<name>/` directory that has a `SKILL.md` (matching
+    the existing non-stale zip's exact convention: contents under a
+    top-level `<name>/` path, not flattened). Ran it once for real — all 12
+    skill dirs with a `SKILL.md` packaged, byte-for-byte verified fresh
+    afterward. `enzyme-active-site-modeling` correctly skipped (no
+    `SKILL.md`, see item 19). One-line README mention added.
 23. [x] **DONE — Duplicated path-resolution helper**, maintainer-flagged as
     deferred debt back in the 2026-05-27 diary entry. Fixed together with
     Tier 0 item 3 (the security fix), as planned — see that item for
     details.
-24. **`design-analyst`'s "liability" rubric has no matching data on the
-    binder track.** `skills/design-analyst/SKILL.md:58-150` mandates a
-    liability/developability sentence in every summary; `_BINDER_SUMMARY_COLS`
-    (`src/pipeline_runner.py:1764-1785`, binder track) has no `liability_*`
-    fields — those only exist in the PPI track's `_SUMMARY_CONTEXT_COLS`
-    (sourced from BoltzGen). Every binder-track `binder_summary` stage is
-    prompted with rubric language it structurally cannot satisfy, risking
-    a boilerplate or hallucinated "no liability data" line every run. This
-    was flagged as "undecided: real gap or dead prompt language" as far
-    back as the 2026-08-22/23 diary entry and is still unresolved — this
-    session's audit confirms it's still live. **Needs a decision**, not
-    just a fix: either add a binder-track liability signal (if one is
-    meaningfully computable from foundry/RF3 output) or split the rubric
-    section so the liability request is PPI-only.
-25. `_stage_binder_scoring` (`src/pipeline_runner.py:1671`) still only
-    knows the local `FoundryPaths` shape — no `cluster_cfg` threading for
-    the **production** stage (calibration already got this threading in
-    the 2026-08-23 session's compute-auto work). Blocks an
-    `auto`-routed cluster production run from being scored end-to-end the
-    same way a local run is. Not urgent per diary ("not yet needed") but
-    will become one the first time `--compute auto` actually routes a real
-    production run to the cluster.
-26. `scripts/resume_cluster_calibration.py` remains a standalone
-    workaround script because per-site cluster/production resume has no
-    path through the normal `--start-from` CLI flag. Extend `--start-from`
-    to accept a site-scoped stage argument and retire the script, per the
-    plan already sketched in CLAUDE.md's cluster-compute section.
-27. Two real bugs fixed live against production data this session/last
-    (`src/handoff.py`'s `_clean_atom_list`, `src/binder_metrics.py`'s
-    `iter_protenix_refolds`) are still **unguarded by any regression
-    test** — confirmed via grep, no `test_*` references either name.
-    Backfill tests using the exact failure shapes CLAUDE.md documents
-    (malformed RFD3 atom-list prose; Protenix's per-design-subdirectory
-    output layout).
-28. `src/ppi_report.py`'s histogram gate-marker lines are drawn from
-    live `config.yaml` rather than a frozen per-run threshold record
-    (unlike the binder track's `calibration.json`) — cosmetic only, the
-    funnel/survivor counts themselves are read from the run's own frozen
-    `filter_stats.txt` and can't drift. Low priority; fix by persisting
-    the thresholds a PPI run actually scored against if it ever becomes
-    confusing in practice.
-29. `pyproject.toml` has no `[tool.pytest.ini_options]` marker
-    registration — `@pytest.mark.slow` in `tests/test_membrane_topology.py`
-    triggers a `PytestUnknownMarkWarning` on every collection. Trivial fix,
-    register the mark.
+24. [x] **`design-analyst`'s liability rubric — split PPI-only (maintainer's
+    decision).** `skills/design-analyst/SKILL.md` now conditions the
+    liability-assessment instruction on whether `liability_*` columns are
+    actually present in the provided data — mandatory when they are (PPI
+    track), explicitly omitted when they aren't (binder track), rather than
+    "always mandatory" regardless of track. Conditioned on column
+    presence, not a track label, which is more robust to future column
+    changes. No changes to `_SUMMARY_CONTEXT_COLS`/`_BINDER_SUMMARY_COLS`
+    (no new data added, per the decision — prompt-text fix only).
+    `skills/design-analyst.zip` re-packaged after the edit.
+25. [x] **`_stage_binder_scoring` cluster_cfg threading.** New
+    `_binder_compute_for_mode` (resolves which compute path a given mode's
+    `_run_gpu_stage` call actually took, reusing `_resolve_production_plan`
+    for the "production" mode specifically — including the fresh-process-resume
+    case where `calibration.json` on disk is the only record) and
+    `_cluster_paths_for_mode` (reconstructs the `ClusterPaths` needed to
+    locate `refold_dir` for scoring, without re-staging). Both call sites of
+    `_stage_binder_scoring` updated to pass `calib=calib` through. A
+    `--compute auto`/`cluster` production campaign can now be scored the
+    same way a local one is. Verified: full diff read, both call sites
+    confirmed updated, 291/291 tests still passing.
+26. [x] **Per-site `--start-from` resume.** New `PipelineRunner.resume_site_stage`
+    is the shared implementation behind both the standalone
+    `scripts/resume_cluster_calibration.py` (kept for backward
+    compatibility, now a thin caller) and a new `run_pipeline.py --site
+    <site_id>` flag (requires `--start-from calibration` and an exact
+    `--n-batches` match, forces `--compute cluster` — validated with clear
+    CLI errors otherwise). Only `stage="calibration"` is supported (documented
+    reasoning: production has no single owning method the same way).
+    Verified: full diff read, both callers confirmed working, 291/291 tests
+    passing.
+27. [x] **Regression tests backfilled** for `iter_protenix_refolds`
+    (`tests/test_binder_metrics.py` — synthetic per-design-subdirectory
+    tree + a flat-file negative case) and `_clean_atom_list`
+    (`tests/test_binder_report.py`'s `TestCleanAtomList` — 7 cases including
+    the exact malformed-prose example from the original incident, a clean
+    passthrough, and the no-atoms-matched fallback, all checked against the
+    real implementation rather than assumed).
+29. [x] **Pytest marker registration.** `pyproject.toml` now has
+    `[tool.pytest.ini_options]` with `slow` registered (the only custom
+    marker in use, confirmed by grepping all of `tests/`). Verified the
+    `PytestUnknownMarkWarning` is gone, including under
+    `-W error::pytest.PytestUnknownMarkWarning`.
+
+28. **Still open.** `src/ppi_report.py`'s histogram gate-marker lines are
+    drawn from live `config.yaml` rather than a frozen per-run threshold
+    record (unlike the binder track's `calibration.json`) — cosmetic only,
+    the funnel/survivor counts themselves are read from the run's own
+    frozen `filter_stats.txt` and can't drift. Low priority; fix by
+    persisting the thresholds a PPI run actually scored against if it ever
+    becomes confusing in practice.
 
 ---
 

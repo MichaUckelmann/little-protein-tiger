@@ -1506,6 +1506,58 @@ class PipelineRunner:
                 f"the cluster's diffuse stage likely hasn't produced output.")
         return hotspots_from_rfd3(sidecars[0], "B")
 
+    def _binder_compute_for_mode(self, mode: str, dirs: dict[str, Path],
+                                 calib: dict | None) -> str:
+        """
+        Which compute path a given binder-track mode's `_run_gpu_stage` call
+        actually dispatched to — `_stage_binder_scoring` needs this to pick
+        local `FoundryPaths` vs. cluster `ClusterPaths` scoring, and has no
+        other record of where a campaign ran (that decision was made, and
+        possibly persisted, inside `_run_gpu_stage`/`_resolve_production_plan`
+        during an earlier stage, potentially in a different process).
+
+        Only "production" is ever placed dynamically (`choose_compute()` at
+        the calibration gate, recovered via `_resolve_production_plan` —
+        which itself reloads `calibration.json` from disk when `calib` is
+        None, exactly the case on a fresh `--start-from binder_scoring`
+        resume). Every other mode mirrors `_run_gpu_stage`'s own dispatch:
+        `effective_compute = compute_override or self._compute`, no override
+        passed for pilot/calibration, so the cluster branch triggers only on
+        the literal string "cluster" — `self._compute == "auto"` always means
+        local for those two.
+        """
+        if mode == "production":
+            _, compute = self._resolve_production_plan(calib, dirs, None)
+            return compute
+        return "cluster" if self._compute == "cluster" else "local"
+
+    def _cluster_paths_for_mode(self, mode: str, dirs: dict[str, Path],
+                                cluster_cfg) -> "ClusterPaths":
+        """
+        Reconstruct the `ClusterPaths` a cluster stage staged, from just
+        `dirs`/`mode`/`cluster_cfg` — enough to locate `refold_dir` for
+        scoring, without calling `stage_campaign` again (which needs the
+        spec/trim; a fresh `--start-from binder_scoring` resume in a
+        separate process has neither, and re-staging isn't "resume" anyway
+        — see `_run_cluster_stage`'s own docstring).
+
+        `run_name`/`run_dir` are fully deterministic from `slug` + `mode`,
+        mirroring `_run_cluster_stage`'s own derivation exactly.
+        `spec_path`/`structure_path`/`msa_path`/`launch_script` are unused
+        by `collect_campaign`/`_cluster_hotspots` (both only ever read
+        `.refold_dir`), so placeholders here are harmless.
+        """
+        from src.cluster_runner import ClusterPaths
+
+        slug = dirs["binder"].parent.name or "campaign"
+        run_name = f"{slug}_{mode}"
+        run_dir = cluster_cfg.pipeline_root / cluster_cfg.stage_subdir / run_name
+        return ClusterPaths(
+            run_name=run_name, run_dir=run_dir,
+            spec_path=run_dir / "unused.json",
+            structure_path=run_dir / "unused.pdb",
+            msa_path=None, launch_script=run_dir / "launch.sh")
+
     def _stage_calibration(self, spec_path: Path, trim, dirs: dict[str, Path],
                            result: PipelineResult, *, attach: bool,
                            n_batches: int | None = None) -> dict:
@@ -1669,7 +1721,8 @@ class PipelineRunner:
             return n_batches, default_compute
 
     def _stage_binder_scoring(self, dirs: dict[str, Path],
-                              result: PipelineResult) -> dict:
+                              result: PipelineResult, *,
+                              calib: dict | None = None) -> dict:
         from src.binder_ranking import (
             rank_designs, read_scores, write_ranking_outputs,
         )
@@ -1678,8 +1731,30 @@ class PipelineRunner:
         rcfg = cfg.get("binder_ranking") or {}
         # Prefer production output; fall back to calibration when production was
         # never run (a pilot-only or ITERATE round still deserves a ranking).
+        #
+        # `_binder_compute_for_mode` resolves the same compute decision each
+        # mode's own `_run_gpu_stage` call made — for "production" specifically
+        # that reuses `_resolve_production_plan`, which recovers the decision
+        # from `calibration.json` when `calib` is None (a fresh
+        # `--start-from binder_scoring` resume in a separate process, the
+        # normal case after a multi-day GPU campaign finishes). A production
+        # run placed on the cluster has no local RF3 output at all, so without
+        # this a `--compute auto`/`--compute cluster` production campaign
+        # could never be scored.
         rows, source = None, None
         for mode in ("production", "calibration", "pilot"):
+            if self._binder_compute_for_mode(mode, dirs, calib) == "cluster":
+                from src.cluster_runner import ClusterConfig, refold_counts
+
+                cluster_cfg = ClusterConfig.from_cfg(self.config)
+                cpaths = self._cluster_paths_for_mode(mode, dirs, cluster_cfg)
+                if refold_counts(cpaths, cluster_cfg.refold_backend)["n_refolds"]:
+                    rows = self._score_campaign(cpaths, dirs, dirs["scoring"],
+                                                cluster_cfg=cluster_cfg)
+                    source = mode
+                    break
+                continue
+
             paths = self._binder_paths(dirs, mode)
             if paths.rf3_dir.is_dir():
                 from src.foundry_runner import count_rf3
@@ -1968,6 +2043,57 @@ class PipelineRunner:
             return None
         return trim, specs[0]
 
+    def resume_site_stage(self, run_dir: Path, site_id: str, stage: str,
+                          n_batches: int, *, attach: bool = True) -> dict:
+        """
+        Re-enter ONE site's own calibration campaign directly, by site id.
+
+        `_run_site_trials`'s normal re-entry points (`--trial-sites N>1` or
+        `--stop-after trial`) always recompute `n_batches` from
+        `--trial-backbones`, which must exactly match the value the site was
+        originally staged with or the completion check
+        (`ClusterPlan.expected_rf3` / foundry's own `plan.expected_rf3`)
+        silently targets the wrong count — and they re-derive ALL sites from
+        `target_intel`'s candidate list, not just the one being resumed.
+        This is the narrow bypass: go straight to the named site's own
+        `binder/sites/<site_id>/` stage files with an explicit `n_batches`.
+
+        Shared implementation behind both
+        `scripts/run_pipeline.py --start-from calibration --site <id>` and
+        the standalone `scripts/resume_cluster_calibration.py` (kept for
+        backward compatibility) — one code path, so a future fix to either
+        caller's bug doesn't have to be made twice.
+
+        Only `stage="calibration"` is supported today: production has no
+        single owning method the same way calibration does (`_stage_calibration`
+        both runs/collects AND scores AND writes the verdict in one call);
+        ask if a per-site production resume is ever needed.
+        """
+        if stage != "calibration":
+            raise PipelineError(
+                f"per-site resume only supports stage='calibration' today, "
+                f"got {stage!r} — production has no single owning method the "
+                f"same way; ask if you need this.")
+
+        dirs = self._binder_dirs(run_dir)
+        site_dirs = self._binder_dirs(dirs["sites"] / site_id)
+
+        # Reuses the exact same (trim, spec) loader + validate_spec check
+        # `_run_site_trials` itself uses to skip re-preparing an already-
+        # prepared site — a per-site resume is exactly that case.
+        prepared = self._prepared_site(site_dirs)
+        if prepared is None:
+            raise PipelineError(
+                f"no usable prepared site under {site_dirs['spec']} / "
+                f"{site_dirs['trim']} — the site trial must have generated "
+                f"a spec + trim_map.json before this can resume it.")
+        trim, spec_path = prepared
+
+        result = PipelineResult(run_dir=run_dir)
+        return self._stage_calibration(
+            spec_path, trim, site_dirs, result, attach=attach,
+            n_batches=n_batches)
+
     @staticmethod
     def _backbones_to_batches(n_backbones: int,
                               diffusion_batch_size: int = 4) -> int:
@@ -2237,7 +2363,7 @@ class PipelineRunner:
                         f"{calib['result'].verdict_reason}")
                     # Still score and rank what the calibration produced — an
                     # ITERATE round has real designs worth looking at.
-                    scored = self._stage_binder_scoring(dirs, result)
+                    scored = self._stage_binder_scoring(dirs, result, calib=calib)
                     self._stage_binder_summary(scored["top_k"], intel, dirs, result)
                     self._generate_binder_report(dirs["binder"])
                     return result
@@ -2260,7 +2386,7 @@ class PipelineRunner:
 
             # ── B7: score + rank ────────────────────────────────────────────
             if start_idx <= 7:
-                scored = self._stage_binder_scoring(dirs, result)
+                scored = self._stage_binder_scoring(dirs, result, calib=calib)
             else:
                 scored = {"top_k": dirs["scoring"] / "top_k.csv"}
 

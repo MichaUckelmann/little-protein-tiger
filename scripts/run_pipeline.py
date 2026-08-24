@@ -223,6 +223,24 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--site",
+        metavar="SITE_ID", default=None,
+        help=(
+            "Binder workflow: resume ONE site's own calibration campaign "
+            "under binder/sites/<site_id>/ (from a prior --trial-sites N "
+            "run), instead of the top-level binder/ stage files --start-from "
+            "normally targets. Requires --start-from calibration and "
+            "--n-batches set to EXACTLY the value the site was originally "
+            "staged with (the normal --trial-sites/--trial-backbones "
+            "re-entry recomputes n_batches from --trial-backbones and "
+            "targets every candidate site, not just this one). Forces "
+            "--compute cluster — this bypass exists for a cluster campaign "
+            "staged for that site and submitted by a human. Shares its "
+            "implementation with the standalone "
+            "scripts/resume_cluster_calibration.py."
+        ),
+    )
+    p.add_argument(
         "--trial-sites",
         type=int, default=1, metavar="N", dest="trial_sites",
         help=(
@@ -306,7 +324,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="MODEL",
         default=None,
         dest="model_id",
-        help="Override model ID (e.g. claude-opus-4-6). Default: provider default.",
+        help="Override model ID (e.g. claude-opus-5). Default: provider default.",
     )
     p.add_argument(
         "--max-iter",
@@ -362,6 +380,25 @@ def main() -> int:
     elif args.target:
         parser.error("--target applies to --workflow binder only.")
 
+    if args.site:
+        if not is_binder:
+            parser.error("--site applies to --workflow binder only.")
+        if args.start_from != "calibration":
+            parser.error(
+                "--site currently only supports --start-from calibration "
+                "(production has no single owning method the same way — "
+                "see PipelineRunner.resume_site_stage).")
+        if args.n_batches is None:
+            parser.error(
+                "--site requires --n-batches, set to EXACTLY the value the "
+                "site was originally staged with.")
+        if args.compute not in ("auto", "cluster"):
+            parser.error(
+                f"--site forces --compute cluster (the only case this "
+                f"per-site resume bypass exists for); got --compute "
+                f"{args.compute!r}.")
+        args.compute = "cluster"
+
     # Validate resume arguments
     if (not is_binder and args.start_from != "pathway"
             and not args.pdb and not args.context):
@@ -380,6 +417,7 @@ def main() -> int:
 
     from src.pipeline_runner import (
         PipelineBlockedError,
+        PipelineError,
         PipelinePausedError,
         PipelineRunner,
     )
@@ -435,6 +473,42 @@ def main() -> int:
         logger.info(f"PDB override: {args.pdb}")
     if args.start_from != "pathway":
         logger.info(f"Resuming from stage: {args.start_from}")
+
+    if args.site:
+        # Per-site resume: go straight to that site's own stage files
+        # (binder/sites/<site_id>/) rather than the top-level run's, and
+        # with the exact n_batches the site was staged with — the same
+        # underlying call scripts/resume_cluster_calibration.py makes.
+        logger.info(f"Resuming site {args.site!r} at stage {args.start_from!r} "
+                    f"(n_batches={args.n_batches})")
+        try:
+            calib = runner.resume_site_stage(
+                output_dir, args.site, args.start_from, args.n_batches,
+                attach=True)
+        except PipelinePausedError as exc:
+            print()
+            print("=" * 60)
+            print(f"STILL WAITING: {exc.pause_point}")
+            print("=" * 60)
+            for key, val in (exc.payload or {}).items():
+                print(f"  {key}: {val}")
+            print("=" * 60)
+            return 3
+        except PipelineError as exc:
+            logger.error(str(exc))
+            return 1
+
+        dirs = runner._binder_dirs(output_dir)
+        site_dirs = runner._binder_dirs(dirs["sites"] / args.site)
+        res = calib["result"]
+        print()
+        print("=" * 60)
+        print(f"CALIBRATION VERDICT: {res.verdict}")
+        print("=" * 60)
+        print(res.verdict_reason)
+        print(f"report: {site_dirs['binder'] / runner._BINDER_STAGE_FILES['calibration']}")
+        print("=" * 60)
+        return 0
 
     try:
         result = runner.run(
