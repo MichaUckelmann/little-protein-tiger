@@ -53,6 +53,13 @@ def _rcsb_accessions_for_doi(doi: str) -> list[str]:
     try:
         r = requests.post(RCSB_SEARCH_URL, json=payload, timeout=15)
         r.raise_for_status()
+        # RCSB answers "no matching entries" with 204 No Content and an empty
+        # body — which is the NORMAL case, since most papers deposit nothing.
+        # 204 passes raise_for_status, so calling .json() on it raised
+        # "Expecting value: line 1 column 1" and every ordinary paper was
+        # logged as "RCSB DOI lookup failed", burying real failures in noise.
+        if r.status_code == 204 or not r.content:
+            return []
         return [hit["identifier"] for hit in r.json().get("result_set", [])]
     except Exception as exc:
         logger.warning(f"  RCSB DOI lookup failed for {doi}: {exc}")

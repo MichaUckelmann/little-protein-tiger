@@ -524,3 +524,60 @@ def test_pyrosetta_is_never_used_before_designs_exist():
             assert token not in src.lower(), (
                 f"{fn.__name__} references {token!r} — PyRosetta is documented "
                 f"as post-generation scoring only")
+
+
+# ----------------------------------------------------------------------
+# RCSB "no deposited structures" is 204, not an error
+# ----------------------------------------------------------------------
+
+class _Resp:
+    def __init__(self, status, content=b"", payload=None):
+        self.status_code, self.content, self._payload = status, content, payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        if not self.content:
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        return self._payload
+
+
+def test_no_deposited_structures_is_not_logged_as_a_failure(monkeypatch):
+    """RCSB answers "nothing matched" with 204 and an empty body — the normal
+    case, since most papers deposit nothing. 204 passes raise_for_status, so
+    .json() raised and every ordinary paper was logged "RCSB DOI lookup
+    failed", burying real failures in noise."""
+    import scripts.curate_papers as cp
+
+    monkeypatch.setattr(cp.requests, "post", lambda *a, **k: _Resp(204))
+    warned = []
+    monkeypatch.setattr(cp.logger, "warning", lambda m: warned.append(m))
+
+    assert cp._rcsb_accessions_for_doi("10.1093/nar/gkaa912") == []
+    assert warned == [], f"204 should be silent, got: {warned}"
+
+
+def test_deposited_structures_are_returned(monkeypatch):
+    import scripts.curate_papers as cp
+
+    payload = {"result_set": [{"identifier": "7CIZ"}, {"identifier": "7CJ0"}]}
+    monkeypatch.setattr(cp.requests, "post",
+                        lambda *a, **k: _Resp(200, b"{...}", payload))
+
+    assert cp._rcsb_accessions_for_doi("10.1016/j.molcel.2021.03.041") == ["7CIZ", "7CJ0"]
+
+
+def test_a_real_transport_failure_is_still_warned(monkeypatch):
+    import scripts.curate_papers as cp
+
+    def boom(*a, **k):
+        raise cp.requests.RequestException("connection reset")
+
+    monkeypatch.setattr(cp.requests, "post", boom)
+    warned = []
+    monkeypatch.setattr(cp.logger, "warning", lambda m: warned.append(m))
+
+    assert cp._rcsb_accessions_for_doi("10.1/x") == []
+    assert warned and "connection reset" in warned[0]
