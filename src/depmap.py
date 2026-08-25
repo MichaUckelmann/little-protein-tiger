@@ -56,7 +56,12 @@ def _ensure_loaded(path: Path | None = None) -> None:
 
     logger.info(f"Loading DepMap CRISPR data from {target} ...")
     if not target.exists():
-        raise FileNotFoundError(f"DepMap CSV not found at {target}")
+        raise FileNotFoundError(
+            f"DepMap CSV not found at {target}. This ~420 MB file is optional "
+            f"— only the wildcard-expert DepMap tools need it — and DepMap's "
+            f"portal cannot be scripted, so download CRISPRGeneEffect.csv by "
+            f"hand from https://depmap.org/portal/data_page/?tab=allData and "
+            f"save it there. Run `python scripts/fetch_reference_data.py --check` to see all reference-data status.")
 
     # pyarrow.csv handles the 440 MB file in ~3 s and respects float→NaN
     # encoding for empty cells out of the box. We materialise the columns

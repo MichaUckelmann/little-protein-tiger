@@ -31,14 +31,16 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import requests
 import yaml
-from dotenv import load_dotenv
 from loguru import logger
 
 _ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(_ROOT / ".env")
 sys.path.insert(0, str(_ROOT))
 
+from src.env_config import load_env  # noqa: E402
+load_env(_ROOT / ".env")
+
 from src import handoff as _handoff
+from src.env_config import resolve_env_path
 from src.design_metrics import (
     enrich_with_hotspot_sasa,
     parse_boltzgen_outputs,
@@ -78,6 +80,33 @@ _THINKING_UPGRADE_MODEL = "claude-sonnet-5"
 # reached only when the immediate switch does not resolve it.
 _REFUSAL_FALLBACK_MODELS = ["gemini:gemini-3.7-flash", "claude-opus-5",
                            "claude-haiku-4-5"]
+
+# Model-id prefix -> provider, for refusal_fallbacks entries written WITHOUT an
+# explicit "provider:model" prefix.
+_MODEL_ID_PROVIDERS = (("claude-", "claude"), ("gemini-", "gemini"))
+
+
+def _split_fallback(fallback: str, current_provider: str) -> tuple[str, str]:
+    """Resolve one `refusal_fallbacks` entry to (provider, model_id).
+
+    An explicit "provider:model" always wins. Otherwise the provider is inferred
+    from the model-id prefix, and only falls back to the CURRENT provider for an
+    id we don't recognise (a local/Ollama model, say).
+
+    Inferring rather than inheriting matters: `models.gemini.refusal_fallbacks`
+    is `["claude-opus-5", "claude-haiku-4-5"]` with no prefix, and gemini is the
+    default provider for every stage. Inheriting the current provider sent those
+    Claude ids to the Gemini endpoint, which 404s — and a 404 raises HTTPError,
+    not SkillRefusedError, so it escapes the refusal handler and kills the run.
+    The safety net turned a recoverable refusal into a hard crash.
+    """
+    if ":" in fallback:
+        provider, model_id = fallback.split(":", 1)
+        return provider, model_id
+    for prefix, provider in _MODEL_ID_PROVIDERS:
+        if fallback.startswith(prefix):
+            return provider, fallback
+    return current_provider, fallback
 
 # Per-stage default model overrides keyed by stage name. Picks up before the
 # global _default_model but after an explicit user override via stage_models.
@@ -1866,7 +1895,21 @@ class PipelineRunner:
         if "calibration" not in result.stages_completed:
             result.stages_completed.append("calibration")
         logger.info(f"calibration verdict: {res.verdict} — {res.verdict_reason}")
-        compute = compute_choice.compute if compute_choice else "local"
+        # `choose_compute` PROPOSES a placement; it only DECIDES under
+        # `--compute auto`. An explicit `--compute local` / `--compute cluster`
+        # forces every GPU stage onto one path unconditionally, so honouring the
+        # proposal here would silently override the user: a 20 GPU-h estimate
+        # under `--compute cluster` would run for a day on the workstation, and
+        # a 60 GPU-h one under `--compute local` would stage a SLURM package and
+        # pause on a machine explicitly told to stay local.
+        if self._compute == "auto":
+            compute = compute_choice.compute if compute_choice else "local"
+        else:
+            compute = self._compute
+            if compute_choice is not None and compute_choice.compute != compute:
+                logger.info(
+                    f"compute choice {compute_choice.compute!r} overridden by "
+                    f"explicit --compute {compute}")
         n_batches_chosen = n_batches_cluster if compute == "cluster" else n_batches_local
         return {"result": res, "n_batches": n_batches_chosen, "compute": compute,
                "n_batches_local": n_batches_local, "n_batches_cluster": n_batches_cluster}
@@ -1911,8 +1954,16 @@ class PipelineRunner:
         that only lived in memory.
         """
         default_compute = self._compute if self._compute != "auto" else "local"
+        # An explicit --compute on THIS invocation outranks whatever placement
+        # was persisted, so a resume can be redirected (the cluster queue is
+        # full; the workstation GPU is now free) without editing calibration
+        # JSON. Under `auto` the persisted decision stands — re-deciding on a
+        # resume is what `_resolve_production_plan` exists to prevent.
+        forced = self._compute if self._compute != "auto" else None
         if calib:
-            compute = calib.get("compute", default_compute)
+            # `or`, not `.get(k, default)`: the key can be present-but-None
+            # (a site-trial winner whose calibration never set a placement).
+            compute = forced or calib.get("compute") or default_compute
             got = calib.get(f"n_batches_{compute}") or calib.get("n_batches")
             if got:
                 return got, compute
@@ -1925,7 +1976,7 @@ class PipelineRunner:
             if verdict not in ("SCALE_UP", "SCALE_UP_PARTIAL"):
                 return n_batches, default_compute
             cc = data.get("compute_choice") or {}
-            compute = cc.get("compute", default_compute)
+            compute = forced or cc.get("compute") or default_compute
             resolved = data.get(f"n_batches_{compute}")
             if not resolved:
                 return n_batches, compute
@@ -2000,7 +2051,16 @@ class PipelineRunner:
 
         rosetta_note = ""
         rcfg_ros = rcfg.get("rosetta") or {}
-        if rcfg_ros.get("enabled", True) and gated.survivors:
+        # Two switches, deliberately: `design.pyrosetta.enabled` is the global
+        # "is PyRosetta available/wanted at all" (shared with the PPI track's
+        # SASA stage), while `design.binder_ranking.rosetta.enabled` turns off
+        # just this track's scoring even on a machine that has it. Checking
+        # availability here rather than inside score_designs means a missing
+        # install produces one clear line instead of 300 per-design failures.
+        from src.pyrosetta_sasa import check_available
+
+        ros_available, ros_reason = check_available(cfg)
+        if rcfg_ros.get("enabled", True) and gated.survivors and ros_available:
             from src.rosetta_metrics import (
                 merge_into, score_designs, select_for_rosetta,
             )
@@ -2030,6 +2090,19 @@ class PipelineRunner:
                 rosetta_note = f"\n\nRosetta metrics skipped: {ros.skipped_reason}"
                 ranking = gated
         else:
+            if gated.survivors and not ros_available:
+                # Say WHY, and say it in the report as well as the log — the
+                # composite is weighted differently without these terms, so a
+                # reader comparing two campaigns needs to know.
+                logger.warning(
+                    f"Rosetta interface metrics skipped — {ros_reason}. Designs "
+                    f"are ranked on the folding/geometry terms only.")
+                rosetta_note = (
+                    f"\n\nRosetta interface metrics were **not** computed for "
+                    f"this run ({ros_reason}). PyRosetta is optional and is "
+                    f"used only here, after the gates; ranking used the "
+                    f"folding-confidence and geometry terms only. Composite "
+                    f"scores are not comparable with a run that had it.")
             ranking = gated
         paths_out = write_ranking_outputs(ranking, dirs["scoring"])
 
@@ -2224,12 +2297,29 @@ class PipelineRunner:
                 trials.append({
                     "site_id": site_id, "site": site, "calibration": res,
                     "n_batches": calib.get("n_batches"),
+                    # Both sizings + the placement, so the winner's production
+                    # stage isn't re-derived (and mis-sized) downstream.
+                    "compute": calib.get("compute"),
+                    "n_batches_local": calib.get("n_batches_local"),
+                    "n_batches_cluster": calib.get("n_batches_cluster"),
                     "dirs": site_dirs, "spec": spec, "trim": trim,
                     "n_refolds": count_rf3(paths.rf3_dir),
                     "contig": trim.contig, "error": None,
                 })
-            except (PipelineError, PipelineBlockedError) as exc:
-                # One unusable site must not abandon the others.
+            except PipelinePausedError:
+                # A pause is the pipeline working as designed, not a failed
+                # site: `--detach` raises "<mode>_running" and `--compute
+                # cluster` raises "<mode>_cluster_pending". PipelinePausedError
+                # subclasses PipelineError, so catching PipelineError below
+                # swallowed it and recorded a perfectly healthy running campaign
+                # as "FAILED: Paused at calibration_running" — and, if every
+                # site paused, returned NO_GO "every site trial failed" while
+                # the GPU jobs ran on. Let it propagate so the user sees the
+                # pause and its resume instructions.
+                raise
+            except PipelineError as exc:
+                # One unusable site must not abandon the others. (PipelineError
+                # covers PipelineBlockedError, which subclasses it.)
                 logger.error(f"site {site_id} failed: {exc}")
                 trials.append({"site_id": site_id, "site": site,
                                "calibration": None, "error": str(exc),
@@ -2522,12 +2612,27 @@ class PipelineRunner:
                     "partner_chain": best["site"].get("partner_chain"),
                 }}
                 dirs = best["dirs"]
+                # `binder_dir` was bound from the TOP-LEVEL run dir before the
+                # site trials ran; rebinding `dirs` without it left B1's resume
+                # branch reading a top-level 21_interface.md that a multi-site
+                # run never writes (its real artifacts live under
+                # binder/sites/<site_id>/binder/), killing the campaign right
+                # after paying for N GPU trials.
+                binder_dir = dirs["binder"]
                 result.pdb_id = best["site"].get("pdb_id")
                 start_idx = 6           # straight to production for the winner
                 spec_path = best["spec"]
                 trim = best["trim"]
+                # Carry the winner's compute placement and BOTH sizings forward:
+                # `n_batches` alone is whichever the trial chose, and
+                # `_resolve_production_plan` would then read a cluster-sized
+                # count (already divided by n_gpus) as a local total and run
+                # production at 1/n_gpus of the intended size.
                 calib = {"result": best["calibration"],
-                         "n_batches": best.get("n_batches")}
+                         "n_batches": best.get("n_batches"),
+                         "compute": best.get("compute"),
+                         "n_batches_local": best.get("n_batches_local"),
+                         "n_batches_cluster": best.get("n_batches_cluster")}
 
             # ── B1: interface + model-ready hotspots ────────────────────────
             if start_idx <= 1:
@@ -3030,7 +3135,9 @@ class PipelineRunner:
         logger.info(f"  modality={modality} → protocol={protocol}")
         logger.info(f"  yaml={yaml_path.name}  output={bg_output}")
 
-        executable = ws_cfg.get("boltzgen_executable", "boltzgen")
+        executable = resolve_env_path(
+            "LPT_BOLTZGEN_EXECUTABLE", ws_cfg.get("boltzgen_executable")
+        ) or "boltzgen"
 
         # `boltzgen check` first — abort fast on a malformed YAML.
         try:
@@ -3221,15 +3328,34 @@ class PipelineRunner:
             key=lambda r: (r.get("quality_score") if r.get("quality_score") is not None else -1.0),
             reverse=True,
         )
-        enrich_with_hotspot_sasa(
-            records,
-            target_chain=target_chain,
-            binder_chain=binder_chain,
-            hotspots=hotspots_remapped,
-            python_executable=pyr_cfg["python_executable"],
-            init_flags=pyr_cfg.get("init_flags"),
-            max_designs=enrich_top_k,
-        )
+        # PyRosetta is OPTIONAL. It is used only here (hotspot burial) and in
+        # the binder track's post-gate Rosetta scoring — never to generate
+        # anything — so a run without it is a real run with one fewer metric,
+        # not a broken one. Deciding up front (rather than letting every design
+        # fail individually) is what keeps the SASA gate in step with reality:
+        # when enrichment doesn't run, `rank_designs` skips that gate instead of
+        # dropping all 100 designs for "missing_hotspot_sasa" and reporting it
+        # as a design-quality problem.
+        from src.pyrosetta_sasa import check_available
+
+        sasa_available, sasa_reason = check_available(cfg)
+        if sasa_available:
+            enrich_with_hotspot_sasa(
+                records,
+                target_chain=target_chain,
+                binder_chain=binder_chain,
+                hotspots=hotspots_remapped,
+                python_executable=resolve_env_path(
+                    "LPT_PYROSETTA_PYTHON", pyr_cfg.get("python_executable")
+                ),
+                init_flags=pyr_cfg.get("init_flags"),
+                max_designs=enrich_top_k,
+            )
+        else:
+            logger.warning(
+                f"hotspot-SASA enrichment skipped — {sasa_reason}. The "
+                f"hotspot_sasa_delta filter will not be applied; designs are "
+                f"ranked on iPTM/iPAE and the BoltzGen terms only.")
 
         # Write enriched CSV before ranking so the artifact survives a
         # later ranking-time crash.
@@ -3243,6 +3369,7 @@ class PipelineRunner:
             weights=weights,
             mmr=mmr,
             top_k=top_k,
+            hotspot_sasa_available=sasa_available,
         )
 
         ranking_dir = run_dir / "05_ranking"
@@ -3261,6 +3388,7 @@ class PipelineRunner:
                 ranked_path=ranked_p,
                 top_k_path=top_k_p,
                 stats_path=stats_p,
+                sasa_skipped_reason=(None if sasa_available else sasa_reason),
             ),
             encoding="utf-8",
         )
@@ -3511,11 +3639,26 @@ class PipelineRunner:
         ranked_path: Path,
         top_k_path: Path,
         stats_path: Path,
+        sasa_skipped_reason: str | None = None,
     ) -> str:
         stats = ranking.filter_stats
         lines = [
             "# Stage 5 — Analysis report",
             "",
+        ]
+        if sasa_skipped_reason:
+            # A reader comparing two runs must be able to see that they were
+            # filtered by different rubrics.
+            lines += [
+                "> **Note — hotspot-SASA filter not applied.** PyRosetta was "
+                f"not used for this run ({sasa_skipped_reason}), so no design "
+                "carries `lpt_hotspot_sasa_delta` and that gate was skipped "
+                "rather than failed. Ranking used iPTM, iPAE and the BoltzGen "
+                "terms only. Counts below are not comparable with a run that "
+                "had PyRosetta available.",
+                "",
+            ]
+        lines += [
             f"- boltzgen output: `{bg_output}`",
             f"- target chain: `{target_chain}`  binder chain: `{binder_chain}`",
             f"- hotspot residues ({len(hotspots)}): "
@@ -3703,9 +3846,7 @@ class PipelineRunner:
                             provider=provider, model=model_id,
                             usage=runner.usage(),
                             note=f"refused (category={refusals[-1].category})")
-                    fb_provider, fb_model = (
-                        fallback.split(":", 1) if ":" in fallback
-                        else (provider, fallback))
+                    fb_provider, fb_model = _split_fallback(fallback, provider)
                     runner = SkillRunner(
                         skill_name=skill_name, provider=fb_provider,
                         model_id=fb_model, config=self.config,
@@ -3728,7 +3869,11 @@ class PipelineRunner:
         finally:
             if self._ledger is not None:
                 entry = self._ledger.record(
-                    stage=stage_key, skill=skill_name, provider=self.provider,
+                    # `provider`, not `self.provider`: a cross-provider refusal
+                    # fallback rebinds both, and billing the run's default
+                    # provider for a call another provider actually served makes
+                    # the ledger's per-provider spend wrong.
+                    stage=stage_key, skill=skill_name, provider=provider,
                     model=model_id, usage=runner.usage(),
                 )
                 if projected_usd:

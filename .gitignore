@@ -34,3 +34,18 @@ config_search_expansion_temp.yaml
 
 # PMC corpus data
 PMC_database/
+
+# Machine-specific MCP registration — absolute paths to this checkout's venv
+# and launchers. Generate your own with: python scripts/setup_mcp_json.py
+.mcp.json
+
+# Claude Code local settings (the .local suffix means "do not commit"); they
+# also disclose unrelated local checkouts via permission rules.
+.claude/settings.local.json
+
+# Web platform (FastAPI + Celery + React). Excluded from the v0.1 release: it
+# is unmaintained and does not run against the current pipeline_runner
+# (_TrackedRunner._run_stage has a stale signature). The files remain on disk
+# and in git history; branch archive/web-platform marks the last commit that
+# tracked them.
+web/

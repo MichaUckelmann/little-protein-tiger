@@ -45,7 +45,7 @@ indexing and atom names). Use these directly — do not re-derive residue indice
 ## Output Location
 
 If invoked by the orchestrator, a `run_folder` path will be provided in the handoff
-message (e.g. `C:\Users\micha\Documents\LittleProteinTiger\YAP_TEAD4_2026-04-01\04_design_inputs\`).
+message (e.g. `outputs/YAP_TEAD4_2026-04-01/04_design_inputs/`).
 
 - Create the `04_design_inputs\` subfolder using the filesystem tool if it does not exist.
 - Write all output files (YAML, JSON, submission scripts) to that folder using `filesystem:write_file`.

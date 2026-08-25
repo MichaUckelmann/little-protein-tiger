@@ -26,7 +26,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 # LPT_BCR_REFERENCE_DIR points at the root of the reference campaign's data;
 # see tests/conftest.py for the shared default and rationale.
 _BCR_ROOT = Path(os.environ.get(
-    "LPT_BCR_REFERENCE_DIR", "/home/m.uckelmann_cbs-niob.local/data/BCR"))
+    "LPT_BCR_REFERENCE_DIR", str(Path.home() / "data" / "BCR")))
 _BCR_INPUTS = _BCR_ROOT / "inputs"
 _BCR_RFD3 = _BCR_ROOT / "outputs" / "production" / "CD79b" / "rfd3"
 
@@ -330,7 +330,7 @@ def test_plan_clamps_to_the_disk_budget(design_cfg, tmp_path):
 
 
 def test_driver_is_valid_bash_and_carries_the_ppi_settings(design_cfg, tmp_path,
-                                                           real_spec):
+                                                           real_spec, foundry_root):
     import subprocess
 
     spec_path, _, _ = real_spec
@@ -354,7 +354,8 @@ def test_driver_is_valid_bash_and_carries_the_ppi_settings(design_cfg, tmp_path,
     assert "MIN_FREE_GB" in text
 
 
-def test_driver_derives_the_chainbreak_threshold(design_cfg, tmp_path, real_spec):
+def test_driver_derives_the_chainbreak_threshold(design_cfg, tmp_path, real_spec,
+                                                 foundry_root):
     spec_path, _, _ = real_spec
     paths = FoundryPaths.under(tmp_path)
     paths.mkdirs()

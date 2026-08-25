@@ -552,10 +552,13 @@ def score_one(
         m = sidecar.get("metrics") or {}
         row.update({
             "rfd3_n_chainbreaks": m.get("n_chainbreaks"),
-            "rfd3_sc_clashes": (m.get("n_clashing") or {}).get(
-                "interresidue_clashes_w_sidechain"),
-            "rfd3_bb_clashes": (m.get("n_clashing") or {}).get(
-                "interresidue_clashes_w_backbone"),
+            # RFD3 sidecar metrics are FLAT DOTTED KEYS, not nested objects:
+            # "n_clashing.interresidue_clashes_w_sidechain" is one string. Read
+            # as nested this silently yields None for every design ever scored.
+            # `foundry_runner.prefilter_designs` reads the same two keys —
+            # keep both spellings identical.
+            "rfd3_sc_clashes": m.get("n_clashing.interresidue_clashes_w_sidechain"),
+            "rfd3_bb_clashes": m.get("n_clashing.interresidue_clashes_w_backbone"),
             "rfd3_non_loop_fraction": m.get("non_loop_fraction"),
             "rfd3_rog": m.get("radius_of_gyration"),
             "sampled_contig": ((sidecar.get("specification") or {}).get("extra")

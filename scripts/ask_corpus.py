@@ -20,11 +20,12 @@ from pathlib import Path
 
 import anthropic
 import yaml
-from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT))
+
+from src.env_config import load_env  # noqa: E402
+load_env(ROOT / ".env")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")

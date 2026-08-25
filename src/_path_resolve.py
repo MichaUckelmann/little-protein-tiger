@@ -60,7 +60,34 @@ def resolve(file_path: str, *, root: Path) -> str:
         # Fall through to the strip-and-rejoin branch — same effect as
         # the relative case, so the caller sees a path under root in
         # the error message rather than a wholly external absolute path.
-    return str(root / Path(file_path.lstrip("/\\")))
+    return str(_confine(root / Path(file_path.lstrip("/\\")), root))
+
+
+def _confine(candidate: Path, root: Path) -> Path:
+    """Collapse `..` segments and guarantee the result stays under `root`.
+
+    Stripping a leading slash confines an ABSOLUTE path, but does nothing to a
+    relative one: `root / "../../../etc/passwd"` is still an escape, because
+    pathlib does not normalise `..` and the old code did no final containment
+    check. Reachable through `write_file` (enabled for `protein-design-script`
+    and `binder-optimizer`) and every file_path-taking structure tool on both
+    transports.
+
+    `os.path.normpath` is deliberate over `Path.resolve()`: it is purely
+    lexical, so a path that escapes via a symlink inside the repo is judged on
+    what it says rather than where the filesystem happens to point, and it does
+    not touch the disk. An escaping path is re-anchored at `root` rather than
+    raising, so the caller still gets a "no such file under root" error instead
+    of a stack trace on hostile input.
+    """
+    import os
+
+    normalised = Path(os.path.normpath(str(candidate)))
+    root_norm = Path(os.path.normpath(str(root)))
+    if normalised == root_norm or root_norm in normalised.parents:
+        return normalised
+    # Escaped: keep only the basename, anchored under root.
+    return root_norm / normalised.name
 
 
 def _recover_under_root(p: Path, root: Path) -> "Path | None":

@@ -16,7 +16,6 @@ python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Linux/macOS
 pip install -e .              # core dependencies
-pip install -e ".[web,dev]"   # + web backend and test tooling, if needed
 ```
 
 Or run `scripts/setup.sh` to do all of the above (venv creation, dependency
@@ -467,11 +466,15 @@ takes a prompt + slug and captures per-stage conversation traces for audit.
   --pathway-mode wildcard
 ```
 
-Configuration lives under `design:` in `config.yaml`:
+Configuration lives under `design:` in `config.yaml`, except for
+machine-specific paths (BoltzGen, PyRosetta, foundry, cluster staging), which
+are set via env vars instead — see
+[Environment setup](docs/environment_setup.md) for the full list and why
+they don't live in the tracked `config.yaml`:
 
-- `design.workstation.boltzgen_executable` — absolute path to the BoltzGen entry
-  point (we use the entry script's own shebang to invoke its conda/uv env, no
-  `conda activate` needed).
+- `design.workstation.boltzgen_executable` (or `LPT_BOLTZGEN_EXECUTABLE`) —
+  absolute path to the BoltzGen entry point (we use the entry script's own
+  shebang to invoke its conda/uv env, no `conda activate` needed).
 - `design.workstation.cuda_device` / `timeout_hours` — GPU and time limits.
 - `design.pilot` / `design.production` — `num_designs` + `budget` per phase. The
   pilot result gates the production run (raises `PipelinePausedError`
@@ -483,9 +486,9 @@ Configuration lives under `design:` in `config.yaml`:
 - `design.constraints` — target-size limits (`max_target_residues`,
   `target_residues_warn`) and binder size ranges (`cyclic_peptide` 12..15,
   `mini_protein` 70..86 by default).
-- `design.pyrosetta.python_executable` — absolute path to a conda env where
-  PyRosetta imports cleanly (typically Python 3.11; see
-  `docs/pyrosetta_setup.md`).
+- `design.pyrosetta.python_executable` (or `LPT_PYROSETTA_PYTHON`) — absolute
+  path to a conda env where PyRosetta imports cleanly (typically Python 3.11;
+  see `docs/pyrosetta_setup.md`).
 
 Run outputs land under `outputs/<slug>/`:
 
@@ -516,10 +519,13 @@ python scripts/fetch_pdb_metadata.py   # writes data/pdb_metadata.json
 
 The pipeline expects BoltzGen and PyRosetta envs already configured. For
 BoltzGen, install per its README (`pip install boltzgen` or `uv pip install`)
-and set the absolute path in `config.yaml`. For PyRosetta, see
-`docs/pyrosetta_setup.md` — the LPT venv
+and set `LPT_BOLTZGEN_EXECUTABLE` in `.env`. For PyRosetta, see
+`docs/pyrosetta_setup.md` and set `LPT_PYROSETTA_PYTHON` — the LPT venv
 itself does NOT need PyRosetta installed; the orchestrator subprocesses out
-to a dedicated env via `scripts/_sasa_worker.py`.
+to a dedicated env via `scripts/_sasa_worker.py`. See
+[Environment setup](docs/environment_setup.md) for the full list of
+machine-specific env vars (foundry, cluster staging included) and why they
+live in `.env` rather than the tracked `config.yaml`.
 
 See `diary.md` for design notes, known failure modes, and the long-term
 plan for a ground-truth PDB→protein lookup table.
@@ -979,7 +985,6 @@ python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Linux/macOS
 pip install -e .              # core dependencies
-pip install -e ".[web,dev]"   # + web backend and test tooling, if needed
 ```
 
 **2. Copy data directories**
@@ -988,7 +993,12 @@ Transfer `data/literature.db`, `data/fingerprints/`, and `data/vectors/` to the 
 
 **3. Recreate `.env`**
 
-Copy `.env.example` to `.env` and fill in your API keys.
+Copy `.env.example` to `.env` and fill in your API keys. If you use the
+binder/design track, also fill in the `LPT_BOLTZGEN_EXECUTABLE` /
+`LPT_PYROSETTA_PYTHON` / `LPT_FOUNDRY_ROOT` / `LPT_CLUSTER_*` vars for
+wherever those tools live on the new machine — see
+[Environment setup](docs/environment_setup.md). `config.yaml` itself needs
+no path edits; it never carries machine-specific values.
 
 **4. Update MCP configs — one path each**
 
@@ -1046,3 +1056,58 @@ python scripts/ingest_vectors.py
 
 # 4. Restart Claude Desktop to pick up new fingerprints via MCP
 ```
+
+## Responsible use
+
+Little Protein Tiger designs de novo protein binders. Every design it emits is
+an **unvalidated computational hypothesis** — a sequence and a predicted pose,
+not a working binder. If you synthesize anything derived from it, screening the
+sequence is your responsibility; use a synthesis provider that screens orders
+(see the [IGSC Harmonized Screening Protocol](https://genesynthesisconsortium.org/)).
+
+Read **[docs/responsible-use.md](docs/responsible-use.md)** before using the
+design tracks. It covers intended use, what the confidence metrics do and do
+not tell you, biosecurity expectations, and this project's position on safety
+classifiers (short version: model fallback is fine, prompt-engineering around a
+safety check is not).
+
+## Licence and third-party tools
+
+LPT itself is MIT-licensed (see `LICENSE`) and comes with no warranty.
+
+**The MIT licence covers this repository only.** LPT orchestrates external
+models and tools that it does not ship, does not redistribute, and grants no
+rights to. Several are free for academic use but **restricted for commercial
+use** — check each one against your own use case before relying on it:
+
+| Tool | Needed for | Licence — check before commercial use |
+|---|---|---|
+| [RFdiffusion3 / solubleMPNN / RF3 (foundry)](https://github.com/RosettaCommons/foundry) | `--workflow binder`, `--design-engine foundry` | RosettaCommons terms — read before commercial use |
+| BoltzGen | `--workflow ppi` design + execution stages | see upstream repository |
+| PyRosetta (**optional**) | hotspot SASA, Rosetta composite terms — see below | **free for academic / non-commercial only**; commercial licence via `license@uw.edu` — see [docs/pyrosetta_setup.md](docs/pyrosetta_setup.md) |
+| Protenix | cluster refold backend (optional) | see upstream repository |
+| ChimeraX / PyMOL | optional visualisation | separate licences |
+
+**PyRosetta is optional.** It is used in exactly two places, both *after*
+designs already exist — per-design hotspot SASA in the PPI track's analysis
+stage, and relax + InterfaceAnalyzer on gate survivors in the binder track's
+scoring stage. Nothing generative depends on it. With the default
+`design.pyrosetta.enabled: auto`, a machine without it runs both tracks
+end-to-end, skips those metrics, does **not** apply the hotspot-SASA filter,
+and says so in the stage report. Set `enabled: true` to require it (fail
+loudly instead) or `false` to never use it.
+
+**foundry is not optional** for the binder track — see
+[docs/environment_setup.md](docs/environment_setup.md#external-tools) for
+install notes, GPU/disk requirements, and the checkpoint-registry gotcha.
+
+Bundled third-party code:
+
+- **Mol\*** (`assets/vendor/molstar/`) — MIT, vendored so generated reports have
+  no runtime network dependency. Licence and pinned version in
+  `assets/vendor/molstar/`.
+
+Python dependencies are MIT/BSD/Apache, with one to be aware of: **PyMuPDF is
+AGPL-3.0-or-later**. It is imported at runtime by `src/text_extractor.py` for
+PDF parsing and is not linked into anything distributed here, but if you
+redistribute a derivative that bundles it, read its terms.

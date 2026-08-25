@@ -4,13 +4,14 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
 from fastmcp import FastMCP
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT))
+
+from src.env_config import load_env  # noqa: E402
+load_env(ROOT / ".env")
 
 # Log to file so we can debug subprocess issues (stdout is reserved for MCP stdio)
 _log_file = ROOT / "data" / "mcp_server.log"

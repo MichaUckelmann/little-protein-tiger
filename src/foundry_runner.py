@@ -38,6 +38,7 @@ from typing import Callable, Iterable, Sequence
 
 from loguru import logger
 
+from src.env_config import resolve_env_path
 from src.foundry_spec import (
     RFD3_BINDER_CHAIN, RFD3_TARGET_CHAIN, build_mpnn_configs, parse_contig,
     strip_design_suffixes, validate_spec,
@@ -485,10 +486,11 @@ def write_campaign_driver(
     if max_cb is None:
         max_cb = n_target_segments
 
-    foundry_root = f.get("root")
+    foundry_root = resolve_env_path("LPT_FOUNDRY_ROOT", f.get("root"))
     if not foundry_root:
         raise FoundryValidationError(
-            "design.foundry.root is not set in config.yaml — it must point at "
+            "foundry root is not set — set the LPT_FOUNDRY_ROOT env var "
+            "(see .env.example) or design.foundry.root in config.yaml to "
             "this machine's foundry checkout (the directory containing "
             ".venv-blackwell). There is no cross-machine default.")
 

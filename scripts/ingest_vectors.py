@@ -19,12 +19,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT))
+
+from src.env_config import load_env  # noqa: E402
+load_env(ROOT / ".env")
 
 from src.vector_store import VectorStore
 

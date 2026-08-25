@@ -6,7 +6,7 @@ storage" — a third variant alongside foundry's "LPT drives the GPU" (this
 workstation) and the old enzyme track's "LPT preps + validates" (external
 ORCA). This machine has no SLURM login-node access, so unlike foundry_runner
 this module never launches a job; it prepares inputs in the exact shape
-g-groups/group_sahtoe/muckelmann/binder_pipeline already expects, writes a
+g-groups/.../binder_pipeline already expects, writes a
 ready-to-run launch script, and pauses. `collect_campaign()` on resume reads
 back whatever that pipeline produced.
 
@@ -52,6 +52,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from src.env_config import resolve_env_path
+
 
 class ClusterError(RuntimeError):
     """A cluster campaign could not be staged."""
@@ -64,13 +66,17 @@ class MsaFetchError(ClusterError):
 @dataclass(frozen=True)
 class ClusterConfig:
     enabled: bool
-    pipeline_root: Path
+    # None means "not configured" — deliberately NOT Path(""), which
+    # pathlib normalises to Path(".") and would make an unconfigured root
+    # silently pass an `is_dir()` check against the current working
+    # directory instead of failing loudly.
+    pipeline_root: "Path | None"
     stage_subdir: str
     submit_instructions: str
     refold_backend: str
     use_msa: bool
     msa_source: str
-    protenix_repo: Path
+    protenix_repo: "Path | None"
     protenix_venv: str
     n_gpus: int
     pilot: dict
@@ -83,15 +89,19 @@ class ClusterConfig:
     @classmethod
     def from_cfg(cls, cfg: dict) -> "ClusterConfig":
         c = ((cfg or {}).get("design") or {}).get("cluster") or {}
+        pipeline_root = resolve_env_path("LPT_CLUSTER_PIPELINE_ROOT", c.get("pipeline_root"))
+        protenix_repo = resolve_env_path("LPT_CLUSTER_PROTENIX_REPO", c.get("protenix_repo"))
         return cls(
             enabled=bool(c.get("enabled", False)),
-            pipeline_root=Path(c.get("pipeline_root", "")).expanduser(),
+            pipeline_root=Path(pipeline_root).expanduser() if pipeline_root else None,
             stage_subdir=c.get("stage_subdir", "examples"),
-            submit_instructions=c.get("submit_instructions", ""),
+            submit_instructions=resolve_env_path(
+                "LPT_CLUSTER_SUBMIT_INSTRUCTIONS", c.get("submit_instructions")
+            ) or "",
             refold_backend=c.get("refold_backend", "protenix"),
             use_msa=bool(c.get("use_msa", True)),
             msa_source=c.get("msa_source", "protenix_hosted"),
-            protenix_repo=Path(c.get("protenix_repo", "")).expanduser(),
+            protenix_repo=Path(protenix_repo).expanduser() if protenix_repo else None,
             protenix_venv=c.get("protenix_venv", ".venv"),
             n_gpus=max(1, int(c.get("n_gpus", 4))),
             pilot=c.get("pilot") or {"n_batches": 25},
@@ -198,11 +208,19 @@ def fetch_target_msa(seq: str, name: str, cluster_cfg: ClusterConfig) -> Path:
         raise MsaFetchError(
             f"msa_source={cluster_cfg.msa_source!r} has no automatic fetch — "
             f"use bin/make_msa.sh manually (see the pause instructions).")
+    if cluster_cfg.protenix_repo is None:
+        raise MsaFetchError(
+            "no Protenix checkout configured — set the LPT_CLUSTER_PROTENIX_REPO "
+            "env var (see .env.example) or design.cluster.protenix_repo in "
+            "config.yaml to a working checkout, or switch msa_source to "
+            "cluster_colabfold.")
     venv_py = cluster_cfg.protenix_repo / cluster_cfg.protenix_venv / "bin" / "python3"
     if not venv_py.exists():
         raise MsaFetchError(
-            f"no Protenix venv at {venv_py} — set design.cluster.protenix_repo "
-            f"to a working checkout, or switch msa_source to cluster_colabfold.")
+            f"no Protenix venv at {venv_py} — set the LPT_CLUSTER_PROTENIX_REPO "
+            f"env var (see .env.example) or design.cluster.protenix_repo in "
+            f"config.yaml to a working checkout, or switch msa_source to "
+            f"cluster_colabfold.")
 
     script = (
         "import sys; sys.path.insert(0, 'lpt_scripts')\n"
@@ -267,11 +285,13 @@ def stage_campaign(
 
     Does NOT submit anything — this machine cannot reach the scheduler.
     """
-    if not cluster_cfg.pipeline_root.is_dir():
+    if cluster_cfg.pipeline_root is None or not cluster_cfg.pipeline_root.is_dir():
         raise ClusterError(
-            f"design.cluster.pipeline_root does not exist: "
-            f"{cluster_cfg.pipeline_root} — point it at a binder_pipeline "
-            f"checkout reachable from this machine.")
+            f"cluster pipeline_root does not exist: "
+            f"{cluster_cfg.pipeline_root!r} — set the LPT_CLUSTER_PIPELINE_ROOT "
+            f"env var (see .env.example) or design.cluster.pipeline_root in "
+            f"config.yaml to a binder_pipeline checkout reachable from this "
+            f"machine.")
 
     run_name = f"{slug}_{mode}"
     run_dir = cluster_cfg.pipeline_root / cluster_cfg.stage_subdir / run_name

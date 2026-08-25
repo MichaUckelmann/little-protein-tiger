@@ -25,7 +25,7 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
 
    `src/pipeline_runner.py` chains skills end-to-end (pathway → structure → literature → design) by parsing `### PIPELINE HANDOFF` blocks out of each skill's markdown output. Editing handoff format in one skill requires updating the consumers.
 
-3. **Web platform** (`web/`): FastAPI + Celery backend (`web/backend/`), React/Vite frontend (`web/frontend/`). Celery wraps `pipeline_runner` as a background task. BYOK API keys are Fernet-encrypted (`web/backend/crypto.py`).
+3. **Web platform** (`web/`) — **EXCLUDED FROM THE RELEASE, DO NOT WORK ON IT** unless explicitly asked. FastAPI + Celery + React. It is untracked (see `.gitignore`) and unmaintained: `_TrackedRunner._run_stage` in `web/backend/tasks.py` has a stale signature against `PipelineRunner._run_stage` (which gained a keyword-only `stage`), so it raises `TypeError` on the first PPI stage; it also knows nothing about `--workflow binder` and handles 4 of the 11 pause points the runner now raises. Branch `archive/web-platform` marks the last commit that tracked it. The CLI is the supported entry point.
 
 ## Two design workflows in one orchestrator
 
@@ -486,9 +486,11 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 
 ## MCP launchers (Windows gotcha)
 
-`scripts/launch_mcp.py` and `scripts/launch_structure_tools.py` set `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `TOKENIZERS_PARALLELISM=false`, and `HF_HUB_OFFLINE=1` before importing `sentence_transformers`. Without these, the MCP server hangs at import on Windows. Don't bypass the launcher when registering with Claude Desktop.
+`scripts/launch_mcp.py` sets `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `TOKENIZERS_PARALLELISM=false`, and `HF_HUB_OFFLINE=1` before importing `sentence_transformers`. Without these, the literature-db server hangs at import on Windows. Don't bypass the launcher when registering with Claude Desktop. `scripts/launch_structure_tools.py` sets none of them and does not need to — structure-tools never imports `sentence_transformers`.
 
-`.mcp.json` paths are absolute and **machine-specific** (currently pointing at `C:\Users\micha\Documents\little_protein_tiger\...`, which differs from this checkout's path). When working on this machine, expect MCP servers to potentially be stale until paths are reconciled — `README.md` "Migrating to a new machine" §4 has the canonical fix.
+`HF_HUB_OFFLINE=1` means the embedding model must already be in the HuggingFace cache: on a machine that has never downloaded it, the first `search_corpus` fails with an HF error that names nothing about LPT. Warm it once with `python -c "from sentence_transformers import SentenceTransformer as S; S('NeuML/pubmedbert-base-embeddings')"`.
+
+`.mcp.json` holds absolute, **machine-specific** paths, so it is NOT tracked in git (see `.gitignore`); each checkout generates its own. Run `python scripts/setup_mcp_json.py` to write one for the current venv and launcher paths — `README.md` "Migrating to a new machine" §4 has the context.
 
 `scripts/setup_mcp_json.py` automates that fix: it regenerates `.mcp.json` for the current checkout's venv Python and launcher paths (backing up the previous file to `.mcp.json.bak`), as an alternative to hand-editing.
 
@@ -537,4 +539,4 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 
 ## Frontend
 
-`web/frontend/` is Vite + React 19 + TypeScript. Commands run from that directory: `npm run dev` (port 5173), `npm run build`, `npm run lint`. The backend's `FRONTEND_URL` env var must match the dev server origin for CORS.
+`web/frontend/` (Vite + React 19 + TypeScript) is part of the excluded web platform — see "Two intertwined systems" §3. Not part of the release and not maintained; don't wire new pipeline features into it.

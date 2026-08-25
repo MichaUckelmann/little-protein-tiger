@@ -37,6 +37,7 @@ from typing import Any
 from src import handoff as handoff_mod
 from src.design_ranking import FilterStats
 from src.report_common import (
+    escape_html,
     ReportError,
     as_float as _as_float,
     extract_citation_section as _extract_citation_section,
@@ -466,7 +467,8 @@ def _render(report_data: dict, structures: dict, title: str) -> str:
         return json.dumps(obj, ensure_ascii=False).replace("</script", "<\\/script").replace("<!--", "<\\!--")
 
     html = shell
-    html = html.replace("@@TITLE@@", title)
+    # LLM-derived target name going straight into <title>.
+    html = html.replace("@@TITLE@@", escape_html(title))
     html = html.replace("/*@@BASE_CSS@@*/", base_css)
     html = html.replace("/*@@MOLSTAR_CSS@@*/", molstar_css)
     html = html.replace("/*@@MOLSTAR_JS@@*/", molstar_js)

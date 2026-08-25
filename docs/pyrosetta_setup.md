@@ -3,9 +3,10 @@
 Operational notes for using PyRosetta from LittleProteinTiger (or any other
 Python project on the same machine). The paths below are what one contributor's
 workstation happened to use — adjust them to wherever PyRosetta actually lives
-on yours, and set `design.pyrosetta.python_executable` in `config.yaml`
-accordingly. The mistakes and fixes here generalise to any project that needs
-PyRosetta from a venv whose Python version doesn't match the PyRosetta build.
+on yours, and set `LPT_PYROSETTA_PYTHON` in your `.env` accordingly (see
+`docs/environment_setup.md`). The mistakes and fixes here generalise to any
+project that needs PyRosetta from a venv whose Python version doesn't match
+the PyRosetta build.
 
 ## TL;DR
 

@@ -44,10 +44,10 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 import yaml
-from dotenv import load_dotenv
+from src.env_config import load_env
 from loguru import logger
 
-load_dotenv(_ROOT / ".env")
+load_env(_ROOT / ".env")
 
 
 def _load_config() -> dict:

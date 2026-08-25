@@ -33,24 +33,17 @@ dependencies = [
     "biopython>=1.85",
     "biotite>=1.7.1",
     "markdown>=3.6",
+    # Direct imports in src/ that happened to arrive via lancedb /
+    # sentence-transformers / biotite. Relying on a transitive edge means a
+    # dependency bump can break structure_tools and binder_ranking silently.
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pyarrow>=15.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-]
-web = [
-    "fastapi>=0.111",
-    "uvicorn[standard]>=0.29",
-    "sqlmodel>=0.0.18",
-    "celery[redis]>=5.3",
-    "redis>=5.0",
-    "cryptography>=42.0",
-    "authlib>=1.3",
-    "python-jose[cryptography]>=3.3",
-    "sse-starlette>=1.8",
-    "slowapi>=0.1.9",
-    "httpx>=0.27",
 ]
 
 [project.urls]
@@ -67,9 +60,26 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+# `scripts` is a package (it has __init__.py) and backs the console scripts
+# below; without it every `lpt-*` command dies with ModuleNotFoundError. An
+# editable install hides this because it puts the repo ROOT on sys.path.
+packages = ["src", "scripts"]
+
+# Runtime data read via `Path(__file__).parent.parent / <name>`:
+#   src/binder_report.py, src/ppi_report.py -> assets/vendor/molstar
+#   src/skill_runner.py                     -> skills/<name>/SKILL.md
+# Installed alongside the packages so those lookups resolve the same way in a
+# wheel as in a source checkout.
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "skills"
+"assets" = "assets"
 
 [tool.pytest.ini_options]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "network: hits a live external API (RCSB / UniProt). Deselected by default; run with '-m network'",
 ]
+# The chain-assignment and hotspot-grounding guards are ABOUT real structures,
+# so a handful of tests genuinely reach RCSB/UniProt. They stay in the suite but
+# out of the default run, which must be hermetic.
+addopts = "-m 'not network'"

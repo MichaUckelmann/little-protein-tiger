@@ -33,6 +33,17 @@ class PaperMetadata(BaseModel):
     doi: Optional[str] = None
     study_type: str
     situational_context_hook: str
+    # `curation_prompt.md` §3 instructs the model to extract EVERY PDB code it
+    # sees — deposited, referenced, in methods, in data-availability, in figure
+    # legends — and `pmcid` is stamped on by `curate_papers.py` after
+    # validation. Neither was declared here, and Pydantic v2 drops undeclared
+    # keys on model_dump, so every extracted accession was silently discarded:
+    # of 10,180 curated fingerprints only the 1,561 that RCSB's own
+    # primary-citation lookup could recover carry any accession at all. Those
+    # feed `find_pdb_structures`, `_corpus_graph`, and the pathway/wildcard
+    # skills' structure selection.
+    pdb_accessions: list[str] = []
+    pmcid: Optional[str] = None
 
 
 class Methodology(BaseModel):

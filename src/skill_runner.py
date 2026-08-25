@@ -18,13 +18,14 @@ import time
 
 import anthropic
 import requests
-from dotenv import load_dotenv
 from loguru import logger
 
 _ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(_ROOT / ".env")
 
 sys.path.insert(0, str(_ROOT))
+
+from src.env_config import load_env  # noqa: E402
+load_env(_ROOT / ".env")
 
 
 from src._path_resolve import resolve as _resolve_path
@@ -955,6 +956,15 @@ _GEMINI_GENERATE_URL = (
 )
 
 
+class SkillRunnerError(RuntimeError):
+    """Misconfiguration caught before any API call — a missing key, say.
+
+    Distinct from `SkillRefusedError`: nothing was sent, nothing was billed,
+    and no model fallback can help. The message is meant to be read by a user
+    on a fresh clone, so it names the env var and the file to put it in.
+    """
+
+
 class SkillRefusedError(RuntimeError):
     """A safety classifier declined the request; no content was returned."""
 
@@ -1039,10 +1049,35 @@ class SkillRunner:
         # Populated after run() completes — full conversation history for tracing.
         self._messages: list[dict] | None = None
 
+        self._require_api_key()
         self.system_prompt = self._load_system_prompt()
         logger.info(
             f"SkillRunner ready: skill={skill_name}, provider={provider}, model={model_id}"
             + (" [extended thinking]" if self.use_extended_thinking else "")
+        )
+
+    _PROVIDER_KEYS = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}
+
+    def _require_api_key(self) -> None:
+        """Fail early and legibly when the provider's key isn't configured.
+
+        Without this the missing key surfaces as the provider's own error at
+        the first LLM call — for Gemini, `403 Forbidden for url: ...?key=` with
+        an empty key, which names nothing about LPT or `.env`. Gemini is the
+        default provider for every stage, so this is the very first wall a
+        fresh clone hits, and on the binder track it lands only AFTER structure
+        download and interface analysis have already run.
+        """
+        var = self._PROVIDER_KEYS.get(self.provider)
+        if var is None or os.environ.get(var):
+            return          # local/Ollama needs no key
+        raise SkillRunnerError(
+            f"{var} is not set, but the {self.provider!r} provider needs it "
+            f"(skill={self.skill_name}, model={self.model_id}).\n"
+            f"Add it to .env at the project root:\n"
+            f"    {var}=...\n"
+            f"See .env.example for which key each provider and workflow needs. "
+            f"To use a different provider instead, pass --provider."
         )
 
     # ------------------------------------------------------------------

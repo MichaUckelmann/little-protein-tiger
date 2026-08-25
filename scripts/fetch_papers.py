@@ -16,11 +16,12 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import yaml
-from dotenv import load_dotenv
 from loguru import logger
 
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.env_config import load_env  # noqa: E402
 
 from src.database import Database
 from src.models import DownloadStatus
@@ -44,7 +45,7 @@ def print_stats(db: Database):
 
 
 def main():
-    load_dotenv()
+    load_env()
 
     parser = argparse.ArgumentParser(description="Fetch scientific PDFs from PMC and preprint servers")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")

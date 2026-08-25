@@ -15,6 +15,7 @@ metrics get charted) stays in each report's own module.
 
 from __future__ import annotations
 
+import html as _html
 import json
 import re
 from pathlib import Path
@@ -23,6 +24,47 @@ from typing import Any
 import markdown as _markdown_lib
 
 _MD_EXTENSIONS = ["tables", "fenced_code", "sane_lists"]
+
+# Raw-HTML neutralisation for LLM-authored prose. `markdown` passes embedded
+# HTML through untouched, and a report is a self-contained file explicitly
+# meant to be shared, so a prompt-injected paper reaching a stage narrative
+# could otherwise land executable script in a distributed artifact. The JSON
+# data blobs are already guarded by each report's `safe_json`; this is the
+# prose path.
+#
+# Whole elements whose CONTENT is also dangerous (dropped, content included):
+_MD_STRIP_ELEMENTS = ("script", "iframe", "object", "embed", "style", "noscript",
+                      "template", "svg", "math", "form", "base", "link", "meta")
+_STRIP_RE = re.compile(
+    r"<\s*(" + "|".join(_MD_STRIP_ELEMENTS) + r")\b[^>]*>.*?<\s*/\s*\1\s*>",
+    re.IGNORECASE | re.DOTALL)
+# ...and their self-closing / unterminated forms.
+_STRIP_LONE_RE = re.compile(
+    r"<\s*/?\s*(" + "|".join(_MD_STRIP_ELEMENTS) + r")\b[^>]*>",
+    re.IGNORECASE)
+# Inline event handlers: onclick=, onerror=, onload=, ...
+_EVENT_ATTR_RE = re.compile(r"\son[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)",
+                            re.IGNORECASE)
+# javascript:/vbscript:/data: URLs in href/src.
+_BAD_URL_RE = re.compile(
+    r"\s(href|src|xlink:href)\s*=\s*(\"|')?\s*(javascript|vbscript|data)\s*:[^\"'>\s]*(\"|')?",
+    re.IGNORECASE)
+
+
+def sanitize_html(rendered: str) -> str:
+    """Strip script-bearing constructs from rendered HTML.
+
+    Deliberately a narrow denylist over the constructs that execute, not a full
+    sanitiser: the input is markdown from this pipeline's own stages, and the
+    goal is that no path from LLM output to a shared file can carry script. If
+    reports ever render genuinely untrusted third-party HTML, replace this with
+    a real allowlist sanitiser (``bleach`` / ``nh3``) rather than extending it.
+    """
+    cleaned = _STRIP_RE.sub("", rendered)
+    cleaned = _STRIP_LONE_RE.sub("", cleaned)
+    cleaned = _EVENT_ATTR_RE.sub("", cleaned)
+    cleaned = _BAD_URL_RE.sub(" ", cleaned)
+    return cleaned
 
 
 class ReportError(RuntimeError):
@@ -48,10 +90,29 @@ def read_json(path: Path) -> Any | None:
 
 
 def markdown_html(text: str) -> str:
+    """Render a stage's markdown narrative to HTML, with raw HTML neutralised.
+
+    Everything passed here is LLM-authored prose, and a report is a
+    self-contained file explicitly meant to be shared. `markdown` passes raw
+    HTML through untouched by default, so a prompt-injected paper reaching a
+    stage narrative would land executable script in a distributed artifact.
+    The data blobs are already guarded by `safe_json`; this closes the prose
+    path. Markdown's own syntax is unaffected — only literal tags are escaped.
+    """
     text = text.strip()
     if not text:
         return ""
-    return _markdown_lib.markdown(text, extensions=_MD_EXTENSIONS)
+    return sanitize_html(
+        _markdown_lib.markdown(text, extensions=_MD_EXTENSIONS))
+
+
+def escape_html(text: str) -> str:
+    """Escape a plain-text value for interpolation into an HTML template.
+
+    Used for `@@TITLE@@`, which carries an LLM-derived target name straight
+    into `<title>`.
+    """
+    return _html.escape(str(text), quote=True)
 
 
 def section_before_handoff(text: str) -> str:

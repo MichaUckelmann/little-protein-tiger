@@ -23,8 +23,7 @@ _TIER1_JOURNALS: set[str] = {
     # Multidisciplinary flagships
     "nature", "science", "cell", "pnas",
     "proceedings of the national academy of sciences",
-    "new england journal of medicine","n engl j med",
-    "n"
+    "new england journal of medicine", "n engl j med", "nejm",
     # Nature family
     "nature chemical biology", "nat chem biol",
     "nature structural & molecular biology", "nat struct mol biol",
@@ -33,7 +32,7 @@ _TIER1_JOURNALS: set[str] = {
     "nature cell biology", "nat cell biol",
     "nature medicine", "nat med",
     "nature cancer", "nat cancer",
-    "nature genetics", "nat genet"
+    "nature genetics", "nat genet",
     # Cell Press
     "cell chemical biology","cell chem biol",
     "molecular cell", "mol cell",

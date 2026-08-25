@@ -20,12 +20,13 @@ import time
 from pathlib import Path
 
 import yaml
-from dotenv import load_dotenv
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT))
+
+from src.env_config import load_env  # noqa: E402
+load_env(ROOT / ".env")
 
 from src.database import Database, _paper_key  # noqa: E402
 from src.text_extractor import extract_text  # noqa: E402

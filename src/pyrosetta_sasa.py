@@ -34,6 +34,102 @@ class PyRosettaWorkerError(RuntimeError):
     """The pyrosetta subprocess worker exited with an error."""
 
 
+class PyRosettaNotConfigured(PyRosettaWorkerError):
+    """No usable PyRosetta interpreter — distinct from "the worker failed".
+
+    Raised only when PyRosetta was *required* (`design.pyrosetta.enabled: true`).
+    Under the default `auto` the caller skips the optional stage instead.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Availability — one answer, shared by both consumers
+# ---------------------------------------------------------------------------
+#
+# PyRosetta is used in exactly two places, both AFTER designs exist:
+#   * PPI track   — `design_metrics.enrich_with_hotspot_sasa` (per-design
+#                   hotspot burial), called from `_stage_analysis`;
+#   * binder track — `rosetta_metrics.score_designs` (relax + InterfaceAnalyzer
+#                   on gate survivors), called from `_stage_binder_scoring`.
+# Neither generates anything, so the whole pipeline runs without it. This is
+# the single place that decides whether it can be used, so the two tracks
+# cannot disagree — and so `design.pyrosetta.enabled` means the same thing in
+# both.
+
+def resolve_interpreter(cfg: dict) -> str | None:
+    """Absolute path to the PyRosetta env's python, or None if unset/missing.
+
+    Deliberately does NOT fall back to `shutil.which("python")`: that resolves
+    the LPT venv's own interpreter, which has no pyrosetta, so `available()`
+    returned True and the worker then died on `import pyrosetta` — reported to
+    the user as "worker produced no output (rc=1)".
+    """
+    from src.env_config import resolve_env_path
+
+    exe = resolve_env_path(
+        "LPT_PYROSETTA_PYTHON", (cfg.get("pyrosetta") or {}).get("python_executable"))
+    if not exe:
+        return None
+    path = Path(exe)
+    if not path.is_absolute():
+        found = shutil.which(str(exe))
+        if not found:
+            return None
+        path = Path(found)
+    return str(path) if path.exists() else None
+
+
+def pyrosetta_mode(cfg: dict) -> str:
+    """`design.pyrosetta.enabled` normalised to 'auto' | 'on' | 'off'."""
+    raw = (cfg.get("pyrosetta") or {}).get("enabled", "auto")
+    if raw is None:          # `enabled:` with no value — treat as unset
+        return "auto"
+    if raw is True:
+        return "on"
+    if raw is False:
+        return "off"
+    value = str(raw).strip().lower()
+    if value in ("auto", ""):
+        return "auto"
+    if value in ("true", "yes", "on", "1", "required"):
+        return "on"
+    if value in ("false", "no", "off", "0"):
+        return "off"
+    logger.warning(f"design.pyrosetta.enabled={raw!r} not understood — using 'auto'")
+    return "auto"
+
+
+def check_available(cfg: dict) -> tuple[bool, str]:
+    """(usable, human-readable reason). Never raises under 'auto' or 'off'.
+
+    Raises :class:`PyRosettaNotConfigured` only when the config *requires*
+    PyRosetta and it isn't there — a run pinned to `enabled: true` must fail
+    loudly rather than quietly produce designs scored by a different rubric.
+    """
+    mode = pyrosetta_mode(cfg)
+    if mode == "off":
+        return False, "disabled (design.pyrosetta.enabled: false)"
+
+    interpreter = resolve_interpreter(cfg)
+    if interpreter is None:
+        reason = ("no PyRosetta interpreter configured — set LPT_PYROSETTA_PYTHON "
+                  "in .env (see docs/pyrosetta_setup.md) or "
+                  "design.pyrosetta.python_executable in config.yaml")
+        if mode == "on":
+            raise PyRosettaNotConfigured(
+                f"design.pyrosetta.enabled is true but {reason}. Set it, or use "
+                f"'auto' to skip the PyRosetta stages when it isn't installed.")
+        return False, reason
+
+    if not _DEFAULT_WORKER.exists():
+        reason = f"SASA worker script missing: {_DEFAULT_WORKER}"
+        if mode == "on":
+            raise PyRosettaNotConfigured(reason)
+        return False, reason
+
+    return True, f"using {interpreter}"
+
+
 @dataclass
 class HotspotSasaResult:
     cif_path: Path
@@ -106,13 +202,21 @@ def compute_hotspot_sasa(
     if not worker.exists():
         raise PyRosettaWorkerError(f"SASA worker script not found: {worker}")
 
+    if not python_executable:
+        raise PyRosettaWorkerError(
+            "no pyrosetta interpreter configured — set the LPT_PYROSETTA_PYTHON "
+            "env var (see .env.example) or design.pyrosetta.python_executable "
+            "in config.yaml to the absolute path of the pyrosetta conda env's "
+            "python."
+        )
     py = Path(python_executable)
     if not py.is_absolute():
         which = shutil.which(str(python_executable))
         if not which:
             raise PyRosettaWorkerError(
                 f"pyrosetta python_executable {python_executable!r} not on PATH. "
-                "Set design.pyrosetta.python_executable in config.yaml to the "
+                "Set the LPT_PYROSETTA_PYTHON env var (see .env.example) or "
+                "design.pyrosetta.python_executable in config.yaml to the "
                 "absolute path of the pyrosetta conda env's python."
             )
         py = Path(which)

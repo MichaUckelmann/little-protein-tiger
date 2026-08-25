@@ -35,7 +35,7 @@ from loguru import logger  # noqa: E402
 # LPT_BCR_REFERENCE_DIR points at the root of the reference campaign's data;
 # see tests/conftest.py for the shared default and rationale.
 _BCR_ROOT = Path(os.environ.get(
-    "LPT_BCR_REFERENCE_DIR", "/home/m.uckelmann_cbs-niob.local/data/BCR"))
+    "LPT_BCR_REFERENCE_DIR", str(Path.home() / "data" / "BCR")))
 BCR = _BCR_ROOT / "outputs" / "production" / "CD79b"
 STRUCT = _ROOT / "data" / "structures" / "7XQ8_ba1.cif"
 

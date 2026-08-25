@@ -768,10 +768,30 @@ _DEFAULT_HGNC = (
 _NORMALIZER: IdentifierNormalizer | None = None
 
 
+class ReferenceDataMissing(FileNotFoundError):
+    """A required reference dataset isn't on disk, with instructions to fix it."""
+
+
 def get_normalizer() -> IdentifierNormalizer:
     """Return a process-wide :class:`IdentifierNormalizer` (built on first call)."""
     global _NORMALIZER
     if _NORMALIZER is None:
+        # `data/` is gitignored, so these are absent on every fresh clone. This
+        # is the first thing the binder track touches (target_resolve, stage 0),
+        # and the bare FileNotFoundError that used to come out of gzip.open
+        # named a path but not what the file was, where to get it, or that a
+        # script exists to fetch it — the run just died two seconds in.
+        missing = [p for p in (_DEFAULT_IDMAPPING, _DEFAULT_HGNC) if not p.exists()]
+        if missing:
+            names = "\n  ".join(str(p) for p in missing)
+            raise ReferenceDataMissing(
+                f"required reference data is missing:\n  {names}\n\n"
+                f"These are public, free, and ~52 MB together. Fetch them with:\n"
+                f"    python scripts/fetch_reference_data.py\n"
+                f"(check what's present with --check). They map gene symbols and "
+                f"aliases to UniProt accessions, which target resolution, the "
+                f"chain-assignment guards and every graph tool depend on."
+            )
         _NORMALIZER = IdentifierNormalizer(_DEFAULT_IDMAPPING, _DEFAULT_HGNC)
     return _NORMALIZER
 
