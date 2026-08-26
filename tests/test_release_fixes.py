@@ -1575,3 +1575,83 @@ def test_the_api_pipeline_path_still_auto_uses_its_tools():
     assert mcp_doc != by_name["search_corpus"], (
         "MCP and pipeline descriptions have converged; they have opposite "
         "requirements and must stay distinct")
+
+
+# ----------------------------------------------------------------------
+# LLM prose must not carry LaTeX into terminals, .md files or HTML reports
+# ----------------------------------------------------------------------
+
+_LATEX = __import__("re").compile(
+    r"\$[^$\n]*\\(?:text|approx|mu|times|cdot|le|ge|frac|sim)[^$\n]*\$"
+    r"|\\text\{|\\approx|\\mu\\text|\$K_[A-Za-z0-9{]")
+
+
+def test_every_skill_prompt_carries_the_output_format_rule():
+    """Appended in _load_system_prompt so it reaches all 12 skills on BOTH
+    transports — a per-SKILL.md rule would be 12 places to forget."""
+    import inspect
+
+    from src import skill_runner
+
+    assert "OUTPUT FORMATTING" in skill_runner._OUTPUT_FORMAT_RULE
+    assert "Never use LaTeX" in skill_runner._OUTPUT_FORMAT_RULE
+    src = inspect.getsource(skill_runner.SkillRunner._load_system_prompt)
+    assert "_OUTPUT_FORMAT_RULE" in src, "the rule must actually be appended"
+
+
+def test_the_rule_reaches_a_real_skill_prompt(config, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-placeholder")
+    from src.skill_runner import SkillRunner
+
+    r = SkillRunner(skill_name="corpus-explorer", provider="gemini",
+                    model_id="gemini-3.7-flash", config=config)
+    assert "Never use LaTeX" in r.system_prompt
+
+
+def test_the_rule_gives_concrete_replacements_not_just_a_prohibition():
+    """'Do not use X' without 'use Y instead' is weak instruction. The model
+    reached for LaTeX because that IS the convention in scientific writing it
+    was trained on; it needs to be shown what to write instead."""
+    from src.skill_runner import _OUTPUT_FORMAT_RULE
+
+    for example in ("nM", "kcal/mol", "IC50", "Kd"):
+        assert example in _OUTPUT_FORMAT_RULE, f"no plain-text example for {example}"
+
+
+def test_latex_in_stage_prose_would_reach_the_rendered_report():
+    """Why this matters beyond the terminal: markdown_html passes math markup
+    through verbatim, so LaTeX in a stage report lands in the shipped HTML."""
+    from src.report_common import markdown_html
+
+    out = markdown_html(r"Binding was $K_d \approx 470\text{ nM}$ by SPR.")
+    assert "\\approx" in out or "$K_d" in out, (
+        "if this ever stops being true the rule can be relaxed")
+
+
+def test_the_corpus_itself_is_not_the_source_of_the_latex():
+    """Establishes WHERE the markup comes from. The corpus stores affinities as
+    plain floats in Molar; if this starts failing, curation has regressed and
+    the fix belongs there, not in the output rule."""
+    import json
+    import pathlib
+
+    fps = sorted((_repo_root() / "data" / "fingerprints").glob("*.json"))
+    if len(fps) < 100:
+        pytest.skip("no corpus installed")
+
+    sample = fps[:1500]
+    latex = [f.name for f in sample
+             if _LATEX.search(f.read_text(encoding="utf-8", errors="ignore"))]
+    assert len(latex) <= len(sample) * 0.01, (
+        f"{len(latex)}/{len(sample)} fingerprints carry LaTeX — the corpus, not "
+        f"the output formatting, is now the problem: {latex[:3]}")
+
+    # ...and affinities are numbers, not formatted strings.
+    for f in sample[:400]:
+        for kf in (json.loads(f.read_text(encoding="utf-8")).get("key_findings") or []):
+            v = kf.get("affinities_kd_Molar")
+            if v is not None:
+                assert isinstance(v, (int, float)), (
+                    f"{f.name}: affinities_kd_Molar is {type(v).__name__}, not a "
+                    f"float in Molar — see the curation contract in CLAUDE.md")
+                return

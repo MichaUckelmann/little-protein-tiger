@@ -987,6 +987,31 @@ _GEMINI_GENERATE_URL = (
 )
 
 
+# Appended to EVERY skill's system prompt, both transports. Output goes to a
+# terminal, to a .md stage file, and (via src/report_common.markdown_html) into
+# a self-contained HTML report — none of which render LaTeX. Models reach for
+# `$K_d \approx 470\text{ nM}$` unprompted because that is the convention in
+# scientific writing they were trained on; the corpus itself is clean (1 of
+# 11,052 fingerprints contains LaTeX) and stores affinities as plain floats in
+# Molar. So this is purely an output-formatting instruction.
+_OUTPUT_FORMAT_RULE = """
+
+---
+## OUTPUT FORMATTING (applies to everything you write)
+
+Write plain text and plain Markdown. **Never use LaTeX or math-mode markup.**
+Your output is read in a terminal, saved as a Markdown file, and rendered into
+an HTML report — none of these render LaTeX, so `$K_d \\approx 470\\text{ nM}$`
+reaches the reader verbatim, as noise.
+
+- Quantities: `Kd ~ 470 nM`, `Ki = 2 nM`, `dG = -9.2 kcal/mol`, `1.5 uM`
+  (or `µM`), `2.5e-6 M`. Not `$K_d$`, not `\\text{}`, not `\\approx`.
+- Subscripts in prose: `Kd`, `Kd1`, `IC50`, `EC50` — not `K_d` or `K_{D1}`.
+- Ranges and comparisons: `10-50 nM`, `< 1 uM`, `>= 2-fold`.
+- Tables, bullets, bold and inline code are all fine and encouraged.
+"""
+
+
 class SkillRunnerError(RuntimeError):
     """Misconfiguration caught before any API call — a missing key, say.
 
@@ -1135,7 +1160,7 @@ class SkillRunner:
                     )
             logger.info("Orchestrator mode: sub-skill SKILL.mds appended to system prompt")
 
-        return system
+        return system + _OUTPUT_FORMAT_RULE
 
     # ------------------------------------------------------------------
     # Tool execution
