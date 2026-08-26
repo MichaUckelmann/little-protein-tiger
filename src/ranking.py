@@ -39,6 +39,7 @@ _TIER1_JOURNALS: set[str] = {
     "cancer cell", 
     "cell reports", "cell rep",
     "cell research", "cell res",
+    "developmental cell", "dev cell",
     # Other high-impact
     "elife",
     "embo journal", "embo j",

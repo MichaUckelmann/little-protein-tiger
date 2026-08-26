@@ -869,6 +869,7 @@ def test_pubmed_spellings_of_listed_journals_are_recognised(journal):
     "EMBO Molecular Medicine", "EMBO Mol Med",
     "Development", "Development (Cambridge, England)",
     "Genome Biology", "Genome Biol",
+    "Developmental Cell", "Developmental cell", "Dev Cell",
     "Molecular Biology of the Cell", "Mol Biol Cell",
     "PLoS Genetics", "PLoS Genet", "PLOS Genetics",
     "FEBS Journal", "FEBS Letters", "PLoS Biology", "PLoS Computational Biology",

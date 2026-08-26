@@ -29,8 +29,8 @@ Measured against the shipped corpus (55,644 indexed papers):
 | | Papers | Share |
 |---|---|---|
 | Indexed by search | 55,688 | 100% |
-| **Pass the tier gate** | **17,735** | **32%** |
-| Blocked | 37,953 | 68% |
+| **Pass the tier gate** | **17,856** | **32%** |
+| Blocked | 37,832 | 68% |
 
 The gate is deliberately strict. The largest excluded venues are *PLoS One*,
 *bioRxiv*, *Scientific Reports*, and *International Journal of Molecular
@@ -51,7 +51,7 @@ The same score also feeds `priority_score`, which orders the download queue.
 | **0.4** | Unlisted, or journal unknown — decent but unranked. **Blocked by the gate.** |
 | **0.25** | Deliberately downweighted: Frontiers titles, and MDPI titles (*IJMS*, *Molecules*, *Cells*, *Cancers*, …) |
 
-Tier 1 holds 81 entries and tier 2 holds 62, but both include abbreviations
+Tier 1 holds 83 entries and tier 2 holds 62, but both include abbreviations
 alongside full names, so the real count is roughly half that many journals.
 Entries are normalised at import, so you can write one in whatever form reads
 naturally — `"Genes & Development"` and `"genes development"` are equivalent.
@@ -100,7 +100,6 @@ corpus:
 | *bioRxiv* | 1,385 | Not peer reviewed |
 | *Scientific Reports* | 1,023 | Same reasoning as *PLoS One* |
 | *Int J Mol Sci* | 1,033 | MDPI; scored 0.25 deliberately |
-| *Developmental Cell* | 15 | Not yet listed — a reasonable addition |
 
 Admitting *PLoS One* alone would grow the eligible pool by ~1,800 papers
 (≈10%), at roughly $45 of curation and 7 GB of documents — a real trade, not a
