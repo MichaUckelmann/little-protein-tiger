@@ -1,6 +1,10 @@
 ---
 name: molecular-biology-expert
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Query the curated scientific literature database to assess the biology, prior art,
   feasibility, and design challenges for a candidate binder target — either a
   protein-protein interaction (PPI; default) or a single-protein active-site /

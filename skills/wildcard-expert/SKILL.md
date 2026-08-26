@@ -1,6 +1,10 @@
 ---
 name: wildcard-expert
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Query the curated literature database to identify non-obvious, potentially novel
   PPI targets for a disease context. Uses a training-knowledge bridge plus
   graph-driven novelty triage (interaction_hubs, shortest_interaction_path,

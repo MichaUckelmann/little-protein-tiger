@@ -21,7 +21,22 @@ from src.structure_tools import (
     score_surface_patch,
 )
 
-mcp = FastMCP("structure-tools")
+mcp = FastMCP(
+    "structure-tools",
+    instructions=(
+        "Deterministic structural-biology calculations over local PDB/CIF "
+        "files: interface analysis, buried surface area, residue contacts, "
+        "mutation clash checks, sequence/numbering maps, surface patches.\n\n"
+        "DO NOT reach for these tools on your own. Use them only when the "
+        "user explicitly asks for a calculation on a specific structure — "
+        "'analyse the interface of 6VJJ chains A and B', 'what contacts does "
+        "residue 45 make'.\n\n"
+        "These compute real numbers from real coordinates, so they are worth "
+        "using when a structure is genuinely in question. They are not a "
+        "substitute for what you already know about a protein, and they need "
+        "the structure file to be present locally."
+    ),
+)
 
 
 from src._path_resolve import resolve as _resolve_path

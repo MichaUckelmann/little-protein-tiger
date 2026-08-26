@@ -1505,3 +1505,73 @@ def test_pdb_discovery_ranks_metadata_confirmed_hits_first():
     src = inspect.getsource(skill_runner._find_pdb_structures)
     assert "query_named_in_metadata" in src
     assert "_rank(" in src
+
+
+# ----------------------------------------------------------------------
+# MCP must not auto-trigger; the API/pipeline path must still auto-use
+# ----------------------------------------------------------------------
+
+def test_mcp_servers_tell_the_model_not_to_reach_for_them():
+    """Auto-triggered corpus search makes answers WORSE: the corpus is ~11k
+    papers weighted to chromatin/chaperones, while the model's own knowledge
+    spans all of biology. A general question answered from a corpus search is
+    narrower than the unaided answer, and makes that narrowness look like the
+    state of the field."""
+    import src.mcp_server as lit
+    import src.structure_tools_server as st
+
+    for server, label in ((lit.mcp, "literature-db"), (st.mcp, "structure-tools")):
+        instructions = getattr(server, "instructions", "") or ""
+        assert instructions, f"{label} has no server instructions"
+        assert "DO NOT reach for these tools on your own" in instructions, label
+        assert "explicitly" in instructions, label
+
+
+def test_no_mcp_tool_description_invites_auto_use():
+    import re
+    import pathlib
+
+    root = _repo_root()
+    bad = re.compile(r"(use this (tool )?(whenever|when asked|for )|reach for this|"
+                     r"whenever the user|always use|call this early)", re.I)
+    offenders = []
+    for f in ("src/mcp_server.py", "src/structure_tools_server.py"):
+        for i, line in enumerate((root / f).read_text(encoding="utf-8").splitlines(), 1):
+            if bad.search(line):
+                offenders.append(f"{f}:{i}")
+    assert not offenders, f"MCP descriptions invite auto-use: {offenders}"
+
+
+def test_every_skill_requires_explicit_invocation():
+    """Claude Code auto-invokes a skill from its frontmatter `description`.
+    Without a guard, a general protein question pulls in a pipeline skill."""
+    import pathlib
+
+    root = _repo_root()
+    missing = [s.parent.name for s in (root / "skills").glob("*/SKILL.md")
+               if "Invoke ONLY" not in s.read_text(encoding="utf-8")]
+    assert not missing, f"skills without an explicit-invocation guard: {missing}"
+
+
+def test_the_api_pipeline_path_still_auto_uses_its_tools():
+    """The counterpart guarantee, and the one easiest to break by accident:
+    when the PIPELINE runs a skill it has already been told to run, its tools
+    SHOULD be used freely. Those descriptions live in a different table
+    (skill_runner._TOOL_DEFS) and must keep their trigger language."""
+    from src.skill_runner import _TOOL_DEFS
+
+    by_name = {t["name"]: t["description"] for t in _TOOL_DEFS}
+    search = by_name["search_corpus"].lower()
+    assert "use for" in search or "use this" in search, (
+        "the pipeline's search_corpus description lost its trigger language — "
+        "MCP's no-auto-trigger rule must not leak into the API path")
+
+    # And the two tables must remain genuinely separate objects.
+    import inspect
+
+    import src.mcp_server as m
+
+    mcp_doc = (inspect.getdoc(m.search_corpus) or "")
+    assert mcp_doc != by_name["search_corpus"], (
+        "MCP and pipeline descriptions have converged; they have opposite "
+        "requirements and must stay distinct")

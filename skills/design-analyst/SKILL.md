@@ -1,6 +1,10 @@
 ---
 name: design-analyst
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Terminal stage of the LittleProteinTiger design pipeline. Reviews the
   ranked top-K of computationally designed binders against the original
   design intent and target hotspots, calls out methodological red flags

@@ -1,6 +1,10 @@
 ---
 name: orchestrator
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Sequence the full protein-protein interaction design pipeline across four expert
   skills: target selection (pathway-expert OR complex-expert, conditional), structural
   analysis (complex-structure-analysis), literature analysis (molecular-biology-expert), and

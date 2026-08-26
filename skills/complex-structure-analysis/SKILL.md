@@ -1,6 +1,10 @@
 ---
 name: complex-structure-analysis
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Analyse protein-protein interaction interfaces to identify surface hotspots for
   disruption OR stabilization by de novo cyclic peptides and mini-proteins. In
   disrupt mode: identifies single-chain interface hotspots. In stabilize (molecular

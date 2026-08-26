@@ -48,7 +48,23 @@ except ModuleNotFoundError as exc:
                                # its thread pool; importing from inside run_in_executor causes
                                # an OpenMP/MKL deadlock with the asyncio event loop.
 logger.info("sentence_transformers imported. Starting MCP server.")
-mcp = FastMCP("literature-db")
+mcp = FastMCP(
+    "literature-db",
+    instructions=(
+        "Tools over Little Protein Tiger's LOCAL curated corpus: ~11,000 "
+        "papers, heavily weighted toward chromatin, histone chaperones and "
+        "structural/chemical biology, filtered to tier 1-2 journals.\n\n"
+        "DO NOT reach for these tools on your own. Use them only when the "
+        "user explicitly asks about THIS corpus — 'search the corpus', "
+        "'what does the literature database say', 'which papers here...'.\n\n"
+        "For a general question about biology, a protein, or a mechanism, "
+        "answer from your own knowledge. It is far broader than this corpus, "
+        "which is one lab's reading list and is silent on most of biology. "
+        "Answering a general question from a corpus search will give the user "
+        "a narrower and worse answer than you would have given unaided, and "
+        "will make that narrowness look like the state of the field."
+    ),
+)
 
 # Paths from env (set in .mcp.json); fall back to config defaults
 _VECTOR_DB_PATH  = os.getenv("VECTOR_DB_PATH",  str(ROOT / "data/vectors"))
@@ -74,7 +90,8 @@ def search_corpus(query: str, top_k: int = 5, study_type: str = "", study_catego
     Each result includes the situational context, key quantitative findings
     (Kd, Ki), protein lists, DOI, study type, and study category.
 
-    Use this tool when asked about proteins, mechanisms, assay results,
+    Searches THIS corpus only. Use when the user explicitly asks what the
+    corpus/literature database contains about proteins, mechanisms, assays,
     inhibitors, binding affinities, or study designs present in the corpus.
 
     Args:
@@ -135,11 +152,11 @@ def get_interactions_for(
     deduplicated partner list with mention counts, supporting DOIs, and any
     quantitative anchors (Kd / Ki) reported in the same key_findings entry.
 
-    Use this when the user asks "which proteins interact with X?" or wants a
+    Use when the user explicitly asks what THIS CORPUS records about a
     network around a target — semantic search via search_corpus misses the
-    long tail of the interactome because top-k is small. Reach for this tool
-    early in relational queries rather than running multiple search_corpus
-    calls.
+    long tail of the interactome because top-k is small.
+
+    Corpus-derived, so it reflects one reading list — not the interactome.
 
     Args:
         protein:      Protein name (gene symbol or common name). Matching is
@@ -176,7 +193,7 @@ def find_quantitative_evidence(protein_pair: list[str], metric: str = "Kd") -> s
 
     Scans the entire corpus and returns only findings where the requested
     metric is non-null, sorted by metric value ascending (tightest binder
-    first). Use this when the user asks for the affinity of a specific pair
+    first). Use when the user explicitly asks what the corpus MEASURED for a pair
     or wants to know what's been measured experimentally.
 
     Args:
@@ -208,7 +225,7 @@ def shortest_interaction_path(
     min_mentions_along_path and weak_links_count so you can flag low-confidence
     steps when reporting to the user.
 
-    Use this for "is X connected to Y?" / "draw the cascade from X to Y"
+    Use when the user explicitly asks for a path THROUGH THIS CORPUS
     questions. Use get_interactions_for instead for "what does X bind?".
 
     Args:
@@ -425,7 +442,7 @@ def cluster_for_protein(protein: str) -> str:
     mentions * |DepMap r|). Returns the full cluster record with members,
     hub, internal/external edge counts, and max internal correlation.
 
-    Use this when the user asks "what pathway / module is X part of?" or
+    Use when the user explicitly asks about the corpus' own clustering, or
     wants the consensus co-essential neighbourhood — complements
     `find_cocorrelated_genes` (top-K pairwise) which returns one gene's
     nearest neighbours rather than the whole module.

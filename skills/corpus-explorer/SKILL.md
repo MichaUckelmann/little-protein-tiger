@@ -1,6 +1,10 @@
 ---
 name: corpus-explorer
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Free-form research assistant for the curated literature corpus. Use for
   exploratory questions about protein interactions, signalling pathways, and
   hypothesis generation — e.g. "which proteins interact with X?", "draw the

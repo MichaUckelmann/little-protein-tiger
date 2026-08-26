@@ -70,6 +70,29 @@ substitute for the pipeline: a stage's `### PIPELINE HANDOFF` block is parsed by
 the next stage, and nothing validates it until then, so a hand-produced handoff
 that is subtly malformed fails confusingly two stages later.
 
+## These tools do not auto-trigger — by design
+
+Both servers carry instructions telling the model **not to reach for them on
+its own**, and every `SKILL.md` frontmatter begins "Invoke ONLY when the user
+explicitly asks…".
+
+That is deliberate. The corpus is ~11,000 papers weighted toward chromatin,
+histone chaperones and structural biology. Claude's own knowledge spans all of
+biology. If a general question ("what does p53 do?") silently became a corpus
+search, you would get a **narrower and worse answer than the model would have
+given unaided** — and the corpus's blind spots would look like the state of the
+field.
+
+So ask for them explicitly: *"search the corpus for…"*, *"what does the
+literature database say about…"*, *"analyse the interface of 6VJJ chains A
+and B"*.
+
+**This applies to the MCP transport only.** When `run_pipeline.py` runs a skill,
+that skill was explicitly invoked for a corpus task, so its tools SHOULD be used
+freely — those descriptions live in a separate table
+(`skill_runner._TOOL_DEFS`) and keep their trigger language. The two tables have
+opposite requirements and a test keeps them from converging.
+
 ## Tool parity between the two transports
 
 The same `SKILL.md` runs under two transports — the MCP servers here, and an

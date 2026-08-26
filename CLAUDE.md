@@ -480,6 +480,26 @@ check is not.
 
 `src/project.py` manages `projects/<slug>/` with an atomic `manifest.json` (the filesystem source of truth for stage/checkpoint state + artifact pointers; `web.db` stays authoritative for the web UI). Layout: `shared/{structures,ligands}/` + `runs/<round-N>/scratch/`. `PipelineRunner(project=, round_id=)` mirrors stage state into the manifest (`_record_stage`) and computes `run_dir` from it. The binder track requires `--project` — it iterates in rounds, and the manifest is what makes a multi-day GPU campaign resumable. When adding a binder pause point, set a manifest checkpoint (`_binder_checkpoint`) so resume state survives.
 
+## Two transports, opposite trigger rules
+
+The same `SKILL.md` and the same tool surface run under two transports, and they
+need OPPOSITE defaults:
+
+- **MCP** (Claude Desktop / Code): must NOT auto-trigger. The model is in a
+  general conversation, and the corpus is ~11k papers weighted to chromatin /
+  chaperones — auto-searching it on a general question yields a narrower answer
+  than the model's own knowledge, and makes the corpus's blind spots look like
+  the field's. Both servers set FastMCP `instructions` saying so, no tool
+  docstring contains "use this whenever", and every skill's frontmatter opens
+  with "Invoke ONLY when the user explicitly asks".
+- **API / pipeline** (`run_pipeline.py`, `run_skill.py`, `ask_corpus.py`): SHOULD
+  auto-use. The skill was already explicitly invoked for a corpus task, so
+  hesitating would just cost a turn. `skill_runner._TOOL_DEFS` and
+  `vector_store.SEARCH_TOOL_DEFINITION` keep their trigger language.
+
+These are separate description tables on purpose. Do not "fix" one to match the
+other; tests assert both directions and that they have not converged.
+
 ## Skill execution model
 
 - A skill's source of truth is its `SKILL.md` frontmatter + body. The `.zip` siblings in `skills/` are packaged artifacts — regenerate them, don't hand-edit.

@@ -1,6 +1,10 @@
 ---
 name: pathway-expert
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Query the curated literature database to characterise pathway biology for a disease
   context, identify dysregulated nodes, and recommend the highest-priority druggable
   opportunity for therapeutic intervention. Default mode is to recommend a PPI target

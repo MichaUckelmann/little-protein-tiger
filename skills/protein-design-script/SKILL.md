@@ -1,6 +1,10 @@
 ---
 name: protein-design-script
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Generates input YAML/JSON for protein design models BoltzGen and RFDiffusion3
   (RFD3). Input is a target-site analysis report with hotspot residues — the
   report may come from PPI mode (disrupt or stabilize; hotspots are interface

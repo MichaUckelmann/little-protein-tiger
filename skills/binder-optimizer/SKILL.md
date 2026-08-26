@@ -1,6 +1,10 @@
 ---
 name: binder-optimizer
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Analyses a predicted binder-target complex (local CIF/PDB from AF3/RFDiffusion/Boltz),
   maps the binding interface atomically, proposes 4 single-point mutations on the binder
   to improve affinity, validates steric clashes, and outputs 4 mutated sequences for
