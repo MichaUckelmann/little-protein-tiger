@@ -1338,20 +1338,49 @@ class PipelineRunner:
 
         design_intent = (lit.get("design_intent") or pathway.get("design_intent")
                          or "disrupt")
-        modality = lit.get("modality") or "mini_protein"
+
+        # foundry designs MINI-PROTEINS. RFD3 has no cyclic-peptide path, and
+        # `binder_sizes.cyclic_peptide` is 12-15 residues — feeding that to RFD3
+        # asks it for something it cannot build, and (measured on a real
+        # validation run) it fails quietly rather than loudly. The PPI stages
+        # legitimately propose cyclic_peptide for a BoltzGen run, so coerce it
+        # here and say so, rather than inheriting a modality this backend does
+        # not implement.
+        structure_handoff = result.structure_handoff or {}
+        proposed = (structure_handoff.get("modality") or lit.get("modality")
+                    or "mini_protein")
+        modality = proposed
+        if proposed not in ("mini_protein", "minibinder", ""):
+            logger.warning(
+                f"  design_engine=foundry: the PPI stages proposed "
+                f"modality={proposed!r}, which RFD3 cannot build — designing a "
+                f"mini_protein instead. Use --design-engine boltzgen if you "
+                f"specifically want a {proposed}.")
+            modality = "mini_protein"
+
         sizes = (self._binder_cfg().get("constraints") or {}).get("binder_sizes") or {}
         size = sizes.get(modality) or sizes.get("mini_protein") or {}
 
+        # The chain assignment lives in the INTERFACE handoff (PPI's structure
+        # stage chose it). `_binder_sites` reads it from the TARGET-INTEL
+        # handoff, so without carrying it across, every path that builds a site
+        # list — `--stop-after spec`, `--stop-after trial`, `--trial-sites N` —
+        # died with "target-intel did not name usable chains". Found by a real
+        # bridged GPU run; `--stop-after spec` is the recommended first command
+        # for a new user, so this was the first thing they would have hit.
         intel_handoff = {
             "pdb_id": result.pdb_id or "",
             "target_gene": primary_name,
             "target_uniprot": resolved.uniprot or "",
             "partner_name": partner_name,
+            "target_chain": structure_handoff.get("target_chain", ""),
+            "partner_chain": structure_handoff.get("partner_chain", ""),
             "design_intent": design_intent,
             "modality": modality,
             "binder_length_min": size.get("min", 70),
             "binder_length_max": size.get("max", 86),
-            "interface_rationale": lit.get("go_rationale", ""),
+            "interface_rationale": (lit.get("go_rationale")
+                                    or structure_handoff.get("interface_summary", "")),
             "go_recommendation": result.go_recommendation or "GO",
         }
         target_intel_out = dirs["binder"] / self._BINDER_STAGE_FILES["target_intel"]

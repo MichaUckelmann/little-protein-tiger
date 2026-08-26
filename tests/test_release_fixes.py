@@ -1262,3 +1262,88 @@ def test_python_version_is_bounded_and_tested_versions_are_in_ci():
     assert len(matrix) >= 2, f"CI must test more than one Python: {matrix}"
     for v in ("3.12", "3.13"):
         assert v in matrix, f"{v} is supported but not in the CI matrix"
+
+
+# ----------------------------------------------------------------------
+# PPI -> foundry bridge: defects found by a real GPU validation run
+# ----------------------------------------------------------------------
+
+def test_bridge_carries_the_chain_assignment_into_target_intel():
+    """`_binder_sites` reads target_chain/partner_chain from the TARGET-INTEL
+    handoff, but PPI's structure stage puts them in the INTERFACE handoff. The
+    bridge did not carry them across, so every path that builds a site list —
+    `--stop-after spec` (the recommended first command), `--stop-after trial`,
+    `--trial-sites N` — died with 'target-intel did not name usable chains'."""
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner._bridge_ppi_to_foundry)
+    assert '"target_chain": structure_handoff.get("target_chain"' in src
+    assert '"partner_chain": structure_handoff.get("partner_chain"' in src
+
+
+def test_site_building_works_with_the_bridge_handoff_and_fails_without():
+    from src.pipeline_runner import PipelineBlockedError, PipelineRunner
+
+    complete = {"pdb_id": "6VJJ", "target_gene": "KRAS",
+                "target_chain": "A", "partner_chain": "B"}
+    sites = PipelineRunner._binder_sites(complete, limit=1)
+    assert sites and sites[0]["target_chain"] == "A"
+
+    with pytest.raises(PipelineBlockedError, match="usable chains"):
+        PipelineRunner._binder_sites({"pdb_id": "6VJJ", "target_gene": "KRAS"},
+                                     limit=1)
+
+
+def test_bridge_coerces_a_modality_rfd3_cannot_build():
+    """foundry designs mini-proteins; RFD3 has no cyclic-peptide path, and
+    binder_sizes.cyclic_peptide is 12-15 residues. The real validation run's
+    structure stage DID emit modality: cyclic_peptide — it was silently ignored
+    and the right thing happened by accident. Coerce it loudly instead."""
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner._bridge_ppi_to_foundry)
+    assert 'modality = "mini_protein"' in src, "must coerce, not inherit"
+    assert "RFD3 cannot build" in src, "and must say why"
+
+
+def test_trim_bsa_warning_compares_like_with_like():
+    """`bsa_total_A2` covers BOTH chains; per-residue BSA is filtered to the
+    target's side. Subtracting one from the other reported ~half the interface
+    as dropped on EVERY trim — a no-op trim removing one cloning-artifact
+    residue warned '1138 A^2 (60%)' and opened a trim_gate checkpoint."""
+    import inspect
+
+    from src import structure_trim
+
+    src = inspect.getsource(structure_trim.trim_target)
+    assert "target_side_before = sum(per_bsa.values())" in src
+    assert "dropped_bsa = max(0.0, target_side_before - kept_before)" in src
+    assert "dropped_bsa > 0.05 * bsa_before" not in src, (
+        "the threshold must use the target-side total, not the both-chain one")
+
+
+@pytest.mark.network
+def test_the_bsa_mismatch_is_real_and_the_fix_silences_a_no_op_trim():
+    """Numeric proof against a real structure, rather than trusting the source."""
+    import pathlib
+
+    from src.structure_trim import _per_residue_bsa
+
+    cif = _repo_root() / "data" / "structures" / "3kys.cif"
+    if not cif.is_file():
+        pytest.skip("3kys.cif not downloaded")
+
+    per, both_chain_total = _per_residue_bsa(cif, "A", "B")
+    target_side = sum(per.values())
+    assert both_chain_total > 1.5 * target_side, (
+        "premise: the returned total covers both chains")
+
+    kept = dict(list(per.items())[1:])          # drop exactly one residue
+    old = both_chain_total - sum(kept.values())
+    new = target_side - sum(kept.values())
+    assert old > 0.05 * both_chain_total, "the old comparison warned on a no-op"
+    assert new <= 0.05 * target_side, "the new one must not"

@@ -252,7 +252,11 @@ def test_dropping_a_second_native_interface_warns_but_does_not_fail(tmp_path):
                       hotspots=hotspots, budget=110, out_dir=tmp_path,
                       pdb_id="7XQ8")
     assert res.bsa_retention >= 0.9
-    assert res.bsa_dropped_A2 > 0.5 * res.interface_bsa_before_A2
+    # Compare against the TARGET-SIDE total, not the both-chain one:
+    # bsa_dropped_A2 counts only the trimmed chain's buried area, so measuring
+    # it against the whole interface is the apples-to-oranges comparison that
+    # made this warning fire on every trim, including no-ops.
+    assert res.bsa_dropped_A2 > 0.5 * res.interface_bsa_target_side_A2
     assert any("more than one interface" in w for w in res.warnings)
 
 

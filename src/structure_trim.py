@@ -115,7 +115,13 @@ class TrimResult:
     method: str
     hotspots_retained: list[dict]
     hotspots_lost: list[dict]
+    # NOTE the two bases. `interface_bsa_before_A2` is the whole interface
+    # (BOTH chains) — the conventional "how big is this interface" number.
+    # `interface_bsa_target_side_A2` counts only the chain being trimmed, and is
+    # the one comparable with `bsa_dropped_A2` / `bsa_retention`. Mixing them is
+    # what made the drop warning fire on every trim.
     interface_bsa_before_A2: float = 0.0
+    interface_bsa_target_side_A2: float = 0.0
     interface_bsa_after_A2: float = 0.0
     # Fraction of the interface area of the RETAINED residues that survives the
     # trim. Deliberately not "fraction of the whole native interface" — see
@@ -1095,17 +1101,26 @@ def trim_target(
     # not the trim failing. What must not happen is the residues we kept losing
     # the contacts they had.
     bsa_after, retention, dropped_bsa = 0.0, 1.0, 0.0
+    target_side_before = 0.0
     per_after: dict[int, float] = {}
     if partner_chain and bsa_before > 0:
         per_after, bsa_after = _per_residue_bsa(cif_path, target_chain, partner_chain)
+        # Compare like with like. `bsa_before` is analyze_interface's
+        # bsa_total_A2, which covers BOTH chains, while `per_bsa` is filtered to
+        # the TARGET's side (see _per_residue_bsa). Subtracting one from the
+        # other reported roughly half the interface as "dropped" on every trim
+        # — including a no-op that removed a single cloning-artifact residue,
+        # which warned "removed 1138 A^2 (60%)" and opened a trim_gate
+        # checkpoint. Measured on 3KYS: total 3,401.7 vs target-side 1,652.1.
+        target_side_before = sum(per_bsa.values())
         kept_before = sum(v for a, v in per_bsa.items() if a in kept_set)
         kept_after = sum(v for a, v in per_after.items() if a in kept_set)
-        dropped_bsa = bsa_before - kept_before
+        dropped_bsa = max(0.0, target_side_before - kept_before)
         retention = kept_after / kept_before if kept_before > 0 else 1.0
-        if dropped_bsa > 0.05 * bsa_before:
+        if target_side_before > 0 and dropped_bsa > 0.05 * target_side_before:
             warnings.append(
                 f"the trim removed residues carrying {dropped_bsa:.0f} A^2 "
-                f"({dropped_bsa / bsa_before:.0%}) of the native "
+                f"({dropped_bsa / target_side_before:.0%}) of the native "
                 f"{target_chain}-{partner_chain} interface. That is expected when "
                 f"the target has more than one interface and you are designing "
                 f"against a single one — confirm it is the one you meant.")
@@ -1132,6 +1147,7 @@ def trim_target(
         hotspots_retained=list(retained),
         hotspots_lost=list(lost),
         interface_bsa_before_A2=round(bsa_before, 1),
+        interface_bsa_target_side_A2=round(target_side_before, 1),
         interface_bsa_after_A2=round(bsa_after, 1),
         bsa_retention=round(retention, 4),
         bsa_dropped_A2=round(dropped_bsa, 1),
@@ -1267,6 +1283,7 @@ def _write_mapping(result: TrimResult, source: Path, pdb_id: str | None,
         ],
         "domains": [asdict(d) for d in result.domains],
         "bsa_before_A2": result.interface_bsa_before_A2,
+        "bsa_before_target_side_A2": result.interface_bsa_target_side_A2,
         "bsa_after_A2": result.interface_bsa_after_A2,
         # Over the KEPT residues only — see trim_target.
         "bsa_retention": result.bsa_retention,
