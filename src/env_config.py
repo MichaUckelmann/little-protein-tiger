@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from loguru import logger
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -72,6 +73,93 @@ def apply_ca_bundle() -> str | None:
     return bundle
 
 
+
+# ---------------------------------------------------------------------------
+# Python 3.13's stricter certificate validation vs TLS-inspecting proxies
+# ---------------------------------------------------------------------------
+#
+# Python 3.13 turns on ssl.VERIFY_X509_STRICT by default; 3.12 does not.
+# Verified on this machine:
+#     3.12  verify_flags = VERIFY_X509_TRUSTED_FIRST
+#     3.13  verify_flags = VERIFY_X509_TRUSTED_FIRST | VERIFY_X509_STRICT
+#                          | VERIFY_X509_PARTIAL_CHAIN
+#
+# STRICT enforces RFC 5280 structural rules that many corporate TLS-inspection
+# proxies violate when they re-sign a certificate — most commonly by omitting
+# the Authority Key Identifier extension. The failure is
+# "CERTIFICATE_VERIFY_FAILED: Missing Authority Key Identifier", and pointing at
+# a CA bundle does NOT fix it: the chain is structurally non-compliant, not
+# untrusted.
+#
+# `LPT_SSL_RELAX_STRICT=1` clears that ONE flag. It is opt-in, because silently
+# relaxing a security default is not something a tool should decide for you.
+# What it does NOT relax, verified against badssl.com on 3.13 with the flag
+# cleared: self-signed certificates, untrusted roots and expired certificates
+# are all still rejected, and hostname verification still fails a mismatch.
+# Only the structural pedantry is dropped — which is exactly what Python 3.12,
+# curl and every browser already do.
+
+_STRICT_RELAXED = False
+
+
+def relax_x509_strict() -> bool:
+    """Clear VERIFY_X509_STRICT on newly-created default SSL contexts.
+
+    Wraps `ssl.create_default_context`, so `requests` (via urllib3), `httpx`
+    and `urllib` all pick it up — they all build their context through it.
+    Idempotent. Returns True if the relaxation is now active.
+    """
+    global _STRICT_RELAXED
+    import ssl
+    import sys
+
+    if _STRICT_RELAXED:
+        return True
+    if not hasattr(ssl, "VERIFY_X509_STRICT"):
+        return False
+
+    def _clear(ctx):
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        return ctx
+
+    # 1. The stdlib path — urllib, httpx, and anything calling it directly.
+    _std = ssl.create_default_context
+
+    def _relaxed_std(*args, **kwargs):
+        return _clear(_std(*args, **kwargs))
+
+    _relaxed_std.__wrapped__ = _std
+    ssl.create_default_context = _relaxed_std
+
+    # 2. urllib3's own builder — `requests` goes through this, NOT through
+    #    ssl.create_default_context, so patching only the stdlib silently
+    #    leaves every requests call still failing. urllib3 mirrors 3.13's
+    #    defaults itself (verified: same urllib3 2.7.0 yields STRICT on 3.13
+    #    and not on 3.12).
+    try:
+        import urllib3.util.ssl_ as _u3
+    except ImportError:
+        pass
+    else:
+        _orig_u3 = _u3.create_urllib3_context
+
+        def _relaxed_u3(*args, **kwargs):
+            return _clear(_orig_u3(*args, **kwargs))
+
+        _relaxed_u3.__wrapped__ = _orig_u3
+        _u3.create_urllib3_context = _relaxed_u3
+        # requests imports the symbol into its own namespace at import time,
+        # so rebinding the module attribute alone would not reach it.
+        for mod_name in ("urllib3.util", "urllib3.connection",
+                         "requests.adapters"):
+            mod = sys.modules.get(mod_name)
+            if mod is not None and hasattr(mod, "create_urllib3_context"):
+                mod.create_urllib3_context = _relaxed_u3
+
+    _STRICT_RELAXED = True
+    return True
+
+
 def load_env(dotenv_path: Path | None = None) -> None:
     """Load `.env` and reconcile the CA-bundle vars.
 
@@ -82,3 +170,7 @@ def load_env(dotenv_path: Path | None = None) -> None:
     """
     load_dotenv(dotenv_path if dotenv_path is not None else _ROOT / ".env")
     apply_ca_bundle()
+    if os.environ.get("LPT_SSL_RELAX_STRICT", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        if relax_x509_strict():
+            logger.debug("VERIFY_X509_STRICT cleared (LPT_SSL_RELAX_STRICT)")

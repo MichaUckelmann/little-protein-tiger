@@ -7,12 +7,19 @@ license = "MIT"
 authors = [
     {name = "Michael Uckelmann", email = "micha.uckelmann@gmail.com"},
 ]
-requires-python = ">=3.12"
+# Upper bound deliberately: LPT is an application, not a library, and a Python
+# minor release HAS already changed behaviour under it — 3.13 turned on
+# ssl.VERIFY_X509_STRICT, which breaks downloads behind a TLS-inspecting proxy
+# (see src/env_config.relax_x509_strict). 3.12 and 3.13 are both tested in CI;
+# 3.14 is allowed on the assumption it behaves, and the bound stops an untested
+# 3.15 from silently becoming the default interpreter on someone's machine.
+requires-python = ">=3.12,<3.15"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [

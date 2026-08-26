@@ -185,10 +185,11 @@ def download(ds: Dataset, *, force: bool = False) -> bool:
                   "certificate re-signed by a TLS-inspecting\n"
                   "         proxy. 3.13 enforces stricter X.509 rules than 3.12, "
                   "and a CA bundle\n"
-                  "         will NOT fix it. Options: build the venv with "
-                  "python3.12, download the\n"
-                  f"         file by hand into {DEST_DIR}/, or "
-                  "fetch it from outside the proxy.")
+                  "         will NOT fix it. Set LPT_SSL_RELAX_STRICT=1 in "
+                  ".env to clear that one\n"
+                  "         flag — trust chain, hostname and expiry checks all "
+                  "still apply.\n"
+                  "         (Or build the venv with python3.12.)")
         elif "CERTIFICATE_VERIFY_FAILED" in msg:
             print("         Behind a TLS-inspecting proxy? Set LPT_CA_BUNDLE "
                   "in .env (see .env.example).")

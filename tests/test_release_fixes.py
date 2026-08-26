@@ -1163,3 +1163,102 @@ def test_install_and_fetch_agree_on_what_the_archive_contains():
 
     assert set(INSTALLS) == {rel for rel, _ in MEMBERS}, (
         "package_corpus.MEMBERS and fetch_corpus.INSTALLS have drifted")
+
+
+# ----------------------------------------------------------------------
+# Python 3.13's VERIFY_X509_STRICT vs TLS-inspecting proxies
+# ----------------------------------------------------------------------
+
+def test_relaxation_is_opt_in_and_off_by_default(monkeypatch):
+    """Silently relaxing a TLS default is not a tool's decision to make."""
+    import ssl
+
+    monkeypatch.delenv("LPT_SSL_RELAX_STRICT", raising=False)
+    import src.env_config as ec
+
+    monkeypatch.setattr(ec, "_STRICT_RELAXED", False)
+    before = ssl.create_default_context
+    ec.load_env()
+    assert ssl.create_default_context is before, (
+        "load_env must not touch TLS defaults unless asked")
+
+
+def test_relaxation_clears_only_the_strict_flag(monkeypatch):
+    """It must drop VERIFY_X509_STRICT and NOTHING else — trust chain,
+    hostname and expiry checking all still have to apply."""
+    import ssl
+
+    import src.env_config as ec
+
+    monkeypatch.setattr(ec, "_STRICT_RELAXED", False)
+    original = ssl.create_default_context
+    try:
+        assert ec.relax_x509_strict() is True
+        ctx = ssl.create_default_context()
+        assert not (ctx.verify_flags & ssl.VERIFY_X509_STRICT)
+        # The properties that actually matter must survive.
+        assert ctx.verify_mode == ssl.CERT_REQUIRED
+        assert ctx.check_hostname is True
+    finally:
+        ssl.create_default_context = original
+        ec._STRICT_RELAXED = False
+
+
+def test_relaxation_also_covers_the_urllib3_path(monkeypatch):
+    """requests builds its context through urllib3, NOT through
+    ssl.create_default_context — patching only the stdlib left every requests
+    call still failing, which is how the first version of this fix looked
+    correct and did nothing."""
+    import ssl
+
+    import src.env_config as ec
+
+    urllib3_util = pytest.importorskip("urllib3.util.ssl_")
+    monkeypatch.setattr(ec, "_STRICT_RELAXED", False)
+    std_original = ssl.create_default_context
+    u3_original = urllib3_util.create_urllib3_context
+    try:
+        ec.relax_x509_strict()
+        ctx = urllib3_util.create_urllib3_context()
+        assert not (ctx.verify_flags & ssl.VERIFY_X509_STRICT)
+    finally:
+        ssl.create_default_context = std_original
+        urllib3_util.create_urllib3_context = u3_original
+        ec._STRICT_RELAXED = False
+
+
+def test_relaxation_is_idempotent(monkeypatch):
+    import ssl
+
+    import src.env_config as ec
+
+    monkeypatch.setattr(ec, "_STRICT_RELAXED", False)
+    original = ssl.create_default_context
+    try:
+        assert ec.relax_x509_strict() is True
+        once = ssl.create_default_context
+        assert ec.relax_x509_strict() is True
+        assert ssl.create_default_context is once, "must not double-wrap"
+    finally:
+        ssl.create_default_context = original
+        ec._STRICT_RELAXED = False
+
+
+def test_python_version_is_bounded_and_tested_versions_are_in_ci():
+    """An unbounded requires-python let an untested interpreter become the
+    default on someone's machine — and 3.13 DID change behaviour under us."""
+    import tomllib
+
+    import yaml
+
+    root = _repo_root()
+    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    spec = data["project"]["requires-python"]
+    assert "<" in spec, f"requires-python must have an upper bound, got {spec!r}"
+
+    workflow = yaml.safe_load(
+        (root / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8"))
+    matrix = workflow["jobs"]["test"]["strategy"]["matrix"]["python-version"]
+    assert len(matrix) >= 2, f"CI must test more than one Python: {matrix}"
+    for v in ("3.12", "3.13"):
+        assert v in matrix, f"{v} is supported but not in the CI matrix"

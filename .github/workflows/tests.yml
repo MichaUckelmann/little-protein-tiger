@@ -17,13 +17,21 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.13 is supported, so it is tested — not assumed. It already differs
+        # from 3.12 in TLS behaviour (VERIFY_X509_STRICT), which is exactly the
+        # kind of thing a single-version matrix hides.
+        python-version: ["3.12", "3.13"]
+    name: test (py${{ matrix.python-version }})
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
 
