@@ -189,9 +189,8 @@ def check_corpus(rep: Report) -> None:
 
     if not db.is_file():
         rep.add("Corpus database", FAIL, "data/literature.db absent",
-                "Build one: scripts/fetch_papers.py then scripts/curate_papers.py "
-                "(see docs/journal-filtering.md first — the default only "
-                "downloads tier 1/2 journals).",
+                "python scripts/fetch_corpus.py   "
+                "(~83 MB, free — the curated corpus ships pre-built)",
                 tracks=("literature",))
     else:
         rep.add("Corpus database", OK, f"{db.stat().st_size/2**20:.0f} MB",
@@ -199,12 +198,14 @@ def check_corpus(rep: Report) -> None:
 
     rep.add("Fingerprints", OK if n_fp else FAIL,
             f"{n_fp:,} curated" if n_fp else "none — nothing to search",
-            "" if n_fp else "python scripts/curate_papers.py",
+            "" if n_fp else "python scripts/fetch_corpus.py",
             tracks=("literature",))
 
     rep.add("Vector index", OK if vec.is_dir() else FAIL,
             "present" if vec.is_dir() else "absent — search_corpus will fail",
-            "" if vec.is_dir() else "python scripts/ingest_vectors.py",
+            "" if vec.is_dir() else
+            "python scripts/fetch_corpus.py   (or scripts/ingest_vectors.py "
+            "if you built your own fingerprints)",
             tracks=("literature",))
 
 

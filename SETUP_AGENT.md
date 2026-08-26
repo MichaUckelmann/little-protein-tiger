@@ -28,8 +28,10 @@ and installing everything by default wastes gigabytes and hours.
    machine paths in it show up in the user's next `git diff` and eventually in
    a pull request. Every machine-specific value has an `LPT_*` env var — see
    `.env.example` and `docs/environment_setup.md`.
-2. **Never spend the user's money without explicit confirmation.** Building a
-   corpus costs real API spend. State the estimate, wait for a yes.
+2. **Never spend the user's money without explicit confirmation.** Setup itself
+   is free — the corpus ships pre-built. Only *extending* it with new search
+   terms costs API spend. If that comes up, state the estimate and wait for a
+   yes.
 3. **Do not modify** `config.yaml`, `CLAUDE.md`, `.mcp.json` (except by running
    `scripts/setup_mcp_json.py`), or anything under `src/`. If setup seems to
    need a source change, stop and tell the user why.
@@ -48,7 +50,7 @@ Ask, and wait for answers:
   | Track | What it does | Needs |
   |---|---|---|
   | `structure` | PDB/interface analysis, trimming, reports | Base install only |
-  | `literature` | Corpus search, discovery workflows | + `corpus` extra (~3 GB), + a corpus |
+  | `literature` | Corpus search, discovery workflows | + `corpus` extra (~3 GB); the corpus itself is a free ~83 MB download |
   | `ppi` | Discovery → design | + BoltzGen *or* foundry |
   | `binder` | RFD3/MPNN/RF3 campaigns | + foundry, + a CUDA GPU, + ~120 GB disk |
 
@@ -125,37 +127,50 @@ tracks the user chose. Re-run it after each subsequent phase.
 
 Do not duplicate its logic in your own checks — call it.
 
-### Phase 6 — The corpus decision (literature track only)
+### Phase 6 — The corpus (literature track only)
 
-**Nothing is shipped in the git repo**: `data/` is gitignored. Present these
-three options with the real numbers, and wait for a choice:
+**The curated corpus ships pre-built. Downloading it is free and takes about a
+minute.** A new user does not rebuild it: no LLM spend, no days of downloading,
+no PubMed rate limits.
 
-| Option | What you get | Cost | Time | Disk |
-|---|---|---|---|---|
-| **A. No corpus** | Everything except corpus search. The binder track is fully usable. | $0 | 0 | 0 |
-| **B. Starter** | ~500 papers in the user's own field | **~$15** | an afternoon | ~150 MB with `--prefer-xml` |
-| **C. Full build** | ~10k papers | **$150–500** | 1–3 days | up to 50 GB |
+```bash
+python scripts/fetch_corpus.py
+```
 
-Option B is the right default for most people. To build it:
+~83 MB compressed, ~337 MB installed: **10,981 curated papers**, the vector
+index, and a database indexing all ~55,000 papers the maintainer's searches
+found. `search_corpus` works immediately afterwards.
 
-1. **Edit the keywords** in `config.yaml` — the shipped list is the
-   maintainer's own research focus (chromatin/histone chaperones) and is almost
-   certainly wrong for the user. This is the one `config.yaml` edit that is
-   expected; confirm it with them first.
-2. **Read `docs/journal-filtering.md` with the user.** By default LPT downloads
-   only tier 1/2 journals — 32% of search hits. The tier lists are
-   molecular/structural/chemical-biology focused. If the user works in another
-   field, they need `quality.tier1_extra` / `tier2_extra` or the gate off.
-   Getting this wrong quietly produces a corpus missing most of their field.
-3. `python scripts/fetch_papers.py --prefer-xml` — XML is ~47× smaller than
-   publisher PDFs for the same paper.
-4. `python scripts/curate_papers.py --limit 500 --provider gemini` — for a
-   cheaper run, set `curation.gemini_model: gemini-3.1-flash-lite-preview`
-   (~8× cheaper than the default `gemini-3.7-flash`). Add
-   `--discard-documents` if they will not re-curate: documents are ~95% of a
-   corpus on disk and nothing downstream reads them.
-   Both scripts support `--dry-run`. **Use it first and show the user what
-   would happen.**
+Source documents (PDFs/XMLs) are deliberately excluded — they are ~95% of the
+corpus on disk and nothing downstream reads them.
+
+If `fetch_corpus.py` reports no release asset, none has been published yet;
+say so rather than silently falling through to a paid rebuild.
+
+**Cost only enters if the user wants to EXTEND the corpus** with their own
+search terms — a different field, or newer papers than the shipped snapshot.
+Do not raise this unprompted; mention it only if they ask, or if their field is
+clearly outside the shipped corpus's scope (it is chromatin / histone chaperone
+/ structural biology focused — check with `scripts/ask_corpus.py` before
+assuming it does not cover them).
+
+If they do want to extend it, then and only then:
+
+1. **Read `docs/journal-filtering.md` with them.** LPT downloads only tier 1/2
+   journals by default — 32% of search hits — and the tier lists are
+   molecular/structural/chemical-biology focused. A user in another field needs
+   `quality.tier1_extra` / `tier2_extra` or the gate off, or they will quietly
+   get a corpus missing most of their literature.
+2. **Edit the keywords** in `config.yaml`. This is the one expected
+   `config.yaml` edit; confirm it with them first.
+3. `python scripts/fetch_papers.py --prefer-xml --dry-run` — show them what
+   would be fetched before fetching it. XML is ~47x smaller than publisher PDFs
+   for the same paper.
+4. `python scripts/curate_papers.py --limit N --provider gemini` — **state the
+   estimate and wait for a yes.** Roughly **$0.03 per paper** on the default
+   `gemini-3.7-flash` (~28k tokens each, measured), so ~$15 for 500. Setting
+   `curation.gemini_model: gemini-3.1-flash-lite-preview` is ~8x cheaper. Add
+   `--discard-documents` if they will not re-curate.
 
 Curation self-runs identifier normalisation, the graph rebuild and vector
 ingest afterwards; do not run those by hand.

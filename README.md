@@ -14,6 +14,10 @@ An end-to-end pipeline for PPI drug target discovery. Covers automated paper dis
 > **Just want to see it work?** `python scripts/quickstart.py` — about 7
 > seconds, no API key, no GPU, no corpus.
 >
+> **Want the literature corpus?** `python scripts/fetch_corpus.py` — ~83 MB,
+> free, about a minute. 10,981 curated papers, ready to search. You only pay
+> if you later extend it with your own search terms.
+>
 > **Something not working?** `python scripts/doctor.py` reports readiness per
 > track and prints the command that fixes each problem.
 

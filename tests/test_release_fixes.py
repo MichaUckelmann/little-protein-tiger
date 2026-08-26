@@ -828,7 +828,11 @@ def test_nothing_downstream_reads_the_source_documents():
     # about — it is a development tool, not part of any pipeline run.
     allowed = {"downloader.py", "curate_papers.py", "database.py",
                "models.py", "text_extractor.py", "fetch_papers.py",
-               "compare_providers.py"}
+               "compare_providers.py",
+               # package_corpus.py names pdf_path only to REFUSE to ship a
+               # database containing local paths, and data/pdfs only in its
+               # exclusion note. It never opens a document.
+               "package_corpus.py"}
     offenders = []
     for sub in ("src", "scripts"):
         for path in (root / sub).rglob("*.py"):
@@ -1050,3 +1054,70 @@ def test_corpus_extra_is_declared_and_not_a_base_dependency():
     for pkg in ("sentence-transformers", "lancedb"):
         assert pkg not in base, f"{pkg} must not be a base dependency"
         assert any(pkg in d for d in extras["corpus"]), f"{pkg} missing from corpus extra"
+
+
+# ----------------------------------------------------------------------
+# The corpus ships pre-built — setup must not tell users to pay for it
+# ----------------------------------------------------------------------
+
+def test_corpus_package_and_fetch_scripts_exist():
+    import subprocess
+    import sys
+
+    root = _repo_root()
+    for name in ("package_corpus.py", "fetch_corpus.py"):
+        path = root / "scripts" / name
+        assert path.is_file(), f"{name} missing"
+        p = subprocess.run([sys.executable, str(path), "--help"],
+                           capture_output=True, text=True, timeout=120)
+        assert p.returncode == 0, f"{name} --help failed: {p.stderr[:200]}"
+
+
+def test_the_release_archive_excludes_source_documents():
+    """PDFs are ~95% of a corpus on disk and nothing downstream reads them.
+    Shipping them would turn an 83 MB download into 50 GB."""
+    from scripts.package_corpus import MEMBERS
+
+    shipped = [rel for rel, _ in MEMBERS]
+    assert not any("pdfs" in rel for rel in shipped), (
+        f"source documents must not ship: {shipped}")
+    # ...and the things that make search work must.
+    for required in ("data/fingerprints", "data/vectors", "data/literature.db"):
+        assert required in shipped, f"{required} must ship"
+
+
+def test_packaging_refuses_a_database_with_local_paths():
+    """The DB stores pdf_path/fingerprint_path. Absolute or home-directory
+    paths would leak the maintainer's filesystem layout to every user."""
+    import inspect
+
+    from scripts import package_corpus
+
+    src = inspect.getsource(package_corpus._verify_no_personal_data)
+    assert "home" in src and "absolute" in src.lower()
+    src_pkg = inspect.getsource(package_corpus.package)
+    assert "check()" in src_pkg, "package() must run the check before archiving"
+
+
+def test_setup_does_not_present_corpus_building_as_the_default():
+    """The corpus is a free download. Telling a new user to spend $150-500
+    rebuilding it — which an earlier draft of SETUP_AGENT.md did — is wrong."""
+    root = _repo_root()
+    text = (root / "SETUP_AGENT.md").read_text(encoding="utf-8")
+
+    phase6 = text[text.index("### Phase 6"):text.index("### Phase 7")]
+    assert "fetch_corpus.py" in phase6, (
+        "Phase 6 must lead with downloading the pre-built corpus")
+    lead = phase6[:phase6.index("```") if "```" in phase6 else 400]
+    assert "free" in lead.lower(), "the lead must say the corpus is free"
+
+
+def test_doctor_points_at_the_download_not_a_rebuild():
+    import inspect
+
+    from scripts import doctor
+
+    src = inspect.getsource(doctor.check_corpus)
+    assert "fetch_corpus.py" in src
+    assert "curate_papers.py" not in src, (
+        "a missing corpus should be fixed by downloading, not by curating")
