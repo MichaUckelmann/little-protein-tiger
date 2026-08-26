@@ -342,7 +342,7 @@ inhibitor co-crystal structures.
 - tractability: <Excellent | Good | Marginal | Poor>
 - go_recommendation: <GO | CONDITIONAL_GO | NO_GO>
 - go_rationale: <one sentence — the single most decisive reason for the recommendation>
-- modality: <cyclic_peptide | mini_protein | stapled_helix | either>
+- modality: mini_protein          # default; the operator opts into cyclic_peptide at kickoff
 - target_site_hint: <compact JSON object — see format below; consumed by complex-structure-analysis to focus the geometry pass>
 - design_query: <one sentence — e.g. "Generate {modality} design inputs for {complex}, PDB {pdb_id}. Priority hotspots: {res_list}. Affinity target: {kd}. {key constraint if any}." DO NOT include chain letters (A/B/...) anywhere in this query — you have not inspected the mmCIF at this stage and any chain assignment will be a guess. Chain identity is resolved by the structure-analysis stage from the mmCIF entity descriptions and flows downstream from there.>
 

@@ -239,13 +239,13 @@ From the glue pockets result, extract and note:
   - `chain_a_patch.residues[]` — residue nums + SASA on chain A
   - `chain_b_patch.residues[]` — residue nums + SASA on chain B
 - `interface_summary.bsa_total_A2` — from the inner interface analysis
-- Top-1 pocket `centroid_separation_A` → select design modality:
+- Top-1 pocket `centroid_separation_A` → note modality SUITABILITY (the operator chooses):
   - ≤ 12 Å: bicyclic or large cyclic peptide
   - 13–20 Å: mini-protein recommended (needs structural scaffold to bridge)
   - > 20 Å (`bridgeable: false`): very long span — note as challenging, flag for user
 
 From the `tool_analyze_interface` result, extract and note:
-- `interface.bsa_total_A2` — total BSA; use to select design modality:
+- `interface.bsa_total_A2` — total BSA; use to note modality SUITABILITY (the operator chooses):
   - < 500 Å²: crystal packing, likely not biological
   - 500–1000 Å²: small — cyclic peptide
   - 1000–2000 Å²: typical PPI — cyclic peptide or mini-protein
@@ -519,7 +519,7 @@ types from residue names — all of these are now in the tool results.
 - BSA total: <value> Å²
 - H-bonds across interface: <n_hbonds>
 - Interface residues: <n_contacts_chain_a> on chain A, <n_contacts_chain_b> on chain B
-- Design modality: <cyclic_peptide / mini_protein / either> — rationale
+- Design modality: mini_protein (the operator selects the modality at kickoff; note here if a compact pocket would ALSO suit a cyclic peptide)
 
 ### CHAIN A INTERFACE RESIDUES
 Chain <id>: Hydrophobic: <comma-separated list> | Aromatic: <list> | Charged: <list> | Polar: <list>
@@ -582,7 +582,7 @@ for design unless top-2 has a meaningfully better combined_rating.
 ```
 ### DESIGN RECOMMENDATIONS
 - Design mode: <DISRUPT | STABILIZE (molecular glue)>
-- Recommended modality: <cyclic_peptide / mini_protein / either>
+- Recommended modality: mini_protein (default; the operator opts into cyclic_peptide explicitly — note a pocket that would suit one, but do not select it)
 - Primary target: <[DISRUPT] region name and rating | [STABILIZE] Glue Pocket rank + combined_rating>
 - Key chain A residues: <list with auth_seq_id — interface hotspots [DISRUPT] or periinterface patch [STABILIZE]>
 - Key chain B residues: <[DISRUPT] partner residues to mimic | [STABILIZE] periinterface patch residues>
@@ -696,7 +696,7 @@ select_hotspots:
 - partner_chain: <chain ID of the binding partner — the helix/loop chain>
 - target_complex: <ProteinA / ProteinB>
 - design_intent: <disrupt | stabilize>
-- modality: <cyclic_peptide | mini_protein | stapled_helix | either>
+- modality: mini_protein          # default; the operator opts into cyclic_peptide at kickoff
 - bsa_A2: <integer BSA in Å²>
 - tractability: <Excellent | Good | Marginal | Poor>
 - literature_query: <one sentence — e.g. "Search for published inhibitors and mutagenesis data for {ProteinA}/{ProteinB}. Cross-reference hotspot residues {res1}, {res2}, {res3} on {target_chain_protein}.">

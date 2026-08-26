@@ -290,9 +290,22 @@ def test_target_flag_is_rejected_outside_the_binder_track():
 # design_engine: the opt-in PPI -> foundry bridge
 # ----------------------------------------------------------------------
 
-def test_design_engine_defaults_to_boltzgen(config):
+def test_design_engine_defaults_to_foundry(config):
+    """foundry is the default for --workflow ppi as well as binder, so both
+    tracks run the same RFD3 -> solubleMPNN -> RF3 machine. Validated by a real
+    KRAS/RAF1 GPU campaign before the default was flipped."""
     r = PipelineRunner(config, workflow="ppi")
-    assert r._design_engine == "boltzgen"
+    assert r._design_engine == "foundry"
+
+
+def test_an_explicit_engine_choice_beats_the_config(config):
+    """`design_engine` used to default to a real engine NAME, which made an
+    explicit choice of that engine indistinguishable from silence — so config
+    could override the caller. None is the only correct sentinel."""
+    assert PipelineRunner(
+        config, workflow="ppi", design_engine="boltzgen")._design_engine == "boltzgen"
+    assert PipelineRunner(
+        config, workflow="ppi", design_engine="foundry")._design_engine == "foundry"
 
 
 def test_design_engine_rejects_an_unknown_value(config):
@@ -332,9 +345,9 @@ def test_config_backend_key_is_no_longer_dead(config):
     was set but never read anywhere. Confirms the value in the checked-in
     config.yaml actually reaches PipelineRunner now.
     """
-    assert config.get("design", {}).get("backend") == "boltzgen"
+    assert config.get("design", {}).get("backend") == "foundry"
     r = PipelineRunner(config, workflow="ppi")
-    assert r._design_engine == "boltzgen"
+    assert r._design_engine == "foundry"
 
 
 @pytest.mark.network

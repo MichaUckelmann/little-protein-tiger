@@ -220,10 +220,15 @@ design:
   # (hands off to the same RFD3 -> solubleMPNN -> RF3 stage machine
   # --workflow binder uses, right after PPI's own structure stage — see
   # PipelineRunner._bridge_ppi_to_foundry and UNIFY_DESIGN_BACKEND_NOTES.md).
-  # This key was dead until that bridge existed — do not assume any other
-  # value here does anything. CLI --design-engine overrides this value when
-  # explicitly passed; foundry requires --project.
-  backend: boltzgen
+  # DEFAULT since the bridge was validated on a real KRAS/RAF1 GPU campaign:
+  # both --workflow ppi and --workflow binder now run the same RFD3 ->
+  # solubleMPNN -> RF3 machine, so a target discovered by the PPI stages is
+  # designed the same way as one named directly. CLI --design-engine overrides
+  # this; foundry requires --project.
+  #
+  # 'boltzgen' remains fully supported and is selected automatically by
+  # --modality cyclic_peptide, which RFD3 cannot build.
+  backend: foundry
 
   foundry:
     # Machine-specific — set via the LPT_FOUNDRY_ROOT env var instead (see

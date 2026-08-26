@@ -1305,9 +1305,12 @@ def test_bridge_coerces_a_modality_rfd3_cannot_build():
 
     from src.pipeline_runner import PipelineRunner
 
-    src = inspect.getsource(PipelineRunner._bridge_ppi_to_foundry)
-    assert 'modality = "mini_protein"' in src, "must coerce, not inherit"
-    assert "RFD3 cannot build" in src, "and must say why"
+    # The coercion moved into _resolve_modality, which every caller shares —
+    # the bridge no longer carries its own copy.
+    src = inspect.getsource(PipelineRunner._resolve_modality)
+    assert "cyclic_peptide" in src and "opt-in" in src
+    bridge = inspect.getsource(PipelineRunner._bridge_ppi_to_foundry)
+    assert "_resolve_modality" in bridge, "the bridge must go through it"
 
 
 def test_trim_bsa_warning_compares_like_with_like():
@@ -1347,3 +1350,95 @@ def test_the_bsa_mismatch_is_real_and_the_fix_silences_a_no_op_trim():
     new = target_side - sum(kept.values())
     assert old > 0.05 * both_chain_total, "the old comparison warned on a no-op"
     assert new <= 0.05 * target_side, "the new one must not"
+
+
+# ----------------------------------------------------------------------
+# Cyclic peptides are opt-in, and select the engine that can build them
+# ----------------------------------------------------------------------
+
+def test_mini_protein_is_the_default_modality(config):
+    from src.pipeline_runner import PipelineRunner
+
+    assert PipelineRunner(config, workflow="ppi")._modality == "mini_protein"
+
+
+@pytest.mark.parametrize("proposed", ["cyclic_peptide", "either", None, ""])
+def test_a_stage_cannot_talk_the_run_into_a_cyclic_peptide(config, proposed):
+    """LLM stages PROPOSE a modality; the operator decides. A stage suggesting
+    cyclic_peptide must not commit a campaign to specialised synthesis — and
+    RFD3 cannot build one anyway."""
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._resolve_modality(proposed, source="test") == "mini_protein"
+
+
+def test_opting_in_keeps_cyclic_even_when_a_stage_proposes_otherwise(config):
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner(config, workflow="ppi", modality="cyclic_peptide",
+                       design_engine="boltzgen")
+    assert r._resolve_modality("mini_protein", source="test") == "cyclic_peptide"
+
+
+def test_cyclic_peptide_cannot_run_on_foundry(config):
+    """RFD3 has no cyclic-peptide path, and binder_sizes.cyclic_peptide is
+    12-15 residues — feeding that to RFD3 asks for something it cannot build,
+    and it fails quietly rather than loudly."""
+    from src.pipeline_runner import PipelineError, PipelineRunner
+
+    with pytest.raises(PipelineError, match="cyclic"):
+        PipelineRunner(config, workflow="ppi", modality="cyclic_peptide",
+                       design_engine="foundry")
+
+
+def test_an_unknown_modality_is_rejected(config):
+    from src.pipeline_runner import PipelineError, PipelineRunner
+
+    with pytest.raises(PipelineError, match="modality"):
+        PipelineRunner(config, workflow="ppi", modality="stapled_helix")
+
+
+def test_the_cli_offers_modality_and_defaults_it_to_mini_protein():
+    import subprocess
+    import sys
+
+    root = _repo_root()
+    p = subprocess.run([sys.executable, str(root / "scripts" / "run_pipeline.py"), "--help"],
+                       capture_output=True, text=True, timeout=120)
+    assert "--modality" in p.stdout
+    assert "mini_protein" in p.stdout and "cyclic_peptide" in p.stdout
+
+
+def test_no_skill_offers_modality_as_a_free_choice():
+    """The prompts used to ask the model to pick a modality. It is the
+    operator's call — a skill that presents it as a menu will keep proposing
+    cyclic_peptide, which the pipeline then has to override every run."""
+    import pathlib
+
+    root = _repo_root()
+    offenders = []
+    for skill in (root / "skills").glob("*/SKILL.md"):
+        text = skill.read_text(encoding="utf-8")
+        for bad in ("cyclic_peptide / mini_protein", "cyclic_peptide | mini_protein"):
+            if bad in text:
+                offenders.append(f"{skill.parent.name}: {bad!r}")
+    assert not offenders, f"skills still present a modality menu: {offenders}"
+
+
+def test_packaged_skill_zips_match_their_source():
+    """SKILL.md is the source of truth; the zips are build artifacts. An edit
+    that forgets scripts/package_skills.py ships a stale prompt."""
+    import zipfile
+
+    root = _repo_root()
+    stale = []
+    for zip_path in sorted((root / "skills").glob("*.zip")):
+        src = root / "skills" / zip_path.stem / "SKILL.md"
+        if not src.is_file():
+            continue
+        with zipfile.ZipFile(zip_path) as zf:
+            members = [n for n in zf.namelist() if n.endswith("SKILL.md")]
+            if not members or zf.read(members[0]) != src.read_bytes():
+                stale.append(zip_path.name)
+    assert not stale, f"stale skill zips (run scripts/package_skills.py): {stale}"

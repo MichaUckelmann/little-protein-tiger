@@ -167,6 +167,19 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--modality",
+        choices=["mini_protein", "cyclic_peptide"],
+        default="mini_protein",
+        help=(
+            "What to design (default: mini_protein, 70-86 residues). "
+            "'cyclic_peptide' (12-15 residues) is OPT-IN: cyclic peptides need "
+            "specialised synthesis, cost substantially more, and have a thinner "
+            "experimental record than mini-protein binders. Choosing it also "
+            "selects --design-engine boltzgen, since RFD3/foundry has no "
+            "cyclic-peptide path. Whatever the LLM stages propose, this decides."
+        ),
+    )
+    p.add_argument(
         "--design-engine",
         choices=["boltzgen", "foundry"],
         default=None,
@@ -388,7 +401,30 @@ def main() -> int:
     # the runner side, which is what actually matters for a library caller
     # that skips this CLI).
     design_engine = args.design_engine or (config.get("design") or {}).get(
-        "backend", "boltzgen")
+        "backend", "foundry")
+
+    # Cyclic peptides are a BoltzGen-only modality: RFD3/foundry has no cyclic
+    # path, and `binder_sizes.cyclic_peptide` (12-15 residues) fed to RFD3 asks
+    # for something it cannot build — quietly, not loudly. So opting into the
+    # modality selects the engine that can actually do it.
+    if args.modality == "cyclic_peptide":
+        if args.design_engine == "foundry":
+            parser.error(
+                "--modality cyclic_peptide cannot run on --design-engine "
+                "foundry: RFD3 has no cyclic-peptide path. Drop "
+                "--design-engine to let the modality pick boltzgen, or design "
+                "a mini_protein instead.")
+        if is_binder:
+            parser.error(
+                "--workflow binder always runs foundry, which cannot build "
+                "cyclic peptides. Use --workflow ppi for a cyclic-peptide "
+                "campaign.")
+        if design_engine != "boltzgen":
+            logger.info(
+                "--modality cyclic_peptide: using the boltzgen design engine "
+                "(foundry/RFD3 has no cyclic-peptide path)")
+        design_engine = "boltzgen"
+
     is_foundry_bridge = (not is_binder) and design_engine == "foundry"
 
     if is_binder:
@@ -501,6 +537,7 @@ def main() -> int:
         escalate_to=(args.escalate_to or None),
         stop_after=args.stop_after,
         design_engine=design_engine,
+        modality=args.modality,
     )
 
     logger.info(f"Query: {query[:120]}{'...' if len(query) > 120 else ''}")

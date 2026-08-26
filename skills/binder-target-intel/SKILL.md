@@ -115,10 +115,20 @@ result.
 
 ## Modality
 
-- `cyclic_peptide` (12–15 residues) — small, well-defined pockets and grooves.
-- `mini_protein` (70–86 residues) — flat or extended interfaces, which is most
-  PPIs. **Default to this unless the epitope is a compact pocket.**
-- `either` — only if genuinely balanced.
+**Report `mini_protein` unless you are told otherwise.**
+
+- `mini_protein` (70–86 residues) — the default, and what the design backend
+  actually builds. Suits flat or extended interfaces, which is most PPIs.
+- `cyclic_peptide` (12–15 residues) — suits small, well-defined pockets, but it
+  is an **opt-in** modality the operator selects at kickoff with
+  `--modality cyclic_peptide`. Cyclic peptides need specialised synthesis, cost
+  substantially more, and have a thinner experimental track record. The
+  default design engine (RFD3/foundry) cannot build them at all.
+
+  If the epitope is a compact pocket and you think a cyclic peptide would suit
+  it better, say so in `interface_rationale` as a suggestion for the operator —
+  but still report `modality: mini_protein`. You are not choosing the modality;
+  the operator already has.
 
 ## Output
 
@@ -141,7 +151,7 @@ block. Downstream stages parse it; every key must be present.
 - downstream_effect: <one clause: what blocking this interface does>
 - interface_rationale: <one sentence: why this interface over the others>
 - design_intent: disrupt | stabilize | inhibit_active_site
-- modality: cyclic_peptide | mini_protein | either
+- modality: mini_protein          # unless the operator opted into cyclic_peptide
 - binder_length_min: <int>
 - binder_length_max: <int>
 - keep_domain_hint: <chain><start>-<end>, or NONE

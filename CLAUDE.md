@@ -124,11 +124,21 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
 ## The PPI -> foundry bridge (opt-in `design_engine`)
 
 Scoped in `UNIFY_DESIGN_BACKEND_NOTES.md`, unification work started there.
-`--workflow ppi` still defaults to BoltzGen; `design.backend: foundry` in
-`config.yaml` (or `--design-engine foundry` on the CLI) hands a
+`design.backend` is now **`foundry` by default**, so `--workflow ppi` hands a
 PPI-discovered target off to the SAME RFD3->solubleMPNN->RF3 stage machine
 `--workflow binder` uses, instead of continuing into BoltzGen's
-design/execution/analysis stages. Requires `--project` — same reasoning as
+design/execution/analysis stages. Flipped after a real KRAS/RAF1 campaign
+validated the bridge end-to-end on GPU (82 min, top design iPTM 0.923 /
+dock-RMSD 0.39 A). `--design-engine boltzgen` selects the old path.
+
+**Modality is the operator's choice, not the model's.** `--modality` defaults
+to `mini_protein`; `cyclic_peptide` is opt-in and automatically selects
+BoltzGen, because RFD3 has no cyclic-peptide path and
+`binder_sizes.cyclic_peptide` (12-15 residues) fed to RFD3 asks for something
+it cannot build — quietly. `PipelineRunner._resolve_modality` is the single
+place that reconciles what a stage PROPOSED against what the operator CHOSE;
+every consumer goes through it, and the skill prompts no longer present
+modality as a menu. Requires `--project` — same reasoning as
 the binder track's own requirement: the foundry stages downstream are
 multi-day GPU campaigns that need a resumable manifest. `design.backend` was
 a dead config key before this (nothing read it — confirmed by grep); do not

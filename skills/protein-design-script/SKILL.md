@@ -242,7 +242,7 @@ omitted `- ` prefix.
 - go_recommendation: GO
 - design_files: <comma-separated filenames of all generated YAML/JSON/sh files>
 - hotspot_regions: <1 or 2>
-- modality: <cyclic_peptide | mini_protein | either>
+- modality: mini_protein          # default; the operator opts into cyclic_peptide at kickoff
 - target_complex: <ProteinA / ProteinB>
 
 ## Reference

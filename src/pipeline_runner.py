@@ -294,7 +294,8 @@ class PipelineRunner:
         trial_backbones: int = 300,
         escalate_to: int | None = 1000,
         stop_after: str | None = None,
-        design_engine: str = "boltzgen",
+        design_engine: str | None = None,
+        modality: str = "mini_protein",
     ) -> None:
         self.config = config
         self.provider = provider
@@ -389,14 +390,29 @@ class PipelineRunner:
         # override-precedence pattern as `pathway_mode` above: an explicit
         # non-default kwarg (i.e. what the CLI's --design-engine passed) wins;
         # otherwise config.yaml sets the project-wide default.
-        cfg_design_engine = (config.get("design") or {}).get("backend", "boltzgen")
-        resolved_engine = design_engine if design_engine != "boltzgen" else cfg_design_engine
+        # None means "not specified" — config decides. Using a real engine
+        # name as the default made an EXPLICIT choice of that engine
+        # indistinguishable from silence, so config could override the caller.
+        cfg_design_engine = (config.get("design") or {}).get("backend", "foundry")
+        resolved_engine = design_engine or cfg_design_engine
         if resolved_engine not in {"boltzgen", "foundry"}:
             raise ValueError(
                 f"Invalid design_engine={resolved_engine!r}; expected "
                 f"'boltzgen' or 'foundry'."
             )
         self._design_engine = resolved_engine
+        # What the operator asked to design. LLM stages PROPOSE a modality;
+        # this decides. See _resolve_modality.
+        if modality not in ("mini_protein", "cyclic_peptide"):
+            raise PipelineError(
+                f"Invalid modality={modality!r}; expected 'mini_protein' or "
+                f"'cyclic_peptide'.")
+        if modality == "cyclic_peptide" and resolved_engine == "foundry":
+            raise PipelineError(
+                "modality='cyclic_peptide' cannot run on the foundry design "
+                "engine — RFD3 has no cyclic-peptide path. Use "
+                "design_engine='boltzgen' for a cyclic-peptide campaign.")
+        self._modality = modality
 
     @property
     def model_id(self) -> str:
@@ -877,6 +893,35 @@ class PipelineRunner:
         result.stages_completed.append("target_intel")
         return handoff
 
+    def _resolve_modality(self, proposed: str | None, *, source: str) -> str:
+        """The modality a run will ACTUALLY design, given what a stage proposed.
+
+        The operator's `--modality` decides; an LLM stage only proposes. Two
+        reasons this is not just "trust the handoff":
+
+        * cyclic_peptide is opt-in. It needs specialised synthesis, costs
+          substantially more, and has a thinner experimental record than
+          mini-protein binders — so a stage suggesting it must not silently
+          commit a campaign to it.
+        * RFD3/foundry has no cyclic-peptide path at all, and
+          `binder_sizes.cyclic_peptide` is 12-15 residues. Feeding that to RFD3
+          asks for something it cannot build, and it fails quietly.
+        """
+        wanted = self._modality or "mini_protein"
+        proposed = (proposed or "").strip() or wanted
+        if proposed == wanted or proposed == "either":
+            return wanted
+        if proposed == "cyclic_peptide" and wanted != "cyclic_peptide":
+            logger.info(
+                f"  {source} proposed modality=cyclic_peptide; designing a "
+                f"mini_protein instead. Cyclic peptides are opt-in — re-run "
+                f"with --modality cyclic_peptide (which also selects the "
+                f"boltzgen engine) if that is what you want.")
+            return wanted
+        logger.info(f"  {source} proposed modality={proposed!r}; using "
+                    f"{wanted!r} (--modality decides)")
+        return wanted
+
     @staticmethod
     def _binder_sites(intel: dict[str, str], limit: int = 1) -> list[dict]:
         """
@@ -1339,24 +1384,10 @@ class PipelineRunner:
         design_intent = (lit.get("design_intent") or pathway.get("design_intent")
                          or "disrupt")
 
-        # foundry designs MINI-PROTEINS. RFD3 has no cyclic-peptide path, and
-        # `binder_sizes.cyclic_peptide` is 12-15 residues — feeding that to RFD3
-        # asks it for something it cannot build, and (measured on a real
-        # validation run) it fails quietly rather than loudly. The PPI stages
-        # legitimately propose cyclic_peptide for a BoltzGen run, so coerce it
-        # here and say so, rather than inheriting a modality this backend does
-        # not implement.
         structure_handoff = result.structure_handoff or {}
-        proposed = (structure_handoff.get("modality") or lit.get("modality")
-                    or "mini_protein")
-        modality = proposed
-        if proposed not in ("mini_protein", "minibinder", ""):
-            logger.warning(
-                f"  design_engine=foundry: the PPI stages proposed "
-                f"modality={proposed!r}, which RFD3 cannot build — designing a "
-                f"mini_protein instead. Use --design-engine boltzgen if you "
-                f"specifically want a {proposed}.")
-            modality = "mini_protein"
+        modality = self._resolve_modality(
+            structure_handoff.get("modality") or lit.get("modality"),
+            source="the PPI structure/literature stages")
 
         sizes = (self._binder_cfg().get("constraints") or {}).get("binder_sizes") or {}
         size = sizes.get(modality) or sizes.get("mini_protein") or {}
