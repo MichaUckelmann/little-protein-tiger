@@ -1864,9 +1864,25 @@ class SkillRunner:
                 "generationConfig": {"maxOutputTokens": 24000},
             }
             for attempt in range(4):
-                resp = requests.post(
-                    url, params={"key": api_key}, json=payload, timeout=180
-                )
+                # The status-code retry below only helps once a RESPONSE
+                # exists. A dropped connection or a read timeout raises out of
+                # requests.post itself, and gemini is the default provider for
+                # every stage — so a blip that the Claude path shrugs off
+                # (anthropic retries APIConnectionError) used to abort a whole
+                # multi-hour run here. Same budget as the status retries.
+                try:
+                    resp = requests.post(
+                        url, params={"key": api_key}, json=payload, timeout=180
+                    )
+                except (requests.ConnectionError, requests.Timeout) as exc:
+                    if attempt == 3:
+                        raise
+                    wait = 10 * (attempt + 1)
+                    logger.warning(
+                        f"[gemini] {type(exc).__name__} on call #{iteration + 1} "
+                        f"(attempt {attempt + 1}/4) — retrying in {wait}s")
+                    time.sleep(wait)
+                    continue
                 if resp.status_code not in (429, 500, 502, 503, 504) or attempt == 3:
                     break
                 if resp.status_code == 429:
@@ -1907,23 +1923,47 @@ class SkillRunner:
                     skill=self.skill_name, model=self.model_id,
                     category=candidate["finishReason"], iteration=iteration + 1)
 
-            parts: list[dict] = candidate["content"]["parts"]
+            # A truncated or empty candidate can carry `content` with no
+            # `parts` (a thinking model that hit maxOutputTokens before
+            # emitting one). Indexing straight in raised a bare KeyError
+            # outside the handled-refusal path, so the run died with a
+            # traceback instead of the truncation warning below.
+            parts: list[dict] = ((candidate.get("content") or {}).get("parts") or [])
 
             if candidate.get("finishReason") == "MAX_TOKENS":
                 logger.warning(
                     f"Gemini response truncated at maxOutputTokens on call #{iteration + 1} "
                     f"— '### PIPELINE HANDOFF' may be missing."
                 )
+            if not parts:
+                raise RuntimeError(
+                    f"Gemini returned no content on call #{iteration + 1} "
+                    f"(finishReason={candidate.get('finishReason')!r}). "
+                    f"If this is MAX_TOKENS, raise maxOutputTokens or shorten "
+                    f"the query; the model produced no usable output.")
 
             usage = body.get("usageMetadata", {})
             in_tok = usage.get("promptTokenCount", 0)
-            out_tok = usage.get("candidatesTokenCount", 0)
+            # Gemini reports reasoning tokens SEPARATELY in thoughtsTokenCount.
+            # They are billed at the output rate and are NOT included in
+            # candidatesTokenCount, so counting only the latter under-reported
+            # spend on every thinking-model call — and `--budget`, which is
+            # documented as a hard cap, under-enforced by the same margin.
+            thought_tok = usage.get("thoughtsTokenCount", 0) or 0
+            out_tok = (usage.get("candidatesTokenCount", 0) or 0) + thought_tok
+            # promptTokenCount INCLUDES cached tokens; surface the cached share
+            # so the ledger can price it at the cache-read rate rather than
+            # billing the whole prompt as fresh input.
+            cached_tok = usage.get("cachedContentTokenCount", 0) or 0
             self._total_input_tokens += in_tok
             self._total_output_tokens += out_tok
+            self._total_cache_read_tokens += cached_tok
             self._last_input_tokens = in_tok
             logger.info(
-                f"  tokens: {in_tok:,} in / {out_tok:,} out "
-                f"(run cumulative: {self._total_input_tokens:,} in / "
+                f"  tokens: {in_tok:,} in / {out_tok:,} out"
+                + (f" (incl. {thought_tok:,} reasoning)" if thought_tok else "")
+                + (f" / {cached_tok:,} cached" if cached_tok else "")
+                + f" (run cumulative: {self._total_input_tokens:,} in / "
                 f"{self._total_output_tokens:,} out)"
             )
 

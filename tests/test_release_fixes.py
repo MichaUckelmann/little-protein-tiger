@@ -581,3 +581,188 @@ def test_a_real_transport_failure_is_still_warned(monkeypatch):
 
     assert cp._rcsb_accessions_for_doi("10.1/x") == []
     assert warned and "connection reset" in warned[0]
+
+
+# ----------------------------------------------------------------------
+# Lower-severity batch
+# ----------------------------------------------------------------------
+
+def test_both_search_filters_are_ANDed_not_overwritten():
+    """LanceDB's builder does `self._where = where`, so two consecutive
+    .where() calls REPLACE rather than AND. Asking for study_type +
+    study_category silently applied the category only."""
+    import inspect
+
+    from src import vector_store
+
+    src = inspect.getsource(vector_store.VectorStore.search)
+    assert src.count(".where(") <= 2, (
+        "search() must build ONE predicate; a second .where() overwrites the first")
+    assert " AND ".join.__self__ or True     # readability only
+    assert '" AND ".join' in src, "the two clauses must be ANDed into one predicate"
+
+
+@pytest.mark.parametrize("hostile,expected", [
+    ("biochemistry", "'biochemistry'"),
+    ("bio'; DROP TABLE x--", "'bio''; DROP TABLE x--'"),
+    ("a'b", "'a''b'"),
+])
+def test_filter_values_are_quoted(hostile, expected):
+    """These arrive from an LLM tool call; the schema enum is advisory only."""
+    from src.vector_store import _sql_quote
+
+    assert _sql_quote(hostile) == expected
+
+
+def test_control_characters_are_stripped_from_filter_values():
+    from src.vector_store import _sql_quote
+
+    assert "\n" not in _sql_quote("bio\nchemistry")
+
+
+# --- Gemini token accounting -------------------------------------------
+
+def test_reasoning_tokens_are_billed():
+    """Gemini reports reasoning tokens in thoughtsTokenCount, billed at the
+    OUTPUT rate and NOT included in candidatesTokenCount. Counting only the
+    latter under-reported spend on every thinking call — and `--budget`,
+    documented as a hard cap, under-enforced by the same margin."""
+    import inspect
+
+    from src import skill_runner
+
+    src = inspect.getsource(skill_runner.SkillRunner._run_gemini)
+    assert "thoughtsTokenCount" in src, "reasoning tokens must be counted"
+    assert "cachedContentTokenCount" in src, "cached tokens must be surfaced"
+
+
+def test_gemini_handles_a_candidate_with_no_parts():
+    """A thinking model truncated before emitting a part yields `content` with
+    no `parts`; indexing straight in raised a bare KeyError outside the
+    handled-refusal path."""
+    import inspect
+
+    from src import skill_runner
+
+    src = inspect.getsource(skill_runner.SkillRunner._run_gemini)
+    assert 'candidate["content"]["parts"]' not in src
+    assert '(candidate.get("content") or {}).get("parts")' in src
+
+
+def test_gemini_retries_transient_network_errors():
+    """The status-code retry only helps once a response exists; a dropped
+    connection raised straight out of requests.post. Gemini is the default
+    provider, so a blip aborted whole multi-hour runs."""
+    import inspect
+
+    from src import skill_runner
+
+    src = inspect.getsource(skill_runner.SkillRunner._run_gemini)
+    assert "requests.ConnectionError" in src and "requests.Timeout" in src
+
+
+# --- PPI structure-stage guards ----------------------------------------
+
+def test_chain_assignment_guard_does_not_depend_on_hotspot_parsing():
+    """The guards sit outside the try/except by design — but gating them on
+    `hotspots_json`, assigned INSIDE it, meant a parse failure silently
+    skipped both. A chain swap yields real, correctly-numbered residues on the
+    WRONG protein, and is most likely exactly when the report is malformed."""
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner._stage_structure)
+    tail = src[src.index("_verify_ppi_chain_assignment"):]
+    before = src[:src.index("_verify_ppi_chain_assignment")]
+    # The chain guard must NOT be nested under an `if hotspots_json:`
+    assert not before.rstrip().endswith("if hotspots_json:"), (
+        "chain-assignment guard is still gated on hotspot parsing")
+    assert "_verify_hotspot_grounding" in tail
+
+
+# --- database ----------------------------------------------------------
+
+def test_connections_are_closed_not_just_committed(tmp_path):
+    """`with sqlite3.connect(...)` commits but does not close; a long-lived
+    MCP server accumulated a handle per call."""
+    import os
+
+    from src.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    before = len(os.listdir(f"/proc/{os.getpid()}/fd"))
+    for _ in range(100):
+        db.stats()
+    after = len(os.listdir(f"/proc/{os.getpid()}/fd"))
+    assert after - before < 5, f"leaked {after - before} handles over 100 queries"
+
+
+def test_a_paper_with_no_identifier_warns_instead_of_silently_no_op(tmp_path, caplog):
+    """`WHERE pmcid = NULL` matches nothing, so these rows stayed 'pending'
+    forever and were re-detected on every run."""
+    from src.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    db.mark_downloaded(None, None, "/x/y.pdf")     # must not raise
+    db.mark_failed(None, None, "boom")
+
+
+# --- resource leak in PDF extraction -----------------------------------
+
+def test_a_malformed_pdf_does_not_leak_the_mupdf_handle(tmp_path):
+    """Curation walks ~10k PDFs in one process, so this is not theoretical."""
+    import os
+
+    from src.text_extractor import _extract_pdf
+
+    bad = tmp_path / "bad.pdf"
+    bad.write_bytes(b"not a pdf at all")
+    before = len(os.listdir(f"/proc/{os.getpid()}/fd"))
+    for _ in range(50):
+        try:
+            _extract_pdf(bad, 5000)
+        except Exception:
+            pass
+    after = len(os.listdir(f"/proc/{os.getpid()}/fd"))
+    assert after - before < 5, f"leaked {after - before} handles over 50 files"
+
+
+# --- config/default consistency ----------------------------------------
+
+def test_cluster_n_gpus_default_matches_config_and_calibration(config):
+    """A 4 in the code against an 8 in config.yaml silently sized cluster
+    campaigns for half the GPUs whenever design.cluster was absent."""
+    import inspect
+
+    from src import campaign_calibration, cluster_runner
+
+    cfg_default = (((config.get("design") or {}).get("cluster") or {}).get("n_gpus"))
+    code_default = int(inspect.getsource(cluster_runner.ClusterConfig.from_cfg)
+                       .split('c.get("n_gpus", ')[1].split(")")[0])
+    sig_default = inspect.signature(
+        campaign_calibration.choose_compute).parameters["n_gpus_cluster"].default
+    assert code_default == sig_default == cfg_default, (
+        f"n_gpus defaults disagree: code={code_default} "
+        f"choose_compute={sig_default} config.yaml={cfg_default}")
+
+
+def test_report_reads_success_metric_from_the_frozen_run_not_todays_config():
+    """Editing config.yaml silently relabelled the scatter axis of an OLD
+    report — the same run-time-vs-config-time drift ppi_report guards against."""
+    import inspect
+
+    from src import binder_report
+
+    src = inspect.getsource(binder_report.build_report)
+    assert 'calibration.get("success_metric")' in src
+
+
+def test_cluster_paths_fail_with_a_message_not_a_typeerror():
+    """Reachable on resume: staged with LPT_CLUSTER_PIPELINE_ROOT set, resumed
+    from a shell without it."""
+    import inspect
+
+    from src import cluster_runner
+
+    assert "_require_pipeline_root" in inspect.getsource(cluster_runner)

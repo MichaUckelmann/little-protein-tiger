@@ -14,6 +14,20 @@ from loguru import logger
 _EMBEDDING_DIM = 768
 
 
+
+def _sql_quote(value: str) -> str:
+    """Quote a string for LanceDB's SQL-ish filter language.
+
+    These values reach us from an LLM tool call. The tool schema declares an
+    enum, but that is advisory — nothing enforces it at the API boundary — so
+    an embedded quote would otherwise break out of the literal and into the
+    predicate. Doubling single quotes is the SQL standard escape; control
+    characters are dropped outright since no legitimate enum value has any.
+    """
+    cleaned = "".join(ch for ch in str(value) if ch.isprintable())
+    return "'" + cleaned.replace("'", "''") + "'"
+
+
 class VectorStore:
     """
     Wraps a LanceDB table of embedded paper fingerprints.
@@ -367,25 +381,23 @@ class VectorStore:
             .limit(fetch_limit)
         )
 
+        # ONE where() call, not two. LanceDB's builder assigns
+        # `self._where = where`, so a second call REPLACES the first rather
+        # than ANDing it: asking for study_type + study_category silently
+        # applied the category only, and a caller that thought it had
+        # constrained methodology got results from every study_type.
+        # Verified against lancedb 0.30.2.
+        clauses = []
         if study_type:
-            try:
-                search_builder = search_builder.where(
-                    f"study_type = '{study_type}'", prefilter=False
-                )
-            except TypeError:
-                search_builder = search_builder.where(
-                    f"study_type = '{study_type}'"
-                )
-
+            clauses.append(f"study_type = {_sql_quote(study_type)}")
         if study_category:
+            clauses.append(f"study_category = {_sql_quote(study_category)}")
+        if clauses:
+            predicate = " AND ".join(clauses)
             try:
-                search_builder = search_builder.where(
-                    f"study_category = '{study_category}'", prefilter=False
-                )
-            except TypeError:
-                search_builder = search_builder.where(
-                    f"study_category = '{study_category}'"
-                )
+                search_builder = search_builder.where(predicate, prefilter=False)
+            except TypeError:      # older lancedb without the kwarg
+                search_builder = search_builder.where(predicate)
 
         results_arrow = search_builder.to_arrow()
 

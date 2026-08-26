@@ -19,27 +19,31 @@ def _extract_pdf(file_path: Path, max_chars: int) -> str:
     import fitz  # pymupdf
 
     doc = fitz.open(str(file_path))
-    parts = []
-    total = 0
+    try:
+        parts = []
+        total = 0
 
-    for page_num, page in enumerate(doc, start=1):
-        page_text = page.get_text("text").strip()
-        if not page_text:
-            continue
+        for page_num, page in enumerate(doc, start=1):
+            page_text = page.get_text("text").strip()
+            if not page_text:
+                continue
 
-        paragraphs = [p.strip() for p in page_text.split("\n\n") if p.strip()]
-        for para_num, para in enumerate(paragraphs, start=1):
-            marker = f"[Page {page_num}, Para {para_num}]\n"
-            chunk = marker + para + "\n\n"
-            if total + len(chunk) > max_chars:
-                parts.append(f"[Truncated at {max_chars} characters]")
-                doc.close()
-                return "".join(parts)
-            parts.append(chunk)
-            total += len(chunk)
+            paragraphs = [p.strip() for p in page_text.split("\n\n") if p.strip()]
+            for para_num, para in enumerate(paragraphs, start=1):
+                marker = f"[Page {page_num}, Para {para_num}]\n"
+                chunk = marker + para + "\n\n"
+                if total + len(chunk) > max_chars:
+                    parts.append(f"[Truncated at {max_chars} characters]")
+                    return "".join(parts)
+                parts.append(chunk)
+                total += len(chunk)
 
-    doc.close()
-    return "".join(parts)
+        return "".join(parts)
+    finally:
+        # A malformed PDF raising mid-iteration used to skip doc.close()
+        # entirely, leaking the MuPDF handle. Curation walks ~10k PDFs in one
+        # process, so the leak is not theoretical.
+        doc.close()
 
 
 def _extract_xml(file_path: Path, max_chars: int) -> str:

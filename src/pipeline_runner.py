@@ -2140,7 +2140,8 @@ class PipelineRunner:
         import csv as _csv
         import io as _io
 
-        rows = list(_csv.DictReader(Path(top_k_csv).open(encoding="utf-8")))
+        with Path(top_k_csv).open(encoding="utf-8") as _fh:
+            rows = list(_csv.DictReader(_fh))
         if not rows:
             return "(no designs survived ranking)"
         cols = [c for c in cls._BINDER_SUMMARY_COLS if c in rows[0]]
@@ -2160,7 +2161,8 @@ class PipelineRunner:
         """
         import csv as _csv
 
-        rows = list(_csv.DictReader(Path(top_k_csv).open(encoding="utf-8")))
+        with Path(top_k_csv).open(encoding="utf-8") as _fh:
+            rows = list(_csv.DictReader(_fh))
         entries = [r for r in rows if r.get("binder_seq")]
         if not entries:
             return None
@@ -2935,11 +2937,27 @@ class PipelineRunner:
         # campaign once. Deliberately OUTSIDE the try/except above: a real
         # mismatch here must halt the run, not degrade to a warning the way a
         # missing hotspot table does.
+        verify_pdb = result.pdb_id or pdb_id
+        # Chain assignment needs only the handoff, NOT the hotspot table, so it
+        # runs unconditionally. It used to sit behind `if hotspots_json:` — a
+        # variable assigned inside the try above — so any parse failure there
+        # was swallowed as a warning AND silently skipped both guards. That
+        # defeated the stated intent: a chain swap produces real,
+        # correctly-numbered residues on the WRONG protein, which is exactly
+        # the failure that burned a full campaign, and it is most likely
+        # precisely when the report is malformed enough to break parsing.
+        self._verify_ppi_chain_assignment(
+            result.target_complex or target_complex, handoff, verify_pdb)
+
+        # Grounding genuinely needs the hotspot table. If it's missing, say so
+        # loudly rather than letting "no table" read as "table verified".
         if hotspots_json:
-            verify_pdb = result.pdb_id or pdb_id
-            self._verify_ppi_chain_assignment(
-                result.target_complex or target_complex, handoff, verify_pdb)
             self._verify_hotspot_grounding(hotspots_json, verify_pdb)
+        else:
+            logger.warning(
+                "  ⚠ hotspot grounding NOT verified — no parseable MODEL-READY "
+                "HOTSPOTS table in the structure report. Residue names in any "
+                "downstream spec are unchecked against the real structure.")
 
         return handoff
 

@@ -103,7 +103,11 @@ class ClusterConfig:
             msa_source=c.get("msa_source", "protenix_hosted"),
             protenix_repo=Path(protenix_repo).expanduser() if protenix_repo else None,
             protenix_venv=c.get("protenix_venv", ".venv"),
-            n_gpus=max(1, int(c.get("n_gpus", 4))),
+            # 8, matching config.yaml design.cluster.n_gpus and
+            # campaign_calibration.choose_compute's own default. A 4 here
+            # silently sized cluster campaigns for half the GPUs whenever
+            # design.cluster was absent from a config.
+            n_gpus=max(1, int(c.get("n_gpus", 8))),
             pilot=c.get("pilot") or {"n_batches": 25},
             calibration=c.get("calibration") or {"n_batches": 145},
             production=c.get("production") or {"n_batches": 3000},
@@ -244,6 +248,23 @@ def fetch_target_msa(seq: str, name: str, cluster_cfg: ClusterConfig) -> Path:
     return a3m
 
 
+
+def _require_pipeline_root(cluster_cfg) -> None:
+    """Fail with the configured-path message, not `NoneType / str`.
+
+    Reachable on a RESUME: a campaign staged with LPT_CLUSTER_PIPELINE_ROOT set
+    is later resumed (`--start-from binder_scoring`) from a shell without it,
+    and every path build raised an opaque TypeError instead of the message
+    `from_cfg` was written to give.
+    """
+    if cluster_cfg.pipeline_root is None:
+        raise ClusterError(
+            "cluster pipeline_root is not set — set the "
+            "LPT_CLUSTER_PIPELINE_ROOT env var (see .env.example) or "
+            "design.cluster.pipeline_root in config.yaml to this machine's "
+            "mount of the shared binder_pipeline checkout.")
+
+
 def node_path(path: Path, cluster_cfg: ClusterConfig) -> str:
     """
     Submit-host absolute path -> compute-node absolute path.
@@ -258,6 +279,7 @@ def node_path(path: Path, cluster_cfg: ClusterConfig) -> str:
     without this module needing its own copy of that value.
     """
     prefix = "/g-groups"
+    _require_pipeline_root(cluster_cfg)
     site_sh = cluster_cfg.pipeline_root / "config" / "site.sh"
     try:
         text = site_sh.read_text(encoding="utf-8")
@@ -294,6 +316,7 @@ def stage_campaign(
             f"machine.")
 
     run_name = f"{slug}_{mode}"
+    _require_pipeline_root(cluster_cfg)
     run_dir = cluster_cfg.pipeline_root / cluster_cfg.stage_subdir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 

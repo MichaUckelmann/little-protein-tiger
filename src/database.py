@@ -1,5 +1,6 @@
 import hashlib
 import sqlite3
+from contextlib import contextmanager
 import json
 from pathlib import Path
 from typing import Optional
@@ -24,10 +25,22 @@ class Database:
         self._init_schema()
         self._migrate()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
+        """A connection that is COMMITTED and CLOSED.
+
+        `with sqlite3.connect(...) as conn` commits on exit but does NOT close
+        — every call leaked a handle, which a long-lived MCP server
+        accumulates over a session. Wrapping it keeps every existing
+        `with self._connect() as conn:` call site working unchanged.
+        """
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_schema(self):
         with self._connect() as conn:
@@ -157,12 +170,28 @@ class Database:
         return [self._row_to_paper(r) for r in rows]
 
     def mark_downloaded(self, doi: Optional[str], pmcid: Optional[str], path: str):
+        # `WHERE pmcid = NULL` matches NOTHING in SQL (NULL != NULL), so a
+        # paper with neither identifier updates 0 rows and stays 'pending'
+        # forever — re-detected as already-on-disk on every run and never
+        # curated. Warn instead of raising: the file IS downloaded, and
+        # aborting the whole download loop over 3 unidentifiable rows would be
+        # a worse trade than a visible warning.
         key_val, key_col = (doi, "doi") if doi else (pmcid, "pmcid")
+        if not key_val:
+            logger.warning(
+                f"cannot mark downloaded: paper has neither DOI nor PMCID "
+                f"(path/reason={path!r}). It will stay 'pending' "
+                f"and be re-examined on the next run.")
+            return
         with self._connect() as conn:
-            conn.execute(
+            cur = conn.execute(
                 f"UPDATE papers SET download_status='downloaded', pdf_path=? WHERE {key_col}=?",
                 (path, key_val)
             )
+            if cur.rowcount == 0:
+                logger.warning(
+                    f"marking downloaded matched no row for {key_col}={key_val!r} — "
+                    f"the paper stays 'pending'.")
 
     def get_uncurated(self, limit: int = 0) -> list[Paper]:
         """Papers that are downloaded but not yet curated."""
@@ -229,12 +258,28 @@ class Database:
             )
 
     def mark_failed(self, doi: Optional[str], pmcid: Optional[str], reason: str):
+        # `WHERE pmcid = NULL` matches NOTHING in SQL (NULL != NULL), so a
+        # paper with neither identifier updates 0 rows and stays 'pending'
+        # forever — re-detected as already-on-disk on every run and never
+        # curated. Warn instead of raising: the file IS downloaded, and
+        # aborting the whole download loop over 3 unidentifiable rows would be
+        # a worse trade than a visible warning.
         key_val, key_col = (doi, "doi") if doi else (pmcid, "pmcid")
+        if not key_val:
+            logger.warning(
+                f"cannot mark failed: paper has neither DOI nor PMCID "
+                f"(path/reason={reason!r}). It will stay 'pending' "
+                f"and be re-examined on the next run.")
+            return
         with self._connect() as conn:
-            conn.execute(
+            cur = conn.execute(
                 f"UPDATE papers SET download_status='failed', fail_reason=? WHERE {key_col}=?",
                 (reason, key_val)
             )
+            if cur.rowcount == 0:
+                logger.warning(
+                    f"marking failed matched no row for {key_col}={key_val!r} — "
+                    f"the paper stays 'pending'.")
 
     def stats(self) -> dict:
         with self._connect() as conn:

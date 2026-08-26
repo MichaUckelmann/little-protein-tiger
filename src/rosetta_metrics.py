@@ -157,7 +157,8 @@ def score_designs(
         return RosettaResult([], None, 0, 0,
                              f"worker produced no output (rc={proc.returncode})")
 
-    rows = list(csv.DictReader(out_csv.open(encoding="utf-8")))
+    with out_csv.open(encoding="utf-8") as _fh:
+        rows = list(csv.DictReader(_fh))
     failed = [r for r in rows if r.get("error")]
     logger.info(f"Rosetta: {len(rows) - len(failed):,} scored, {len(failed)} failed")
     return RosettaResult(rows, out_csv, len(rows) - len(failed), len(failed))

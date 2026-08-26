@@ -429,6 +429,13 @@ def build_report(binder_dir: Path, out_path: Path | None = None,
             calibration.get("bar_raised_to")
             or calibration.get("requested_bar")
             or excellence_bar)
+        # Same reasoning for the METRIC as for the bar, and the run already
+        # froze it: reading success_metric from today's config meant editing
+        # config.yaml silently relabelled the scatter axis of an old report,
+        # so the plot claimed a campaign was sized on a metric it never used.
+        # This is exactly the run-time-vs-config-time drift that
+        # `ppi_report._parse_filter_stats` exists to avoid.
+        success_metric = calibration.get("success_metric") or success_metric
 
     rows, source_label, top_rows, filter_stats = _resolve_designs(binder_dir, rcfg)
     # "production campaign" is the only fixed source_label string; every
