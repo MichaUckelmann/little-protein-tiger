@@ -1517,14 +1517,16 @@ def test_mcp_servers_tell_the_model_not_to_reach_for_them():
     spans all of biology. A general question answered from a corpus search is
     narrower than the unaided answer, and makes that narrowness look like the
     state of the field."""
-    import src.mcp_server as lit
-    import src.structure_tools_server as st
-
-    for server, label in ((lit.mcp, "literature-db"), (st.mcp, "structure-tools")):
-        instructions = getattr(server, "instructions", "") or ""
-        assert instructions, f"{label} has no server instructions"
-        assert "DO NOT reach for these tools on your own" in instructions, label
-        assert "explicitly" in instructions, label
+    # Read the source rather than importing: src/mcp_server.py deliberately
+    # requires the optional `corpus` extra, which CI does not install, and this
+    # test is about description CONTENT, not runtime behaviour.
+    root = _repo_root()
+    for f, label in (("src/mcp_server.py", "literature-db"),
+                     ("src/structure_tools_server.py", "structure-tools")):
+        text = (root / f).read_text(encoding="utf-8")
+        assert "instructions=(" in text, f"{label} sets no server instructions"
+        assert "DO NOT reach for these tools on your own" in text, label
+        assert "explicitly" in text, label
 
 
 def test_no_mcp_tool_description_invites_auto_use():
@@ -1566,15 +1568,13 @@ def test_the_api_pipeline_path_still_auto_uses_its_tools():
         "the pipeline's search_corpus description lost its trigger language — "
         "MCP's no-auto-trigger rule must not leak into the API path")
 
-    # And the two tables must remain genuinely separate objects.
-    import inspect
-
-    import src.mcp_server as m
-
-    mcp_doc = (inspect.getdoc(m.search_corpus) or "")
-    assert mcp_doc != by_name["search_corpus"], (
-        "MCP and pipeline descriptions have converged; they have opposite "
-        "requirements and must stay distinct")
+    # And the two tables must remain genuinely distinct. Source-read for the
+    # same reason as above — the MCP module needs the `corpus` extra.
+    mcp_src = (_repo_root() / "src" / "mcp_server.py").read_text(encoding="utf-8")
+    assert by_name["search_corpus"] not in mcp_src, (
+        "the pipeline's search_corpus description now appears verbatim in the "
+        "MCP server; the two have opposite trigger requirements and must not "
+        "converge")
 
 
 # ----------------------------------------------------------------------
