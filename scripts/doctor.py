@@ -101,10 +101,18 @@ def _run(argv: list[str], timeout: float = 20.0) -> tuple[int, str]:
 def check_interpreter(rep: Report) -> None:
     v = sys.version_info
     ok = (v.major, v.minor) >= (3, 12)
-    rep.add("Python", OK if ok else FAIL,
+    # 3.13 works, but its stricter X.509 validation rejects certificates
+    # re-signed by TLS-inspecting corporate proxies that 3.12 accepts — and no
+    # CA bundle fixes that. Worth flagging before a download fails confusingly.
+    newer = ok and (v.major, v.minor) > (3, 12)
+    rep.add("Python", FAIL if not ok else (WARN if newer else OK),
             f"{v.major}.{v.minor}.{v.micro}"
             + ("" if sys.prefix != sys.base_prefix else "  (not in a venv)"),
-            "" if ok else "LPT requires Python 3.12+ (pyproject requires-python).",
+            "LPT requires Python 3.12+ (pyproject requires-python)." if not ok
+            else ("Tested on 3.12. On 3.13+ behind a TLS-inspecting proxy, "
+                  "downloads can fail with 'Missing Authority Key Identifier' — "
+                  "3.13 enforces stricter certificate rules and a CA bundle does "
+                  "not help. Use python3.12 if you hit that." if newer else ""),
             tracks=TRACKS)
 
 

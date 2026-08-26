@@ -175,7 +175,21 @@ def download(ds: Dataset, *, force: bool = False) -> bool:
     except requests.RequestException as exc:
         tmp.unlink(missing_ok=True)
         print(f"  [FAIL] {ds.filename}: {exc}")
-        if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+        msg = str(exc)
+        if "Missing Authority Key Identifier" in msg:
+            # Python 3.13 tightened X.509 validation and rejects re-signed
+            # certificates that 3.12 accepts. Setting a CA bundle does NOT
+            # help — the chain is structurally non-compliant, not untrusted.
+            print("         This is Python "
+                  f"{sys.version_info.major}.{sys.version_info.minor} refusing a "
+                  "certificate re-signed by a TLS-inspecting\n"
+                  "         proxy. 3.13 enforces stricter X.509 rules than 3.12, "
+                  "and a CA bundle\n"
+                  "         will NOT fix it. Options: build the venv with "
+                  "python3.12, download the\n"
+                  f"         file by hand into {DEST_DIR}/, or "
+                  "fetch it from outside the proxy.")
+        elif "CERTIFICATE_VERIFY_FAILED" in msg:
             print("         Behind a TLS-inspecting proxy? Set LPT_CA_BUNDLE "
                   "in .env (see .env.example).")
         return False

@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+> **PRE-RELEASE BLOCKER:** the literature corpus is not yet packaged or
+> published, so `scripts/fetch_corpus.py` finds nothing and the literature
+> track is unusable for anyone but the maintainer. Run
+> `python scripts/package_corpus.py` and attach the archive to a GitHub
+> release. See `RELEASE_CHECKLIST.md`.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 `README.md` already documents commands, environment setup, the migration checklist, and the full skill catalogue. This file covers the architectural big picture and project-specific conventions that aren't obvious from a single file.

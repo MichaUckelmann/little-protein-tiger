@@ -1,3 +1,10 @@
+> ### ⚠️ Not yet public-ready
+>
+> **The literature corpus has not been packaged and released yet.**
+> `scripts/fetch_corpus.py` — which the setup docs tell users to run — will
+> find nothing until it is. See **[RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)**
+> before flipping this repository to public.
+
 # Little Protein Tiger
 
 An end-to-end pipeline for PPI drug target discovery. Covers automated paper discovery, Claude-powered structured extraction, a vector database for semantic search, and a suite of AI expert skills for pathway analysis, structural interface analysis, and binder design. Skills run either inside Claude Desktop (via MCP) or from the CLI using the Claude or Gemini API directly.

@@ -1121,3 +1121,45 @@ def test_doctor_points_at_the_download_not_a_rebuild():
     assert "fetch_corpus.py" in src
     assert "curate_papers.py" not in src, (
         "a missing corpus should be fixed by downloading, not by curating")
+
+
+# ----------------------------------------------------------------------
+# Release blocker: the corpus must be published before going public
+# ----------------------------------------------------------------------
+
+def test_the_release_blocker_is_documented_where_it_cannot_be_missed():
+    """Every setup path tells users to run fetch_corpus.py. Until a release
+    asset exists that command finds nothing, so the blocker must be visible in
+    the README's first screen — not only in a checklist file."""
+    root = _repo_root()
+
+    checklist = root / "RELEASE_CHECKLIST.md"
+    assert checklist.is_file(), "RELEASE_CHECKLIST.md must exist while unreleased"
+    body = checklist.read_text(encoding="utf-8")
+    assert "package_corpus.py" in body and "fetch_corpus.py" in body
+
+    readme_head = (root / "README.md").read_text(encoding="utf-8")[:800]
+    assert "RELEASE_CHECKLIST.md" in readme_head, (
+        "the blocker must appear in the README's first screen")
+
+
+def test_the_asset_name_the_fetcher_looks_for_matches_what_packaging_writes():
+    """fetch_corpus.py finds a release asset by name prefix. If packaging ever
+    emits a different name, the published corpus becomes invisible and the
+    failure looks like 'no release yet'."""
+    from scripts.fetch_corpus import ASSET_PREFIX
+    from scripts.package_corpus import DEFAULT_OUT
+
+    assert DEFAULT_OUT.name.startswith(ASSET_PREFIX), (
+        f"packaging writes {DEFAULT_OUT.name!r} but fetching looks for "
+        f"{ASSET_PREFIX!r}*")
+
+
+def test_install_and_fetch_agree_on_what_the_archive_contains():
+    """package_corpus decides what ships; fetch_corpus reports what is present.
+    If they drift, --check misreports a correctly-installed corpus."""
+    from scripts.fetch_corpus import INSTALLS
+    from scripts.package_corpus import MEMBERS
+
+    assert set(INSTALLS) == {rel for rel, _ in MEMBERS}, (
+        "package_corpus.MEMBERS and fetch_corpus.INSTALLS have drifted")
