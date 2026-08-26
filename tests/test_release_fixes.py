@@ -863,8 +863,55 @@ def test_pubmed_spellings_of_listed_journals_are_recognised(journal):
 
 
 @pytest.mark.parametrize("journal", [
+    "Journal of Cell Biology", "The Journal of Cell Biology", "J Cell Biol",
+    "Cell Stem Cell", "Stem Cell Reports",
+    "Molecular and Cellular Biology", "Mol Cell Biol",
+    "EMBO Molecular Medicine", "EMBO Mol Med",
+    "Development", "Development (Cambridge, England)",
+    "Genome Biology", "Genome Biol",
+    "Molecular Biology of the Cell", "Mol Biol Cell",
+    "PLoS Genetics", "PLoS Genet", "PLOS Genetics",
+    "FEBS Journal", "FEBS Letters", "PLoS Biology", "PLoS Computational Biology",
+])
+def test_curated_additions_are_recognised_in_every_spelling(journal):
+    """Added deliberately; each must match in the abbreviated form PubMed
+    emits as well as the full name, or it is a silent 100% exclusion."""
+    from src.ranking import is_tiered_journal
+
+    assert is_tiered_journal(journal), f"{journal!r} should pass the tier gate"
+
+
+@pytest.mark.parametrize("journal", [
+    # Punctuated entries could never match before the lists were normalised
+    # at import — four tier 1 journals were silently excluded despite being
+    # listed.
+    "Genes & Development", "Cell Host & Microbe",
+    "Nature Structural & Molecular Biology", "The ISME Journal",
+    "Bioorganic & Medicinal Chemistry", "Organic & Biomolecular Chemistry",
+])
+def test_punctuated_tier_entries_match(journal):
+    from src.ranking import is_tiered_journal
+
+    assert is_tiered_journal(journal)
+
+
+def test_every_tier_entry_is_reachable():
+    """An entry not in normalised form can never match any lookup, so it is
+    dead weight that looks like coverage. Normalising at import prevents it;
+    this fails if that ever regresses."""
+    from src.ranking import _TIER1_JOURNALS, _TIER2_JOURNALS, _normalise
+
+    unreachable = [e for e in (_TIER1_JOURNALS | _TIER2_JOURNALS)
+                   if _normalise(e) != e]
+    assert not unreachable, f"these entries can never match: {unreachable}"
+
+
+@pytest.mark.parametrize("journal", [
     "PLoS One", "Sci Rep", "Int J Mol Sci", "bioRxiv",
     "Frontiers in Molecular Biosciences", "Cells",
+    # Adjacent names that must NOT be caught by the generic "development" entry
+    "Stem Cells and Development", "Developmental biology",
+    "Frontiers in Cell and Developmental Biology",
 ])
 def test_deliberately_excluded_venues_stay_excluded(journal):
     """The gate is a quality judgement; normalisation must not soften it."""

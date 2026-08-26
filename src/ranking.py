@@ -62,7 +62,13 @@ _TIER1_JOURNALS: set[str] = {
     "nature immunology", "nat immunol",
     "cell systems", "cell sys", 
     "genes & development", "genes dev",
-    "molecular systems biology", "mol syst biol"
+    "molecular systems biology", "mol syst biol",
+    # Flagship primary-research journals, peers of the entries above.
+    # Every spelling the corpus actually contains is listed — matching is
+    # exact, so a missing variant is a silent 100% exclusion of that journal.
+    "journal of cell biology", "j cell biol",
+    "cell stem cell",
+    "genome biology", "genome biol",
 }
 
 # Tier 2 — solid domain-specific journals
@@ -74,6 +80,15 @@ _TIER2_JOURNALS: set[str] = {
     "biophysical journal", "biophys j",
     "febs journal", "febs j",
     "febs letters", "febs lett",
+    # Strong specialist venues, peers of JBC / JMB / Biochemical Journal.
+    "molecular and cellular biology", "mol cell biol",
+    "molecular biology of the cell", "mol biol cell",
+    "stem cell reports", "stem cell rep",
+    "embo molecular medicine", "embo mol med",
+    # "Development (Cambridge, England)" is PubMed's full form; the
+    # parenthetical normalises away to "development cambridge england".
+    "development", "development cambridge england", "dev camb",
+    "plos genetics", "plos genet",
     "chembiochem",
     "bioorganic & medicinal chemistry", "bioorg med chem",
     "european journal of medicinal chemistry", "eur j med chem",
@@ -150,6 +165,19 @@ def _normalise(s: str) -> str:
             out = out[: -len(suffix)].strip()
             break
     return out
+
+
+# Run the lists through the SAME normalisation as the lookup key.
+#
+# The lists are hand-written, so entries carry natural punctuation ("Genes &
+# Development", "Cell Host & Microbe", "Nature Structural & Molecular
+# Biology", "The ISME Journal"). Lookups normalise; the lists did not — so
+# those six entries could never match anything, and four well-known tier 1
+# journals were being silently excluded from the corpus despite being listed.
+# Normalising at import makes the whole class of mistake impossible: an entry
+# can now be written in whatever form reads naturally.
+_TIER1_JOURNALS = {_normalise(j) for j in _TIER1_JOURNALS}
+_TIER2_JOURNALS = {_normalise(j) for j in _TIER2_JOURNALS}
 
 
 def _journal_tier(journal: str | None, tier1_extra: set[str], tier2_extra: set[str]) -> float:

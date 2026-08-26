@@ -1060,8 +1060,8 @@ python scripts/ingest_vectors.py
 ## Journal filtering — read this before building a corpus
 
 **By default LPT downloads only papers from journals on a curated tier list.**
-On the shipped corpus that gate passes **28% of indexed papers** and blocks the
-other 72% — *PLoS One*, *bioRxiv*, *Scientific Reports* and *IJMS* are the
+On the shipped corpus that gate passes **32% of indexed papers** and blocks the
+other 68% — *PLoS One*, *bioRxiv*, *Scientific Reports* and *IJMS* are the
 largest exclusions. This is a deliberate quality judgement, and it shapes the
 corpus, the vector search, the interaction graph, and every target a discovery
 workflow proposes.

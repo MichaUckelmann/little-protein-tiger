@@ -22,8 +22,8 @@ quality:
   # (src/ranking.py). Search still INDEXES every hit, so widening this later
   # and re-running fetch_papers.py needs no re-search.
   #
-  # On the shipped corpus this gate passes 28% of indexed papers; turning it
-  # off multiplies downloads ~3.6x, with matching curation cost and disk.
+  # On the shipped corpus this gate passes 32% of indexed papers; turning it
+  # off multiplies downloads ~3.1x, with matching curation cost and disk.
   # See docs/journal-filtering.md for the tier lists, what is excluded, and
   # how to extend them (tier1_extra / tier2_extra above).
   require_tiered_journal: true

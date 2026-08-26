@@ -28,9 +28,9 @@ Measured against the shipped corpus (55,644 indexed papers):
 
 | | Papers | Share |
 |---|---|---|
-| Indexed by search | 55,644 | 100% |
-| **Pass the tier gate** | **15,472** | **28%** |
-| Blocked | 40,172 | 72% |
+| Indexed by search | 55,688 | 100% |
+| **Pass the tier gate** | **17,735** | **32%** |
+| Blocked | 37,953 | 68% |
 
 The gate is deliberately strict. The largest excluded venues are *PLoS One*,
 *bioRxiv*, *Scientific Reports*, and *International Journal of Molecular
@@ -51,8 +51,10 @@ The same score also feeds `priority_score`, which orders the download queue.
 | **0.4** | Unlisted, or journal unknown — decent but unranked. **Blocked by the gate.** |
 | **0.25** | Deliberately downweighted: Frontiers titles, and MDPI titles (*IJMS*, *Molecules*, *Cells*, *Cancers*, …) |
 
-Tier 1 holds 77 entries and tier 2 holds 49, but both include abbreviations
+Tier 1 holds 81 entries and tier 2 holds 62, but both include abbreviations
 alongside full names, so the real count is roughly half that many journals.
+Entries are normalised at import, so you can write one in whatever form reads
+naturally — `"Genes & Development"` and `"genes development"` are equivalent.
 
 ## Matching is exact, and that matters
 
@@ -67,6 +69,13 @@ from journals that *are* listed — 1,721 of them across this corpus:
 - `The EMBO Journal`, `The Journal of Biological Chemistry`, `The Biochemical Journal`
 - `Angew Chem Int Ed Engl`
 
+A second variant of the same trap: the tier lists themselves were **not**
+normalised, so any entry containing punctuation could never match a lookup.
+Six were affected, including *Genes & Development*, *Cell Host & Microbe* and
+*Nature Structural & Molecular Biology* — all tier 1, all silently excluded.
+The lists are now normalised at import, which makes that class of mistake
+impossible.
+
 **If you add a journal, add every spelling your sources use** — the full name
 and the PubMed abbreviation at minimum. A missing variant is not a warning; it
 is a silent 100% exclusion of that journal. When adding to `config.yaml`'s
@@ -79,11 +88,23 @@ python -c "from src.ranking import is_tiered_journal as t; \
 
 ## Known gaps
 
-Some well-regarded journals are simply not on the list yet — among the more
-frequent in this corpus: *Journal of Cell Biology* (462 papers across both
-spellings), *Cell Stem Cell*, *Stem Cell Reports*, *Molecular and Cellular
-Biology*. These are editorial choices, not bugs; add them via `tier1_extra` /
-`tier2_extra` if they matter to your field.
+The list reflects the maintainer's field. Journals absent from it are an
+editorial choice, not a bug — add them via `tier1_extra` / `tier2_extra`.
+
+The largest excluded venues, and roughly what admitting each would add to this
+corpus:
+
+| Journal | Papers | Why it is excluded |
+|---|---|---|
+| *PLoS One* | 1,842 | Volume and variable peer review |
+| *bioRxiv* | 1,385 | Not peer reviewed |
+| *Scientific Reports* | 1,023 | Same reasoning as *PLoS One* |
+| *Int J Mol Sci* | 1,033 | MDPI; scored 0.25 deliberately |
+| *Developmental Cell* | 15 | Not yet listed — a reasonable addition |
+
+Admitting *PLoS One* alone would grow the eligible pool by ~1,800 papers
+(≈10%), at roughly $45 of curation and 7 GB of documents — a real trade, not a
+formality.
 
 The list also reflects a **molecular / structural / chemical biology** focus.
 If your work sits elsewhere — immunology, neuroscience, plant biology — expect
