@@ -312,7 +312,15 @@ def test_rf3_counter_keys_on_summary_confidences(tmp_path):
 # Planning + driver
 # ----------------------------------------------------------------------
 
-def test_plan_scales_with_batches(design_cfg, tmp_path):
+def test_plan_scales_with_batches(design_cfg, tmp_path, roomy_disk):
+    """n_batches scales the campaign linearly — with the disk clamp out of play.
+
+    `plan_campaign` clamps n_batches to what free disk allows, so on a machine
+    with little headroom BOTH plans clamp to the same floor and the scaling
+    property silently stops being tested: on a 14 GB CI runner this asserted
+    4 == 40. The clamp has its own test below; this one is about scaling, so it
+    pins free space rather than inheriting the host's.
+    """
     paths = FoundryPaths.under(tmp_path)
     small = plan_campaign(design_cfg, paths, mode="pilot", n_batches=10)
     big = plan_campaign(design_cfg, paths, mode="pilot", n_batches=100)

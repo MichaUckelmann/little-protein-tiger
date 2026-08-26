@@ -166,6 +166,7 @@ def test_trims_tead1_keeping_every_hotspot(tmp_path, tead_hotspots):
 
 
 @pytest.mark.skipif(not _3KYS.exists(), reason="3KYS not downloaded")
+@pytest.mark.network
 def test_rcsb_annotation_is_used_when_available(tmp_path, tead_hotspots):
     """3KYS chain A carries a CATH assignment; the geometric tier is the fallback."""
     res = trim_target(_3KYS, target_chain="A", partner_chain="B",

@@ -854,6 +854,7 @@ def test_grounding_check_is_silent_when_it_cannot_verify(config, tmp_path):
 # Target/partner chain-assignment swap
 # ----------------------------------------------------------------------
 
+@pytest.mark.network
 def test_a_target_partner_chain_swap_is_caught(config):
     """
     Real failure from the four-target trial: for PD-L1 (7CZD, PD-L1 on RCSB
@@ -894,6 +895,7 @@ def test_chain_assignment_check_is_silent_when_it_cannot_verify(config):
         {}, {"target_chain": "A", "partner_chain": "B"}, "6VJJ")   # no target identity given
 
 
+@pytest.mark.network
 def test_a_stale_swapped_spec_is_caught_on_resume_not_just_fresh_generation(
         config, tmp_path):
     """
@@ -919,6 +921,7 @@ def test_a_stale_swapped_spec_is_caught_on_resume_not_just_fresh_generation(
              "partner_chain": trim.partner_chain}, trim.pdb_id)
 
 
+@pytest.mark.network
 def test_chain_assignment_check_uses_sequence_identity_not_just_metadata(config):
     """
     Sequence identity against the structure's actual modelled residues is the
@@ -959,6 +962,7 @@ def test_neither_chain_matching_by_sequence_is_also_a_hard_stop(config,
             {"target_chain": "A", "partner_chain": "B"}, "3KYS")
 
 
+@pytest.mark.network
 def test_falls_back_to_metadata_when_the_structure_is_not_yet_downloaded(
         config, tmp_path):
     """
@@ -976,6 +980,7 @@ def test_falls_back_to_metadata_when_the_structure_is_not_yet_downloaded(
             {"target_chain": "A", "partner_chain": "B"}, "7CZD")
 
 
+@pytest.mark.network
 def test_sequence_identity_separates_same_protein_from_unrelated(config):
     """Sanity check on the underlying primitive: a real match scores high,
     an unrelated sequence scores low, both against a real UniProt fetch."""

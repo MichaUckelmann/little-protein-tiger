@@ -101,3 +101,22 @@ def foundry_root(tmp_path, monkeypatch) -> Path:
     root.mkdir()
     monkeypatch.setenv("LPT_FOUNDRY_ROOT", str(root))
     return root
+
+
+@pytest.fixture
+def roomy_disk(monkeypatch):
+    """Pin free disk space so plans aren't clamped by the host machine.
+
+    `foundry_runner.plan_campaign` reduces n_batches to fit available disk
+    (~2.5 MB per RF3 design directory, minus a reserve). That is correct
+    behaviour and has its own test — but it makes any OTHER assertion about
+    plan sizing depend on the free space of whatever machine runs the suite.
+    A GitHub runner has ~14 GB, which clamps every plan to the same floor and
+    turned a linear-scaling assertion into 4 == 40.
+    """
+    import shutil as _shutil
+
+    real = _shutil.disk_usage(".")
+    monkeypatch.setattr(
+        "src.foundry_runner.shutil.disk_usage",
+        lambda _p: real._replace(total=2000 * 2**30, used=0, free=1500 * 2**30))
