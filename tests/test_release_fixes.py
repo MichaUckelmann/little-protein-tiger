@@ -958,3 +958,95 @@ def test_the_gate_is_documented_where_a_user_will_see_it():
     cfg = (root / "config.yaml").read_text(encoding="utf-8")
     assert "docs/journal-filtering.md" in cfg, (
         "the config key itself should point at the explanation")
+
+
+# ----------------------------------------------------------------------
+# Onboarding surface
+# ----------------------------------------------------------------------
+
+def _repo_root():
+    import pathlib
+
+    return pathlib.Path(__file__).resolve().parent.parent
+
+
+def test_onboarding_scripts_exist_and_have_help():
+    """A new user's first three commands. If any stops parsing, onboarding
+    breaks silently — the docs would still say to run it."""
+    import subprocess
+    import sys
+
+    root = _repo_root()
+    for name in ("doctor.py", "quickstart.py", "fetch_reference_data.py"):
+        path = root / "scripts" / name
+        assert path.is_file(), f"{name} is referenced by the docs but missing"
+        p = subprocess.run([sys.executable, str(path), "--help"],
+                           capture_output=True, text=True, timeout=120)
+        assert p.returncode == 0, f"{name} --help failed: {p.stderr[:200]}"
+
+
+def test_setup_agent_prompt_references_only_real_things():
+    """SETUP_AGENT.md tells an agent what to run. Every script, doc and flag it
+    names must exist, or the agent will confidently run something that
+    doesn't."""
+    import re
+    import subprocess
+    import sys
+
+    root = _repo_root()
+    text = (root / "SETUP_AGENT.md").read_text(encoding="utf-8")
+
+    missing = [s for s in set(re.findall(r"scripts/([a-z_]+\.py)", text))
+               if not (root / "scripts" / s).is_file()]
+    assert not missing, f"SETUP_AGENT.md names missing scripts: {missing}"
+
+    docs = set(re.findall(r"docs/[a-z_\-]+\.md", text)) | {"README.md", ".env.example"}
+    missing_docs = [d for d in docs if not (root / d).is_file()]
+    assert not missing_docs, f"SETUP_AGENT.md names missing docs: {missing_docs}"
+
+    # The flags it tells the agent to use must be real.
+    for script, flag in (("fetch_papers.py", "--prefer-xml"),
+                         ("curate_papers.py", "--discard-documents"),
+                         ("doctor.py", "--track"),
+                         ("fetch_reference_data.py", "--with-depmap")):
+        p = subprocess.run([sys.executable, str(root / "scripts" / script), "--help"],
+                           capture_output=True, text=True, timeout=120)
+        assert flag in p.stdout, f"{script} has no {flag}, but SETUP_AGENT.md uses it"
+
+
+def test_the_base_install_does_not_require_the_corpus_extra():
+    """The whole point of the split: everything except corpus search must
+    import without sentence-transformers or lancedb."""
+    import ast
+
+    root = _repo_root()
+    heavy = {"sentence_transformers", "lancedb", "torch"}
+    offenders = []
+    for path in (root / "src").glob("*.py"):
+        if path.name == "vector_store.py":       # guarded, lazy, and expected
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            # Only MODULE-level imports break the base install; a lazy import
+            # inside a function is fine.
+            if isinstance(node, (ast.Import, ast.ImportFrom)) and node.col_offset == 0:
+                names = ([a.name for a in node.names]
+                         if isinstance(node, ast.Import) else [node.module or ""])
+                if any((n or "").split(".")[0] in heavy for n in names):
+                    offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, (
+        f"module-level heavy imports break the base install: {offenders}")
+
+
+def test_corpus_extra_is_declared_and_not_a_base_dependency():
+    import tomllib
+
+    root = _repo_root()
+    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    base = " ".join(data["project"]["dependencies"])
+    extras = data["project"]["optional-dependencies"]
+
+    assert "corpus" in extras, "the corpus extra must exist"
+    for pkg in ("sentence-transformers", "lancedb"):
+        assert pkg not in base, f"{pkg} must not be a base dependency"
+        assert any(pkg in d for d in extras["corpus"]), f"{pkg} missing from corpus extra"

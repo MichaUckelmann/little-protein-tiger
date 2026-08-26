@@ -6,6 +6,17 @@ An end-to-end pipeline for PPI drug target discovery. Covers automated paper dis
 
 ---
 
+
+> **Setting up with a coding agent?** Paste
+> **[SETUP_AGENT.md](SETUP_AGENT.md)** into Claude Code from a fresh clone and
+> it will interview you, install only the tracks you need, and verify each step.
+>
+> **Just want to see it work?** `python scripts/quickstart.py` — about 7
+> seconds, no API key, no GPU, no corpus.
+>
+> **Something not working?** `python scripts/doctor.py` reports readiness per
+> track and prints the command that fixes each problem.
+
 ## Requirements
 
 - Python 3.12+
