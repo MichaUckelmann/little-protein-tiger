@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-import pyarrow as pa
+import pyarrow as pa   # noqa: F401 — schema only; ships in the base install
 from loguru import logger
 
 # PubMedBERT-base output dimension. Verified at first ingest against the
@@ -26,6 +26,22 @@ def _sql_quote(value: str) -> str:
     """
     cleaned = "".join(ch for ch in str(value) if ch.isprintable())
     return "'" + cleaned.replace("'", "''") + "'"
+
+
+
+_CORPUS_EXTRA_HINT = (
+    "This needs the optional `corpus` extra, which is not installed.\n"
+    "    pip install -e \".[corpus]\"\n"
+    "It pulls in sentence-transformers and lancedb (and, transitively, torch —\n"
+    "about 3 GB). It is optional because semantic corpus search is the only\n"
+    "thing that needs it: structure tools, both design tracks and the report\n"
+    "generators all run without it."
+)
+
+
+def _require_corpus_extra(module: str, exc: Exception) -> "NoReturn":
+    raise ModuleNotFoundError(f"{module} is required for corpus search.\n"
+                              f"{_CORPUS_EXTRA_HINT}") from exc
 
 
 class VectorStore:
@@ -130,7 +146,10 @@ class VectorStore:
 
     def _get_db(self):
         if self._db is None:
-            import lancedb
+            try:
+                import lancedb
+            except ModuleNotFoundError as exc:
+                _require_corpus_extra("lancedb", exc)
             self.db_path.mkdir(parents=True, exist_ok=True)
             self._db = lancedb.connect(str(self.db_path))
         return self._db
@@ -155,7 +174,10 @@ class VectorStore:
 
     def _get_encoder(self):
         if self._encoder is None:
-            from sentence_transformers import SentenceTransformer
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ModuleNotFoundError as exc:
+                _require_corpus_extra("sentence-transformers", exc)
             logger.info(f"Loading embedding model: {self.embedding_model_name}")
             try:
                 self._encoder = SentenceTransformer(

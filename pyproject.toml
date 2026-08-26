@@ -25,8 +25,6 @@ dependencies = [
     "anthropic>=0.40",
     "pymupdf>=1.24",
     "lxml>=5.0",
-    "lancedb>=0.20",
-    "sentence-transformers>=3.0",
     "fastmcp>=2.0",
     "networkx>=3.0",
     "gemmi>=0.7",
@@ -42,6 +40,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Semantic corpus search. Split out because sentence-transformers pulls torch
+# and the full NVIDIA CUDA stack — 283 wheels, ~3 GB downloaded, ~5.7 GB
+# installed — on every machine, including laptops that will never touch a GPU.
+# Everything except `search_corpus` and the literature-db MCP server runs
+# without it: structure tools, both design tracks, and both report generators.
+corpus = [
+    "lancedb>=0.20",
+    "sentence-transformers>=3.0",
+]
 dev = [
     "pytest>=8",
 ]

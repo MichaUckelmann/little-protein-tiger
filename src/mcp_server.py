@@ -35,7 +35,16 @@ from src.fingerprint_store import load_fingerprint
 from src.vector_store import VectorStore
 
 logger.info("MCP server starting up — pre-importing sentence_transformers...")
-import sentence_transformers  # noqa: F401 — must import on main thread before FastMCP starts
+try:
+    import sentence_transformers  # noqa: F401 — must import on main thread before FastMCP starts
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "The literature-db MCP server needs the optional `corpus` extra:\n"
+        '    pip install -e ".[corpus]"\n'
+        "It provides sentence-transformers and lancedb for semantic search.\n"
+        "The structure-tools MCP server (scripts/launch_structure_tools.py) "
+        "needs none of this and works on the base install."
+    ) from exc
                                # its thread pool; importing from inside run_in_executor causes
                                # an OpenMP/MKL deadlock with the asyncio event loop.
 logger.info("sentence_transformers imported. Starting MCP server.")
