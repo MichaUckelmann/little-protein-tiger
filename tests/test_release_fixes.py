@@ -1442,3 +1442,66 @@ def test_packaged_skill_zips_match_their_source():
             if not members or zf.read(members[0]) != src.read_bytes():
                 stale.append(zip_path.name)
     assert not stale, f"stale skill zips (run scripts/package_skills.py): {stale}"
+
+
+# ----------------------------------------------------------------------
+# MCP tool parity between the two transports
+# ----------------------------------------------------------------------
+
+def _mcp_tool_names() -> set[str]:
+    import re
+
+    root = _repo_root()
+    names: set[str] = set()
+    for f in ("src/mcp_server.py", "src/structure_tools_server.py"):
+        text = (root / f).read_text(encoding="utf-8")
+        names |= set(re.findall(r"@mcp\.tool\(\)\s*\ndef\s+(\w+)", text))
+    return names
+
+
+def test_every_skill_referenced_tool_exists_in_the_mcp_transport():
+    """The same SKILL.md runs under MCP and the in-process CLI dispatch. A tool
+    present in only one transport makes the skill silently degrade under the
+    other — pathway-expert could not look up a PDB structure under Claude
+    Desktop despite its own prompt telling it to."""
+    import re
+
+    root = _repo_root()
+    mcp = _mcp_tool_names()
+    # Names a skill can call. `filesystem:`-prefixed tools belong to a
+    # DIFFERENT server the user configures themselves, not to LPT.
+    known = {"search_corpus", "get_fingerprint", "find_pdb_structures",
+             "search_rcsb_pdb", "get_interactions_for", "novelty_signal",
+             "cluster_for_protein", "find_quantitative_evidence",
+             "interaction_hubs", "shortest_interaction_path"}
+    missing = set()
+    for skill in (root / "skills").glob("*/SKILL.md"):
+        text = skill.read_text(encoding="utf-8")
+        for tool in known:
+            # Ignore prose that tells the model NOT to use a tool.
+            if re.search(rf"`{tool}`|\b{tool}\(", text) and f"Do not call `{tool}`" not in text:
+                if tool not in mcp and f"tool_{tool}" not in mcp:
+                    missing.add(f"{skill.parent.name}:{tool}")
+    assert not missing, f"skills call tools absent from MCP: {sorted(missing)}"
+
+
+def test_lpt_does_not_expose_a_file_writing_tool_over_mcp():
+    """`protein-design-script` and `orchestrator` ask for `filesystem:write_file`
+    — the standard filesystem server, not LPT's — and
+    complex-structure-analysis explicitly forbids one. Exposing arbitrary file
+    writes over MCP would be a security surface for no benefit."""
+    assert "write_file" not in _mcp_tool_names()
+
+
+def test_pdb_discovery_ranks_metadata_confirmed_hits_first():
+    """A paper's pdb_accessions includes structures it CITES, so a corpus scan
+    for YAP1 returns methods references from papers that merely mention it.
+    Unranked, a model sees 'De novo designed TIM barrel' before the real
+    structure."""
+    import inspect
+
+    from src import skill_runner
+
+    src = inspect.getsource(skill_runner._find_pdb_structures)
+    assert "query_named_in_metadata" in src
+    assert "_rank(" in src

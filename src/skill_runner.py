@@ -918,11 +918,42 @@ def _find_pdb_structures(proteins: list[str], fingerprint_dir: Path) -> dict:
         return result
 
     all_ids = sorted({p for ids in by_protein.values() for p in ids})
+
+    def _named_in_metadata(entry: dict, query: str) -> bool:
+        """Does RCSB's own metadata actually name the protein we asked for?"""
+        blob = f"{entry.get('title', '')} {entry.get('entities', '')}".upper()
+        q = query.upper()
+        # "YAP1" should match an entity called "Transcriptional coactivator YAP1"
+        # and also the "YAP" of a YAP/TAZ construct.
+        return q in blob or (len(q) > 3 and q[:-1] in blob)
+
+    def _rank(entries: list[dict], query: str) -> list[dict]:
+        """Confirmed hits first, and say which is which.
+
+        A corpus paper's `pdb_accessions` now includes structures it merely
+        CITES, not only ones it deposited — higher recall, lower precision. For
+        "YAP1" that means 41 hits of which RCSB's metadata names YAP in exactly
+        1; the rest are methods references from papers that mention YAP1 in
+        passing. Unranked, a model sees "De novo designed TIM barrel" first and
+        has to reason its way past four irrelevant entries.
+        """
+        for e in entries:
+            e["query_named_in_metadata"] = _named_in_metadata(e, query)
+        return sorted(entries, key=lambda e: not e["query_named_in_metadata"])
+
     return {
-        "by_protein": {q: [_enrich(pid) for pid in ids] for q, ids in by_protein.items()},
+        "by_protein": {q: _rank([_enrich(pid) for pid in ids], q)
+                       for q, ids in by_protein.items()},
         "all_pdb_ids": all_ids,
         "total_found": len(all_ids),
         "metadata_available": bool(metadata_cache),
+        "note": (
+            "Entries where RCSB's own metadata names the queried protein are "
+            "listed FIRST and flagged query_named_in_metadata=true. The rest "
+            "come from papers that cite the structure without it being the "
+            "paper's subject — usable, but verify the entity descriptions "
+            "before designing against one."
+        ),
     }
 
 

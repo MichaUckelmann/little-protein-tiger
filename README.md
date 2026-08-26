@@ -27,6 +27,10 @@ An end-to-end pipeline for PPI drug target discovery. Covers automated paper dis
 >
 > **Something not working?** `python scripts/doctor.py` reports readiness per
 > track and prints the command that fixes each problem.
+>
+> **Have a Claude subscription?** Register the MCP servers and use the corpus
+> and structure tools conversationally, no API key — see
+> **[docs/mcp.md](docs/mcp.md)**.
 
 ## Requirements
 
@@ -910,7 +914,7 @@ sqlite3 data/literature.db "SELECT curation_status, COUNT(*) FROM papers GROUP B
 
 ## MCP server (Claude Desktop integration)
 
-The MCP server exposes two tools to LLM agents:
+The MCP servers expose 23 tools (15 literature-db + 8 structure-tools) — see **[docs/mcp.md](docs/mcp.md)** for the full list, setup and the subscription-driven workflow. The two used most often:
 
 | Tool | Description |
 |------|-------------|

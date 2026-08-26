@@ -520,7 +520,14 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 ## Common file pairs to keep in sync
 
 - `extraction_schema.json` ⇄ `src/models.py` (Pydantic) ⇄ `curation_prompt.md` — schema, validator, and prompt must agree.
-- `src/mcp_server.py` ⇄ `src/skill_runner.py` tool dispatch — same tool surface, two transports.
+- `src/mcp_server.py` ⇄ `src/skill_runner.py` tool dispatch — same tool surface, two
+  transports. `find_pdb_structures` / `search_rcsb_pdb` were CLI-only until this was
+  fixed, so three skills silently degraded under Claude Desktop. ONE deliberate
+  exception: `write_file` is CLI-only. The skills that want it name
+  `filesystem:write_file` (a different server the user configures), and
+  `complex-structure-analysis` forbids it — LPT exposing arbitrary file writes over
+  MCP would be a security surface for no benefit. Tests pin both the parity rule and
+  this exception. See `docs/mcp.md`.
 - `src/structure_tools.py` (pure logic) ⇄ `src/structure_tools_server.py` (MCP wrapper) — server is a thin shim; logic lives in the former.
 - `src/pipeline_runner.py` ⇄ each skill's "PIPELINE HANDOFF" output block.
 - `src/pipeline_runner.py` `_STAGE_TO_SKILL` is **many-to-one** — `complex-structure-analysis`

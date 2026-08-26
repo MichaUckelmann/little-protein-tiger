@@ -475,5 +475,67 @@ def find_clusters_by_keyword(query: str, max_results: int = 20) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
+# ---------------------------------------------------------------------------
+# PDB structure discovery
+# ---------------------------------------------------------------------------
+# These two were reachable only from the in-process CLI transport, so
+# pathway-expert, wildcard-expert and binder-target-intel silently degraded
+# under Claude Desktop / Claude Code — they would call the tool, get NOT_FOUND,
+# and carry on without a structure. CLAUDE.md requires every skill-referenced
+# tool to exist in BOTH transports; the implementations live in
+# src/skill_runner.py and are shared, not duplicated.
+
+
+@mcp.tool()
+def find_pdb_structures(proteins: list[str]) -> str:
+    """
+    Find PDB accessions for proteins by scanning the curated corpus.
+
+    Two sources per protein:
+      - pathway_context.target_nodes[].suggested_pdb_structures (pathway papers)
+      - paper_metadata.pdb_accessions of papers where the protein appears in
+        entities.proteins or key_findings.protein_pair
+
+    Corpus-sourced, so every hit carries a supporting DOI. Call this BEFORE
+    search_rcsb_pdb: a structure the corpus already cites is one the literature
+    connects to your target, whereas RCSB full-text search returns anything
+    whose title happens to match.
+
+    Matching is case-insensitive substring, so "YAP1" matches a stored
+    "YAP/TAZ". Queries shorter than 3 characters are ignored.
+
+    Args:
+        proteins: Gene symbols to look up, e.g. ["YAP1", "TEAD4", "NF2"].
+    """
+    from src.skill_runner import _find_pdb_structures
+
+    result = _find_pdb_structures(proteins, Path(_FINGERPRINT_DIR))
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def search_rcsb_pdb(proteins: list[str]) -> str:
+    """
+    Search RCSB PDB full-text for structures containing the given proteins.
+
+    The fallback for when find_pdb_structures returns total_found=0 — the
+    corpus has no PDB IDs for your target. Runs one RCSB full-text request per
+    protein (top 5 each), then batch-fetches title, method, resolution and
+    chain/entity metadata for any ID not already in the local cache.
+
+    Results are from RCSB, NOT the corpus: nothing here is vouched for by a
+    paper you have read. Check the entity descriptions actually match your
+    intended complex before using an ID — a full-text hit on "TEAD" can easily
+    be a different family member, or a fragment-screening entry.
+
+    Args:
+        proteins: Gene symbols to search for, e.g. ["YAP1", "TEAD4"].
+    """
+    from src.skill_runner import _search_rcsb_pdb
+
+    result = _search_rcsb_pdb(proteins, Path(_FINGERPRINT_DIR))
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
 if __name__ == "__main__":
     mcp.run()
