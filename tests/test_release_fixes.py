@@ -766,3 +766,76 @@ def test_cluster_paths_fail_with_a_message_not_a_typeerror():
     from src import cluster_runner
 
     assert "_require_pipeline_root" in inspect.getsource(cluster_runner)
+
+
+# ----------------------------------------------------------------------
+# Corpus size controls: --prefer-xml and --discard-documents
+# ----------------------------------------------------------------------
+
+def test_prefer_xml_puts_xml_first_and_keeps_fallback_order():
+    """PMC open-access XML is ~47x smaller than the publisher PDF of the same
+    paper (measured: 8,150 PDFs at 6.1 MB mean vs 3,976 XMLs at 0.13 MB), and
+    text_extractor handles both. The reorder must be STABLE so the
+    carefully-ordered AWS-then-search-metadata chain within each format
+    survives."""
+    urls = [("pdf", "aws_v1.pdf"), ("pdf", "aws_v2.pdf"), ("pdf", "search.pdf"),
+            ("xml", "aws_v1.xml"), ("xml", "aws_v2.xml"), ("xml", "search.xml")]
+    urls.sort(key=lambda hu: hu[0] != "xml")
+
+    assert [u for _, u in urls][:3] == ["aws_v1.xml", "aws_v2.xml", "search.xml"]
+    assert [u for _, u in urls][3:] == ["aws_v1.pdf", "aws_v2.pdf", "search.pdf"]
+
+
+def test_prefer_xml_is_opt_in():
+    """It trades corpus breadth (PDF-only papers) for size, so it must never
+    be the default."""
+    import inspect
+
+    from src import downloader
+
+    sig = inspect.signature(downloader.download_papers)
+    assert sig.parameters["prefer_xml"].default is False
+
+
+def test_discard_documents_is_opt_in_and_runs_after_the_fingerprint():
+    """Deleting the source before the fingerprint is durably on disk would
+    destroy input an interrupted run has not yet extracted."""
+    import inspect
+    import pathlib
+
+    src = pathlib.Path(
+        inspect.getfile(test_discard_documents_is_opt_in_and_runs_after_the_fingerprint)
+    ).parent.parent / "scripts" / "curate_papers.py"
+    text = src.read_text(encoding="utf-8")
+
+    assert '"--discard-documents", action="store_true"' in text, "must be opt-in"
+    save_at = text.index("Saved fingerprint")
+    discard_at = text.index("if args.discard_documents:")
+    assert save_at < discard_at, (
+        "the document must only be deleted AFTER its fingerprint is written")
+
+
+def test_nothing_downstream_reads_the_source_documents():
+    """The premise of --discard-documents: documents are curation INPUT only.
+    If a consumer of pdf_path appears outside the download/curate path, the
+    flag becomes unsafe and this should fail."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    # The download/curate path itself, plus compare_providers.py, which
+    # RE-curates a fixed paper set to compare providers side by side. That is
+    # precisely the "you may want to re-curate" case --discard-documents warns
+    # about — it is a development tool, not part of any pipeline run.
+    allowed = {"downloader.py", "curate_papers.py", "database.py",
+               "models.py", "text_extractor.py", "fetch_papers.py",
+               "compare_providers.py"}
+    offenders = []
+    for sub in ("src", "scripts"):
+        for path in (root / sub).rglob("*.py"):
+            if path.name in allowed or "__pycache__" in path.parts:
+                continue
+            body = path.read_text(encoding="utf-8", errors="ignore")
+            if "pdf_path" in body or "pdf_dir" in body:
+                offenders.append(str(path.relative_to(root)))
+    assert not offenders, (
+        f"these read source documents, so discarding them is not safe: {offenders}")

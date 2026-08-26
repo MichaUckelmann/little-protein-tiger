@@ -125,6 +125,14 @@ def main():
     parser = argparse.ArgumentParser(description="Curate papers with Claude")
     parser.add_argument("--limit", type=int, default=0, help="Max papers to process (0 = all)")
     parser.add_argument("--reprocess", action="store_true", help="Reset and reprocess already-curated papers")
+    parser.add_argument(
+        "--discard-documents", action="store_true",
+        help="Delete each source PDF/XML after its fingerprint is written. "
+             "Documents are curation INPUT ONLY — nothing downstream reads "
+             "them — and they are ~95%% of a corpus on disk (50 GB of 51 GB "
+             "for the reference corpus). Keep them only if you may want to "
+             "re-curate under a changed schema without re-downloading. "
+             "scripts/compare_providers.py also needs them.")
     parser.add_argument("--dry-run", action="store_true", help="List papers without calling Claude")
     parser.add_argument("--paper-key", dest="paper_key", default=None, help="Process a single paper by key")
     parser.add_argument("--provider", default=None, choices=["claude", "gemini", "local"],
@@ -186,7 +194,8 @@ def main():
 
     logger.info(f"Found {len(papers)} papers to process")
 
-    stats = {"curated": 0, "skipped": 0, "failed": 0, "tokens": 0}
+    stats = {"curated": 0, "skipped": 0, "failed": 0, "tokens": 0,
+             "discarded": 0, "bytes_reclaimed": 0}
 
     for i, paper in enumerate(papers, start=1):
         paper_key = get_paper_key(paper)
@@ -274,6 +283,24 @@ def main():
         stats["tokens"] += tokens
 
         logger.info(f"  Saved fingerprint → {fp_path.name}  ({tokens:,} tokens)")
+
+        if args.discard_documents:
+            # Only AFTER the fingerprint is on disk and the DB row is updated,
+            # so an interrupted run never destroys a document it hasn't
+            # extracted. The source document is curation INPUT only — nothing
+            # downstream reads it again (tools read fingerprints, vectors and
+            # the DB), and documents are ~95% of a full corpus: 50 GB of 51 GB
+            # here. Re-fetch later with fetch_papers.py if you ever want to
+            # re-curate under a new schema.
+            try:
+                size = file_path.stat().st_size
+                file_path.unlink()
+                stats["bytes_reclaimed"] += size
+                stats["discarded"] += 1
+                logger.debug(f"  Discarded source document ({size/2**20:.1f} MB)")
+            except OSError as exc:
+                logger.warning(f"  Could not discard {file_path.name}: {exc}")
+
         time.sleep(delay_s)
 
     # Final summary
@@ -282,6 +309,12 @@ def main():
     print(f"  Skipped : {stats['skipped']}  (irrelevant papers)")
     print(f"  Failed  : {stats['failed']}")
     print(f"  Tokens  : {stats['tokens']:,}")
+    if stats["discarded"]:
+        reclaimed = stats["bytes_reclaimed"]
+        human = (f"{reclaimed/2**30:.2f} GB" if reclaimed >= 2**30
+                 else f"{reclaimed/2**20:.0f} MB")
+        print(f"  Discarded: {stats['discarded']} source document(s), "
+              f"{human} reclaimed")
 
     # ----- Post-curation pipeline -----
     # Three independent stages run after a successful curation batch:
