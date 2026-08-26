@@ -169,6 +169,19 @@ def main():
         and (not require_tiered or is_tiered_journal(p.journal, tier1_extra, tier2_extra))
     ]
     pending.sort(key=lambda p: p.priority_score, reverse=True)
+    if require_tiered:
+        # Say so at runtime. Otherwise the only visible symptom of the gate is
+        # a download count much smaller than the search count, which reads as a
+        # bug rather than the deliberate quality filter it is.
+        eligible = [p for p in all_db_papers
+                    if p.download_status == DownloadStatus.pending]
+        blocked = len(eligible) - len(pending)
+        if blocked > 0:
+            logger.info(
+                f"journal filter: {blocked:,} of {len(eligible):,} pending "
+                f"papers are NOT from a tier 1/2 journal and will be skipped "
+                f"(quality.require_tiered_journal — see "
+                f"docs/journal-filtering.md to extend the list or turn it off)")
     logger.info(f"{len(pending)} papers pending download (sorted by priority)")
 
     download_papers(

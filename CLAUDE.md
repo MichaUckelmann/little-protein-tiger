@@ -11,6 +11,13 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
 1. **Literature corpus pipeline** (`src/` + `scripts/`):
    `fetch_papers.py` → SQLite (`data/literature.db`) → `curate_papers.py` → fingerprint JSONs (`data/fingerprints/`) → LanceDB (`data/vectors/`) + edge index (`data/depmap_edges.parquet`) + clusters (`data/clusters.json`). Each stage is incremental and idempotent — papers carry `download_status` and `curation_status` columns that gate reruns.
 
+   **`fetch_papers.py` gates downloads on a journal tier list**
+   (`quality.require_tiered_journal`, default true; lists in `src/ranking.py`).
+   Search indexes every hit, but only tier 1/2 journals are downloaded — 28% of
+   indexed papers on the reference corpus. Matching is EXACT against a
+   normalised name, so a journal spelled a way the list doesn't contain is a
+   silent 100% exclusion, not a warning. See `docs/journal-filtering.md`.
+
    `curate_papers.py` self-runs three post-curation hooks at the end of each batch when at least one paper was curated successfully:
    1. **identifier normalization** (`run_backfill`) — adds the `protein_identifiers` sidecar block. Skip with `--skip-normalize`.
    2. **graph rebuild** (`build_and_cluster`) — refreshes `data/depmap_edges.parquet` and `data/clusters.json` so cluster tools see new papers. Skip with `--skip-graph-rebuild`.

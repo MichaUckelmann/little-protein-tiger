@@ -839,3 +839,74 @@ def test_nothing_downstream_reads_the_source_documents():
                 offenders.append(str(path.relative_to(root)))
     assert not offenders, (
         f"these read source documents, so discarding them is not safe: {offenders}")
+
+
+# ----------------------------------------------------------------------
+# Journal tier gate
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("journal", [
+    # PubMed's own spellings of journals that ARE on the tier lists. Each of
+    # these was a silent 100% exclusion before _normalise learned to strip a
+    # leading "The" and PubMed's country/edition suffixes — 1,721 papers
+    # across the reference corpus, 827 of them PNAS alone.
+    "Proceedings of the National Academy of Sciences of the United States of America",
+    "The EMBO Journal",
+    "The Journal of Biological Chemistry",
+    "The Biochemical journal",
+    "Angew Chem Int Ed Engl",
+])
+def test_pubmed_spellings_of_listed_journals_are_recognised(journal):
+    from src.ranking import is_tiered_journal
+
+    assert is_tiered_journal(journal), f"{journal!r} should pass the tier gate"
+
+
+@pytest.mark.parametrize("journal", [
+    "PLoS One", "Sci Rep", "Int J Mol Sci", "bioRxiv",
+    "Frontiers in Molecular Biosciences", "Cells",
+])
+def test_deliberately_excluded_venues_stay_excluded(journal):
+    """The gate is a quality judgement; normalisation must not soften it."""
+    from src.ranking import is_tiered_journal
+
+    assert not is_tiered_journal(journal), f"{journal!r} should NOT pass"
+
+
+def test_normalisation_is_idempotent():
+    from src.ranking import _normalise
+
+    for raw in ("The EMBO Journal", "  Nature   Methods  ", "PNAS"):
+        once = _normalise(raw)
+        assert _normalise(once) == once
+
+
+def test_extra_journals_from_config_are_honoured():
+    """tier1_extra / tier2_extra are how a user extends the list without
+    editing src/ranking.py."""
+    from src.ranking import is_tiered_journal
+
+    assert not is_tiered_journal("Journal of Obscure Results")
+    assert is_tiered_journal("Journal of Obscure Results",
+                             tier2_extra=["Journal of Obscure Results"])
+    # ...and the extras go through the same normalisation.
+    assert is_tiered_journal("The Journal of Obscure Results",
+                             tier2_extra=["Journal of Obscure Results"])
+
+
+def test_the_gate_is_documented_where_a_user_will_see_it():
+    """It silently drops ~72% of search hits, so it must not be discoverable
+    only by reading src/ranking.py."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    doc = root / "docs" / "journal-filtering.md"
+    assert doc.is_file(), "docs/journal-filtering.md is the canonical reference"
+
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert "journal-filtering.md" in readme, "README must link the reference"
+    assert "require_tiered_journal" in readme
+
+    cfg = (root / "config.yaml").read_text(encoding="utf-8")
+    assert "docs/journal-filtering.md" in cfg, (
+        "the config key itself should point at the explanation")

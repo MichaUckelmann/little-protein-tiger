@@ -1057,6 +1057,29 @@ python scripts/ingest_vectors.py
 # 4. Restart Claude Desktop to pick up new fingerprints via MCP
 ```
 
+## Journal filtering — read this before building a corpus
+
+**By default LPT downloads only papers from journals on a curated tier list.**
+On the shipped corpus that gate passes **28% of indexed papers** and blocks the
+other 72% — *PLoS One*, *bioRxiv*, *Scientific Reports* and *IJMS* are the
+largest exclusions. This is a deliberate quality judgement, and it shapes the
+corpus, the vector search, the interaction graph, and every target a discovery
+workflow proposes.
+
+The tier lists live in `src/ranking.py` (`_TIER1_JOURNALS`, `_TIER2_JOURNALS`)
+and reflect a **molecular / structural / chemical biology** focus. If your field
+sits elsewhere you will want to extend them via `quality.tier1_extra` /
+`tier2_extra`, or switch the gate off:
+
+```yaml
+# config.yaml
+quality:
+  require_tiered_journal: false   # ~3.6x more downloads, matching cost + disk
+```
+
+**→ [docs/journal-filtering.md](docs/journal-filtering.md)** — the tier lists,
+what is excluded and why, the scoring ladder, known gaps, and how to extend it.
+
 ## Responsible use
 
 Little Protein Tiger designs de novo protein binders. Every design it emits is
