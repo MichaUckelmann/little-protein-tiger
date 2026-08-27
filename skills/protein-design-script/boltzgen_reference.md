@@ -1,3 +1,11 @@
+> **Upstream document — redistributed under its own licence, not LPT's.**
+> Verbatim copy of `README.md` from
+> [HannesStark/boltzgen](https://github.com/HannesStark/boltzgen) (branch
+> `main`), retrieved 2026-05-21. MIT License, Copyright (c) 2025 Hannes Stärk —
+> full licence text in
+> [`THIRD_PARTY_LICENSES.md`](../../THIRD_PARTY_LICENSES.md). Upstream is the
+> authority; re-fetch before assuming this copy is current.
+
 <div align="center">
   <div>&nbsp;</div>
   <img src="assets/boltzgen.png" alt="BoltzGen logo" width="60%">

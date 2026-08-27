@@ -137,8 +137,9 @@ Notes:
   For mini-proteins omit it.
 - For `inhibit_active_site` mode the structure has only a single target
   chain (no partner) — the YAML shape is **identical** to a PPI binder.
-- The reference file at `references/boltzgen_example_yaml_cyclic_peptide.yaml`
-  is the same schema; use it as a sanity check if anything above is unclear.
+- The reference file `boltzgen_example_yaml_cyclic_peptide.yaml`, alongside
+  this SKILL.md, is the same schema; use it as a sanity check if anything
+  above is unclear.
 
 ### Validation
 
@@ -164,7 +165,7 @@ inference_sampler.gamma_0=0.2
 ```
  
 ### Example JSON
-See references/RFD3_protein_binder_design.md
+See `RFD3_protein_binder_design.md`, alongside this SKILL.md.
  
 ## Shell Context
 The jobs are submitted on a SLURM-managed HPC cluster. Generate a complete
@@ -251,7 +252,13 @@ omitted `- ` prefix.
 
 ## Reference
  
-For BoltzGen input YAML structure see references/boltzgen_reference.md
-For BoltzGen cyclic peptide example see references/boltzgen_example_yaml_cyclic_peptide.yaml
-For RFD3 input specification see references/RFD3input.md
-For RFD3 protein binder design examples see references/RFD3_protein_binder_design.md
+These files sit alongside this SKILL.md, in the same directory — read them by
+plain filename, with no directory prefix.
+
+- BoltzGen input YAML structure — `boltzgen_reference.md`
+- BoltzGen cyclic peptide example — `boltzgen_example_yaml_cyclic_peptide.yaml`
+- RFD3 overview, install and inference usage — `RFD3_reference.md`
+- RFD3 input specification — `RFD3input.md`
+- RFD3 protein binder design examples — `RFD3_protein_binder_design.md`
+- Worked example of the upstream PPI analysis this skill consumes —
+  `example_output_KRAS_RAF1_PPI_analysis_6XHB.md`

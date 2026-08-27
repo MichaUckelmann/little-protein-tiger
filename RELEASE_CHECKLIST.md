@@ -1,6 +1,7 @@
 # ⚠️ BEFORE MAKING THIS REPOSITORY PUBLIC
 
-**Status: NOT READY TO GO PUBLIC.** One blocking item, listed first.
+**Status: NOT READY TO GO PUBLIC.** One blocking item, listed first, and one
+open decision below it.
 
 ---
 
@@ -55,16 +56,6 @@ branches, which rewrites every SHA.
 
 Decide before going public — it is cheap now and impossible later.
 
-### Third-party documentation redistributed without attribution
-
-`skills/protein-design-script/` contains four verbatim upstream documents:
-RFD3's README, the RFD3 input spec, the binder-design doc, and BoltzGen's
-README (664 lines). No copyright or licence line in any of them.
-
-RosettaCommons terms are frequently academic-only. **Verify each upstream
-licence and add attribution, or replace them with links**, before publishing
-them under this repo's MIT licence.
-
 ---
 
 ## Verified clean — no action needed
@@ -79,6 +70,7 @@ These were checked adversarially and are fine:
 | Repo weight | 11 MB, 212 tracked files, no accidental blobs |
 | Dangerous constructs | No `eval`/`exec`/`pickle.load`/`yaml.load`/`shell=True` |
 | Vendored Mol* | Licence tracked, version pinned, upstream credited |
+| Redistributed upstream docs | **Resolved 2026-08-27.** All permissive, none academic-only: foundry (RFD3 README, input spec, binder-design doc) is **BSD-3-Clause**, © 2025 IPD/University of Washington; BoltzGen's README and the cyclic-peptide example spec are **MIT**, © 2025 Hannes Stärk. Verified against upstream `LICENSE.md`/`LICENSE` — note foundry's default branch is `production`, not `main`. Attribution headers added to all five files, full texts in `THIRD_PARTY_LICENSES.md`, README licence table corrected. `dl_binder_design` (MIT, © 2023 N. R. Bennett) is referenced nowhere in the repo — nothing redistributed |
 | PyRosetta licence | Flagged as academic/non-commercial in README and `docs/pyrosetta_setup.md` |
 | Responsible use | `docs/responsible-use.md`, linked from the README |
 | CI | Green: test + wheel-install + lint |
@@ -90,7 +82,7 @@ These were checked adversarially and are fine:
 
 1. **Merge PR #1** (`pre-release-hardening`).
 2. **Package and publish the corpus** — the blocker above.
-3. Decide on `web/web.db` and the skills-directory attribution.
+3. Decide on `web/web.db` (the only remaining open question).
 4. Flip visibility to public.
 5. Re-run `python scripts/fetch_corpus.py --check` from a fresh clone and
    confirm the asset is found anonymously.

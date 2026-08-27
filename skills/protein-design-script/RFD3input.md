@@ -1,3 +1,11 @@
+> **Upstream document — redistributed under its own licence, not LPT's.**
+> Verbatim copy of `models/rfd3/docs/input.md` from
+> [RosettaCommons/foundry](https://github.com/RosettaCommons/foundry) (branch
+> `production`), retrieved 2026-05-21. BSD 3-Clause, Copyright (c) 2025,
+> Institute for Protein Design, University of Washington — full licence text in
+> [`THIRD_PARTY_LICENSES.md`](../../THIRD_PARTY_LICENSES.md). Upstream is the
+> authority; re-fetch before assuming this copy is current.
+
 # RFdiffusion3 — Input Specification & Command-line arguments
 
 RFdiffusion3 accepts inputs in two forms: 
