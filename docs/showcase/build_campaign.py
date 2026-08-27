@@ -45,6 +45,10 @@ TOP = [
     (3, "53_model_2_b0_d0", 0.908, 0.762, 1.548, 0.840, -47.1, 82,
      "MLEEDRERATKLIDEGSKAFKAGDYETALKKFEEAAKSKDLGLQAMAYRLRARVYKAMGDEEKAKEDYKKADELESKAVPRP"),
 ]
+PD1 = dict(pd1_n=18, design_n=26, shared_n=14, pct=78, hs_hit=7, hs_n=9,
+           rmsd=0.83, n_ca=115, ident=99.1,
+           pd1_only=[19, 23, 26, 124])
+
 HOTSPOTS = [
     ("Tyr56", 56, 66.9, "−3.87", "strongest ΔΔG residue in the interface"),
     ("Glu58", 58, 17.1, "—", "CC′ loop, polar anchor"),
@@ -512,6 +516,51 @@ HTML = f"""{_HEAD}
 </section>
 
 <section class="stage">
+  <div class="stage-h"><p class="step">Independent check</p>
+    <h2>Would it actually get in PD-1's way?</h2></div>
+  <p>Nothing in this campaign ever saw PD-1. The epitope was chosen from a nanobody
+  complex, and the designs were folded against PD-L1 alone. So the human PD-1/PD-L1
+  complex — PDB <strong>4ZQK</strong>, which played no part in the run — is a genuinely
+  independent way to ask whether the pipeline aimed at the right patch.</p>
+  <p>Superposing 4ZQK's PD-L1 onto the campaign's own copy puts both partners in one
+  frame: {{rmsd}} Å over {{n_ca}} Cα at {{ident}}% sequence identity, so the two really are the
+  same protein and the comparison is fair. Then it is just a matter of counting which
+  PD-L1 residues each partner touches, at a 4.5 Å heavy-atom cutoff.</p>
+  <div class="two">
+    <figure class="fig">
+      <img src="{{IMG_PD1}}" alt="PD-1 bound to PD-L1 in PDB 4ZQK, with PD-1's footprint tinted on the PD-L1 surface.">
+      <figcaption><strong>4ZQK</strong> — PD-1 (violet) on PD-L1, in the same orientation
+      as every other structure on this page. The violet patch is the {{pd1_n}} PD-L1 residues
+      PD-1 actually contacts.</figcaption>
+    </figure>
+    <figure class="fig">
+      <img src="{{IMG_FP}}" alt="The PD-L1 surface coloured by which partner touches each residue: shared, PD-1 only, or design only.">
+      <p class="legend">
+        <span><b style="background:#c0872b"></b>both ({{shared_n}})</span>
+        <span><b style="background:#5e62b0"></b>PD-1 only ({{pd1_only_n}})</span>
+        <span><b style="background:#2f8f74"></b>design only ({{design_only_n}})</span>
+        <span><b style="background:#9aa79d"></b>neither</span>
+      </p>
+      <figcaption>The same surface, coloured by who touches what. The designed binder
+      covers <strong>{{shared_n}} of PD-1's {{pd1_n}} contact residues — {{pct}}%</strong> — and
+      reaches {{design_only_n}} more that PD-1 does not use.</figcaption>
+    </figure>
+  </div>
+  <div class="stats" style="margin-top:8px">
+    <div class="stat"><b>{{pct}}%</b><span>of PD-1's footprint covered</span></div>
+    <div class="stat"><b>{{shared_n}}/{{pd1_n}}</b><span>shared contact residues</span></div>
+    <div class="stat"><b>{{hs_hit}}/{{hs_n}}</b><span>chosen hotspots are real PD-1 contacts</span></div>
+    <div class="stat"><b>{{rmsd}} Å</b><span>superposition RMSD</span></div>
+  </div>
+  <div class="note-box" style="margin-top:22px"><p><strong>This is a geometric argument,
+  not a measured one.</strong> Occupying {{pct}}% of a footprint says a binder is in the way;
+  it says nothing about whether it out-competes PD-1, which depends on affinities neither
+  measured here nor predictable from these structures. The four residues PD-1 uses and the
+  design misses — {{pd1_only}} — sit at the edge of the interface. Read this as evidence the
+  pipeline aimed where it said it would, not as evidence of a blocker.</p></div>
+</section>
+
+<section class="stage">
   <div class="stage-h"><p class="step">What it cost</p>
     <h2>Three LLM calls, twenty-one GPU-hours</h2></div>
   <p>Only three stages of this campaign involved a language model at all: target intel,
@@ -538,6 +587,21 @@ HTML = f"""{_HEAD}
 
 </div>
 """
+
+HTML = (HTML
+    .replace("{IMG_PD1}", img("pd1_face"))
+    .replace("{IMG_FP}", img("footprint"))
+    .replace("{pd1_n}", str(PD1["pd1_n"]))
+    .replace("{shared_n}", str(PD1["shared_n"]))
+    .replace("{design_only_n}", str(PD1["design_n"] - PD1["shared_n"]))
+    .replace("{pd1_only_n}", str(len(PD1["pd1_only"])))
+    .replace("{pct}", str(PD1["pct"]))
+    .replace("{hs_hit}", str(PD1["hs_hit"]))
+    .replace("{hs_n}", str(PD1["hs_n"]))
+    .replace("{rmsd}", str(PD1["rmsd"]))
+    .replace("{n_ca}", str(PD1["n_ca"]))
+    .replace("{ident}", str(PD1["ident"]))
+    .replace("{pd1_only}", ", ".join(str(n) for n in PD1["pd1_only"][:-1]) + f" and {PD1['pd1_only'][-1]}"))
 
 OUT.write_text(HTML, encoding="utf-8")
 print(f"wrote {OUT}  ({OUT.stat().st_size/1024:.0f} KB)")

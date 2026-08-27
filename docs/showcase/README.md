@@ -57,7 +57,13 @@ from the target's centroid to the hotspot centroid and points the camera down
 it, so the "bare epitope" and "design bound" images of a pair share one camera
 and can be read as before/after.
 
-Two traps worth knowing if you re-render:
+The PD-1 comparison on the campaign page superposes PDB 4ZQK's PD-L1 chain onto
+the campaign's own copy (ChimeraX `matchmaker`, 0.83 A over 115 CA at 99.1%
+identity) so both partners share one frame and one camera, then counts contact
+residues at a 4.5 A heavy-atom cutoff on each side. 4ZQK took no part in the
+run, which is what makes it an independent check rather than a restatement.
+
+Three traps worth knowing if you re-render:
 
 - **RF3 refold chain B is renumbered 1-based**, while the deposited structure
   uses author numbering. The PD-L1 hotspots are residues 39, 41, 52, 58, 96,
@@ -65,6 +71,9 @@ Two traps worth knowing if you re-render:
   7CZD. Colouring a refold with author ids silently paints the wrong residues.
 - **Binder is chain A and target is chain B in every RF3 refold**, the opposite
   of the deposited complexes, where the target is usually chain A.
+- **ChimeraX draws missing-residue pseudobonds with a text label** ("8
+  residues") that lands in the render as floating type over the structure.
+  `hide pseudobonds` before saving, or it ships in the image.
 
 Renders use `chimerax --offscreen --nogui --exit --silent <script.cxc>` with
 absolute paths (a relative path fails, and without `--exit` the process then
