@@ -57,10 +57,14 @@ Ask, and wait for answers:
   `structure` works everywhere in about 10 minutes. Say so — many users need
   only that.
 - **OS and hardware.** Run `nvidia-smi`, check free disk (`df -h .`), check
-  `python3 --version` (LPT needs 3.12+).
+  `python3 --version` (LPT needs 3.12-3.14; `pyproject.toml` pins
+  `>=3.12,<3.15`).
 - **API keys.** `GEMINI_API_KEY` is the default provider for every pipeline
-  stage. `ANTHROPIC_API_KEY` is optional (used by `--provider claude` and as
-  the refusal fallback). Neither is needed for the `structure` track.
+  stage. `ANTHROPIC_API_KEY` is optional for the pipeline (used by
+  `--provider claude` and as the refusal fallback) but **required by
+  `scripts/ask_corpus.py`**, which talks to Claude directly and has no Gemini
+  path — so a literature-track user who wants that REPL needs it. Neither key
+  is needed for the `structure` track.
 - **Do you already have foundry / PyRosetta / BoltzGen anywhere?** Before
   proposing an install, search: `find ~ -maxdepth 4 -name "foundry" -o -maxdepth 4 -name "*rcfoundry*" 2>/dev/null`,
   and check conda envs (`conda env list`) for pyrosetta. Many users are in labs

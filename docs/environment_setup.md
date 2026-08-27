@@ -26,9 +26,13 @@ Instead, each of those paths can be set via an env var, read from `.env`
 config_value)` is the one place this precedence is implemented: **the env var
 wins if set; the `config.yaml` value is used only as a fallback** for anyone
 who prefers to keep it there instead (e.g. a single-user machine where
-`config.yaml` never gets pushed anywhere). Either way, if neither is set, the
-pipeline fails with an error naming both the env var and the config key —
-not a stack trace three stages later.
+`config.yaml` never gets pushed anywhere). Either way, if neither is set,
+`LPT_FOUNDRY_ROOT` and the `LPT_CLUSTER_*` vars fail with an error naming
+both the env var and the config key — not a stack trace three stages later.
+`LPT_BOLTZGEN_EXECUTABLE` and `LPT_PYROSETTA_PYTHON` are the deliberate
+exception: with neither set they fall back to a bare `boltzgen` /
+`python` on `PATH`, which is a supported way to configure them, and only
+fail if that command is missing too.
 
 | Env var | What it points at | Read by |
 |---|---|---|
@@ -44,14 +48,18 @@ requires any of them. Each is only consulted when the specific stage that
 needs it actually runs, and each is entirely absent from the literature
 corpus pipeline.
 
-`scripts/setup.sh` runs a diagnostic over all six after installing
-dependencies: it shows the effective value (env var, or config.yaml
-fallback, or "not set"), which source it came from, and whether the path
-exists on disk. Re-run it any time with just:
+`scripts/setup.sh` finishes by running `scripts/doctor.py`, which *probes*
+rather than path-tests: it runs the binary, calls `nvidia-smi`, and imports
+`pyrosetta` under the configured interpreter, then reports readiness per
+track with the command that fixes each gap. It covers four of the six vars
+below — `LPT_FOUNDRY_ROOT`, `LPT_PYROSETTA_PYTHON`,
+`LPT_BOLTZGEN_EXECUTABLE` and `LPT_CLUSTER_PIPELINE_ROOT`; the other two
+`LPT_CLUSTER_*` vars are only read when a campaign is actually staged.
+Re-run the report on its own any time with:
 
 ```bash
 source .venv/bin/activate  # if not already active
-./scripts/setup.sh
+python scripts/doctor.py   # or: ./scripts/setup.sh --check
 ```
 
 ## What each tool actually is, and how to get one

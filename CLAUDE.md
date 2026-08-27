@@ -19,7 +19,7 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
 
    **`fetch_papers.py` gates downloads on a journal tier list**
    (`quality.require_tiered_journal`, default true; lists in `src/ranking.py`).
-   Search indexes every hit, but only tier 1/2 journals are downloaded — 28% of
+   Search indexes every hit, but only tier 1/2 journals are downloaded — 32% of
    indexed papers on the reference corpus. Matching is EXACT against a
    normalised name, so a journal spelled a way the list doesn't contain is a
    silent 100% exclusion, not a warning. See `docs/journal-filtering.md`.
@@ -36,7 +36,7 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
    - **Claude Desktop / Claude Code**: via the two MCP servers in `.mcp.json` (`literature-db`, `structure-tools`).
    - **CLI / web backend**: via `scripts/run_skill.py`, which loads `SKILL.md` as the system prompt and routes tool calls **directly to Python functions** (no MCP subprocess). Same skill, same tools, different transport.
 
-   `src/pipeline_runner.py` chains skills end-to-end (pathway → structure → literature → design) by parsing `### PIPELINE HANDOFF` blocks out of each skill's markdown output. Editing handoff format in one skill requires updating the consumers.
+   `src/pipeline_runner.py` chains skills end-to-end (pathway → literature → structure → design) by parsing `### PIPELINE HANDOFF` blocks out of each skill's markdown output. Editing handoff format in one skill requires updating the consumers.
 
 3. **Web platform** (`web/`) — **EXCLUDED FROM THE RELEASE, DO NOT WORK ON IT** unless explicitly asked. FastAPI + Celery + React. It is untracked (see `.gitignore`) and unmaintained: `_TrackedRunner._run_stage` in `web/backend/tasks.py` has a stale signature against `PipelineRunner._run_stage` (which gained a keyword-only `stage`), so it raises `TypeError` on the first PPI stage; it also knows nothing about `--workflow binder` and handles 4 of the 11 pause points the runner now raises. Branch `archive/web-platform` marks the last commit that tracked it. The CLI is the supported entry point.
 
@@ -121,7 +121,7 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
   extend a track's own `app.js` when the content is genuinely specific to
   that track — don't grow one at the expense of the other's readability.
 
-## The PPI -> foundry bridge (opt-in `design_engine`)
+## The PPI -> foundry bridge (`design_engine`, foundry by default)
 
 Scoped in `UNIFY_DESIGN_BACKEND_NOTES.md`, unification work started there.
 `design.backend` is now **`foundry` by default**, so `--workflow ppi` hands a
@@ -525,7 +525,7 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 
 ## Configuration layering
 
-`config.yaml` is the main config; alternates (`config_search_expansion.yaml`, `config_flagship_journals.yaml`, `config_with_complexes.yaml`) are passed via `--config` to `fetch_papers.py` for targeted searches without polluting the primary keyword list. The current main config is focused on hypertrophic cardiomyopathy / sarcomere biology — keyword sets rotate as research focus shifts.
+`config.yaml` is the main config; alternates (`config_search_expansion.yaml`, `config_flagship_journals.yaml`, `config_with_complexes.yaml`) are passed via `--config` to `fetch_papers.py` for targeted searches without polluting the primary keyword list. The current main config is focused on histone chaperones / chromatin biology — keyword sets rotate as research focus shifts.
 
 ## MCP launchers (Windows gotcha)
 
@@ -539,7 +539,10 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 
 ## Common file pairs to keep in sync
 
-- `extraction_schema.json` ⇄ `src/models.py` (Pydantic) ⇄ `curation_prompt.md` — schema, validator, and prompt must agree.
+- `extraction_schema.json` ⇄ `src/curator.py` (the `Fingerprint` / `KeyFinding` /
+  `PathwayContext` Pydantic models, validated in `curate_paper`) ⇄ `curation_prompt.md`
+  — schema, validator, and prompt must agree. `src/models.py` is the *paper*-level
+  model (`Paper`, `DownloadStatus`, `CurationStatus`), not the fingerprint one.
 - `src/mcp_server.py` ⇄ `src/skill_runner.py` tool dispatch — same tool surface, two
   transports. `find_pdb_structures` / `search_rcsb_pdb` were CLI-only until this was
   fixed, so three skills silently degraded under Claude Desktop. ONE deliberate
@@ -576,7 +579,8 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
   matching pairing on the rendered side — both reports' `shell.html`/`app.js` source their
   palette, layout primitives, and Mol* explorer harness from there; see the binder-track
   section above ("Two reports, one design system").
-- Configs: alternates passed via `--config` to `fetch_papers.py` (and now `curate_papers.py`).
+- Configs: alternates passed via `--config` to `fetch_papers.py`. `curate_papers.py`
+  has no `--config` flag; it reads the main `config.yaml`.
 - `_verify_target_chain_assignment` ⇄ `_verify_ppi_chain_assignment` ⇄ `_verify_hotspot_grounding`
   — the PD-L1/8ZNL guards. Now called from BOTH `_stage_binder_interface` (binder) and
   `_stage_structure` (PPI); a future stage that also calls `complex-structure-analysis`

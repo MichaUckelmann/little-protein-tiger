@@ -24,7 +24,7 @@ widen the filter later and re-run `fetch_papers.py` without re-searching.
 
 ## What it does today
 
-Measured against the shipped corpus (55,644 indexed papers):
+Measured against the shipped corpus (55,688 indexed papers):
 
 | | Papers | Share |
 |---|---|---|
