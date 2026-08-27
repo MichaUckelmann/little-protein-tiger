@@ -7,9 +7,10 @@ laid out from mesothelioma_target_network.cyjs — the actual Cytoscape export t
 session produced.  Rebuild:  python docs/showcase/build_corpus.py
 """
 from __future__ import annotations
-import json, math, pathlib
+import json, math, pathlib, sys
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 ROOT = HERE.parent.parent
 OUT = HERE / "corpus_explorer.html"
 
@@ -233,10 +234,10 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
 
 NET_SVG, NET_N, NET_E = network_svg()
 
-HTML = f"""<title>Corpus Explorer</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+from _common import head as _mkhead
+_HEAD = _mkhead('Corpus Explorer', 'One real corpus-explorer session: eight tool calls over 11,055 curated papers turned into a cited target map, with the interaction and DepMap graphs behind it.', 'corpus_explorer.html', 'corpus')
+
+HTML = f"""{_HEAD}
 <style>{CSS}</style>
 
 <div class="wrap">

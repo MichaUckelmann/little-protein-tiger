@@ -5,9 +5,10 @@ Facts come from that run's 00_pathway.md, 01_literature.md, 02_structure.md and
 05_ranking/filter_stats.txt.  Rebuild:  python docs/showcase/build_ppi.py
 """
 from __future__ import annotations
-import base64, pathlib
+import base64, pathlib, sys
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 OUT = HERE / "ppi_discovery.html"
 CSS = (HERE / "campaign_pdl1.html").read_text().split("<style>")[1].split("</style>")[0]
 CSS += """
@@ -68,10 +69,10 @@ def ev_rows():
         for c, d in EVIDENCE)
 
 
-HTML = f"""<title>PPI Discovery Track</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+from _common import head as _mkhead
+_HEAD = _mkhead('PPI Discovery Track', 'How Little Protein Tiger turns a disease name into a specific interface: three tiered candidate targets, the mutagenesis behind them, six hotspot residues on TEAD1.', 'ppi_discovery.html', 'ppi')
+
+HTML = f"""{_HEAD}
 <style>{CSS}</style>
 
 <div class="wrap">

@@ -1,0 +1,45 @@
+# Publish docs/ to GitHub Pages, so the showcase walkthroughs have public URLs
+# that can be linked, embedded and unfurled into link previews.
+#
+# The pages themselves are static and pre-built (docs/showcase/*.html are
+# committed), so this workflow only uploads — it does not run the builders.
+# Regenerate them locally with `python docs/showcase/build_*.py` and commit the
+# result when a run changes.
+#
+# NOTE: Pages must be enabled once by hand — Settings -> Pages -> Source:
+# "GitHub Actions". On a private repo that needs a paid plan; on a public repo
+# it is free.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a half-finished deploy; queue instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: deploy
+        uses: actions/deploy-pages@v4

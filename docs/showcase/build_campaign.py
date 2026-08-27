@@ -6,9 +6,10 @@ markdowns, calibration.json, filter_stats.txt and top_k.csv. Nothing is
 illustrative. Re-run after a campaign changes:  python docs/showcase/build_campaign.py
 """
 from __future__ import annotations
-import base64, pathlib
+import base64, pathlib, sys
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 ASSETS = HERE / "assets"
 OUT = HERE / "campaign_pdl1.html"
 
@@ -309,10 +310,10 @@ footer p{max-width:74ch}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 """
 
-HTML = f"""<title>PD-L1 Binder Campaign</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+from _common import head as _mkhead
+_HEAD = _mkhead('PD-L1 Binder Campaign', 'A complete Little Protein Tiger binder campaign against PD-L1 — target choice, epitope, the calibration gate, and twenty ranked designs. Every number from a real run.', 'campaign_pdl1.html', 'campaign')
+
+HTML = f"""{_HEAD}
 <style>{CSS}</style>
 
 <div class="wrap">
