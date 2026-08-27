@@ -26,6 +26,12 @@ An end-to-end pipeline for PPI drug target discovery. Covers automated paper dis
 > free, about a minute. 10,981 curated papers, ready to search. You only pay
 > if you later extend it with your own search terms.
 >
+> **Want to see what it produces first?** Three illustrated walkthroughs built
+> from real runs in this repository — a complete PD-L1 binder campaign, a
+> corpus-explorer session, and the PPI discovery track — live in
+> **[docs/showcase/](docs/showcase/)**. Open the `.html` files directly; they are
+> self-contained.
+>
 > **Something not working?** `python scripts/doctor.py` reports readiness per
 > track and prints the command that fixes each problem.
 >
