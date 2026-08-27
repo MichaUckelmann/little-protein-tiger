@@ -80,6 +80,27 @@ absolute paths (a relative path fails, and without `--exit` the process then
 waits at an interactive prompt forever), and are cropped to the alpha bounding
 box afterwards rather than framed by hand.
 
+## Network maps
+
+Every interaction/DepMap map LPT draws goes through `src/network_svg.py`, so
+they share one visual grammar wherever they appear:
+
+| channel | meaning |
+|---|---|
+| node fill | filled = a seed the query started from, hollow = pulled in |
+| node radius | degree within the drawn subgraph |
+| edge width | corpus co-mention count (sqrt-scaled) |
+| edge colour | sign of the DepMap correlation; dashed grey = no DepMap pair |
+| edge opacity | \|r\| — a weak correlation reads as a faint line |
+
+`load_cyjs()` reads a Cytoscape export (what `export_subgraph` emits),
+`render_svg()` returns a self-styling `<svg>` that inherits the host page's
+theme tokens, and `legend_items()` gives the legend so callers cannot drift.
+The layout is a deterministic Fruchterman-Reingold with no RNG — the same graph
+always produces the same picture, so regenerating a report does not churn the
+figure. `tests/test_network_svg.py` pins the determinism, the no-overlap
+property and the colour encoding.
+
 ## Chart colours
 
 The two data hues are validated per theme against the six checks in the

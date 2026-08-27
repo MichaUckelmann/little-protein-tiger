@@ -11,6 +11,7 @@ import json, math, pathlib, sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent.parent))
 ROOT = HERE.parent.parent
 OUT = HERE / "corpus_explorer.html"
 
@@ -25,22 +26,27 @@ JOURNALS = [("Nature",1943),("Nat Commun",1592),("Cell",1008),("Nucleic Acids Re
             ("Sci Adv",232),("Mol Cell",211)]
 HUBS = [("YAP-1",23,367),("BRD4",21,244),("OCT4",21,173),("STING",20,394),("EGFR",20,211),
         ("KRAS",17,233),("Dnmt3a",16,175),("CTCF",11,150),("TET1",11,142),("STAT3",11,119)]
-CODEP = [("DOCK5",0.4111),("RAF1",0.3817),("TCF7L2",0.3195),("FERMT1",0.3062),
-         ("RAB10",0.2864),("CTNNB1",0.2707),("MAP3K2",0.2701),("KLF3",0.2532)]
+# find_cocorrelated_genes("YAP1") — the page's own subject, not a stray example.
+CODEP = [("ARHGEF7",0.2907),("TEAD1",0.2722),("PKN2",0.2709),("NCKAP1",0.2672),
+         ("TEAD3",0.2652),("ILK",0.2608),("CRKL",0.2596),("TP53BP2",0.2565),
+         ("ITGB1",0.2512),("MARK2",0.2458)]
+# Verified pairs quoted in the paralog callout.
+PARALOG = [("LATS1", "LATS2", 0.0437), ("NF2", "LATS2", 0.5456),
+           ("YAP1", "WWTR1", 0.0202), ("NF2", "YAP1", -0.2425)]
 
 FINGERPRINT = """{
-  "claim": "BI-3406 is a potent, selective inhibitor of the
-            SOS1::KRAS protein-protein interaction.",
-  "protein_pair": ["SOS1", "KRAS"],
-  "experimental_context": "Surface plasmon resonance (SPR) Kd measurement on SOS1",
-  "affinities_kd_Molar": 4.7e-07,
+  "claim": "The non-acetylated VGLL4-TDU domain peptide binds to
+            TEAD1 with a dissociation constant of 3.1 nM.",
+  "protein_pair": ["VGLL4", "TEAD1"],
+  "experimental_context": "Photonic crystal nanobeam sensor assay",
+  "affinities_kd_Molar": 3.1e-09,
   "inhibitory_constant_Ki": null,
-  "key_amino_acid_residues": ["Tyr884", "His905", "Met878"],
+  "key_amino_acid_residues": ["K225"],
   "quantitative_or_qualitative": "quantitative",
   "is_statistically_significant": true,
   "confidence_score": 0.95,
-  "source_span": "Section: Discovery of BI-3406, a potent and selective
-                  SOS1::KRAS interaction inhibitor, Para 1"
+  "source_span": "Section: VGLL4 Activity Is Regulated by Its TDU
+                  Domain Acetylation, Para 2"
 }"""
 
 TRACE = [
@@ -60,96 +66,15 @@ CANON = ["YAP1","WWTR1","TAZ","TEAD1","TEAD4","LATS1","LATS2","NF2","SAV1","MST1
          "RAP2","AHR","SOX2","RUNX2","IGF1R","MED15","TCF4","TEAD2"]
 
 
-def subgraph():
-    """Real nodes/edges from the session's own Cytoscape export."""
-    d = json.loads((ROOT / "mesothelioma_target_network.cyjs").read_text())["elements"]
-    nd = {n["data"]["id"]: n["data"] for n in d["nodes"]}
-    keep = [c for c in CANON if c in nd]
-    ks = set(keep)
-    edges = []
-    seen = set()
-    for e in d["edges"]:
-        s, t = e["data"]["source"], e["data"]["target"]
-        if s in ks and t in ks and (s, t) not in seen and (t, s) not in seen:
-            seen.add((s, t))
-            edges.append((s, t, e["data"].get("depmap_r"), e["data"].get("mentions", 1),
-                          e["data"].get("tightest_kd_M")))
-    used = {n for s, t, *_ in edges for n in (s, t)}
-    keep = [k for k in keep if k in used]
-    return keep, edges, {k: nd[k] for k in keep}
-
-
-def layout(nodes, edges, W=760, H=470, iters=520):
-    """Deterministic Fruchterman-Reingold. No RNG: seeded on a circle by index."""
-    n = len(nodes); idx = {k: i for i, k in enumerate(nodes)}
-    pos = [[W/2 + 190*math.cos(2*math.pi*i/n), H/2 + 150*math.sin(2*math.pi*i/n)]
-           for i in range(n)]
-    adj = [[0.0]*n for _ in range(n)]
-    for s, t, *_ in edges:
-        adj[idx[s]][idx[t]] = adj[idx[t]][idx[s]] = 1.0
-    k = math.sqrt(W*H/n) * 0.72
-    for it in range(iters):
-        temp = k * (1 - it/iters) * 0.11
-        disp = [[0.0, 0.0] for _ in range(n)]
-        for i in range(n):
-            for j in range(i+1, n):
-                dx, dy = pos[i][0]-pos[j][0], pos[i][1]-pos[j][1]
-                dist = max(0.01, math.hypot(dx, dy))
-                rep = k*k/dist
-                ux, uy = dx/dist, dy/dist
-                disp[i][0] += ux*rep; disp[i][1] += uy*rep
-                disp[j][0] -= ux*rep; disp[j][1] -= uy*rep
-                if adj[i][j]:
-                    att = dist*dist/k
-                    disp[i][0] -= ux*att; disp[i][1] -= uy*att
-                    disp[j][0] += ux*att; disp[j][1] += uy*att
-        for i in range(n):
-            d = max(0.01, math.hypot(*disp[i]))
-            pos[i][0] += disp[i][0]/d * min(d, temp)
-            pos[i][1] += disp[i][1]/d * min(d, temp)
-            pos[i][0] = min(W-46, max(46, pos[i][0]))
-            pos[i][1] = min(H-26, max(26, pos[i][1]))
-    return {k_: tuple(pos[i]) for k_, i in idx.items()}
-
-
-def network_svg() -> str:
-    nodes, edges, meta = subgraph()
-    P = layout(nodes, edges)
-    deg = {n: 0 for n in nodes}
-    for s, t, *_ in edges:
-        deg[s] += 1; deg[t] += 1
-    es = []
-    for s, t, r, m, kd in edges:
-        x1, y1 = P[s]; x2, y2 = P[t]
-        w = 0.9 + min(3.2, (m or 1) ** 0.5)
-        if r is None:
-            col, dash, lab = "var(--rule-2)", "3 3", "no DepMap pair"
-        elif r < 0:
-            col, dash, lab = "var(--mark-b)", "", f"DepMap r = {r:+.3f}"
-        else:
-            col, dash, lab = "var(--mark-a)", "", f"DepMap r = {r:+.3f}"
-        op = 0.35 if r is None else min(0.95, 0.32 + abs(r) * 1.5)
-        kds = f" · tightest Kd {kd:.2g} M" if kd else ""
-        es.append(f'<g class="mk" tabindex="0"><title>{s} — {t}: {m} mention'
-                  f'{"s" if m != 1 else ""} in the corpus, {lab}{kds}</title>'
-                  f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
-                  f'stroke="{col}" stroke-width="{w:.1f}" opacity="{op:.2f}" '
-                  f'stroke-dasharray="{dash}" stroke-linecap="round"/></g>')
-    ns = []
-    for n in nodes:
-        x, y = P[n]
-        seed = meta[n].get("is_seed")
-        r = 6 + min(9, deg[n] * 0.9)
-        ns.append(f'<g class="mk nd" tabindex="0"><title>{n} — {deg[n]} edges in this view, '
-                  f'{meta[n].get("total_mentions", 0)} mentions in the corpus</title>'
-                  f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" '
-                  f'fill="{"var(--mark-a)" if seed else "var(--surface)"}" '
-                  f'stroke="{"var(--mark-a)" if seed else "var(--rule-2)"}" stroke-width="2"/>'
-                  f'<text x="{x:.1f}" y="{y - r - 6:.1f}" text-anchor="middle" '
-                  f'class="nl{" seed" if seed else ""}">{n}</text></g>')
-    return (f'<svg viewBox="0 0 760 470" role="img" class="chart net" '
-            f'aria-label="Interaction network around the mesothelioma seed genes">'
-            f'{"".join(es)}{"".join(ns)}</svg>'), len(nodes), len(edges)
+def network_svg():
+    """The standard LPT map — one renderer for every interaction/DepMap figure."""
+    from src.network_svg import load_cyjs, render_svg, legend_items
+    nodes, edges, meta = load_cyjs(ROOT / "mesothelioma_target_network.cyjs", CANON)
+    svg = render_svg(nodes, edges, meta,
+                     aria="Interaction network around the mesothelioma seed genes")
+    legend = "".join(f'<span><b style="background:{c}"></b>{w}</span>'
+                     for c, w in legend_items())
+    return svg, len(nodes), len(edges), legend
 
 
 def years_svg() -> str:
@@ -232,7 +157,7 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
 .tile p{font-size:.88rem;color:var(--muted);margin:4px 0 0}
 """
 
-NET_SVG, NET_N, NET_E = network_svg()
+NET_SVG, NET_N, NET_E, NET_LEGEND = network_svg()
 
 from _common import head as _mkhead
 _HEAD = _mkhead('Corpus Explorer', 'One real corpus-explorer session: eight tool calls over 11,055 curated papers turned into a cited target map, with the interaction and DepMap graphs behind it.', 'corpus_explorer.html', 'corpus')
@@ -292,6 +217,11 @@ HTML = f"""{_HEAD}
       <code>source_span</code></strong>. A finding that cannot say which page and paragraph
       it came from is rejected by the consumers downstream. There is no way to produce a
       confident-sounding number here without a pointer to where it was read.</p>
+      <p>This particular record is why the map above has a VGLL4 node at all: a natural
+      TEAD1 ligand with a measured 3.1 nM K<sub>d</sub>, curated out of
+      <a href="https://doi.org/10.1016/j.devcel.2016.09.005">10.1016/j.devcel.2016.09.005</a>
+      by <code>gemini-3.1-flash-lite-preview</code> in May 2026 — provenance is stored per
+      file, so you can always ask which model read what.</p>
     </div>
     <pre class="json">{FINGERPRINT}</pre>
   </div>
@@ -302,12 +232,7 @@ HTML = f"""{_HEAD}
     <h2>NF2 loss → YAP/TAZ–TEAD, drawn from the corpus itself</h2></div>
   <div class="chart-wrap">
     {NET_SVG}
-    <p class="legend">
-      <span><b style="background:var(--mark-a)"></b>filled node: a seed the session started from</span>
-      <span><b style="background:var(--mark-a)"></b>edge: positive DepMap correlation</span>
-      <span><b style="background:var(--mark-b)"></b>edge: negative correlation</span>
-      <span><b style="background:var(--rule-2)"></b>dashed: co-mentioned, no DepMap pair</span>
-    </p>
+    <p class="legend">{NET_LEGEND}</p>
     <figcaption>{NET_N} genes and {NET_E} edges, drawn from the Cytoscape export this
     session produced (<code>mesothelioma_target_network.cyjs</code>, 172 nodes / 295 edges
     in full). Edge width is how often the pair is co-mentioned in the corpus; colour and
@@ -340,36 +265,59 @@ HTML = f"""{_HEAD}
 <section class="stage">
   <div class="stage-h"><p class="step">Two signals, deliberately not merged</p>
     <h2>What the literature says, and what the cells say</h2></div>
+  <p>Both tables below are about this page's own subject. The left one is
+  corpus-wide — the most connected proteins in the <em>whole</em> 11,055-paper store,
+  which is where you see what this corpus is actually made of. The right one is
+  co-essentiality for YAP1 specifically, computed from CRISPR screens and not from any
+  paper at all.</p>
   <div class="grid2">
-    <div class="chart-wrap"><h3>Corpus hubs — degree and mentions</h3>
+    <div class="chart-wrap"><h3>Corpus hubs — the whole corpus, not this query</h3>
       <div class="tw"><table><thead><tr><th>protein</th><th class="num">partners</th>
         <th class="num">mentions</th></tr></thead><tbody>{hub_rows()}</tbody></table></div>
-      <figcaption>Built live from the fingerprints, not precomputed. Note YAP-1 and YAP
-      appearing separately — real alias behaviour the tool reports on itself rather than
-      papering over.</figcaption>
+      <figcaption>Built live from the fingerprints. YAP-1 tops the list because of what
+      this lab reads, not because it is the most connected protein in biology — which is
+      the honest reason the mesothelioma question landed in such well-covered territory.
+      Note YAP-1 and YAP appearing separately: real alias behaviour the tool reports on
+      itself rather than papering over.</figcaption>
     </div>
-    <div class="chart-wrap"><h3>KRAS co-essentiality — DepMap, 1,208 cell lines</h3>
+    <div class="chart-wrap"><h3>YAP1 co-essentiality — DepMap, 1,208 cell lines</h3>
       <div class="tw"><table><thead><tr><th>gene</th><th class="num">r</th></tr></thead>
         <tbody>{codep_rows()}</tbody></table></div>
-      <figcaption>Nothing here is read from a paper. RAF1 at r = +0.38 is the corpus's
-      own KRAS–RAF1 edge confirmed from an orthogonal direction; DOCK5 above it is not a
-      pair the corpus talks about at all.</figcaption>
+      <figcaption>Nothing here is read from a paper. TEAD1 and TEAD3 surfacing on their
+      own is the corpus's central claim confirmed from an orthogonal direction; ARHGEF7,
+      ILK, CRKL and ITGB1 above and around them are adhesion and cytoskeletal genes the
+      corpus does not connect to YAP1 at all.</figcaption>
     </div>
   </div>
   <div class="two" style="margin-top:26px">
-    <div class="tile"><span>novelty_signal("KRAS")</span><b>0.002</b>
-      <p>238 mentions, 40 papers with structures, 34 prior targeting efforts, 57
-      quantitative findings. The score is a saturation measure — near zero means
-      "everyone is already here". It is designed to find the opposite.</p></div>
     <div>
-      <p>These two graphs are kept separate on purpose. The literature graph is what has
-      been <em>written down</em>: 18,432 proteins, 20,658 co-mention edges, rebuilt from the
-      fingerprints on every query. The DepMap edge index is what CRISPR screens
-      <em>measured</em>: 1,411 genes, 1,304 edges, each with a real correlation and sample
-      size. An edge that appears in both is a much stronger claim than an edge in either.</p>
-      <p>Louvain clustering over the combined weighting gives 362 co-functional modules.
-      They are heavily long-tailed — 213 of them are simple pairs — which is itself an
-      honest readout of how sparse well-evidenced interaction data actually is.</p>
+      <div class="note-box"><h3>The finding that needed both sources</h3>
+      <p>LATS1 and LATS2 are essentially <em>not</em> co-essential with each other
+      (r&nbsp;=&nbsp;+0.04) — the signature of paralog buffering. The signal only appears
+      against the upstream node: NF2–LATS2 reaches <strong>r&nbsp;=&nbsp;+0.55</strong>.
+      The same pattern holds for the pair the pathway stage flagged as the escape risk:
+      <strong>YAP1–WWTR1 (TAZ) is r&nbsp;=&nbsp;+0.02</strong> — knocking out one does not
+      substitute for the other, which is exactly why a TAZ-blind binder can be bypassed.
+      And NF2–YAP1 is <strong>negative</strong>, r&nbsp;=&nbsp;−0.24: lose the brake, gain
+      the dependency.</p>
+      <p>Literature alone would have called LATS1/2 one module. DepMap alone would have
+      called them unrelated. Neither source answers this on its own.</p></div>
+    </div>
+    <div>
+      <div class="tile"><span>novelty_signal</span><b>0.10</b>
+        <p>YAP1: 370 mentions, 99 prior targeting efforts, 16 quantitative findings. The
+        score is a <em>saturation</em> measure — near zero means everyone is already here.
+        NF2 scores 0.51 on the same scale, off 100 mentions and a single targeting
+        effort.</p></div>
+      <p style="margin-top:16px;font-size:.92rem">That contrast is a prompt, not a
+      recommendation. NF2 looks unexplored because it is a tumour suppressor that is
+      <em>lost</em> in these tumours — there is nothing there to bind. A high novelty score
+      says the literature is thin, and nothing about whether a target is tractable.</p>
+      <p style="font-size:.92rem">The two graphs stay separate on purpose. The literature
+      graph is what has been <em>written down</em>: 18,432 proteins, 20,658 co-mention
+      edges, rebuilt from the fingerprints on every query. The DepMap index is what CRISPR
+      screens <em>measured</em>: 1,411 genes, 1,304 edges, each with a real correlation and
+      sample size. An edge in both is a much stronger claim than an edge in either.</p>
     </div>
   </div>
 </section>

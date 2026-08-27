@@ -6,7 +6,7 @@ by absolute URL, so they cannot be data URIs like the in-page images.
 Rebuild:  python docs/showcase/build_previews.py
 """
 from __future__ import annotations
-import math, pathlib
+import math, pathlib, sys
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -86,22 +86,22 @@ def card(name, eyebrow, title, stats, art):
 
 def network_art():
     """Draw the same subgraph the corpus page shows, as raster."""
-    src = (HERE / "build_corpus.py").read_text().split("def trace_rows")[0]
-    ns = {"__file__": str(HERE / "build_corpus.py")}
-    exec(compile(src, "b", "exec"), ns)
-    nodes, edges, meta = ns["subgraph"]()
-    P = ns["layout"](nodes, edges)
+    sys.path.insert(0, str(HERE)); sys.path.insert(0, str(ROOT))
+    from src.network_svg import load_cyjs, layout as net_layout
+    from build_corpus import CANON
+    nodes, edges, meta = load_cyjs(ROOT / "mesothelioma_target_network.cyjs", CANON)
+    P = net_layout(nodes, edges)
     S = 2
     im = Image.new("RGBA", (760 * S, 470 * S), GROUND + (255,))
     d = ImageDraw.Draw(im, "RGBA")
     deg = {n: 0 for n in nodes}
-    for s, t, *_ in edges:
-        deg[s] += 1; deg[t] += 1
-    for s, t, r, m, kd in edges:
-        col = (RULE if r is None else (OCHRE if r < 0 else ACCENT))
-        op = int(255 * (0.30 if r is None else min(0.95, 0.32 + abs(r) * 1.5)))
-        d.line([tuple(v * S for v in P[s]), tuple(v * S for v in P[t])],
-               fill=col + (op,), width=int((0.9 + min(3.2, (m or 1) ** 0.5)) * S))
+    for e in edges:
+        deg[e.source] += 1; deg[e.target] += 1
+    for e in edges:
+        col = (RULE if e.r is None else (OCHRE if e.r < 0 else ACCENT))
+        op = int(255 * (0.30 if e.r is None else min(0.95, 0.32 + abs(e.r) * 1.5)))
+        d.line([tuple(v * S for v in P[e.source]), tuple(v * S for v in P[e.target])],
+               fill=col + (op,), width=int((0.9 + min(3.2, (e.mentions or 1) ** 0.5)) * S))
     fn = ImageFont.truetype(MONO, 11 * S)
     for n in nodes:
         x, y = (v * S for v in P[n])
