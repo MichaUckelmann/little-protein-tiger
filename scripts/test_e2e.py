@@ -6,7 +6,11 @@ analysis → summary pipeline with capture_traces=True so every LLM stage
 dumps its full conversation under <run_dir>/traces/<stage>/.
 
 BoltzGen pilot/production sizes can be dialed down via --pilot/--production
-for fast verification runs.
+for fast verification runs; they only bite on --design-engine boltzgen.
+
+A persistent project is required, because design.backend defaults to
+foundry and the foundry stages downstream are multi-day GPU campaigns that
+need a resumable manifest. --project defaults to the slug.
 
 Usage:
     .venv/bin/python scripts/test_e2e.py \\
@@ -43,6 +47,16 @@ def main() -> int:
     ap.add_argument("--production", type=int, default=100)
     ap.add_argument("--no-trace", action="store_true",
                     help="Skip per-stage trace dumps.")
+    ap.add_argument("--project", type=str, default=None,
+                    help="Project slug for the persistent manifest. "
+                         "Default: --slug. Required by the runner whenever "
+                         "the PPI track uses the foundry design engine, "
+                         "which is the config default.")
+    ap.add_argument("--provider", choices=["gemini", "claude"], default="gemini",
+                    help="LLM provider for every stage. Default: gemini — "
+                         "cheaper, and it does not hit the 'bio'-category "
+                         "safety refusals claude-sonnet-5 routinely triggers "
+                         "on the structure/interface stages.")
     ap.add_argument("--pathway-mode", choices=["standard", "wildcard"], default=None,
                     dest="pathway_mode",
                     help="Stage-0 skill: 'standard' (pathway-expert, validated-target-biased) "
@@ -50,8 +64,15 @@ def main() -> int:
                          "Default: read from config.yaml (design.pathway.mode).")
     args = ap.parse_args()
 
-    run_dir = _ROOT / "outputs" / f"e2e_{args.slug}"
+    from src.project import Project
+
+    project = Project.create(args.project or args.slug, query=args.prompt,
+                             workflow="ppi")
+    rnd = project.new_round(note=args.prompt[:80])
+    round_id = rnd["run_id"]
+    run_dir = project.run_dir(round_id)
     run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[setup] project: {project.slug}  round: {round_id}")
     print(f"[setup] run_dir: {run_dir}")
 
     cfg = yaml.safe_load((_ROOT / "config.yaml").read_text())
@@ -70,12 +91,14 @@ def main() -> int:
 
     runner = PipelineRunner(
         config=cfg,
-        provider="claude",
+        provider=args.provider,
         output_dir=run_dir,
         max_iter=30,
         max_tokens=120_000,
         capture_traces=not args.no_trace,
         pathway_mode=args.pathway_mode or "standard",
+        project=project,
+        round_id=round_id,
     )
 
     print(f"[start]  {time.strftime('%Y-%m-%d %H:%M:%S')}")

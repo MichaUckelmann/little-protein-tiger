@@ -216,8 +216,8 @@ design:
     mode: standard
 
   # --workflow ppi ONLY (the binder track always runs foundry regardless of
-  # this key). "boltzgen" (default, src/design_runner.py) or "foundry"
-  # (hands off to the same RFD3 -> solubleMPNN -> RF3 stage machine
+  # this key). "foundry" (the default) or "boltzgen" (src/design_runner.py)
+  # (foundry hands off to the same RFD3 -> solubleMPNN -> RF3 stage machine
   # --workflow binder uses, right after PPI's own structure stage — see
   # PipelineRunner._bridge_ppi_to_foundry and UNIFY_DESIGN_BACKEND_NOTES.md).
   # DEFAULT since the bridge was validated on a real KRAS/RAF1 GPU campaign:
@@ -247,9 +247,9 @@ design:
       rfd3: "rfd3"            # checkpoint-registry aliases resolve to ~/pip_rcfoundry_ckpt
       rf3:  "rf3"
       mpnn: "solublempnn"
+    # Exported as CUDA_VISIBLE_DEVICES by the generated run_campaign.sh.
     cuda_device: 0
 
-    gpu_memory_gb: 32
     # Calibrated at ONE point (a ~175-token complex ran comfortably). RF3
     # attention is O(N^2) in tokens; re-measure by bisecting n_batches=2 runs at
     # increasing target size until OOM, then take 80% of the last passing value.
@@ -273,7 +273,9 @@ design:
         gamma_0: 0.2
 
     prefilter:
-      enabled: true
+      # Always runs — the geometric gates are not optional (of designs with
+      # iPTM > 0.7, only 45%/8% on the two reference campaigns were docked on
+      # target). There was an `enabled` key here that nothing read.
       # null => derive from the trim's segment count. A single-segment target
       # scores exactly 1 chainbreak; a two-segment trim scores 2, and a hardcoded
       # 1 would then reject every design.

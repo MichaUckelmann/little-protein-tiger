@@ -373,6 +373,9 @@ CAMPAIGN="{campaign}"
 LPT="{lpt}"
 PY="{py}"
 
+# design.foundry.cuda_device — which GPU this campaign gets on a multi-GPU box.
+export CUDA_VISIBLE_DEVICES="{cuda_device}"
+
 RFD3_DIR="$CAMPAIGN/rfd3"
 FILTERED="$CAMPAIGN/designs_filtered"
 MPNN_OUT="$CAMPAIGN/mpnn_out"
@@ -409,6 +412,8 @@ done
 log "prefiltering"
 $PY "$LPT/src/foundry_stages.py" prefilter "$RFD3_DIR" "$FILTERED" \\
     --max-chainbreaks {max_chainbreaks} --min-non-loop {min_non_loop} \\
+    --max-sidechain-clashes {max_sidechain_clashes} \\
+    --max-backbone-clashes {max_backbone_clashes} \\
     --report "$CAMPAIGN/filter_report.csv" >> "$LOGS/filter.log" 2>&1
 log "prefilter kept $(find "$FILTERED" -maxdepth 1 -name '*.cif.gz' | wc -l)"
 
@@ -502,12 +507,18 @@ def write_campaign_driver(
         expected_rfd3=plan.expected_rfd3,
         n_seq=plan.n_seq,
         mode=plan.mode,
+        cuda_device=int(f.get("cuda_device", 0)),
         max_rfd3_attempts=int(f.get("max_rfd3_attempts", 10)),
         max_rf3_attempts=int(f.get("max_rf3_attempts", 20)),
         min_free_gb=int(f.get("min_free_gb", 20)),
         rfd3_cmd=_rfd3_command(cfg, spec_path, paths, plan),
         max_chainbreaks=int(max_cb),
         min_non_loop=float(prefilter.get("min_non_loop", 0.6)),
+        # Rendered explicitly rather than left to foundry_stages' own
+        # argparse defaults: they happened to agree, so raising either of
+        # these in config.yaml silently did nothing.
+        max_sidechain_clashes=int(prefilter.get("max_sidechain_clashes", 0)),
+        max_backbone_clashes=int(prefilter.get("max_backbone_clashes", 0)),
         mpnn_ckpt=(f.get("ckpt") or {}).get("mpnn", "solublempnn"),
         mpnn_bin=f.get("mpnn_bin", ".venv-blackwell/bin/mpnn"),
         mpnn_chunk=int(mpnn.get("chunk_size", 250)),

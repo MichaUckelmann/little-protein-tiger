@@ -337,7 +337,12 @@ def stage_campaign(
     msa_path = None
     if cluster_cfg.use_msa and cluster_cfg.refold_backend != "rf3":
         from src.structure_tools import get_sequence_map
-        seq = get_sequence_map(str(staged_structure), target_chain)["sequence"]
+        # get_sequence_map returns {"error": ...} for a missing chain.
+        seq = get_sequence_map(str(staged_structure), target_chain).get("sequence", "")
+        if not seq:
+            raise ClusterError(
+                f"chain {target_chain!r} has no modelled residues in "
+                f"{staged_structure.name} — cannot build the target MSA.")
         try:
             fetched = fetch_target_msa(seq, name=f"{slug}_{target_chain}", cluster_cfg=cluster_cfg)
             # fetch_target_msa's cache lives on THIS machine's local disk

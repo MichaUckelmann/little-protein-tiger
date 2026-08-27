@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""See LPT do something real, in about a minute, for nothing.
+"""See LPT do something real, in a few seconds, for nothing.
 
 No API key, no GPU, no corpus, no foundry — just the base install and a network
 connection. It downloads one structure from RCSB, analyses a real protein
@@ -53,7 +53,10 @@ def fetch_structure(pdb_id: str) -> Path:
 
     dest_dir = _ROOT / "data" / "structures"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{pdb_id.lower()}.cif"
+    # Upper-case: every pipeline reader (_binder_structure_path,
+    # _verify_hotspot_grounding, the structure stage's own download) looks
+    # for <PDB>.cif, so a lower-case file is a second copy the cache misses.
+    dest = dest_dir / f"{pdb_id.upper()}.cif"
     if dest.is_file():
         _note(f"already cached: {dest.relative_to(_ROOT)}")
         return dest
@@ -149,7 +152,7 @@ def _candidate_table(target: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Run a real LPT analysis in ~1 minute, with no keys or GPU.")
+        description="Run a real LPT analysis in ~7 s, with no keys or GPU.")
     ap.add_argument("--pdb", default=DEMO_PDB, help=f"PDB id (default {DEMO_PDB})")
     ap.add_argument("--chains", nargs=2, metavar=("A", "B"), default=list(DEMO_CHAINS),
                     help="the two chains to analyse")

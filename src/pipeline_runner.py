@@ -379,10 +379,11 @@ class PipelineRunner:
                 f"'standard' or 'wildcard'."
             )
         self._pathway_mode: str = resolved_mode
-        # "boltzgen" (default, unchanged today) | "foundry" — PPI-track only
-        # (the binder track always runs foundry regardless of this key).
-        # Opt-in per UNIFY_DESIGN_BACKEND_NOTES.md: --workflow ppi still
-        # defaults to BoltzGen; --design-engine foundry hands a
+        # "foundry" (default) | "boltzgen" — PPI-track only (the binder
+        # track always runs foundry regardless of this key). Flipped to
+        # foundry once a real KRAS/RAF1 campaign validated the bridge
+        # end-to-end on GPU; UNIFY_DESIGN_BACKEND_NOTES.md predates that
+        # flip. --design-engine foundry hands a
         # PPI-discovered target off to the same RFD3->solubleMPNN->RF3 stage
         # machine --workflow binder uses, right after PPI's own structure
         # stage (see `_bridge_ppi_to_foundry`). `design.backend` in
@@ -782,6 +783,34 @@ class PipelineRunner:
         for d in dirs.values():
             d.mkdir(parents=True, exist_ok=True)
         return dirs
+
+    def _cluster_slug(self, dirs: dict[str, Path]) -> str:
+        """Name this campaign gets on the SHARED cluster filesystem.
+
+        Must be unique across projects. `dirs["binder"].parent.name` is the
+        run directory, which for a project run is literally "round-1" — so
+        every project's first round staged into the same directory under
+        `pipeline_root`, overwriting each other's spec and mixing outputs.
+        A site trial nests one level deeper (`binder/sites/<site_id>/binder`),
+        so the site id is carried too.
+
+        `_run_cluster_stage` (which stages) and `_cluster_paths_for_mode`
+        (which reads back) must derive this identically — hence one method.
+        """
+        parent = dirs["binder"].parent
+        site = parent.name if parent.parent.name == "sites" else None
+        if self._project is not None:
+            base = f"{self._project.slug}_{self._round_id or 'round'}"
+        elif site is not None:
+            base = parent.parent.parent.name
+        else:
+            base = parent.name
+        base = base or "campaign"
+        return f"{base}_{site}" if site else base
+
+    def _is_site_dirs(self, dirs: dict[str, Path]) -> bool:
+        """True when `dirs` belongs to a `--trial-sites` site, not the top level."""
+        return dirs["binder"].parent.parent.name == "sites"
 
     def _load_binder_handoff(self, binder_dir: Path, stage: str) -> dict[str, str]:
         """Parse a prior binder stage's handoff from its .md, for resume."""
@@ -1241,11 +1270,16 @@ class PipelineRunner:
         path = ba1 if ba1.exists() else structures_dir / f"{pdb_id.upper()}.cif"
         try:
             seq_map = get_sequence_map(str(path), chain)
+            # get_sequence_map RETURNS {"error": ...} for a missing/empty
+            # chain rather than raising, so this subscript has to be inside
+            # the guard too — outside it, an absent chain aborted the run
+            # with a bare KeyError instead of the intended fail-open warning.
+            residues = seq_map["residues"]
         except Exception as exc:
             logger.warning(
                 f"could not verify hotspot grounding against {path}: {exc}")
             return
-        by_auth = {r["auth_seq_id"]: r["three_letter"] for r in seq_map["residues"]}
+        by_auth = {r["auth_seq_id"]: r["three_letter"] for r in residues}
 
         mismatches = []
         for h in residues:
@@ -1612,7 +1646,7 @@ class PipelineRunner:
         ccfg = ClusterConfig.from_cfg(self.config)
         _, spans = parse_contig(trim.contig)
         target_chain = spans[0][0]
-        slug = dirs["binder"].parent.name or "campaign"
+        slug = self._cluster_slug(dirs)
 
         paths, plan = stage_campaign(
             spec_path, trim, dirs, ccfg, mode=mode, slug=slug,
@@ -1635,14 +1669,21 @@ class PipelineRunner:
                 f"Resume with the command below once the SLURM jobs finish.",
                 {"run_dir": str(paths.run_dir), "resume_stage": mode})
             self._record_stage(mode, "awaiting_user", out, stage=mode)
+            proj = self._project.slug if self._project else "<slug>"
             resume_cmd = (
+                # resume_cluster_calibration.py's --site is a directory name
+                # under binder/sites/, so it only applies to a site trial.
                 f"python scripts/resume_cluster_calibration.py "
-                f"--project {self._project.slug if self._project else '<slug>'} "
-                f"--site {slug} --n-batches {plan.n_batches} --n-gpus {plan.n_gpus}"
+                f"--project {proj} --site {dirs['binder'].parent.name} "
+                f"--n-batches {plan.n_batches} --n-gpus {plan.n_gpus}"
+                if mode == "calibration" and self._is_site_dirs(dirs) else
+                f"python scripts/run_pipeline.py --project {proj} "
+                f"--workflow binder --start-from {mode} --compute cluster"
                 if mode == "calibration" else
                 # No standalone resume script for other modes yet — this is
                 # the one the current workflow needs; ask if production ever
                 # needs the same treatment.
+                f"python scripts/run_pipeline.py --project {proj} "
                 f"--workflow binder --start-from {mode}  # NOTE: only works "
                 f"for a top-level (non-site-trial) campaign"
             )
@@ -1856,9 +1897,16 @@ class PipelineRunner:
         """
         from src.cluster_runner import ClusterPaths
 
-        slug = dirs["binder"].parent.name or "campaign"
-        run_name = f"{slug}_{mode}"
-        run_dir = cluster_cfg.pipeline_root / cluster_cfg.stage_subdir / run_name
+        stage_root = cluster_cfg.pipeline_root / cluster_cfg.stage_subdir
+        run_name = f"{self._cluster_slug(dirs)}_{mode}"
+        run_dir = stage_root / run_name
+        if not run_dir.exists():
+            # Campaigns staged before the slug carried the project name live
+            # under the bare round/site directory name. Re-attach to one
+            # rather than staging a duplicate beside it.
+            legacy = f"{dirs['binder'].parent.name or 'campaign'}_{mode}"
+            if (stage_root / legacy).exists():
+                run_name, run_dir = legacy, stage_root / legacy
         return ClusterPaths(
             run_name=run_name, run_dir=run_dir,
             spec_path=run_dir / "unused.json",

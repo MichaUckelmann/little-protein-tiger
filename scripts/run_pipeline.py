@@ -2,8 +2,12 @@
 """
 CLI entry point for the LittleProteinTiger programmatic design pipeline.
 
-Chains four stages automatically:
-  pathway-expert -> complex-structure-analysis -> molecular-biology-expert -> protein-design-script
+Chains the stages automatically, in PipelineRunner.STAGE_ORDER order:
+  pathway-expert -> molecular-biology-expert -> complex-structure-analysis
+    -> the design backend selected by design.backend / --design-engine
+       (foundry by default: bridges into the binder track's RFD3 ->
+       solubleMPNN -> RF3 stages; boltzgen: protein-design-script ->
+       design_runner -> ranking -> design-analyst)
 
 Each stage writes a report to the run directory and passes a machine-readable
 '### PIPELINE HANDOFF' block to the next stage.
@@ -106,7 +110,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--start-from",
         choices=[
-            "pathway", "structure", "literature", "design",
+            # ppi-workflow stages, in PipelineRunner.STAGE_ORDER order
+            "pathway", "literature", "structure", "design",
+            "execution", "analysis", "summary",
             # binder-workflow stages (used with --workflow binder)
             "target_intel", "interface", "trim", "binder_spec",
             "pilot", "calibration", "production", "binder_scoring",
@@ -186,13 +192,15 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="design_engine",
         help=(
             "--workflow ppi only (--workflow binder always runs foundry "
-            "regardless of this). 'boltzgen' (default) is today's PPI design/"
-            "execution/analysis path unchanged. 'foundry' hands the "
+            "regardless of this). 'foundry' (the default) hands the "
             "PPI-discovered target off to the same RFD3->solubleMPNN->RF3 "
             "stage machine --workflow binder uses, right after the PPI "
-            "structure stage — requires --project, since it enters multi-day "
-            "GPU stages. Default without this flag: design.backend in "
-            "config.yaml (itself 'boltzgen' unless changed)."
+            "structure stage — it requires --project, since it enters "
+            "multi-day GPU stages. 'boltzgen' selects the older PPI design/"
+            "execution/analysis path unchanged, and is selected automatically "
+            "by --modality cyclic_peptide, which RFD3 cannot build. Default "
+            "without this flag: design.backend in config.yaml (itself "
+            "'foundry' unless changed)."
         ),
     )
     p.add_argument(
@@ -479,10 +487,14 @@ def main() -> int:
             "(a path to a prior stage output file)."
         )
 
-    if is_binder and args.success_metric:
+    # A --workflow ppi run with design.backend: foundry bridges into the
+    # binder track, so these two reach the same stages a binder run does.
+    # Every other binder-track flag below is already passed unconditionally.
+    runs_foundry = is_binder or design_engine == "foundry"
+    if runs_foundry and args.success_metric:
         config.setdefault("design", {}).setdefault(
             "binder_ranking", {})["success_metric"] = args.success_metric
-    if is_binder and args.n_gpus:
+    if runs_foundry and args.n_gpus:
         config.setdefault("design", {}).setdefault(
             "cluster", {})["n_gpus"] = args.n_gpus
 

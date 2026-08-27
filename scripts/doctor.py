@@ -108,8 +108,9 @@ def check_interpreter(rep: Report) -> None:
     rep.add("Python", FAIL if not ok else (WARN if newer else OK),
             f"{v.major}.{v.minor}.{v.micro}"
             + ("" if sys.prefix != sys.base_prefix else "  (not in a venv)"),
-            "LPT requires Python 3.12+ (pyproject requires-python)." if not ok
-            else ("Tested on 3.12. On 3.13+ behind a TLS-inspecting proxy, "
+            "LPT requires Python 3.12-3.14 (pyproject requires-python)." if not ok
+            else ("Tested in CI on 3.12 and 3.13. On 3.13+ behind a "
+                  "TLS-inspecting proxy, "
                   "downloads can fail with 'Missing Authority Key Identifier' — "
                   "3.13 enforces stricter certificate rules and a CA bundle does "
                   "not help. Use python3.12 if you hit that." if newer else ""),
@@ -232,12 +233,16 @@ def check_embedding_cache(rep: Report) -> None:
 
 
 def check_gpu(rep: Report) -> None:
+    # Same tuple check_foundry makes: with design.backend: foundry a PPI run
+    # bridges into the very same GPU stages the binder track runs.
+    tracks = ("binder",) if _ppi_engine() != "foundry" else ("binder", "ppi")
     exe = shutil.which("nvidia-smi")
     if not exe:
         rep.add("GPU", FAIL, "nvidia-smi not found",
-                "The binder track needs a CUDA GPU (>=32 GB recommended). "
-                "Everything else runs CPU-only.",
-                tracks=("binder",))
+                "The design stages need a CUDA GPU (>=32 GB recommended); "
+                "with design.backend: foundry that includes the ppi track. "
+                "Corpus and literature work runs CPU-only.",
+                tracks=tracks)
         return
     rc, line = _run([exe, "--query-gpu=name,memory.total",
                      "--format=csv,noheader"])
@@ -255,17 +260,18 @@ def check_gpu(rep: Report) -> None:
             f"{name.strip()}, {gb:.0f} GB",
             "" if gb >= 31.0 else
             "config.yaml assumes ~32 GB; smaller cards may OOM on large targets.",
-            tracks=("binder",))
+            tracks=tracks)
 
 
 def check_disk(rep: Report) -> None:
+    tracks = ("binder",) if _ppi_engine() != "foundry" else ("binder", "ppi")
     free_gb = shutil.disk_usage(_ROOT).free / 2**30
     rep.add("Free disk", OK if free_gb >= 120 else WARN,
             f"{free_gb:.0f} GB at {_ROOT}",
             "" if free_gb >= 120 else
             "A full production campaign needs ~120 GB (~2.5 MB per RF3 design). "
             "plan_campaign will clamp the campaign to fit.",
-            tracks=("binder",))
+            tracks=tracks)
 
 
 def check_foundry(rep: Report) -> None:

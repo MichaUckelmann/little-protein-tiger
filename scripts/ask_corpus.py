@@ -127,7 +127,16 @@ def run_agentic_loop(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Interactive corpus analysis agent (Claude + semantic search)."
+        description="Interactive corpus analysis agent (Claude + semantic "
+                    "search). Requires ANTHROPIC_API_KEY — this script talks "
+                    "to Claude directly and has no Gemini path."
+    )
+    parser.add_argument(
+        "query",
+        nargs="?",
+        default=None,
+        help="Optional first question. Without it, the agent starts empty and "
+             "prompts for one. Either way it stays interactive afterwards.",
     )
     parser.add_argument(
         "--config",
@@ -160,13 +169,18 @@ def main() -> None:
     print("Ask a question, or press Enter / type 'quit' to exit.\n")
 
     messages: list[dict] = []
+    seed = args.query
 
     while True:
-        try:
-            user_input = input("You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye.")
-            break
+        if seed is not None:
+            user_input, seed = seed.strip(), None
+            print(f"You: {user_input}")
+        else:
+            try:
+                user_input = input("You: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nGoodbye.")
+                break
 
         if not user_input or user_input.lower() in ("quit", "exit"):
             print("Goodbye.")
