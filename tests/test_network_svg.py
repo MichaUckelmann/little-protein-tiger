@@ -77,3 +77,64 @@ def test_tiny_graphs_lay_out(n):
     nodes = NODES[:n]
     edges = [e for e in EDGES if e.source in nodes and e.target in nodes]
     assert len(layout(nodes, edges)) == n
+
+
+# --- alias-aware seeding --------------------------------------------------
+# The map is drawn on RAW graph nodes, one per name; the persisted DepMap edge
+# index collapses those by gene symbol first. Seeding on the literal string
+# therefore saw a smaller graph than the index had — the two components
+# disagreed about the same data. These pin the fix.
+
+import networkx as nx  # noqa: E402
+
+from src._corpus_graph import _resolve_seeds, _symbol_to_nodes  # noqa: E402
+
+
+def _alias_graph() -> nx.Graph:
+    """YAP1 scattered over three aliases, as the real graph scatters it."""
+    g = nx.Graph()
+    for node, sym in [("YAP1", "YAP1"), ("YAP", "YAP1"), ("YAP/TAZ", "YAP1"),
+                      ("ILK", "ILK"), ("TEAD3", "TEAD3"), ("TEAD1", "TEAD1"),
+                      ("UNRELATED", "SOX2")]:
+        g.add_node(node, human_gene_symbol=sym)
+    g.add_edge("YAP1", "TEAD1")     # reachable from the literal string
+    g.add_edge("YAP", "ILK")        # only via an alias
+    g.add_edge("YAP/TAZ", "TEAD3")  # only via an alias
+    return g
+
+
+def test_seeding_collects_every_alias_of_the_gene():
+    got, missing = _resolve_seeds(_alias_graph(), ["YAP1"])
+    assert set(got) == {"YAP1", "YAP", "YAP/TAZ"}
+    assert missing == []
+
+
+def test_alias_seeding_reaches_partners_the_literal_string_misses():
+    g = _alias_graph()
+    nb = {n for s in _resolve_seeds(g, ["YAP1"])[0] for n in g.neighbors(s)}
+    assert {"TEAD1", "ILK", "TEAD3"} <= nb
+
+
+def test_opting_out_reproduces_the_old_narrower_behaviour():
+    g = _alias_graph()
+    got, _ = _resolve_seeds(g, ["YAP1"], alias_aware=False)
+    assert got == ["YAP1"]
+    nb = {n for s in got for n in g.neighbors(s)}
+    assert "ILK" not in nb
+
+
+def test_unrelated_genes_are_not_swept_in():
+    got, _ = _resolve_seeds(_alias_graph(), ["YAP1"])
+    assert "UNRELATED" not in got
+
+
+def test_symbol_index_is_cached_on_the_graph():
+    g = _alias_graph()
+    assert _symbol_to_nodes(g) is _symbol_to_nodes(g)
+    assert set(_symbol_to_nodes(g)["YAP1"]) == {"YAP1", "YAP", "YAP/TAZ"}
+
+
+def test_a_seed_with_no_symbol_still_resolves_itself():
+    g = nx.Graph()
+    g.add_node("ORPHAN")  # no human_gene_symbol attribute at all
+    assert _resolve_seeds(g, ["ORPHAN"])[0] == ["ORPHAN"]

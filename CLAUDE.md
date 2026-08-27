@@ -523,6 +523,38 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 - **Closed enums**: `study_type` and `study_category` are validated against the schema — adding a new category means updating both the schema and any pathway-expert / complex-expert skill prompts that filter on it.
 - **Curator output is strict JSON only**, no prose. Parsing in `src/curator.py` will fail loudly otherwise.
 
+## Identifier resolution: official symbols win, ambiguity is refused
+
+`src/identifier_normalizer.py` resolves a raw protein name to a human gene
+symbol through ordered tiers (exact HGNC symbol -> curated biology alias ->
+paralog-default -> HGNC alias -> prev_symbol -> UniProt ...). Two rules keep it
+from inventing answers, both added after the corpus was found resolving `NAP1`
+(a yeast name) to `ACOT8` and `p65` to `GORASP1`:
+
+1. **A synonym may never be another gene's approved symbol.** `BAP1` is listed
+   as a synonym of `RNF2` and is also the approved symbol of the deubiquitinase,
+   so the synonym link is dropped at load time and `BAP1` always means BAP1.
+   ~1,270 such collisions are dropped; `resolution_stats()` reports the count.
+2. **If several approved genes still claim a synonym, resolve to nothing.**
+   The old behaviour took the alphabetically-first claimant, which was right
+   about half the time by luck. A refusal is final — it does NOT fall through to
+   the UniProt tiers, which carry unreviewed entries literally gene-named
+   `NAP1` (Q540F3) and `P65` (O43245).
+
+`_BIOLOGY_ALIASES` (tier `curated_alias`, which runs BEFORE the alias tier) is
+the escape hatch for names where refusing would lose an answer that is not
+actually in doubt — `PD-1`, `p21`, `p62`, `p65`, `KAP1`, `NRF2`, `CAF-1` and
+others, each commented with the competing symbols. Add to it rather than
+loosening the two rules. `NAP1`, `RAS`, `AP-1`, `TFIIH`, `MLL4`, `ISWI` are
+deliberately left unresolved.
+
+**The corpus on disk still carries the old resolutions.** These rules apply at
+resolve time; `data/fingerprints/*.json` keeps whatever
+`normalize_identifiers.py` wrote. Re-running the backfill would change ~2,171
+of 74,414 identifier entries (2.9%) — ~390 corrections, the rest becoming
+unresolved — and the graph, edge index and clusters would need rebuilding after
+it.
+
 ## Configuration layering
 
 `config.yaml` is the main config; alternates (`config_search_expansion.yaml`, `config_flagship_journals.yaml`, `config_with_complexes.yaml`) are passed via `--config` to `fetch_papers.py` for targeted searches without polluting the primary keyword list. The current main config is focused on histone chaperones / chromatin biology — keyword sets rotate as research focus shifts.
@@ -581,6 +613,14 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
   section above ("Two reports, one design system").
 - Configs: alternates passed via `--config` to `fetch_papers.py`. `curate_papers.py`
   has no `--config` flag; it reads the main `config.yaml`.
+- `src/identifier_normalizer.py` (resolution) ⇄ `src/_corpus_graph.py`
+  `_resolve_seeds` (alias-aware seeding) ⇄ `src/edge_index.py` (collapses edges by
+  gene symbol) — all three must agree on what counts as one gene. A map is drawn on
+  RAW graph nodes, one per name, while the persisted edge index collapses aliases
+  first; before `_resolve_seeds` became alias-aware a map seeded on `YAP1` saw 169
+  neighbours where the index had 291, so the two disagreed about the same data.
+- `src/network_svg.py` — the single renderer for every interaction/DepMap map; see
+  its module docstring for the visual grammar. Don't hand-roll a second one.
 - `_verify_target_chain_assignment` ⇄ `_verify_ppi_chain_assignment` ⇄ `_verify_hotspot_grounding`
   — the PD-L1/8ZNL guards. Now called from BOTH `_stage_binder_interface` (binder) and
   `_stage_structure` (PPI); a future stage that also calls `complex-structure-analysis`

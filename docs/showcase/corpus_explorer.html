@@ -271,7 +271,13 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
     <figcaption>27 genes and 40 edges, drawn from the Cytoscape export this
     session produced (<code>mesothelioma_target_network.cyjs</code>, 172 nodes / 295 edges
     in full). Edge width is how often the pair is co-mentioned in the corpus; colour and
-    opacity are the DepMap co-essentiality correlation. Hover any edge for its real values.</figcaption>
+    opacity are the DepMap co-essentiality correlation. Hover any edge for its real values.
+    <br><br><strong>The map is a literature map.</strong> Its nodes and edges come from
+    co-mention in the corpus; DepMap only <em>colours</em> edges that are already there. So
+    a gene can be strongly co-essential with YAP1 and still be absent here — ARHGEF7
+    (r&nbsp;=&nbsp;+0.29) is in the table further down and not on this map, because no paper
+    in this corpus mentions it alongside YAP1. That is the blind spot, not a
+    rendering choice.</figcaption>
   </div>
   <div class="two" style="margin-top:26px">
     <div>
