@@ -30,6 +30,10 @@ RFD3_TARGET_CHAIN = "B"
 _CONTIG_SPAN = re.compile(r"^([A-Za-z])(-?\d+)-(-?\d+)$")
 
 
+# One region may declare at most this many hotspots; see
+# skills/complex-structure-analysis/SKILL.md Phase 2 Step 2b.
+MAX_HOTSPOTS = 12
+
 class SpecError(RuntimeError):
     """The spec is malformed, or does not match the structure it points at."""
 
@@ -87,6 +91,21 @@ def build_rfd3_spec(
         raise SpecError(
             "no hotspots — RFD3 would place the binder by centre of mass and the "
             "campaign would not target the intended epitope")
+
+    # The interface skill caps a region at 12 (SKILL.md Phase 2 Step 2b). This
+    # is the backstop for a drifted prompt: an oversized set is not an error —
+    # the campaign still runs — but it quietly weakens the engagement gate,
+    # because RFD3 contacts every hotspot in a 12-set only about half the time
+    # and the rate falls as the set grows. Warn loudly rather than truncate:
+    # choosing WHICH to drop needs the per-residue ddG/BSA the skill had and
+    # this function does not.
+    if len(hotspots) > MAX_HOTSPOTS:
+        logger.warning(
+            f"{len(hotspots)} hotspots declared for {name!r} — above the "
+            f"{MAX_HOTSPOTS}-residue cap the interface skill is meant to apply. "
+            "The campaign will run, but hotspot_engagement becomes harder to "
+            "satisfy and less meaningful; consider splitting into independent "
+            "regions or re-running the interface stage.")
 
     select: dict[str, str] = {}
     for h in hotspots:

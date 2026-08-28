@@ -255,6 +255,22 @@ them without re-reading this list is how they get silently reverted.
   bar (`bar_raised_to` or `requested_bar`) a campaign was actually sized at, not
   the static config default, so the report's "excellent" highlighting always
   matches the verdict that was made.
+- **`hotspot_engagement` is a FRACTION of the declared hotspots, and the gate is
+  0.75, not 1.0.** Requiring every hotspot sounds strict and is mostly self-harm:
+  on the 12-hotspot YAP1/TEAD1 calibration only **49% of RFD3 backbones contacted
+  all twelve themselves**, and 92.5% of refolds engaged at least as many hotspots
+  as their own design did — so a 1.0 gate rejected refolds for missing residues
+  the design never targeted. Over the 1,392 refolds passing every other gate,
+  12/12 kept 738 (median iptm 0.847, dock 1.232) and 9/12 kept 978 (0.842, 1.259):
+  +33% yield for −0.005 iptm, with identical pLDDT in the discarded band. Being a
+  fraction, it scales with however many hotspots a region declares.
+- **One region declares at most 12 hotspots** (`foundry_spec.MAX_HOTSPOTS`, and
+  the rule the interface skill applies in Phase 2 Step 2b: keep the compact
+  hydrophobic cluster, drop rim/polar/backbone-only positions, say what was
+  dropped). More is not stricter — RFD3's hit rate on a full set falls as the set
+  grows, which weakens the engagement gate rather than tightening it.
+  `build_rfd3_spec` warns above the cap rather than truncating: choosing which to
+  drop needs the per-residue ΔΔG/BSA the skill had and the builder does not.
 - **A 300-backbone trial is often too small to size a campaign**, and that is
   measured, not assumed: at the 8TAC rate, 300 backbones gave a usable estimate in
   0/10 random seeds and 1000 in 8/10. Hence `--escalate-to`.

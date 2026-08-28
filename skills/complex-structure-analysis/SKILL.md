@@ -418,6 +418,40 @@ not a replacement for it.
 - Hydrophobic fraction ≥ 0.4
 - Spatial spread ≤ 12 Å (compact, not dispersed)
 - Mean KD score > 1.0
+
+### Step 2b — Cap the set at 12 residues
+
+**A region may declare at most 12 hotspot residues.** Fewer is normal and fine;
+6–10 is the usual useful range.
+
+This is a limit on what the generative model can actually be asked for, not a
+limit on what the interface contains. RFdiffusion3 is given the hotspot set as a
+constraint, and on a 12-residue set only about half its backbones end up
+contacting all twelve — asking for more does not make a binder cover more, it
+just makes the constraint less meaningful and the downstream engagement gate
+less informative.
+
+If more than 12 residues qualify, **choose, and say why in the report**. Rank by,
+in order:
+
+1. **Clustered, not scattered.** Prefer residues that fall in one compact patch —
+   re-run `tool_score_surface_patch` on the candidate subsets and keep the one
+   with the smaller spatial spread. A spread over ~12 Å means you are describing
+   two sites, not one; if both are real, emit them as two independent regions
+   rather than one 12-residue set spanning both.
+2. **Hydrophobic anchor first.** Keep the residues driving the hydrophobic core
+   of the patch (ILE/LEU/VAL/PHE/TYR/TRP/MET, and the `bsa_A2` that goes with
+   them). A patch of charged/polar residues gives a binder little to grip.
+3. **Strongest ΔΔG and BSA.** Within the surviving cluster, keep the largest
+   |`ddg_estimate_kcal_mol`| and the largest `bsa_A2`.
+4. **Literature-validated positions**, where Step 3 found mutagenesis for them —
+   a residue with a measured alanine-scanning cost outranks an equal one without.
+
+Drop residues that are pocket-facing, backbone-only contacts (GLY, or contacted
+only via CA/CB), or at the rim with `bsa_A2` under ~10 Å² — they contribute
+little and spend a slot. State the number considered and the number kept, e.g.
+*"18 interface residues qualified; kept the 11 forming the compact hydrophobic
+patch, dropped 7 rim/polar positions."*
 - Prefer patches where multiple residues have `ddg_estimate_kcal_mol` < −1.0
 
 **Poor patch flags:**
@@ -614,10 +648,13 @@ per region, labelled `### MODEL-READY HOTSPOTS — Region 1` and
 `### MODEL-READY HOTSPOTS — Region 2`. Do NOT merge residues across independent
 regions. Protein-design-script generates a separate submission for each.**
 
+**Hard limit: at most 12 residues per region** (Phase 2 Step 2b). If more
+qualified, the report must say how many were considered and why these were kept.
+
 ```
 ### MODEL-READY HOTSPOTS [DISRUPT]
 
-Target chain <id> — Region <N>: <name> — selected <M> residues:
+Target chain <id> — Region <N>: <name> — selected <M> of <total considered> residues (M ≤ 12):
 
 | Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |
 |---|---|---|---|

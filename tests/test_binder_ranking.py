@@ -130,3 +130,30 @@ def test_end_to_end_reports_survivors_backbones_and_stats():
 def test_empty_input_is_handled():
     result = rank_designs([], top_k=5)
     assert result.survivors == [] and result.top_k == []
+
+
+# --- hotspot engagement is a FRACTION, and the bar is not 1.0 ---------------
+# Gating on "every declared hotspot" rejects designs for residues RFD3 itself
+# never reached: on the 12-hotspot YAP1/TEAD1 calibration only 49% of backbones
+# contacted all twelve, while 92.5% of refolds engaged at least as many as their
+# own design did. 0.75 recovered +33% survivors for -0.005 median ipTM.
+
+def test_engagement_gate_is_a_fraction_below_one():
+    from src.binder_ranking import DEFAULT_THRESHOLDS as D
+    bar = D["hotspot_engagement_min"]
+    assert 0 < bar < 1.0, "1.0 demands every hotspot; see config.yaml for why"
+    assert bar == 0.75
+
+
+def test_a_design_missing_a_couple_of_hotspots_still_passes():
+    from src.binder_ranking import DEFAULT_THRESHOLDS as D
+    bar = D["hotspot_engagement_min"]
+    assert 9 / 12 >= bar          # 9 of 12 survives
+    assert 7 / 12 < bar           # 7 of 12 does not
+    assert 7 / 9 >= bar           # the same fraction scales to a 9-hotspot set
+
+
+def test_the_spec_builder_caps_hotspots_at_the_same_number():
+    """The skill caps a region at 12; the builder warns above it."""
+    from src.foundry_spec import MAX_HOTSPOTS
+    assert MAX_HOTSPOTS == 12
