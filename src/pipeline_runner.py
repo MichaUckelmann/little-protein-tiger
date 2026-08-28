@@ -1737,9 +1737,20 @@ class PipelineRunner:
         cfg = self._binder_cfg()
         paths = self._binder_paths(dirs, mode)
         paths.mkdirs()
-        observed = prefilter_rate_observed(paths)
+        # This stage's OWN directory is empty when it is being planned, so
+        # prefilter_rate_observed() returns 0 on a fresh stage and the fallback
+        # decides the estimate. Prefer what the trial actually measured over the
+        # generic default: on YAP1/TEAD1 the real rate was 0.83 while the
+        # default is 0.59, which under-called production by ~380 refolds and
+        # under-called the disk and GPU-hour estimates with it. This does not
+        # affect completion — progress() swaps in the real MPNN count once MPNN
+        # has written — but the disk CLAMP is computed from the estimate, so a
+        # campaign sized near the budget could be under-clamped.
+        observed = (prefilter_rate_observed(paths)
+                    or self._persisted_prefilter_rate(dirs)
+                    or 0.59)
         plan = plan_campaign(cfg, paths, mode=mode, n_batches=n_batches,
-                             prefilter_rate=observed or 0.59)
+                             prefilter_rate=observed)
 
         if paths.driver_path.exists():
             job = resume(paths, cfg, plan)
@@ -2042,6 +2053,23 @@ class PipelineRunner:
         if res.verdict not in ("SCALE_UP", "SCALE_UP_PARTIAL") or not designs:
             return None
         return max(1, int(designs / max(dbs, 1) / max(n_gpus, 1)))
+
+    def _persisted_prefilter_rate(self, dirs: dict[str, Path]) -> float:
+        """The prefilter rate the calibration trial measured, or 0.0.
+
+        `_stage_calibration` writes it to calibration.json alongside the batch
+        counts. Reading it back is what lets a production stage planned in a
+        FRESH process (the normal `--start-from production` case) size itself
+        on measurement rather than on the generic default.
+        """
+        path = dirs["calibration"] / "calibration.json"
+        try:
+            rate = float(json.loads(path.read_text(encoding="utf-8"))
+                         .get("prefilter_rate") or 0.0)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return 0.0
+        # A nonsense rate would silently distort every downstream estimate.
+        return rate if 0.0 < rate <= 1.0 else 0.0
 
     def _resolve_production_plan(self, calib: dict | None, dirs: dict[str, Path],
                                   n_batches: int | None) -> tuple[int | None, str]:

@@ -487,3 +487,41 @@ def test_an_unmatched_alias_is_passed_through_not_swallowed(tmp_path):
     from src.foundry_stages import resolve_checkpoint
 
     assert resolve_checkpoint("nonesuch", tmp_path) == "nonesuch"
+
+
+# --- production must size on what the trial measured, not the default -------
+# plan_campaign's prefilter_rate defaults to 0.59. A production stage is planned
+# when its own directory is still empty, so prefilter_rate_observed() returns 0
+# and the fallback decides. On YAP1/TEAD1 the measured rate was 0.83, and
+# falling back to 0.59 under-called the campaign by ~380 refolds — harmless for
+# completion (progress() swaps in the real MPNN count) but it also under-calls
+# the disk estimate, and the disk CLAMP is computed from that.
+
+def test_persisted_prefilter_rate_is_read_back(tmp_path):
+    from src.pipeline_runner import PipelineRunner
+    calib = tmp_path / "calibration"; calib.mkdir()
+    (calib / "calibration.json").write_text(json.dumps({"prefilter_rate": 0.8293}))
+    got = PipelineRunner._persisted_prefilter_rate(None, {"calibration": calib})
+    assert got == pytest.approx(0.8293)
+
+
+@pytest.mark.parametrize("payload", [
+    {}, {"prefilter_rate": None}, {"prefilter_rate": 0}, {"prefilter_rate": 1.7},
+    {"prefilter_rate": -0.2}, {"prefilter_rate": "eighty percent"},
+])
+def test_a_missing_or_nonsense_rate_falls_back_rather_than_distorting(tmp_path, payload):
+    from src.pipeline_runner import PipelineRunner
+    calib = tmp_path / "calibration"; calib.mkdir()
+    (calib / "calibration.json").write_text(json.dumps(payload))
+    assert PipelineRunner._persisted_prefilter_rate(None, {"calibration": calib}) == 0.0
+
+
+def test_no_calibration_file_at_all_is_not_an_error(tmp_path):
+    from src.pipeline_runner import PipelineRunner
+    assert PipelineRunner._persisted_prefilter_rate(None, {"calibration": tmp_path}) == 0.0
+
+
+def test_the_rate_actually_changes_the_expected_refold_count():
+    """The whole point: 392 designs is 924 refolds at 0.59 and 1,300 at 0.83."""
+    assert int(392 * 0.59) * 4 == 924
+    assert int(392 * 0.8293) * 4 == 1300

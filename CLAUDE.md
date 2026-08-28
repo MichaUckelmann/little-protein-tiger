@@ -289,6 +289,17 @@ them without re-reading this list is how they get silently reverted.
 - **`os.scandir`, never `ls` or a glob.** Stage directories hold 50–100k entries;
   `ls | wc -l` in a pipeline silently reports 0, which reads as "this stage produced
   nothing" and aborts a completed run.
+- **`expected_rf3` is an ESTIMATE until MPNN writes, and `4 sequences per design`
+  applies to prefilter SURVIVORS, not to every design.** `plan_campaign` computes
+  `int(expected_rfd3 * prefilter_rate) * n_seq`, so 392 designs plans as 924
+  refolds at the 0.59 default and 1,300 at a measured 0.83. It cannot end a
+  campaign early — `progress()` does `expected_rf3 = n_mpnn or plan.expected_rf3`,
+  so the real MPNN count supersedes the estimate as soon as it exists — but the
+  disk CLAMP is computed from the estimate, so an under-called rate can
+  under-clamp a campaign sized near the budget. A stage's own directory is empty
+  when it is planned, so `prefilter_rate_observed()` returns 0 there;
+  `_persisted_prefilter_rate` reads the rate the trial measured back out of
+  `calibration.json` instead of falling through to the default.
 - **Disk, not GPU, is the binding constraint**: ~2.5 MB per RF3 design directory,
   ~120 GB for a full production campaign. `plan_campaign` clamps `n_batches` to the
   disk budget, and `prune_confidences` deletes PAE matrices for non-survivors.
