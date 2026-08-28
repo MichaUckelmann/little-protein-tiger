@@ -17,7 +17,7 @@ OUT = HERE / "corpus_explorer.html"
 
 # ---------------------------------------------------------------- real data
 CORPUS = dict(indexed=55689, downloaded=14307, curated=11055, fingerprints=11052,
-              lit_nodes=18432, lit_edges=20658, clusters=362)
+              lit_nodes=18432, lit_edges=20658, clusters=344)
 YEARS = [(2008,92),(2009,184),(2010,197),(2011,230),(2012,252),(2013,312),(2014,338),
          (2015,376),(2016,641),(2017,794),(2018,844),(2019,814),(2020,954),(2021,957),
          (2022,982),(2023,887),(2024,897),(2025,914),(2026,267)]
@@ -183,7 +183,7 @@ HTML = f"""{_HEAD}
     <div class="stat"><b>55,689</b><span>papers indexed</span></div>
     <div class="stat"><b>11,055</b><span>curated fingerprints</span></div>
     <div class="stat"><b>20,658</b><span>interaction edges</span></div>
-    <div class="stat"><b>362</b><span>co-functional clusters</span></div>
+    <div class="stat"><b>344</b><span>co-functional clusters</span></div>
     <div class="stat"><b>65 s</b><span>to answer</span></div>
   </div>
 </header>
@@ -322,7 +322,7 @@ HTML = f"""{_HEAD}
       <p style="font-size:.92rem">The two graphs stay separate on purpose. The literature
       graph is what has been <em>written down</em>: 18,432 proteins, 20,658 co-mention
       edges, rebuilt from the fingerprints on every query. The DepMap index is what CRISPR
-      screens <em>measured</em>: 1,411 genes, 1,304 edges, each with a real correlation and
+      screens <em>measured</em>: 1,342 genes, 1,248 edges, each with a real correlation and
       sample size. An edge in both is a much stronger claim than an edge in either.</p>
     </div>
   </div>
