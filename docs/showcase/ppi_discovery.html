@@ -255,15 +255,18 @@ td.unc{font-size:.82rem;color:var(--muted);font-style:italic}
   experiment that decides the campaign: 481 backbones, 1,924 refolds, counting how many
   designs actually cleared the success bar rather than assuming a rate.</p>
   <p>It also cleared a first for this pipeline. TEAD1 needed no trimming — all 207
-  modelled residues were already inside budget — but 3KYS is itself missing residues
-  230–238 and 344, disordered loops with no density, so the target reaches RFD3 in
-  <strong>three pieces</strong>. The target is fixed conditioning rather than something
+  modelled residues were already inside budget — but 3KYS has a disordered stretch at
+  230–238 with no density, so the target reaches RFD3 in <strong>more than one
+  piece</strong>. The target is fixed conditioning rather than something
   the model builds, so the gaps are not its problem; what they do change is the
   prefilter's chain-break count, which is <em>derived</em> from the segment number rather
   than hardcoded. A hardcoded limit would have rejected every design. It held —
   <strong>86.2% of backbones cleared the prefilter</strong> — and the refolded target
-  superposes onto the deposited chain at <strong>0.11 Å</strong> Cα RMSD, so the three
-  pieces have not drifted apart.</p>
+  superposes onto the deposited chain at <strong>0.11 Å</strong> Cα RMSD, so the pieces
+  have not drifted apart. (This campaign saw three segments rather than two: benchmarking
+  the trim afterwards showed it was deleting TEAD1's palmitoylated cysteine at 344,
+  because that residue's name is not in gemmi's amino-acid table. Fixed — chain
+  membership now follows the backbone, not the name — but this run predates it.)</p>
   <div class="two">
     <div>
       <p>The measured backbone hit rate was <strong>18.50%</strong> (89 of 481, 95% Wilson

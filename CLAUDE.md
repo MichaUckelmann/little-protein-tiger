@@ -338,10 +338,19 @@ them without re-reading this list is how they get silently reverted.
   real binder breaks stays at 1 either way; a hardcoded 1 against a multi-segment target
   rejects every design.
 - **A trim is often a no-op, and that is a result.** PD-L1 kept 117 of 117 residues and
-  YAP1/TEAD1 207 of 207 — deciding a target is already within budget is as much this
-  stage's job as cutting one down. YAP1/TEAD1's three segments came from gaps in the
-  DEPOSITED structure (3KYS is missing 230–238 and 344), not from any cut, so a
-  multi-segment contig does not imply anything was trimmed away.
+  YAP1/TEAD1 208 of 208 — deciding a target is already within budget is as much this
+  stage's job as cutting one down, so a multi-segment contig does not imply anything was
+  trimmed away. 3KYS has exactly ONE real gap, the disordered 230–238; the campaign's
+  third segment was an artifact of the trim deleting A344, below.
+- **Chain membership is decided by BACKBONE, not by name** (`structure_tools.
+  is_chain_residue`). gemmi's chemical-component table does not know every modification a
+  depositor may make: 3KYS A344 is `P1L`, S-palmitoyl-cysteine, reported as
+  `kind=UNKNOWN, is_amino_acid=False`, yet it carries a full N/CA/C backbone 3.86 Å and
+  3.85 Å from residues 343 and 345. Filtering on the NAME deleted it, which removed the
+  palmitoylation the entire TEAD-inhibitor literature is about AND split TEAD1 into a
+  third segment that cost a chain break. Both the residue enumeration and `write_trimmed`
+  now keep anything carrying N/CA/C, whatever it is called — found by benchmarking the
+  trim across 19 complexes, not by a test.
 - **Solvent never reaches the design or the interface maths.** `write_trimmed` drops
   waters and crystallisation additives (`structure_tools.is_solvent_or_additive` — a
   conservative denylist that checks `_is_protein_residue` FIRST, so MSE/SEP/TPO/PTR/PCA

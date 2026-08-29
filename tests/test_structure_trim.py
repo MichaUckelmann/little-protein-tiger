@@ -315,3 +315,63 @@ def test_case_and_whitespace_do_not_defeat_it():
     assert is_solvent_or_additive(" hoh ")
     assert not is_solvent_or_additive("")
     assert not is_solvent_or_additive(None)  # type: ignore[arg-type]
+
+
+# --- the backbone rule ------------------------------------------------------
+# Membership of the chain is decided by GEOMETRY, not by name. gemmi's
+# chemical-component table does not know every modification a depositor may
+# make: 3KYS residue A344 is P1L, S-palmitoyl-cysteine, reported as
+# kind=UNKNOWN / is_amino_acid=False, yet it carries a full N/CA/C backbone at
+# 3.86 A and 3.85 A from residues 343 and 345. Filtering on the name deleted it,
+# which BOTH removed the palmitoylation the TEAD-inhibitor literature is about
+# AND split the chain into a third segment that cost a chain break downstream.
+
+from src.structure_tools import is_chain_residue  # noqa: E402
+
+
+class _FakeAtom:
+    pass
+
+
+class _FakeRes:
+    def __init__(self, name, atoms):
+        self.name, self._atoms = name, set(atoms)
+
+    def find_atom(self, name, altloc):
+        return _FakeAtom() if name in self._atoms else None
+
+
+def test_a_backbone_bearing_residue_is_chain_whatever_it_is_called():
+    assert is_chain_residue(_FakeRes("P1L", ("N", "CA", "C", "SG")))
+    assert is_chain_residue(_FakeRes("ZZZ", ("N", "CA", "C")))
+
+
+def test_a_recognised_residue_is_chain_even_with_atoms_missing():
+    """A poorly resolved sidechain, or a CA-only trace, is still chain."""
+    assert is_chain_residue(_FakeRes("ALA", ("CA",)))
+    assert is_chain_residue(_FakeRes("MSE", ()))
+
+
+def test_a_free_ligand_is_not_chain():
+    assert not is_chain_residue(_FakeRes("HOH", ("O",)))
+    assert not is_chain_residue(_FakeRes("GTP", ("PA", "PB", "O5'", "C5'")))
+    assert not is_chain_residue(_FakeRes("EDO", ("C1", "O1", "C2", "O2")))
+
+
+def test_a_partial_backbone_is_not_enough():
+    """N+CA without C is a fragment, not a linked residue."""
+    assert not is_chain_residue(_FakeRes("XYZ", ("N", "CA")))
+
+
+@pytest.mark.skipif(not Path("data/structures/3KYS_ba1.cif").exists(),
+                    reason="3KYS not in the structure cache")
+def test_the_real_palmitoyl_cysteine_survives_a_trim(tmp_path):
+    import gemmi
+    from src.structure_trim import write_trimmed
+    out = tmp_path / "t.cif"
+    write_trimmed(Path("data/structures/3KYS_ba1.cif"), out,
+                  {"A": list(range(195, 412))})
+    st = gemmi.read_structure(str(out))
+    names = {r.name for c in st[0] for r in c}
+    assert "P1L" in names, "the palmitoylated cysteine was deleted again"
+    assert "HOH" not in names, "solvent should still be stripped"

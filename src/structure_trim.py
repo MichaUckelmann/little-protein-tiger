@@ -172,13 +172,16 @@ def chain_residues(path: Path, chain: str) -> list[dict]:
     if ch is None:
         raise TrimError(f"chain {chain!r} not found in {path}")
 
-    from src.structure_tools import _is_protein_residue
+    from src.structure_tools import is_chain_residue
 
     out: list[dict] = []
     for res in ch:
-        # gemmi.Residue has no is_amino_acid(); the tabulated-residue lookup in
-        # structure_tools is the project's existing test, reused here.
-        if not _is_protein_residue(res.name):
+        # Backbone-based, not name-based. gemmi's chemical-component table does
+        # not know every modification a depositor may make — 3KYS A344 is P1L,
+        # S-palmitoyl-cysteine, reported as kind=UNKNOWN — and skipping it here
+        # both drops the modification and splits the chain into an extra
+        # segment, which then costs a chain break downstream.
+        if not is_chain_residue(res):
             continue
         ca = res.find_atom("CA", "*")
         if ca is None:
@@ -927,7 +930,7 @@ def write_trimmed(
     """
     import gemmi
 
-    from src.structure_tools import _is_protein_residue, is_solvent_or_additive
+    from src.structure_tools import is_chain_residue, is_solvent_or_additive
 
     src = _model(structure_path)
     dropped: dict[str, int] = {}
@@ -950,7 +953,10 @@ def write_trimmed(
         for res in ch:
             if allowed is not None and int(res.seqid.num) not in allowed:
                 continue
-            if allowed is not None and not _is_protein_residue(res.name):
+            # Backbone-based, not name-based: a modified residue gemmi's table
+            # does not know (P1L, and anything else a depositor invents) is
+            # still chain, and deleting it opens a spurious segment break.
+            if allowed is not None and not is_chain_residue(res):
                 continue
             # Applies to every kept chain, not just the trimmed one: waters and
             # cryoprotectant have no business in the structure RFD3 conditions

@@ -895,6 +895,26 @@ CRYSTALLISATION_ADDITIVES = frozenset({
 })
 
 
+def is_chain_residue(res) -> bool:
+    """True if this gemmi residue is part of the polypeptide.
+
+    ``_is_protein_residue`` asks gemmi's chemical-component table whether a NAME
+    is an amino acid, and that table does not recognise every modification a
+    depositor may make. 3KYS residue A344 is ``P1L`` — S-palmitoyl-cysteine —
+    which gemmi reports as ``kind=UNKNOWN, is_amino_acid=False`` even though it
+    carries a full N/CA/C backbone and sits at 3.86 A and 3.85 A from residues
+    343 and 345. Filtering on the name alone deleted it, which split TEAD1 into
+    an extra segment AND silently removed the palmitoylation that the whole
+    TEAD-inhibitor literature is about.
+
+    So: trust the geometry, not the dictionary. Anything carrying a backbone is
+    chain, whatever it is called.
+    """
+    if _is_protein_residue(res.name):
+        return True
+    return all(res.find_atom(a, "*") is not None for a in ("N", "CA", "C"))
+
+
 def is_solvent_or_additive(resname: str) -> bool:
     """True for water and common crystallisation additives — never for the chain.
 
