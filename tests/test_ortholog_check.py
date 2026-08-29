@@ -710,3 +710,179 @@ def test_both_transports_use_the_same_view():
         assert "llm_view_interface(result)" in src, f
         assert "json.dumps(result, indent=2)" not in src, \
             f"{f} still pretty-prints a structure-tool result"
+
+
+# ---------------------------------------------------------------------------
+# label_seq_id: a lookup, never a derivation
+# ---------------------------------------------------------------------------
+
+_LSQ_TABLE = (
+    "### MODEL-READY HOTSPOTS\n\n"
+    "| Residue | auth_seq_id | label_seq_id | atoms |\n|---|---|---|---|\n"
+    "| GLU | 256 | 53 | CD,OE1 |\n| VAL | 258 | 55 | CG1,CG2 |\n"
+    "| GLN | 262 | 59 | CD,OE1 |\n| ASP | 265 | 62 | CG,OD1 |\n\n"
+    "#### BoltzGen binding\nbinding: 53,55,59,62\n"
+)
+
+
+def _lsq_runner():
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner.__new__(PipelineRunner)
+    r.config = {"paths": {"structures_dir": "data/structures"}}
+    return r
+
+
+def _cif():
+    from pathlib import Path
+
+    p = Path("data/structures/5GN0_ba1.cif")
+    if not p.exists():
+        pytest.skip("5GN0 not downloaded")
+    return p
+
+
+def test_counted_label_seq_ids_are_replaced_in_table_and_binding_line():
+    """BoltzGen reads `binding:` AS label_seq, so a value the model counted
+    constrains the binder to the wrong residues."""
+    fixed, _ = _lsq_runner()._resolve_unverified_label_seq_ids(
+        _LSQ_TABLE, _cif(), "A")
+    assert "binding: 54,56,60,63" in fixed
+    assert "| 54 |" in fixed and "| 53 |" not in fixed
+
+
+def test_a_uniform_offset_is_reported_as_confabulation_not_as_typos():
+    """Every disagreement identical means the column was DERIVED, not read.
+    Worth separating from a scattered single-residue miss, because it says
+    something about the rest of the report."""
+    _, warns = _lsq_runner()._resolve_unverified_label_seq_ids(
+        _LSQ_TABLE, _cif(), "A")
+    systematic = [w for w in warns if w.startswith("SYSTEMATIC")]
+    assert len(systematic) == 1
+    assert "+1" in systematic[0] and "COUNTING" in systematic[0]
+
+
+def test_a_table_the_parser_cannot_read_raises_instead_of_no_opping():
+    """The failure mode that left `_verify_hotspot_grounding` inert for
+    months: a guard that runs, matches nothing, and tells no one. The table
+    format lives in a SKILL.md that gets edited."""
+    from src.pipeline_runner import PipelineError
+
+    drifted = "### MODEL-READY HOTSPOTS\n\nGLU256 -> label 53\nVAL258 -> label 55\n"
+    with pytest.raises(PipelineError, match="did not match the expected"):
+        _lsq_runner()._resolve_unverified_label_seq_ids(drifted, _cif(), "A")
+
+
+def test_an_unverifiable_chain_raises_when_there_is_a_table_to_verify():
+    from src.pipeline_runner import PipelineError
+
+    with pytest.raises(PipelineError, match="cannot build the auth->label map"):
+        _lsq_runner()._resolve_unverified_label_seq_ids(_LSQ_TABLE, _cif(), "ZZZ")
+
+
+def test_no_table_means_nothing_to_correct_and_nothing_to_raise():
+    text = "no hotspots in this report"
+    out, warns = _lsq_runner()._resolve_unverified_label_seq_ids(
+        text, _cif(), "ZZZ")
+    assert out == text and warns == []
+
+
+def test_both_tracks_correct_the_numbering():
+    """Same skill, same table, same failure — the correction lived only on the
+    PPI track, which is the track-parity gap shape CLAUDE.md documents for the
+    PD-L1 verify guards."""
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    for fn in (PipelineRunner._stage_structure,
+               PipelineRunner._stage_binder_interface):
+        assert "_correct_label_seq_ids" in inspect.getsource(fn), fn.__name__
+
+
+def test_the_correction_is_not_inside_the_swallowing_try():
+    """It used to be, so any exception — including one the correction itself
+    raised — became 'could not parse hotspot residues' and the counted values
+    reached the design spec."""
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    import ast
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(
+        inspect.getsource(PipelineRunner._stage_structure)))
+
+    def calls_within(node):
+        return {n.func.attr for n in ast.walk(node)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+
+    swallowing = [t for t in ast.walk(tree) if isinstance(t, ast.Try)
+                  and any("could not parse hotspot residues" in ast.dump(h)
+                          for h in t.handlers)]
+    assert swallowing, "the swallowing try/except is gone; revisit this test"
+    for t in swallowing:
+        assert "_correct_label_seq_ids" not in calls_within(t), \
+            "the numbering correction is back inside the try that swallows " \
+            "its exceptions as a warning"
+    assert "_correct_label_seq_ids" in calls_within(tree)
+
+
+def test_a_structure_without_label_seq_declares_it_rather_than_inventing_one():
+    """
+    label_seq is an mmCIF concept: EVERY residue of a PDB-format file has
+    none — including `trim/trimmed.pdb`, which this pipeline writes itself and
+    hands to RFD3 — and a real mmCIF still has none on het rows (5 of 227 on
+    5GN0). The map used to fall back to the residue's 1-indexed position,
+    which is the very counting this guard exists to catch, wearing a lab coat:
+    on a PDB input it replaced the model's counted numbers with different
+    counted numbers and reported the column verified.
+    """
+    from pathlib import Path
+
+    from src.pipeline_runner import _LABEL_SEQ_UNAVAILABLE
+
+    pdb = Path("projects/mash_e2e/runs/round-2/binder/trim/trimmed.pdb")
+    if not pdb.exists():
+        pytest.skip("no trimmed.pdb on disk")
+    fixed, warns = _lsq_runner()._resolve_unverified_label_seq_ids(
+        _LSQ_TABLE, pdb, "A")
+    assert f"| {_LABEL_SEQ_UNAVAILABLE} |" in fixed
+    # The model's own counted list must not survive in the BoltzGen line —
+    # BoltzGen reads it AS label_seq.
+    assert "binding: 53,55,59,62" not in fixed
+    assert _LABEL_SEQ_UNAVAILABLE in [
+        ln for ln in fixed.splitlines() if ln.startswith("binding")][0]
+    assert any("NOT AVAILABLE" in w for w in warns)
+    # auth_seq_id is untouched — it is what RFD3's select_hotspots uses.
+    assert "| 256 |" in fixed and "| 265 |" in fixed
+
+
+def test_missing_label_seq_is_not_a_run_ending_failure():
+    """A PDB target is a normal input, not an error. Only a chain that is not
+    in the file at all is."""
+    from pathlib import Path
+
+    pdb = Path("projects/mash_e2e/runs/round-2/binder/trim/trimmed.pdb")
+    if not pdb.exists():
+        pytest.skip("no trimmed.pdb on disk")
+    fixed, _ = _lsq_runner()._resolve_unverified_label_seq_ids(
+        _LSQ_TABLE, pdb, "A")
+    assert fixed  # returned normally
+
+
+def test_the_map_reports_absence_as_none_not_as_a_position():
+    from pathlib import Path
+
+    from src.pipeline_runner import PipelineRunner
+
+    pdb = Path("projects/mash_e2e/runs/round-2/binder/trim/trimmed.pdb")
+    if not pdb.exists():
+        pytest.skip("no trimmed.pdb on disk")
+    m = PipelineRunner._build_label_seq_id_map(pdb, "A")
+    assert m, "chain A should be present in the trimmed target"
+    assert all(label is None for label, _ in m.values())
+    # ...while a real mmCIF still yields real numbers.
+    cif = PipelineRunner._build_label_seq_id_map(_cif(), "A")
+    assert cif[256][0] == 54

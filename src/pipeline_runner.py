@@ -139,6 +139,14 @@ _STAGE_TO_SKILL: dict[str, str] = {
 }
 
 
+#: Written into the label_seq_id column when the structure carries no
+#: label_seq for that residue — a PDB-format file has none at all. It is a
+#: deliberately non-numeric token: anything numeric here would be read
+#: downstream as a measured value, and BoltzGen consumes this column as
+#: label_seq.
+_LABEL_SEQ_UNAVAILABLE = "UNAVAILABLE"
+
+
 class _TrimFromDisk:
     """
     The subset of TrimResult the later binder stages use, rebuilt from
@@ -1082,6 +1090,15 @@ class PipelineRunner:
         handoff = self._run_stage("complex-structure-analysis", q, [], out,
                                   stage="interface")
         text = out.read_text(encoding="utf-8")
+        # Same skill, same table, same failure — and until now only the PPI
+        # track corrected it. label_seq_id is a lookup in a file already on
+        # disk, and models derive it by counting instead: 23/23 wrong on 5GRS,
+        # 10/10 on 5GN0, every one off by the same amount. This is the
+        # binder-track half of that fix, deliberately OUTSIDE any try/except —
+        # an unverifiable numbering is not a warning.
+        text = self._correct_label_seq_ids(
+            text, out, self._binder_structure_path(result.pdb_id or pdb),
+            handoff.get("target_chain") or intel.get("target_chain") or "A")
         hotspots = self._parse_hotspot_residues(text, handoff)
         if not hotspots:
             raise PipelineError(
@@ -3479,20 +3496,19 @@ class PipelineRunner:
         # failed inside the skill) and run a residue-name sanity check that
         # surfaces mouse/human numbering mismatches.
         hotspots_json = None
+        # The numbering correction sits OUTSIDE the try below. It used to be
+        # inside it, so any exception — including one raised by the correction
+        # itself — was swallowed as "could not parse hotspot residues" and the
+        # model's own counted label_seq_ids sailed through to the design spec.
+        # A number that is a lookup in a file on disk must never degrade to a
+        # log line.
+        structure_text = output_file.read_text(encoding="utf-8")
+        target_chain = (handoff.get("target_chain", "")
+                        or handoff.get("chain_a", "")
+                        or "A")
+        structure_text = self._correct_label_seq_ids(
+            structure_text, output_file, analysis_path, target_chain)
         try:
-            structure_text = output_file.read_text(encoding="utf-8")
-            target_chain = (handoff.get("target_chain", "")
-                            or handoff.get("chain_a", "")
-                            or "A")
-            fixed_text, name_warnings = self._resolve_unverified_label_seq_ids(
-                structure_text, analysis_path, target_chain,
-            )
-            if fixed_text != structure_text:
-                output_file.write_text(fixed_text, encoding="utf-8")
-                structure_text = fixed_text
-                logger.info("  resolved UNVERIFIED label_seq_ids via gemmi auth→label map")
-            for w in name_warnings:
-                logger.warning(f"  ⚠ structure stage: {w}")
             hotspots_json = self._parse_hotspot_residues(structure_text, handoff)
             if hotspots_json:
                 result.hotspot_residues_json = hotspots_json
@@ -4985,7 +5001,8 @@ class PipelineRunner:
             return {}
 
     @staticmethod
-    def _build_label_seq_id_map(cif_path: Path, chain_id: str) -> dict[int, tuple[int, str]]:
+    def _build_label_seq_id_map(
+            cif_path: Path, chain_id: str) -> dict[int, tuple[int | None, str]]:
         """Return ``{auth_seq_id: (label_seq_id, residue_name_3letter)}`` for one chain.
 
         Uses gemmi; returns empty dict on failure or missing chain. The
@@ -4994,6 +5011,21 @@ class PipelineRunner:
         structure at that auth_seq_id — protecting against mouse/human
         numbering mismatches and similar errors that wouldn't be caught by
         just blindly resolving label_seq_id.
+
+        ``label_seq_id`` is ``None`` when the structure does not carry one.
+        That is not rare and not an error: label_seq is an mmCIF concept, so
+        EVERY residue of a PDB-format file has None — including
+        ``trim/trimmed.pdb``, which this pipeline writes itself and hands to
+        RFD3 — and a real mmCIF still has None on het rows (5 of 227 on
+        5GN0).
+
+        This used to fall back to the residue's 1-indexed position in the
+        chain, which is exactly the counting the caller exists to catch,
+        wearing a lab coat: on a PDB input it would replace the model's
+        counted numbers with different counted numbers and report the column
+        verified. Returning None makes "the file does not say" a distinct
+        answer from "the file says N", which is the only way the caller can
+        decline to fabricate.
         """
         try:
             import gemmi  # type: ignore
@@ -5003,19 +5035,40 @@ class PipelineRunner:
             for chain in st[0]:
                 if chain.name != chain_id:
                     continue
-                mapping: dict[int, tuple[int, str]] = {}
-                # gemmi exposes label_seq directly; if a residue's
-                # label_seq is None (rare — typically only for het rows),
-                # fall back to 1-indexed position in the chain.
-                for i, res in enumerate(chain, start=1):
+                mapping: dict[int, tuple[int | None, str]] = {}
+                for res in chain:
                     auth = int(res.seqid.num)
-                    label = res.label_seq if res.label_seq is not None else i
-                    mapping[auth] = (int(label), res.name.upper())
+                    label = res.label_seq
+                    mapping[auth] = (
+                        int(label) if label is not None else None,
+                        res.name.upper(),
+                    )
                 return mapping
             return {}
         except Exception as exc:
             logger.warning(f"Could not build auth→label map for {chain_id}@{cif_path}: {exc}")
             return {}
+
+    def _correct_label_seq_ids(self, text: str, report_path: Path,
+                               cif_path: Path, target_chain: str) -> str:
+        """
+        Overwrite the report's label_seq_id column with the structure's own
+        values, persist the corrected report, and surface what changed.
+
+        Both tracks call this — the PPI `structure` stage and the binder
+        `interface` stage run the SAME skill and produce the SAME table, so a
+        correction that only one of them applied was a track-parity gap of
+        exactly the shape CLAUDE.md documents for the PD-L1 verify guards.
+        """
+        fixed, warns = self._resolve_unverified_label_seq_ids(
+            text, cif_path, target_chain)
+        if fixed != text:
+            report_path.write_text(fixed, encoding="utf-8")
+            logger.info("  label_seq_ids replaced with the structure's own "
+                        "(gemmi auth→label map)")
+        for w in warns:
+            logger.warning(f"  ⚠ {w}")
+        return fixed
 
     def _resolve_unverified_label_seq_ids(
         self,
@@ -5047,11 +5100,29 @@ class PipelineRunner:
         disagreed with gemmi's.
         """
         warnings: list[str] = []
+        has_table = bool(re.search(r"###\s*MODEL.READY HOTSPOTS", structure_text,
+                                   re.IGNORECASE))
         auth_to_label_and_name = self._build_label_seq_id_map(cif_path, target_chain)
         if not auth_to_label_and_name:
+            if has_table:
+                # label_seq_id is not a judgement call, it is a lookup in a file
+                # already on disk. If that lookup is impossible we cannot ship
+                # the LLM's own number in its place: it is derived by counting,
+                # and BoltzGen reads `binding:` as label_seq, so a wrong value
+                # constrains the binder to the wrong residues — the documented
+                # cause of zero hotspot occlusion on the YAP-TEAD run. Fail
+                # loudly rather than pass through unverified numbers.
+                raise PipelineError(
+                    f"cannot build the auth->label map for chain {target_chain} "
+                    f"in {cif_path.name}, so the MODEL-READY HOTSPOTS table's "
+                    f"label_seq_id column cannot be verified against the "
+                    f"structure. Those values are derived by the model, not "
+                    f"read from the file, and BoltzGen consumes them as "
+                    f"label_seq. Check the chain id and that the structure is "
+                    f"on disk.")
             logger.warning(
                 f"  cannot build gemmi auth→label map for {target_chain}@{cif_path.name} "
-                f"— hotspot table left as-is, downstream stages may misnumber residues"
+                f"— no hotspot table to correct"
             )
             return structure_text, warnings
 
@@ -5064,9 +5135,13 @@ class PipelineRunner:
         )
         seen: set[tuple[str, int]] = set()
         substitutions = 0
+        rows_seen = 0
+        offsets: list[int] = []
+        unavailable: list[int] = []
 
         def _row_sub(match: re.Match) -> str:
-            nonlocal substitutions
+            nonlocal substitutions, rows_seen
+            rows_seen += 1
             prefix = match.group(1)
             expected_name = match.group(2)
             auth_s = int(match.group(3))
@@ -5095,15 +5170,28 @@ class PipelineRunner:
                         f"structure has {actual_name} — likely a numbering offset"
                     )
 
-            # Compare LLM value to gemmi truth; always emit gemmi truth in
-            # the rewritten cell.
+            # Compare LLM value to the structure's own, and emit the
+            # structure's in the rewritten cell.
             try:
                 llm_label = int(llm_label_raw)
             except ValueError:
                 llm_label = None
+
+            if true_label is None:
+                # The file does not carry a label_seq for this residue, so
+                # there is no value to verify against. Whatever the model
+                # wrote here it derived, and passing a derived number on as
+                # though it had been read is the failure this whole function
+                # exists to prevent. Say so in the cell instead.
+                unavailable.append(auth_s)
+                if llm_label is not None:
+                    substitutions += 1
+                return f"{prefix} {_LABEL_SEQ_UNAVAILABLE} |"
+
             if llm_label != true_label:
                 substitutions += 1
                 if llm_label is not None:
+                    offsets.append(true_label - llm_label)
                     warnings.append(
                         f"label_seq_id correction at {expected_name}{auth_s}: "
                         f"LLM said {llm_label}, gemmi says {true_label} "
@@ -5112,6 +5200,46 @@ class PipelineRunner:
             return f"{prefix} {true_label} |"
 
         new_text = row_pat.sub(_row_sub, structure_text)
+
+        if has_table and rows_seen == 0:
+            # A table is present and not one row matched the row pattern, so
+            # nothing was checked and nothing was corrected — silently. This is
+            # the failure mode that left `_verify_hotspot_grounding` inert for
+            # months: a guard that runs, finds nothing to do, and says so to
+            # no one. The table format lives in a SKILL.md that gets edited.
+            raise PipelineError(
+                "the MODEL-READY HOTSPOTS table did not match the expected "
+                "`| RES | auth_seq_id | label_seq_id | ... |` row format, so no "
+                "label_seq_id could be verified against the structure. The "
+                "skill's table format and this parser have drifted apart — fix "
+                "one to match the other rather than shipping unverified "
+                "numbering to the design spec.")
+
+        if unavailable:
+            warnings.append(
+                f"label_seq_id is NOT AVAILABLE for {len(unavailable)} of "
+                f"{rows_seen} hotspot row(s) in {cif_path.name}: the structure "
+                f"carries no label_seq for them (every residue of a "
+                f"PDB-format file, and het rows in an mmCIF). Those cells now "
+                f"read {_LABEL_SEQ_UNAVAILABLE} rather than a number the model "
+                f"derived. auth_seq_id is unaffected and is what RFD3's "
+                f"`select_hotspots` uses; only a BoltzGen `binding:` spec "
+                f"needs label_seq, and it cannot be built from this file.")
+
+        if offsets and len(offsets) >= 3 and len(set(offsets)) == 1:
+            # Every disagreement identical means the column was DERIVED, not
+            # read: the model counted positions instead of looking up
+            # `auth_to_label`, and a constant offset is that signature. Worth
+            # separating from the scattered single-residue case, because it
+            # says something about the rest of the report — a model that
+            # fabricated a whole column may have fabricated more than this one.
+            warnings.append(
+                f"SYSTEMATIC label_seq_id offset: all {len(offsets)} corrected "
+                f"rows were off by exactly {offsets[0]:+d}. That is the "
+                f"signature of the model COUNTING residue positions rather "
+                f"than reading `auth_to_label` from tool_get_sequence_map. The "
+                f"numbers have been replaced with the structure's own, but "
+                f"treat other derived values in this report with suspicion.")
 
         # Rewrite the BoltzGen `binding:` line in each MODEL-READY HOTSPOTS
         # section independently. The structure-expert may produce one or
@@ -5135,6 +5263,18 @@ class PipelineRunner:
                 except ValueError:
                     pass
             if not local_residues:
+                # No row yielded a numeric label_seq — the structure has none
+                # (a PDB-format file never does). Returning the section
+                # unchanged would leave the model's own counted `binding:`
+                # list standing, which is the one thing that must not happen:
+                # BoltzGen reads it AS label_seq. Replace it with a statement.
+                if re.search(r"^\s*binding:", section, re.MULTILINE):
+                    return re.sub(
+                        r"^\s*binding:\s*[^\n]+",
+                        f"binding: {_LABEL_SEQ_UNAVAILABLE} — this structure "
+                        f"carries no label_seq; use auth_seq_id (RFD3 "
+                        f"`select_hotspots`), not this line",
+                        section, flags=re.MULTILINE)
                 return section
             # Dedupe preserving order
             dedup: list[int] = []
