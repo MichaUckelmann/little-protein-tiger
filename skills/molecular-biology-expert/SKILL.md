@@ -245,7 +245,8 @@ agent and the orchestrator skill.
 
 ### COMPLEX OVERVIEW
 - Target complex: <ProteinA / ProteinB>
-- Organism: <human / mouse / etc.>
+- Indication organism: <the organism the therapeutic hypothesis is about — human unless stated otherwise>
+- Cited structures: <one line per PDB id this report relies on, in the form "<PDB> — <source organism> — <human | ortholog of <human protein(s)>>", e.g. "5GRS — Schizosaccharomyces pombe — ortholog of human SCAP/SREBF1". Do NOT fold these into the organism field above: the indication is routinely human while every available structure is not, and collapsing the two is how a yeast crystal passes as a human interface.>
 - Disease context: <oncology / antiviral / inflammatory / other>
 - Biological role: <one sentence>
 - Drug target validation: <genetic knockdown, patient data, animal models — cite source_span>
@@ -287,13 +288,26 @@ inhibitor co-crystal structures.
 
 ### FEASIBILITY ASSESSMENT
 - Target tractability / informativeness: <Excellent / Good / Marginal / Poor>
-  - **Excellent**: structural interface clear (PDB with both partners, or convincing
-    homology); literature names at least 2 interface residues; modality precedent
-    in the literature (peptide / mini-protein / antibody-fragment for ANY member of
-    the same family is sufficient), **OR** a clearly stated falsifiable hypothesis
+  - **Excellent**: structural interface clear in a named PDB with both partners, whose
+    source organism is stated; literature names at least 2 interface residues; modality
+    precedent in the literature (peptide / mini-protein / antibody-fragment for ANY member
+    of the same family is sufficient), **OR** a clearly stated falsifiable hypothesis
     from the pathway stage where disrupting the interaction predicts a specific
     biological readout. Quantitative anchors (Kd / Ki / ΔΔG) reported when present
     but NOT required.
+
+    **When the only structure of the interface is an ortholog**, this tier is still
+    reachable — an ortholog crystal is frequently the only structure that exists (no
+    human SCAP/SREBP complex has ever been solved), and designing against a conserved
+    site on one is legitimate. It is reachable only when the report (a) names the
+    structure's source organism in COMPLEX OVERVIEW, (b) states which human protein it
+    stands in for, and (c) commits to the conservation question **for the residues it is
+    actually proposing**: which of them do you expect to be identical in the human
+    protein, and on what basis. "Convincing homology" is not an answer to (c) — a
+    β-propeller fold can be conserved end to end while the specific epitope on its face
+    is not. Without (c) the ceiling is **Good** (the interface is real; the site is not
+    yet shown to transfer), and where those residues are the only thing making the target
+    attractive and nothing can be said about their conservation, **Marginal**.
   - **Good**: structural interface clear AND at least one mutagenesis or
     interface-residue claim in the corpus, OR a modality precedent on a paralog,
     OR a coherent mechanistic prediction with a named readout.
@@ -313,6 +327,20 @@ inhibitor co-crystal structures.
   `falsifying_readout` fields (wildcard mode emits these), restate them at the
   TOP of this FEASIBILITY ASSESSMENT section so the design stages downstream see
   the testable claim, not just the target name.
+
+  **Ortholog structures and the downstream conservation check.** When the cited
+  structure is an ortholog, the pipeline runs a deterministic per-residue check that
+  maps every hotspot through SIFTS onto the human canonical sequence and reports which
+  ones the human protein actually carries; too few conserved and it halts the run. Two
+  consequences here. First, the conservation claim belongs in `go_rationale` — name the
+  residues you expect to transfer, because that is the claim being tested. Second, an
+  ortholog crystal is the fallback, not the default: where a **human** structure of the
+  same interface exists prefer it, and where none does, note that a human **AlphaFold**
+  model of the target chain can be fetched and used instead once the epitope has been
+  restated in human numbering. Neither is a reason to reject the ortholog — only to say
+  what was chosen and why. Measured on SCAP/SREBF1: the fission-yeast "RK patch"
+  (R617/K635/R640/K643/K659/K685), which reads as a thoroughly characterised epitope,
+  has **none** of those six residues conserved in human SCAP.
 
 - Corpus confidence: <High (≥ 5 papers) / Medium (2–4) / Low (0–1)>
 - Design challenges: <bullet list — isoform redundancy, localisation, flat surface, etc.>
@@ -343,9 +371,11 @@ inhibitor co-crystal structures.
 ### PIPELINE HANDOFF
 - target_complex: <ProteinA / ProteinB for PPI, or single-protein label for inhibit_active_site>
 - design_intent: <disrupt | stabilize | inhibit_active_site — pass through from pathway-expert handoff>
+- structure_organism: <scientific name of the source organism of the PDB this report relies on, e.g. "Homo sapiens" or "Schizosaccharomyces pombe" — pass through from the pathway-expert handoff when it supplied one, otherwise from the structure's own metadata; UNKNOWN only if genuinely unavailable>
+- ortholog_of_human: <NONE when structure_organism is Homo sapiens; otherwise the human protein(s) the structure stands in for, e.g. "SCAP / SREBF1">
 - tractability: <Excellent | Good | Marginal | Poor>
 - go_recommendation: <GO | CONDITIONAL_GO | NO_GO>
-- go_rationale: <one sentence — the single most decisive reason for the recommendation>
+- go_rationale: <one sentence — the single most decisive reason for the recommendation. When ortholog_of_human is not NONE, this sentence must also name which priority residues you expect to be conserved in the human protein; the pipeline checks exactly that claim and may halt on it.>
 - modality: mini_protein          # default; the operator opts into cyclic_peptide at kickoff
 - target_site_hint: <compact JSON object — see format below; consumed by complex-structure-analysis to focus the geometry pass>
 - design_query: <one sentence — e.g. "Generate {modality} design inputs for {complex}, PDB {pdb_id}. Priority hotspots: {res_list}. Affinity target: {kd}. {key constraint if any}." DO NOT include chain letters (A/B/...) anywhere in this query — you have not inspected the mmCIF at this stage and any chain assignment will be a guess. Chain identity is resolved by the structure-analysis stage from the mmCIF entity descriptions and flows downstream from there.>
@@ -355,14 +385,14 @@ Do NOT wrap it in a code fence (no ``` before or after). Do NOT omit the `- ` pr
 The programmatic orchestrator parses these lines with a regex — any deviation breaks the pipeline.
 
 Rules for `### PIPELINE HANDOFF`:
-- `go_recommendation` must be exactly one of: `GO`, `CONDITIONAL_GO`, or `NO_GO`. Use the tractability rubric: Excellent/Good → GO; Marginal → CONDITIONAL_GO (still produces designs, with the key risk surfaced); Poor → NO_GO. Note: missing ΔΔG / Kd values are not a downgrade trigger — see the Tractability rubric in FEASIBILITY ASSESSMENT.
+- `go_recommendation` must be exactly one of: `GO`, `CONDITIONAL_GO`, or `NO_GO`. Use the tractability rubric: Excellent/Good → GO; Marginal → CONDITIONAL_GO (still produces designs, with the key risk surfaced); Poor → NO_GO. Note: missing ΔΔG / Kd values are not a downgrade trigger — see the Tractability rubric in FEASIBILITY ASSESSMENT. An ortholog structure is never itself a NO_GO; but when `ortholog_of_human` is not NONE and the report makes no per-residue conservation claim about the priority residues, tractability is Good at best and `go_recommendation` is capped at `CONDITIONAL_GO`, with that uncertainty as the `go_rationale`.
 - `go_rationale` is a single sentence — the programmatic orchestrator displays this directly to the user.
 - `design_query` is the verbatim query string passed to protein-design-script; include PDB ID, top 3–5 hotspot residues, and suggested affinity target. Do NOT include chain letters — chain assignment is handled by the structure-analysis stage downstream.
 - `target_site_hint` is a single-line JSON object with these keys (use straight double-quotes, no trailing commas):
   - `mode`: `"ppi_interface"` (for disrupt / stabilize) or `"single_protein_pocket"` (for inhibit_active_site)
   - `target_protein`: the protein whose surface the binder engages
   - `priority_residues`: array of residue identifiers from the corpus (numbers and/or one-letter+number, e.g. `["F69", "L91", "R89"]` or `["245", "247", "250"]`); leave empty `[]` if literature gave no specific residues
-  - `notes`: short string explaining the source of the residues AND the numbering convention used. If the literature numbers are from a paralog or full-length canonical sequence and the PDB structure may be a truncated construct or a different family member, say so. Examples: `"alanine scan ΔΔG > 2 kcal/mol from doi:..., YAP1 numbering"`, `"hTEAD4 canonical numbering — mapping to PDB target chain must be confirmed by structure stage"`, `"catalytic triad from inhibitor co-crystal doi:..."`.
+  - `notes`: short string explaining the source of the residues AND the numbering convention used. If the literature numbers are from a paralog, from another species' ortholog, or from a full-length canonical sequence while the PDB structure may be a truncated construct or a different family member, say so. Examples: `"alanine scan ΔΔG > 2 kcal/mol from doi:..., YAP1 numbering"`, `"hTEAD4 canonical numbering — mapping to PDB target chain must be confirmed by structure stage"`, `"catalytic triad from inhibitor co-crystal doi:..."`.
 
   Example: `- target_site_hint: {"mode":"ppi_interface","target_protein":"TEAD4","priority_residues":["F69","L91","R89"],"notes":"Alanine scan ΔΔG > 1.5 kcal/mol from doi:10.7554/eLife.25068; YAP1 numbering"}`
 
@@ -376,6 +406,18 @@ do NOT assert PDB-residue equivalence in the report body. The structure
 stage downstream owns the literature→PDB residue mapping (by contact
 geometry against the actual mmCIF) and will surface the equivalent
 auth_seq_ids in its MODEL-READY HOTSPOTS block.
+
+The same rule applies **across species, and harder**. If
+`target_site_hint.priority_residues` were read off an ortholog structure — or off a
+paper whose mutagenesis was done on the ortholog — they are ortholog numbering on an
+ortholog sequence, and `notes` must say so explicitly: organism, source structure, and
+that the human equivalents are not established. Example: `"S. pombe Scp1 numbering from
+PDB 4YHC/5GRS, doi:10.1038/cr.2015.32; human SCAP equivalents not established"`. These
+numbers flow toward an RFD3 hotspot spec, where an unlabelled ortholog residue id
+becomes a design constraint on a site never checked against the human protein. Do not
+restate them as human numbering, and do not assert a human equivalent you have not
+derived — the pipeline derives it (SIFTS plus a global ortholog↔human alignment) and
+reports the human position for each hotspot.
 
 ---
 

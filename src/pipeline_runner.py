@@ -244,6 +244,11 @@ class PipelineResult:
     # stage surfaces it to the LLM as evidence (synonym → proceed,
     # paralog mismatch → NO_GO).
     pdb_identity_check: dict | None = None
+    # Populated only when the target chain turned out to be an ORTHOLOG of the
+    # human protein: the per-hotspot conservation table, the human accession,
+    # and the human AlphaFold model fetched alongside it. See
+    # PipelineRunner._check_ortholog_conservation.
+    ortholog_conservation: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +381,12 @@ class PipelineRunner:
         self._trial_backbones = int(trial_backbones)
         self._escalate_to = escalate_to
         self._stop_after = stop_after
+        # Set by _verify_target_chain_assignment when the target chain is an
+        # ortholog rather than the human protein; read by
+        # _check_ortholog_conservation, which is the gate that decides
+        # whether that ortholog's epitope is worth designing against.
+        self._ortholog = None
+        self._ortholog_human_acc = ""
         # "standard" = pathway-expert | "wildcard" = wildcard-expert.
         # CLI / explicit kwarg overrides config; if caller passed the default
         # "standard" verbatim, fall back to whatever config says so users can
@@ -1078,6 +1089,7 @@ class PipelineRunner:
                 "RFD3 spec cannot be built without atom-level hotspots")
         self._verify_target_chain_assignment(intel, handoff, result.pdb_id or pdb)
         self._verify_hotspot_grounding(hotspots, result.pdb_id or pdb)
+        self._check_ortholog_conservation(hotspots, result.pdb_id or pdb, result)
         result.hotspot_residues_json = hotspots
         result.stage_files["interface"] = out
         result.stages_completed.append("interface")
@@ -1111,6 +1123,203 @@ class PipelineRunner:
         if not observed:
             return None
         return sequence_identity(observed, uniprot_seq)
+
+    def _infer_membrane_side(self, pdb_id: str, chain: str, uniprot: str,
+                             hotspots: list[dict], topo) -> str | None:
+        """
+        Which face of the membrane is the declared epitope actually on?
+
+        Returns a side name to restrict to, or None for "do not restrict" —
+        which covers a soluble protein, an unmappable structure, and the two
+        cases where restricting would be a guess: no hotspot could be placed,
+        or the hotspots straddle both faces.
+
+        This replaces a hardcoded "extracellular" default. A binder against a
+        cell-surface receptor does have to bind the outside, but that is a
+        property of THAT target, not a law: SCAP sits in the ER membrane and
+        its SREBP-binding WD40 domain faces the cytosol, so "extracellular"
+        names no real surface at all. The interface stage read the structure
+        and chose an interface; the topology's job here is to keep the trim on
+        the same face as that choice and strip the lipid-buried helices, not to
+        veto the choice.
+
+        A hotspot lying INSIDE the membrane is still an error, and is raised by
+        the caller's `restriction_for` path — that one is not a matter of side.
+        """
+        from src.membrane_topology import (CYTOPLASMIC, EXTRACELLULAR,
+                                           TRANSMEMBRANE, uniprot_to_auth)
+
+        if not topo.fetched or not topo.is_membrane:
+            return None
+        mapping = uniprot_to_auth(pdb_id, chain, uniprot)
+        if not mapping:
+            logger.info(
+                f"topology: no UniProt->author alignment for {pdb_id} chain "
+                f"{chain}; not restricting by membrane side")
+            return None
+        auth_to_pos = {auth: pos for pos, auth in mapping.items()}
+
+        counts: dict[str, int] = {}
+        in_membrane = []
+        for h in hotspots:
+            try:
+                auth = int(h["auth_seq_id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            pos = auth_to_pos.get(auth)
+            if pos is None:
+                continue
+            kind = topo.kind_at(pos)
+            if kind == TRANSMEMBRANE:
+                in_membrane.append(auth)
+                continue
+            if kind in (EXTRACELLULAR, CYTOPLASMIC):
+                counts[kind] = counts.get(kind, 0) + 1
+        if in_membrane:
+            raise PipelineError(
+                f"hotspot(s) {in_membrane} on {uniprot} lie INSIDE "
+                f"the membrane (UniProt annotates them transmembrane). That "
+                f"surface is buried in lipid in a cell, so a binder against it "
+                f"cannot work whichever side the rest of the epitope is on. "
+                f"Pick a site on one face.")
+        if not counts:
+            logger.info("topology: no hotspot could be placed on either face; "
+                        "not restricting by membrane side")
+            return None
+        if len(counts) > 1:
+            logger.warning(
+                f"topology: hotspots straddle both faces "
+                f"({counts}) — not restricting by membrane side. The epitope "
+                f"spans the membrane, which no single binder can engage; check "
+                f"the interface stage's chain assignment.")
+            return None
+        side = next(iter(counts))
+        logger.info(
+            f"topology: membrane_side inferred as {side!r} from {counts[side]} "
+            f"declared hotspot(s) — TM residues are dropped either way")
+        return side
+
+    def _check_ortholog_conservation(self, hotspots_json: str, pdb_id: str,
+                                     result: "PipelineResult") -> None:
+        """
+        When the target chain turned out to be an ORTHOLOG, is the epitope it
+        carries actually present in the human protein?
+
+        An ortholog structure is a legitimate, often unavoidable choice — no
+        human SCAP/SREBP complex has ever been solved, and a site conserved
+        between the two is the same site. What is not legitimate is designing
+        against residues the human protein does not have: the binder is then
+        optimised for a surface that exists only in the other organism.
+
+        So this is the gate that replaces "reject every ortholog". It maps each
+        declared hotspot onto human numbering (SIFTS, then a full-length global
+        alignment — see `src.ortholog_check.hotspot_conservation` for why the
+        obvious fragment alignment is not good enough) and requires
+        `MIN_HOTSPOT_CONSERVATION` of them to be identical. It also pulls the
+        human AlphaFold model, because the same alignment yields the epitope's
+        human residue numbers, which is what makes that model usable as a
+        design target instead of the ortholog crystal.
+
+        Fail-open on anything it cannot compute: a UniProt outage must not
+        halt a run. Only a MEASURED shortfall raises.
+        """
+        verdict = getattr(self, "_ortholog", None)
+        if not verdict or not verdict.is_ortholog or not hotspots_json:
+            return
+        from src.ortholog_check import (MIN_HOTSPOT_CONSERVATION,
+                                        fetch_alphafold_model,
+                                        hotspot_conservation)
+
+        data = json.loads(hotspots_json)
+        chain = data.get("target_chain")
+        hotspots = data.get("residues") or []
+        human_acc = getattr(verdict, "human_uniprot", "") or self._ortholog_human_acc
+        if not chain or not hotspots or not human_acc:
+            return
+        try:
+            cons = hotspot_conservation(
+                pdb_id, chain, hotspots, human_uniprot=human_acc,
+                chain_uniprot=verdict.chain_uniprot)
+        except Exception as exc:
+            logger.warning(f"ortholog conservation check failed: {exc}")
+            return
+        if not cons.total:
+            logger.warning("ortholog conservation check produced no rows — "
+                           "the epitope could not be mapped to human numbering")
+            return
+
+        logger.info(f"  ortholog conservation ({cons.method}): {cons.summary()}")
+        for row in cons.rows:
+            logger.info(
+                f"    {row['residue']}{row['auth_seq_id']} "
+                f"({verdict.organism or 'ortholog'}) -> "
+                f"{row['human_aa'] or '?'}{row['human_auth'] or '?'} (human) "
+                f"— {row['status']}")
+
+        af = None
+        try:
+            structures_dir = _ROOT / ((self.config.get("paths") or {}).get(
+                "structures_dir", "data/structures"))
+            af = fetch_alphafold_model(human_acc, structures_dir / "alphafold")
+        except Exception as exc:
+            logger.warning(f"could not fetch the human AlphaFold model: {exc}")
+
+        result.ortholog_conservation = {
+            "pdb_id": pdb_id, "chain": chain,
+            "ortholog_uniprot": verdict.chain_uniprot,
+            "organism": verdict.organism, "human_uniprot": human_acc,
+            "identity": verdict.identity, "method": cons.method,
+            "low_confidence": cons.low_confidence,
+            "fraction_conserved": cons.fraction_conserved,
+            "summary": cons.summary(), "rows": cons.rows,
+            "human_alphafold_model": str(af) if af else None,
+        }
+        self._binder_checkpoint("ortholog_target", "structure", "gate",
+                                result.ortholog_conservation)
+
+        if cons.fraction_conserved < MIN_HOTSPOT_CONSERVATION:
+            raise PipelineError(
+                f"{pdb_id} chain {chain} is an ortholog "
+                f"({verdict.organism or 'non-human'}, {verdict.chain_uniprot}) "
+                f"and its declared epitope is NOT conserved in human "
+                f"{human_acc}: {cons.summary()} — below the "
+                f"{MIN_HOTSPOT_CONSERVATION:.0%} bar. Designing here would "
+                f"optimise a binder for residues the human protein does not "
+                f"carry. Pick a human structure, pick a conserved site on this "
+                f"one, or design against the human AlphaFold model"
+                + (f" now at {af}" if af else " (AlphaFold has no model for it)")
+                + ". Per-hotspot human equivalents are in the "
+                  "'ortholog_target' manifest checkpoint.")
+
+    def _classify_target_chain(self, pdb_id: str, chain: str,
+                               identity: float | None, gene: str,
+                               uniprot: str):
+        """
+        Is a low-identity chain an ortholog of the target, or a different
+        molecule? Fail-open to `mismatch` if the metadata lookup dies — the
+        caller raises on `mismatch`, and a network blip must not silently
+        convert a wrong-molecule campaign into an accepted one.
+        """
+        from src.ortholog_check import MISMATCH, ChainVerdict, classify_chain
+        from src.target_resolve import entry_metadata
+
+        desc, accs = "", []
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+            info = (meta.get("chains") or {}).get(chain) or {}
+            desc = info.get("description") or ""
+            accs = list(info.get("uniprots") or [])
+        except Exception as exc:
+            logger.warning(f"could not read {pdb_id} chain metadata: {exc}")
+        try:
+            return classify_chain(identity=identity, description=desc,
+                                  gene=gene, uniprot=uniprot,
+                                  chain_accessions=accs)
+        except Exception as exc:
+            logger.warning(f"ortholog classification failed for {pdb_id}: {exc}")
+            return ChainVerdict(verdict=MISMATCH, identity=identity,
+                                description=desc,
+                                reason="ortholog classification was not possible")
 
     def _verify_target_chain_assignment(self, intel: dict[str, str],
                                         handoff: dict[str, str],
@@ -1191,6 +1400,30 @@ class PipelineRunner:
                                 f"identical. Designing against target_chain as "
                                 f"stated would build binders against the wrong "
                                 f"molecule.")
+                        # Low identity is NOT automatically the wrong molecule.
+                        # An ortholog of the target sits in exactly the same
+                        # 20-40% band as an unrelated chain (5GRS's S. pombe
+                        # Scp1 is 29% identical to human SCAP; the PD-L1
+                        # incident's VHH was ~20%), so sequence alone cannot
+                        # separate them. `classify_chain` asks the chain's OWN
+                        # UniProt entry for its recommended protein name and
+                        # organism — an ortholog carries the identical protein
+                        # name under a different taxid. An ortholog is a
+                        # legitimate design target when the site is conserved,
+                        # so it is recorded and passed to the conservation
+                        # check, not rejected here.
+                        verdict = self._classify_target_chain(
+                            pdb_id, target_chain, target_id, gene, uniprot)
+                        if verdict.is_ortholog:
+                            self._ortholog = verdict
+                            self._ortholog_human_acc = uniprot
+                            logger.warning(
+                                f"  ⚠ target_chain={target_chain} in {pdb_id} "
+                                f"is an ORTHOLOG, not the human protein: "
+                                f"{verdict.reason}. Continuing — the declared "
+                                f"hotspots will be checked for conservation in "
+                                f"human {gene or uniprot} before any GPU work.")
+                            return
                         raise PipelineError(
                             f"target_chain={target_chain} in {pdb_id} is only "
                             f"{target_id:.0%} identical to {gene or uniprot} "
@@ -1199,8 +1432,7 @@ class PipelineRunner:
                                f"{partner_id:.0%}" if partner_id is not None
                                else "")
                             + " — neither chain looks like the intended target "
-                              "by sequence. The interface stage may have picked "
-                              "the wrong entry or chains entirely.")
+                              "by sequence. " + verdict.reason)
                     logger.debug(
                         f"could not extract a sequence for chain {target_chain} "
                         f"in {structure_path}; falling back to metadata")
@@ -1285,12 +1517,20 @@ class PipelineRunner:
             # chain rather than raising, so this subscript has to be inside
             # the guard too — outside it, an absent chain aborted the run
             # with a bare KeyError instead of the intended fail-open warning.
-            residues = seq_map["residues"]
+            #
+            # Bind under its OWN name. This used to reuse `residues`, which
+            # shadowed the CLAIMED hotspot list parsed above, so the loop
+            # below compared the structure against itself: `three_letter`
+            # rows carry no "residue" key, `claimed` was always "",
+            # every iteration hit the `continue`, and `mismatches` could
+            # never be non-empty. The guard this docstring describes has
+            # never once fired.
+            struct_residues = seq_map["residues"]
         except Exception as exc:
             logger.warning(
                 f"could not verify hotspot grounding against {path}: {exc}")
             return
-        by_auth = {r["auth_seq_id"]: r["three_letter"] for r in residues}
+        by_auth = {r["auth_seq_id"]: r["three_letter"] for r in struct_residues}
 
         mismatches = []
         for h in residues:
@@ -1515,31 +1755,58 @@ class PipelineRunner:
         self._ensure_structure(result.pdb_id)
         structure = self._binder_structure_path(result.pdb_id)
 
-        # Membrane topology: keep the design target on the reachable side and
-        # always drop transmembrane residues. An exposed TM helix is a
+        # Membrane topology. Two separate jobs, and only one of them is a rule.
+        #
+        # Always drop TRANSMEMBRANE residues: an exposed TM helix is a
         # hydrophobic slab that preferentially attracts binders which cannot
-        # work in a cell, where that surface is buried in lipid.
+        # work in a cell, where that surface is buried in lipid. That part is
+        # physics and stays unconditional.
+        #
+        # Which SIDE to design against is not a rule. This used to default to
+        # "extracellular" and hard-fail any hotspot outside it, which is wrong
+        # in two ways at once: for an intracellular-organelle membrane protein
+        # (SCAP in the ER) "extracellular" is not even a meaningful side, and
+        # the cytosolic face is the correct thing to target; and the interface
+        # stage has already looked at the real structure and picked a real
+        # interface, so its choice is evidence, not a proposal to be overruled
+        # by a default. `membrane_side` now defaults to "auto": the side is
+        # INFERRED from where the declared hotspots actually sit, and an
+        # explicit value is still honoured. Only two things still fail: a
+        # hotspot inside the membrane, and hotspots split across both faces —
+        # neither is a site a binder can engage as one epitope.
         restrict = None
-        side = (intel.get("membrane_side") or "extracellular").strip()
+        side = (intel.get("membrane_side") or "auto").strip().lower()
         uniprot = intel.get("target_uniprot")
-        if uniprot and side != "not_applicable":
+        if uniprot and side not in ("not_applicable", "any"):
             from src.membrane_topology import fetch_topology, restriction_for
 
             topo = fetch_topology(uniprot)
-            restrict = restriction_for(result.pdb_id, hs["target_chain"], uniprot,
-                                       side=side, topology=topo)
-            logger.info(f"topology: {restrict.note}")
-            if restrict.applies:
-                bad = [h for h in hs["residues"]
-                       if int(h["auth_seq_id"]) not in restrict.allowed_auth]
-                if bad:
-                    raise PipelineError(
-                        f"hotspot(s) "
-                        f"{[h.get('auth_seq_id') for h in bad]} lie outside the "
-                        f"{side} region of {intel.get('target_gene')} — the chosen "
-                        f"interface is not reachable by a binder. Pick a different "
-                        f"site, or pass membrane_side explicitly if this is "
-                        f"deliberate.")
+            if side == "auto":
+                side = self._infer_membrane_side(
+                    result.pdb_id, hs["target_chain"], uniprot, hs["residues"],
+                    topo)
+            if side is None:
+                restrict = None
+            else:
+                restrict = restriction_for(result.pdb_id, hs["target_chain"],
+                                           uniprot, side=side, topology=topo)
+                logger.info(f"topology: {restrict.note}")
+                if restrict.applies:
+                    bad = [h for h in hs["residues"]
+                           if int(h["auth_seq_id"]) not in restrict.allowed_auth]
+                    if bad:
+                        # Reaching here means the side was pinned explicitly and
+                        # the hotspots disagree with it — inference would have
+                        # followed them. Say which, so the operator can drop the
+                        # override rather than guess.
+                        raise PipelineError(
+                            f"hotspot(s) "
+                            f"{[h.get('auth_seq_id') for h in bad]} lie outside "
+                            f"the {side} region of {intel.get('target_gene')}, "
+                            f"which was requested explicitly via membrane_side. "
+                            f"Set membrane_side=auto to design against the side "
+                            f"the hotspots are actually on, or any to disable "
+                            f"the topology restriction entirely.")
 
         try:
             res = trim_target(
@@ -3128,6 +3395,7 @@ class PipelineRunner:
         # loudly rather than letting "no table" read as "table verified".
         if hotspots_json:
             self._verify_hotspot_grounding(hotspots_json, verify_pdb)
+            self._check_ortholog_conservation(hotspots_json, verify_pdb, result)
         else:
             logger.warning(
                 "  ⚠ hotspot grounding NOT verified — no parseable MODEL-READY "
@@ -4355,6 +4623,19 @@ class PipelineRunner:
         """
         return _handoff.parse_hotspot_residues(text, handoff)
 
+    @staticmethod
+    def _alphafold_accession(pdb_id: str) -> str:
+        """
+        The UniProt accession behind an `AF-<acc>` / `AF:<acc>` pseudo-id, or
+        "". A real PDB accession is four characters, so there is no collision.
+        """
+        raw = (pdb_id or "").strip().upper()
+        for prefix in ("AF-", "AF:", "ALPHAFOLD:"):
+            if raw.startswith(prefix):
+                acc = raw[len(prefix):].split("-", 1)[0]
+                return acc if acc.isalnum() else ""
+        return ""
+
     def _ensure_structure(self, pdb_id: str) -> Path:
         """Return local ASU CIF path, downloading from RCSB if absent.
 
@@ -4362,6 +4643,34 @@ class PipelineRunner:
         is used by the structure stage to avoid crystal-contact confusion.
         """
         structures_dir = _ROOT / self.config.get("paths", {}).get("structures_dir", "data/structures")
+
+        # `AF-<accession>` is not an RCSB id — it is the AlphaFold DB model for
+        # a UniProt accession, and it exists so a campaign can be pointed at
+        # the HUMAN protein when the only experimental structure is an
+        # ortholog's. There is no biological assembly and no RCSB metadata for
+        # one; every downstream lookup that would want them (entry_metadata,
+        # uniprot_to_auth) already fails open, so a predicted monomer degrades
+        # to "no restriction" rather than breaking.
+        af_acc = self._alphafold_accession(pdb_id)
+        if af_acc:
+            from src.ortholog_check import fetch_alphafold_model
+
+            path = fetch_alphafold_model(af_acc, structures_dir)
+            if path is None:
+                raise PipelineError(
+                    f"AlphaFold DB has no model for {af_acc}. Give a PDB "
+                    f"accession instead, or check the accession is a UniProt "
+                    f"entry AFDB covers.")
+            # Land it under the id the caller used, not AFDB's own filename:
+            # every later path in the pipeline is built as
+            # `<structures_dir>/<PDB_ID>.cif` (and `_ba1.cif`), so a file named
+            # AF-Q12770-F1.cif would be fetched and then never found again.
+            dest = structures_dir / f"{pdb_id.upper()}.cif"
+            if path != dest:
+                dest.write_bytes(path.read_bytes())
+            logger.info(f"  AlphaFold model for {af_acc}: {dest}")
+            return dest
+
         dest = structures_dir / f"{pdb_id.upper()}.cif"
         if not dest.exists():
             logger.info(f"  Downloading {pdb_id} from RCSB...")

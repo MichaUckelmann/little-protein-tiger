@@ -140,6 +140,30 @@ be the authoritative starting set for hotspot selection — confirm their geomet
 do not silently drop residues from this list. If the list is empty, fall back to
 purely geometry-driven hotspot selection.
 
+**Collapse the biological assembly — BEFORE the first tool call.**
+The orchestrator injects a chain table (entity description + residue count for
+every chain) into the query. Read it first and group the chains by
+`(entity description, residue count)`. Chains sharing both are **copies of the
+same molecule**, and a biological assembly of an oligomer repeats the *same*
+interface once per copy — analysing a second copy returns the same numbers at
+full token cost. Two chains with the same description but *different* residue
+counts are different constructs (a truncation, a tagged variant), **not** copies;
+keep those apart.
+
+- Pick **one representative pair** — one target-chain copy and the partner-chain
+  copy it contacts — and analyse only that pair.
+- **Never call a structure tool on a redundant copy.** Hotspots declared on the
+  representative chain hold for every copy of it.
+- State the collapse in one line, in the `Assembly` field of COMPLEX OVERVIEW:
+  name the groups and the pair you kept.
+
+Worked example — 5GRS assembly 1 has twelve chains: A,B,C,D (375 res, SCAP),
+I,J,K,L (62 res, SREBP), E,F,G,H (187–191 res). That is a 4:4 tetramer of one
+interface repeated four times, visible entirely from the chain table without a
+single tool call. Collapse it to `A/I` and write:
+*"Assembly: 4:4 tetramer — A/B/C/D (SCAP, 375 aa) and I/J/K/L (SREBP, 62 aa) are
+the same interface repeated; analysed A/I as the representative pair."*
+
 **Confirm the structure is actually your target — BEFORE any geometry pass.**
 The corpus stores paper-level `entities.proteins` and `paper_metadata.pdb_accessions`
 as two independent lists. A paper that mentions protein X and deposits a PDB
@@ -167,8 +191,13 @@ Adjudication rules (apply before any geometry call):
   - Expected `JAK1` vs entity for JAK2 → NO_GO.
   - Expected `YAP1 / TEAD4` vs TAZ-TEAD complex → NO_GO (TAZ ≠ YAP1, paralog).
 - **MISMATCH = different species / orthologs but same gene** (e.g. mouse vs
-  human ENPP1) → proceed if the design intent doesn't require human-specific
-  residue numbering; otherwise NO_GO with a clear "needs human PDB" note.
+  human ENPP1) → **proceed.** An ortholog is often the only structure that
+  exists for a complex, and a site conserved between it and the human protein
+  is a legitimate design target — being non-human is not by itself a NO_GO.
+  What you must do is *say so*: name the source organism in COMPLEX OVERVIEW
+  and fill the ORTHOLOG NOTE section (Phase 4), because the residue numbers you
+  emit are that organism's, not human. Recommend a human PDB instead only when
+  you can name one that covers the same interface.
 - **Partial match** (e.g. one of a PPI pair matches, the other is missing) →
   proceed only if you can name a substitute or argue the missing partner is
   not needed for the design. Otherwise NO_GO.
@@ -242,7 +271,10 @@ From the glue pockets result, extract and note:
   - `rank`, `combined_rating`, `centroid_separation_A`, `bridgeable`, `design_note`
   - `chain_a_patch.residues[]` — residue nums + SASA on chain A
   - `chain_b_patch.residues[]` — residue nums + SASA on chain B
-- `interface_summary.bsa_total_A2` — from the inner interface analysis
+- `interface_summary.n_interface_residues_a` / `.n_interface_residues_b` and
+  `.interface_resnums_a` / `.interface_resnums_b` — the interface this pocket
+  flanks. `interface_summary` carries **no BSA**; take BSA from
+  `interface.bsa_total_A2` in the `tool_analyze_interface` result instead.
 - Top-1 pocket `centroid_separation_A` → note modality SUITABILITY (the operator chooses):
   - ≤ 12 Å: bicyclic or large cyclic peptide
   - 13–20 Å: mini-protein recommended (needs structural scaffold to bridge)
@@ -285,21 +317,34 @@ Compare the two chains using the tool result:
 
 **If chain_b matches the receptor groove profile** (more contacts, distributed BSA,
 broadly spread ΔΔG), the chains are assigned backwards for design purposes.
-Re-call `tool_analyze_interface` with chain_a and chain_b swapped, then proceed.
-This matters because both chains now receive full ΔΔG scoring, so the analysis is
-equally valid regardless of which chain you call chain_a — but the hotspot workflow
-in Phase 2 focuses on chain_a, so the groove must be chain_a.
+**Do not re-call the tool** — reinterpret the result you already have. Both chains
+receive full ΔΔG scoring and per-residue BSA in a single call, so the swap is a
+relabelling, not a new calculation: read `chain_b_interface_residues[]` and the
+chain B half of `bsa_per_residue` wherever the rest of this skill says chain_a,
+and set `target_chain` in the PIPELINE HANDOFF to the groove chain. A second
+`tool_analyze_interface` call returns the same numbers with the headings
+exchanged, for ~25,000 tokens — on a large interface that alone can end the run.
+Say in the report which chain you treated as the design target and that the tool
+was called with the chains the other way round.
 
-### If chain IDs are unknown
+### Reading chain identity
 
-Inspect the file with:
+The orchestrator's chain table in the query already lists every chain with its
+entity description and residue count — that is the answer, and it costs nothing.
+Read chain identity off it. Do **not** call `tool_get_sequence_map` to recover
+information the table states: it is the most token-expensive tool in this surface
+(~30,000 tokens for a 375-residue chain), and walking a 12-chain assembly with it
+exhausts the context budget before any analysis happens. For designed binders,
+the shorter chain is usually the binder.
+
+Only if the query carries **no** chain table, probe with:
 ```
 mcp__structure-tools__tool_get_sequence_map
   file_path = "<path>"
-  chain     = "<try each chain letter>"
+  chain     = "<chain letter>"
 ```
-The `length` field helps identify which chain is which. For designed binders,
-the shorter chain is usually the binder.
+and probe **at most two chains** — the `length` field and residue list are enough
+to tell a target from a binder. Never walk the alphabet.
 
 ---
 
@@ -326,13 +371,16 @@ mcp__structure-tools__tool_get_residue_contacts
 ```
 
 Record per residue:
-- `residue.name` and `residue.auth_seq_id` — canonical identifier
-- `residue.sasa_A2` — solvent accessibility (a buried residue is a poor binder
-  target; flag any priority_residue with `sasa_A2 < 5` as unlikely to be
-  pocket-facing — note for the user but keep in the hotspot list)
+- `residue` (three-letter name) and `resnum` (the auth_seq_id) — canonical identifier
+- `n_contacts` and `gap_flag` — a residue with `gap_flag: true` (< 2 contacts) is
+  weakly engaged; note it for the user but keep it in the hotspot list
 - `contacts[]` — neighbouring residues within the cutoff; these are the pocket
   walls. Use them to confirm the residue is part of a coherent pocket
   (≥ 3 close contacts) rather than an isolated surface residue.
+
+This tool returns **no per-residue SASA** — there is no `sasa_A2` field in the
+result. Do not report one, and do not infer solvent accessibility from the
+residue name; use the contact count as the burial proxy instead.
 
 If the literature `priority_residues` list is empty (the mol-bio stage couldn't find
 specific residues), report this as a degraded run: the structure expert cannot
@@ -342,8 +390,8 @@ literature search with more targeted queries.
 
 **Score and rank for output**: use a simple composite to pick the top 4–6 residues
 for MODEL-READY HOTSPOTS:
-- `sasa_A2 ≥ 30` → likely solvent-accessible pocket-facing
 - `len(contacts) ≥ 4` → in a coherent pocket
+- `gap_flag: false` → engaged rather than an isolated surface position
 - High residue-type score for designability (HYS, ASP, GLU, ARG, LYS, TYR, TRP, PHE
   preferred over GLY, ALA, SER, etc.)
 
@@ -508,8 +556,20 @@ look up the result already in context.
 
 **Critical rule**: Use the `auth_to_label` map verbatim — never compute, estimate,
 or infer the mapping from sequence comparison, chain start residues, or
-observed gaps. If a residue's `auth_seq_id` is not a key in the map, omit it
-from the MODEL-READY HOTSPOTS table and note it as unmapped.
+observed gaps. **For every row, find that residue's `auth_seq_id` as a key in the
+`auth_to_label` object and copy its value across.** Counting positions in the
+residue list, adding a constant offset, or continuing an arithmetic pattern you
+noticed in the first rows is the observed failure mode: one run derived all 23
+label_seq_ids that way and every one was off by exactly one, so every one had to
+be repaired by the orchestrator before the run could continue. If a residue's
+`auth_seq_id` is not a key in the map, omit it from the MODEL-READY HOTSPOTS
+table and note it as unmapped.
+
+**If you did not literally read a value out of an `auth_to_label` map in a tool
+result you actually received, write `**UNVERIFIED**` in the label_seq_id column.**
+The orchestrator resolves those tokens with gemmi (see Phase 0), so `UNVERIFIED`
+costs the run nothing — a counted or offset number is silently wrong and is not
+resolved, because nothing downstream can tell it apart from a real one.
 
 ### Sidechain atoms for RFD3
 
@@ -538,6 +598,30 @@ the MODEL-READY HOTSPOTS section from it in Stage 4.
 Populate from tool outputs only. Do not infer distances, BSA values, or interaction
 types from residue names — all of these are now in the tool results.
 
+**Context budget:** this stage runs under a hard per-call input-token ceiling, and
+a run that crosses it dies with **no report at all** — the tokens are billed and
+nothing survives. Tool results, not your prose, are what fill that context.
+
+- **At most 10 structure-tool calls in a whole run.** If you are still exploring
+  at call 8, stop and write the report with what you have.
+- **At most one `tool_analyze_interface` call per run.** It is by far the most
+  expensive result in this surface (~25,000 tokens on a large interface), it
+  scores *both* chains in one pass, and there is no second question it answers.
+  Never call it again with the chains swapped (Phase 1) or with a different
+  cutoff.
+- **At most two `tool_get_sequence_map` calls per run** — one per chain that
+  contributes hotspot residues (one in DISRUPT / INHIBIT_ACTIVE_SITE mode, two in
+  STABILIZE mode). Not once per chain in the file.
+- **Never call a tool to learn something the orchestrator's chain table already
+  states** (which chain is which protein, how long it is, how many copies exist).
+- **A `[TRUNCATED` marker in any tool result means: stop exploring and write the
+  report now.** The marker's own text suggests re-running the tool with tighter
+  arguments — do not. You have already paid for that result once, and the summary
+  fields it kept are the ones this report needs. Do not issue further calls to
+  compensate either. Write the report from what you have and fill every field you
+  could not determine with `not determined`. **A complete report on partial data
+  is a result; an aborted run is not.**
+
 **Token budget:** The full PPI ANALYSIS REPORT must fit in 3,000–4,000 words.
 - Interface residue categories: one comma-separated line per category, not sub-tables.
 - H-bond table: max 12 rows — keep the 12 shortest distances (strongest bonds).
@@ -551,6 +635,8 @@ types from residue names — all of these are now in the tool results.
 - Structure: <file path or PDB ID>
 - Structure source: <experimental (X-ray) | experimental (cryo-EM) | experimental (NMR) | af3_boltz | rfdiffusion>
   — source type only; do NOT add author, journal, or year (see CITATION POLICY §6)
+- Source organism: <scientific name of the organism this structure was solved from, e.g. "Homo sapiens", "Schizosaccharomyces pombe" — or "not determined">
+- Assembly: <one line: the redundant chain groups and the representative pair analysed — see Phase 0>
 - Chain A: <id> (<protein name>)
 - Chain B: <id> (<protein name>)
 - Design mode: <DISRUPT | STABILIZE (molecular glue)>
@@ -569,6 +655,40 @@ Chain <id>: Hydrophobic: <list> | Aromatic: <list> | Charged: <list> | Polar: <l
 | Donor | Donor atom | Acceptor | Acceptor atom | Distance (Å) |
 |---|---|---|---|---|
 | <chain:ResNum> | <atom> | <chain:ResNum> | <atom> | <dist> |
+```
+
+**Where `Source organism` comes from:** the structure metadata already in your
+query — the entry title and entity descriptions surfaced by the orchestrator's
+PDB identity check, or an entity name that pins the organism unambiguously (a
+yeast gene name such as `Scp1`/`Sre1`). Say which, e.g.
+`Schizosaccharomyces pombe (from the entry title)`. If nothing in the query
+states or implies it, write `not determined` — do not guess a species to fill
+the field, and do not attribute it to a paper (CITATION POLICY §6).
+
+---
+
+### [Non-human structures only] ORTHOLOG NOTE
+
+*Write this section only when `Source organism` is anything other than
+`Homo sapiens`. For a human structure, omit it entirely.*
+
+An ortholog structure is **not** wrong. It is frequently the only structure that
+exists for a complex — no human SREBP–SCAP complex has ever been solved, for
+instance — and a target site conserved between it and the human protein is a
+legitimate thing to design against. What is wrong is not *saying* so: a report
+that presents fission-yeast residue numbers as "the target site" with no mention
+of the organism reads as human and is acted on as human for the rest of a
+multi-day campaign.
+
+```
+### ORTHOLOG NOTE
+- Source organism: <scientific name>
+- Human counterpart: <human gene symbol / protein name of the target chain, or "not determined">
+- Hotspot numbering: the auth_seq_ids in this report are <organism> numbering, NOT human.
+- Conservation: not assessed here — the pipeline runs a deterministic conservation
+  check on the declared hotspots against the human canonical sequence and reports,
+  per hotspot, whether the human protein carries the same residue.
+- Why this structure: <one sentence — e.g. "no human structure of this complex has been solved">
 ```
 
 ---
@@ -679,9 +799,9 @@ geometry:
 
 Target chain <id> (<ProteinName>) — pocket residues — selected <M> residues:
 
-| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms | SASA (Å²) |
+| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms | Contacts |
 |---|---|---|---|---|
-| <name> | <auth> | <label> | <atom1>,<atom2> | <sasa> |
+| <name> | <auth> | <label> | <atom1>,<atom2> | <n_contacts> |
 
 #### BoltzGen binding
 binding: <label_seq_id_1>,<label_seq_id_2>,...
@@ -692,8 +812,9 @@ select_hotspots:
     <chain><auth_resnum>: <atom1>,<atom2>
 ```
 
-Flag any residue with SASA < 5 Å² in a note (likely buried; the binder may not be
-able to reach it).
+Flag any residue with `gap_flag: true` in a note (fewer than 2 contacts — weakly
+engaged, and the binder may not be able to reach it). Per-residue SASA is not
+available from any tool in this surface; do not add a SASA column.
 
 **[STABILIZE mode only]** — dual-chain format for molecular glue:
 
@@ -736,6 +857,7 @@ select_hotspots:
 - target_chain: <chain ID of the design target — the groove/pocket chain confirmed in Phase 1>
 - partner_chain: <chain ID of the binding partner — the helix/loop chain>
 - target_complex: <ProteinA / ProteinB>
+- structure_organism: <scientific name of the organism this structure was solved from, e.g. Homo sapiens — or "not determined">
 - design_intent: <disrupt | stabilize>
 - modality: mini_protein          # default; the operator opts into cyclic_peptide at kickoff
 - bsa_A2: <integer BSA in Å²>
@@ -776,6 +898,17 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
 - **Chain assignment**: confirm target vs partner with the user if not explicit.
   Mis-assignment swaps all downstream hotspot residue numbers.
 
+- **Silent ortholog**: a non-human structure whose organism is never named. The
+  structure is often perfectly fine to analyse (Phase 0), but the report then
+  presents another organism's residue numbering as the human target site, and
+  everything downstream treats it as human. Always fill `Source organism` and
+  `structure_organism`, and add the ORTHOLOG NOTE when it is not `Homo sapiens`.
+
+- **Analysing every copy of one interface**: an assembly of a homo-oligomer
+  repeats the same interface per copy. Collapse it in Phase 0 and analyse one
+  representative pair — a second copy costs the full token price of the first
+  and returns the same numbers.
+
 - **BSA < 500 Å²**: almost certainly crystal packing, not a biological interface.
   Check if the correct chains were selected before proceeding.
 
@@ -804,12 +937,17 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
   BSA ranking, and reasoning throughout the report. Only switch to `label_seq_id`
   in the MODEL-READY HOTSPOTS table, and only by direct lookup in the
   `auth_to_label` map from `get_sequence_map`. Never estimate the mapping with
-  phrases like "auth = label for this chain" or "offset is approximately N" —
-  these guesses propagate silently into wrong BoltzGen specs.
+  phrases like "auth = label for this chain" or "offset is approximately N", and
+  never count positions down the residue list — these guesses propagate silently
+  into wrong BoltzGen specs, and off-by-one is the shape they take. If the map is
+  not in front of you, `**UNVERIFIED**` is the correct entry, not a derived number.
 
-- **Do not re-call `get_sequence_map`**: call it at most once per chain per run.
-  The result is already in context — scroll back to find it rather than issuing
-  a duplicate tool call. A repeated call adds tokens without new information.
+- **Do not re-call `get_sequence_map`**: at most **two calls in the whole run** —
+  one per chain that actually contributes hotspot residues, *not* once per chain
+  in the file. On a 12-chain assembly "once per chain" is ~180,000 tokens and
+  kills the run before the report is written. The result is already in context —
+  scroll back to find it rather than issuing a duplicate tool call. A repeated
+  call adds tokens without new information.
 
 - **[STABILIZE mode] No glue pockets returned**: if `tool_find_glue_pockets` returns
   an empty `glue_pockets` list, report this clearly. Possible causes: interface is
