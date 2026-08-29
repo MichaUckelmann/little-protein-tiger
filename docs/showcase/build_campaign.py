@@ -423,19 +423,22 @@ HTML = f"""{_HEAD}
     <h2>Cutting the target down without losing the site</h2></div>
   <p>RFD3 is given a contig, not a whole protein. The trim stage segmented the chain,
   checked UniProt for a transmembrane region (none — the modelled construct is entirely
-  extracellular), and kept <strong>117 of 117 residues in a single contiguous segment</strong>,
-  18–134 in author numbering. All <strong>9 of 9 hotspots</strong> survived, and the kept
-  residues carry 138.5% of the interface area of the originals.</p>
+  extracellular), and concluded that nothing needed removing: <strong>117 residues in,
+  117 out</strong>, one contiguous segment, 18–134 in author numbering, all
+  <strong>9 of 9 hotspots</strong> retained. Deciding a target is already the right size
+  is as much this stage's job as cutting one down.</p>
   <p>Two details here are load-bearing and easy to get wrong. The trim preserves author
   numbering, so hotspot ids stay valid downstream. And it prefers one segment: every extra
   segment is a chain break RFD3 has to model, and the prefilter's chain-break limit is
   derived from the segment count rather than hardcoded. The resulting contig —
   <code>70-86,/0,B18-134</code> — asks for a binder of 70 to 86 residues against that segment.</p>
-  <div class="note-box"><p>The trim gate raised a warning and recorded it rather than
-  hiding it: cutting to this segment removed residues carrying 1,653 Å² (67%) of the
-  native interface. That is expected when a target has more than one interface and you
-  are designing against a single one — but it is a checkpoint in the manifest, so it is
-  a thing a human confirmed, not a thing that happened quietly.</p></div>
+  <div class="note-box"><p>The trim gate opened a checkpoint here, which is the
+  behaviour worth showing: a trim that might have damaged the epitope pauses for a human
+  rather than proceeding quietly. In this run the warning text was itself wrong — it
+  reported residues "removed" carrying 1,653 Å² of interface, on a trim that removed
+  nothing at all. The gate firing was right; its arithmetic was not, and it is being
+  looked at. Every hotspot survived, which is the part the next stage actually depends
+  on.</p></div>
 </section>
 
 <section class="stage">

@@ -209,26 +209,34 @@ HTML = f"""{_HEAD}
 
 <section class="stage">
   <div class="stage-h"><p class="step">Stage 3 · the trim</p>
-    <h2>The first target that would not cut cleanly</h2></div>
+    <h2>The first target RFD3 saw in three pieces</h2></div>
   <div class="two">
     <div>
-      <p>Every earlier campaign trimmed its target to one contiguous segment. This one
-      could not: no domain boundary exists within 312 residues of the site, so the trim
-      cropped around the hotspots in 3D instead and kept <strong>207 residues in three
-      segments</strong> — which means two chain breaks for RFD3 to model.</p>
-      <p>That is the single most dangerous thing that can happen here quietly. The
-      prefilter's chain-break limit is <em>derived</em> from the segment count rather than
-      hardcoded, and a hardcoded 1 against a three-segment target would have rejected
-      every design produced. It held: <strong>86.2% of backbones cleared the
-      prefilter</strong>, against 64% on the single-segment PD-L1 campaign.</p>
-      <p>The crop is also geometrically sound. Superposing the refolded target back onto
-      the original uncropped 3KYS gives <strong>0.11 Å</strong> Cα RMSD, with per-segment
-      values of 0.09–0.12 Å — the three fragments have not drifted or hinged apart.</p>
+      <p>The trim stage decides how much of the target to hand to RFD3. Here it decided
+      to hand over all of it: <strong>207 residues in, 207 out</strong>, retaining 100.7%
+      of the interface area. TEAD1's modelled extent was already inside the 220-residue
+      budget, so there was nothing worth cutting — it did log that no domain boundary
+      exists within 312 residues, so had a cut been needed it would have been made on
+      geometry rather than on a domain edge.</p>
+      <p>RFD3 still sees <strong>three segments</strong>, and that is the interesting
+      part. The breaks are not the trim's: <strong>3KYS itself is missing residues
+      230–238 and 344</strong> — disordered loops with no density in the crystal. A
+      deposited structure with gaps is a multi-segment target whether anyone trimmed it
+      or not, and it means two chain breaks for the model to bridge.</p>
+      <p>That is the case that fails silently. The prefilter's chain-break limit is
+      <em>derived</em> from the segment count rather than hardcoded; a hardcoded 1 against
+      a three-segment target rejects every design produced, with no error. It held —
+      <strong>86.2% of backbones cleared the prefilter</strong> — and the geometry
+      survived too: the refolded target superposes onto the deposited chain at
+      <strong>0.11 Å</strong> Cα RMSD, per-segment 0.09–0.12 Å, so the three pieces have
+      not drifted or hinged apart.</p>
     </div>
     <figure class="fig">
       <img src="{img('meso_epitope')}" alt="The TEAD1 surface with the twelve hotspot residues highlighted, no binder present.">
       <figcaption>The twelve hotspots on the bare TEAD1 surface — the same camera as the
-      hero image. This is the patch the design had to cover.</figcaption>
+      hero image, and the patch the design had to cover. This is the <em>trimmed</em>
+      target as handed to RFD3, which here is identical to the deposited chain, because
+      the trim kept every modelled residue.</figcaption>
     </figure>
   </div>
 </section>
