@@ -47,10 +47,11 @@ PAGES = [
      "A real corpus-explorer session over 11,055 curated papers: the tool calls it made, "
      "what a curated finding looks like, and the interaction and DepMap graphs it built.",
      "outputs/mesothelioma_showcase.txt"),
-    ("ppi_discovery.html", "og_ppi.png", "Disease name to design target",
-     "The discovery half the binder track skips: three tiered candidate interactions, the "
-     "mutagenesis behind the winner, six hotspot residues on a named chain.",
-     "outputs/e2e_mesothelioma"),
+    ("ppi_discovery.html", "og_ppi.png", "Disease name to designed binders",
+     "No target named: the pipeline picked YAP1/TEAD1, argued for it, sized its own "
+     "campaign from a measured hit rate, and ran it — 317 designs through every gate for "
+     "79 cents of model spend.",
+     "projects/mesothelioma_showcase"),
 ]
 
 cards = "".join(f'''<a class="pc" href="{href}">

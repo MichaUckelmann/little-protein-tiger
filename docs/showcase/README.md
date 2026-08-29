@@ -13,7 +13,7 @@ or the link previews will point at the old host.
 |---|---|---|
 | `campaign_pdl1.html` | `projects/pdl1_e2e` | A complete binder campaign against PD-L1 — target choice, epitope, calibration gate, production funnel, ranked designs |
 | `corpus_explorer.html` | `outputs/mesothelioma_showcase.txt`, `data/` | One corpus-explorer session: tool trace, fingerprint schema, interaction + DepMap graphs |
-| `ppi_discovery.html` | `outputs/e2e_mesothelioma` | The PPI track's discovery half — disease name to tiered targets to six hotspot residues |
+| `ppi_discovery.html` | `projects/mesothelioma_showcase` | The PPI track end to end — an unnamed target chosen, argued, sized from a measured hit rate, and designed against on GPU; with the archived BoltzGen run as the before |
 
 ## Rebuilding
 

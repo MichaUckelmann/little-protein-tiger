@@ -124,10 +124,10 @@ def main():
          "Ask eleven thousand papers a question, get a target map",
          ["55,689 indexed", "11,055 curated", "20,658 edges", "65 s"],
          network_art())
-    card("ppi", "ppi track · discovery",
-         "From a disease name to a specific groove on a specific protein",
-         ["3 tiered targets", "3,402 A2 interface", "6 hotspots"],
-         Image.open(ASSETS / "tead1_yap1.webp").convert("RGBA"))
+    card("ppi", "ppi track · mesothelioma",
+         "One sentence about a disease, twenty designed binders out",
+         ["18.5% hit rate", "317 gated designs", "22 GPU-h", "$0.79"],
+         Image.open(ASSETS / "meso_design.webp").convert("RGBA"))
 
 
 if __name__ == "__main__":
