@@ -546,13 +546,23 @@ def test_the_estimate_tracks_the_campaigns_it_was_fitted_on(tokens, measured):
     assert abs(f(tokens) - measured) / measured < 0.15
 
 
-def test_a_measured_rate_overrides_the_estimate(tmp_path):
-    from src.foundry_runner import FoundryPaths, plan_campaign
-    paths = FoundryPaths.under(tmp_path / "pilot")
+def test_a_measured_rate_overrides_the_estimate(tmp_path, monkeypatch):
+    """A measured rate must beat the size-scaled estimate.
+
+    free_gb is pinned: on a host with less headroom than `min_free_gb` the disk
+    clamp squashes any campaign to n_batches=1, both estimates round to 0.0 h,
+    and the comparison passes or fails on the runner's spare disk rather than on
+    anything this test is about. CI (10 GB free) found that the hard way.
+    """
+    import src.foundry_runner as fr
+    monkeypatch.setattr(fr, "free_gb", lambda *_: 500.0)
+    paths = fr.FoundryPaths.under(tmp_path / "pilot")
     paths.mkdirs()
-    cfg = {"foundry": {"pilot": {"n_batches": 10}}}
-    slow = plan_campaign(cfg, paths, mode="pilot", n_tokens=285)
-    fast = plan_campaign(cfg, paths, mode="pilot", n_tokens=285, sec_per_refold=2.0)
+    cfg = {"foundry": {"pilot": {"n_batches": 200}}}
+    slow = fr.plan_campaign(cfg, paths, mode="pilot", n_tokens=285)
+    fast = fr.plan_campaign(cfg, paths, mode="pilot", n_tokens=285, sec_per_refold=2.0)
+    assert slow.n_batches == fast.n_batches == 200, "disk clamp fired — test is void"
+    assert slow.est_gpu_hours > 0 and fast.est_gpu_hours > 0
     assert fast.est_gpu_hours < slow.est_gpu_hours
 
 
