@@ -883,6 +883,35 @@ def check_mutation_clash(
     }
 
 
+# Crystallisation additives that are essentially never functional: cryo-
+# protectants, buffers and precipitants. Deliberately CONSERVATIVE — it holds no
+# ions (SO4 and PO4 routinely sit in phosphate-binding sites), no sugars (they
+# may be glycans), no nucleotides, no metals. Anything not listed is kept, so an
+# unrecognised ligand survives rather than being guessed away.
+CRYSTALLISATION_ADDITIVES = frozenset({
+    "EDO", "GOL", "PEG", "PG4", "PGE", "1PE", "2PE", "P6G", "PG0", "MPD",
+    "DMS", "ACT", "ACY", "FMT", "TRS", "MES", "EPE", "IMD", "CIT", "FLC",
+    "TLA", "BME", "DTT", "MRD", "BU3", "IPA", "EOH",
+})
+
+
+def is_solvent_or_additive(resname: str) -> bool:
+    """True for water and common crystallisation additives — never for the chain.
+
+    The polypeptide check comes FIRST and is the backstop: gemmi's residue table
+    recognises modified amino acids (MSE, SEP, TPO, PTR, PCA, CSO, UNK), so a
+    depositor's selenomethionine or phosphoserine can never be stripped by this,
+    whatever else it is called.
+    """
+    name = (resname or "").strip().upper()
+    if not name or _is_protein_residue(name):
+        return False
+    info = gemmi.find_tabulated_residue(name)
+    if info is not None and info.is_water():
+        return True
+    return name in CRYSTALLISATION_ADDITIVES
+
+
 def _is_protein_residue(resname: str) -> bool:
     info = gemmi.find_tabulated_residue(resname)
     if info is not None:

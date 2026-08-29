@@ -346,8 +346,15 @@ def prefilter_designs(
     the previous ones behind.
 
     `max_chainbreaks` must be DERIVED from the number of target segments, not
-    hard-coded: a single-segment target scores exactly 1, and a two-segment trim
-    scores 2. Passing the constant 1 against a multi-segment target rejects every
+    hard-coded. `n_chainbreaks` counts breaks in the OUTPUT structure, and the
+    target is fixed conditioning rather than something RFD3 builds, so an
+    N-segment target contributes an unavoidable N-1 before the binder is even
+    considered. Measured over four campaigns: single-segment targets score 0 on
+    ~95% of designs, the occasional 1-2 being a genuine break in the DIFFUSED
+    BINDER — which is the thing worth filtering. A 3-segment target scored
+    exactly 2 on all 400 designs sampled: no variance, no signal. Deriving the
+    limit from the segment count keeps the budget for real binder breaks at 1
+    either way; the constant 1 against a multi-segment target rejects every
     design.
     """
     rfd3_dir, out_dir = Path(rfd3_dir), Path(out_dir)

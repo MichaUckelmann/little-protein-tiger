@@ -927,9 +927,10 @@ def write_trimmed(
     """
     import gemmi
 
-    from src.structure_tools import _is_protein_residue
+    from src.structure_tools import _is_protein_residue, is_solvent_or_additive
 
     src = _model(structure_path)
+    dropped: dict[str, int] = {}
     wanted = {c: (None if v is None else set(int(x) for x in v))
               for c, v in keep.items()}
 
@@ -951,11 +952,22 @@ def write_trimmed(
                 continue
             if allowed is not None and not _is_protein_residue(res.name):
                 continue
+            # Applies to every kept chain, not just the trimmed one: waters and
+            # cryoprotectant have no business in the structure RFD3 conditions
+            # on or that the interface is measured from. is_solvent_or_additive
+            # checks the polypeptide first, so a modified residue is never hit.
+            if is_solvent_or_additive(res.name):
+                dropped[res.name] = dropped.get(res.name, 0) + 1
+                continue
             ch_out.add_residue(res)
         if len(ch_out):
             model_out.add_chain(ch_out)
     st.add_model(model_out)
     st.setup_entities()
+    if dropped:
+        logger.info(
+            f"dropped {sum(dropped.values())} solvent/additive residues "
+            f"({', '.join(f'{k}x{v}' for k, v in sorted(dropped.items()))})")
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.suffix.lower() == ".pdb":
@@ -981,7 +993,7 @@ def build_contig(segments: Sequence[tuple[int, int]], chain: str,
 def _per_residue_bsa(structure_path: Path, target_chain: str,
                      partner_chain: str) -> tuple[dict[int, float], float]:
     """Per-residue buried surface for the target chain, and the interface total."""
-    from src.structure_tools import analyze_interface
+    from src.structure_tools import analyze_interface, is_solvent_or_additive
 
     try:
         res = analyze_interface(str(structure_path), target_chain, partner_chain)
@@ -995,6 +1007,14 @@ def _per_residue_bsa(structure_path: Path, target_chain: str,
         # bsa_per_residue covers BOTH chains; keep only the target's side, or the
         # partner's buried area would inflate every domain's score.
         if not isinstance(e, dict) or e.get("chain") != target_chain:
+            continue
+        # ...and only the POLYPEPTIDE's side. Ordered waters carry the target
+        # chain's id and their own numbering, so they landed in the per-residue
+        # total but could never be in `kept_set` — every interface water was
+        # counted as a residue the trim had removed. On 7CZD that was 20 waters
+        # worth 435 A^2, enough to open a spurious trim_gate on a trim that
+        # removed nothing at all.
+        if is_solvent_or_additive(str(e.get("residue") or "")):
             continue
         auth, bsa = e.get("resnum"), e.get("bsa_A2")
         if auth is None or bsa is None:

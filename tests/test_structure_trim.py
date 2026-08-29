@@ -271,3 +271,47 @@ def test_insertion_codes_are_refused_not_silently_mis_numbered(tmp_path):
         trim_target(_7XQ8, target_chain="C", partner_chain="L",
                     hotspots=[{"residue": "TYR", "auth_seq_id": 150}],
                     budget=220, out_dir=tmp_path, pdb_id="7XQ8")
+
+
+# --- solvent hygiene -------------------------------------------------------
+# Ordered waters carry their target chain's id and their own numbering, so they
+# reached the per-residue interface accounting but could never be in the trim's
+# kept_set: every interface water was counted as a residue the trim had removed.
+# On 7CZD that was 20 waters worth 435 A^2 — 35% of the target-side total, which
+# tripped the 5% threshold and opened a trim_gate checkpoint on a trim that
+# removed nothing at all (117 residues in, 117 out).
+
+from src.structure_tools import is_solvent_or_additive  # noqa: E402
+
+
+@pytest.mark.parametrize("name", ["HOH", "DOD", "EDO", "GOL", "MPD", "DMS", "PEG"])
+def test_water_and_cryoprotectant_are_strippable(name):
+    assert is_solvent_or_additive(name)
+
+
+@pytest.mark.parametrize("name", [
+    "ALA", "GLY", "TRP",              # ordinary residues
+    "MSE", "SEP", "TPO", "PTR",       # modified residues a depositor may use
+    "PCA", "CSO", "UNK",              # and the odd ones
+])
+def test_the_polypeptide_is_never_strippable(name):
+    """The whole safety property: this must not be able to cut the chain."""
+    assert not is_solvent_or_additive(name)
+
+
+@pytest.mark.parametrize("name", [
+    "GTP", "GMPPNP", "ATP",   # functional ligands — KRAS campaigns need these
+    "ZN", "MG", "CA", "FE",   # metals, frequently structural
+    "SO4", "PO4",             # ions that sit in phosphate-binding sites
+    "NAG", "BMA",             # sugars, which may be a real glycan
+    "DA", "DT", "A", "U",     # nucleic acid
+])
+def test_anything_possibly_functional_is_kept(name):
+    """The list is a denylist on purpose — an unrecognised ligand survives."""
+    assert not is_solvent_or_additive(name)
+
+
+def test_case_and_whitespace_do_not_defeat_it():
+    assert is_solvent_or_additive(" hoh ")
+    assert not is_solvent_or_additive("")
+    assert not is_solvent_or_additive(None)  # type: ignore[arg-type]

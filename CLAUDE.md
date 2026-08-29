@@ -325,10 +325,32 @@ them without re-reading this list is how they get silently reverted.
 - **Disk, not GPU, is the binding constraint**: ~2.5 MB per RF3 design directory,
   ~120 GB for a full production campaign. `plan_campaign` clamps `n_batches` to the
   disk budget, and `prune_confidences` deletes PAE matrices for non-survivors.
-- **Trims preserve author numbering** so hotspot ids stay valid, and prefer a single
-  contiguous segment: every extra segment is an RFD3 chain break, and the prefilter's
-  `max_chainbreaks` is *derived from the segment count* — a hardcoded 1 against a
-  two-segment target rejects every design.
+- **Trims preserve author numbering** so hotspot ids stay valid. They prefer a single
+  contiguous segment, but NOT because RFD3 has to build across the gaps — it doesn't. The
+  target is fixed conditioning: the sidecar's `sampled_contig` reads
+  `72P,/0,A195,A196,...`, a diffused binder plus every target residue pinned by index.
+  What the segments change is `rfd3_n_chainbreaks`, which counts breaks in the OUTPUT
+  structure, so an N-segment target contributes an unavoidable N−1 before the binder is
+  looked at. Measured: single-segment campaigns score 0 on ~95% of designs (the rest are
+  genuine breaks in the DIFFUSED BINDER, which is the signal worth filtering); the
+  3-segment YAP1/TEAD1 target scored exactly 2 on all 400 designs sampled — no variance,
+  no information. `max_chainbreaks` is *derived from the segment count* so the budget for
+  real binder breaks stays at 1 either way; a hardcoded 1 against a multi-segment target
+  rejects every design.
+- **A trim is often a no-op, and that is a result.** PD-L1 kept 117 of 117 residues and
+  YAP1/TEAD1 207 of 207 — deciding a target is already within budget is as much this
+  stage's job as cutting one down. YAP1/TEAD1's three segments came from gaps in the
+  DEPOSITED structure (3KYS is missing 230–238 and 344), not from any cut, so a
+  multi-segment contig does not imply anything was trimmed away.
+- **Solvent never reaches the design or the interface maths.** `write_trimmed` drops
+  waters and crystallisation additives (`structure_tools.is_solvent_or_additive` — a
+  conservative denylist that checks `_is_protein_residue` FIRST, so MSE/SEP/TPO/PTR/PCA
+  can never be hit, and that keeps ions, metals, sugars, nucleotides and any unrecognised
+  ligand). Before this, ordered waters carried the target chain's id into
+  `_per_residue_bsa` where they could never match the trim's `kept_set`, so every
+  interface water counted as a residue the trim had "removed": on 7CZD, 20 waters worth
+  435 Å², 35% of the target-side total, opening a `trim_gate` checkpoint on a trim that
+  removed nothing.
 - **Insertion codes are refused, not worked around.** A Kabat-numbered antibody chain
   has repeated author ids, which an RFD3 contig cannot address; emitting `C92-92,C92-92`
   produces a spec RFD3 accepts and silently mis-models.

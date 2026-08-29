@@ -208,45 +208,21 @@ HTML = f"""{_HEAD}
 </section>
 
 <section class="stage">
-  <div class="stage-h"><p class="step">Stage 3 · the trim</p>
-    <h2>The first target RFD3 saw in three pieces</h2></div>
-  <div class="two">
-    <div>
-      <p>The trim stage decides how much of the target to hand to RFD3. Here it decided
-      to hand over all of it: <strong>207 residues in, 207 out</strong>, retaining 100.7%
-      of the interface area. TEAD1's modelled extent was already inside the 220-residue
-      budget, so there was nothing worth cutting — it did log that no domain boundary
-      exists within 312 residues, so had a cut been needed it would have been made on
-      geometry rather than on a domain edge.</p>
-      <p>RFD3 still sees <strong>three segments</strong>, and that is the interesting
-      part. The breaks are not the trim's: <strong>3KYS itself is missing residues
-      230–238 and 344</strong> — disordered loops with no density in the crystal. A
-      deposited structure with gaps is a multi-segment target whether anyone trimmed it
-      or not, and it means two chain breaks for the model to bridge.</p>
-      <p>That is the case that fails silently. The prefilter's chain-break limit is
-      <em>derived</em> from the segment count rather than hardcoded; a hardcoded 1 against
-      a three-segment target rejects every design produced, with no error. It held —
-      <strong>86.2% of backbones cleared the prefilter</strong> — and the geometry
-      survived too: the refolded target superposes onto the deposited chain at
-      <strong>0.11 Å</strong> Cα RMSD, per-segment 0.09–0.12 Å, so the three pieces have
-      not drifted or hinged apart.</p>
-    </div>
-    <figure class="fig">
-      <img src="{img('meso_epitope')}" alt="The TEAD1 surface with the twelve hotspot residues highlighted, no binder present.">
-      <figcaption>The twelve hotspots on the bare TEAD1 surface — the same camera as the
-      hero image, and the patch the design had to cover. This is the <em>trimmed</em>
-      target as handed to RFD3, which here is identical to the deposited chain, because
-      the trim kept every modelled residue.</figcaption>
-    </figure>
-  </div>
-</section>
-
-<section class="stage">
   <div class="stage-h"><p class="step">Stage 4 · calibration</p>
     <h2>The campaign sized itself, then raised its own bar</h2></div>
   <p>A 100-backbone pilot proved the machinery in 1.9 h. Calibration then ran the
   experiment that decides the campaign: 481 backbones, 1,924 refolds, counting how many
   designs actually cleared the success bar rather than assuming a rate.</p>
+  <p>It also cleared a first for this pipeline. TEAD1 needed no trimming — all 207
+  modelled residues were already inside budget — but 3KYS is itself missing residues
+  230–238 and 344, disordered loops with no density, so the target reaches RFD3 in
+  <strong>three pieces</strong>. The target is fixed conditioning rather than something
+  the model builds, so the gaps are not its problem; what they do change is the
+  prefilter's chain-break count, which is <em>derived</em> from the segment number rather
+  than hardcoded. A hardcoded limit would have rejected every design. It held —
+  <strong>86.2% of backbones cleared the prefilter</strong> — and the refolded target
+  superposes onto the deposited chain at <strong>0.11 Å</strong> Cα RMSD, so the three
+  pieces have not drifted apart.</p>
   <div class="two">
     <div>
       <p>The measured backbone hit rate was <strong>18.50%</strong> (89 of 481, 95% Wilson
