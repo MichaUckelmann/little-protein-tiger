@@ -494,3 +494,119 @@ def test_both_transports_return_the_same_fingerprint_view():
     body = re.search(r"def get_fingerprint\(.*?(?=\n@mcp\.tool)", mcp, re.S)
     assert body, "get_fingerprint not found in the MCP server"
     assert "_llm_fingerprint(fp)" in body.group(0)
+
+
+# ---------------------------------------------------------------------------
+# The analyst may not upgrade a deterministic verdict
+# ---------------------------------------------------------------------------
+
+class _FakeStats:
+    n_records = 1352
+    n_survivors = 317
+
+    def render(self):
+        return "clash_severe 391\nhotspot_engagement 342\nbinder_rmsd_dock 206"
+
+
+class _FakeRanking:
+    filter_stats = _FakeStats()
+    top_k = list(range(20))
+
+
+def _summary_runner(monkeypatch, handoff, captured):
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner.__new__(PipelineRunner)
+    r._BINDER_STAGE_FILES = PipelineRunner._BINDER_STAGE_FILES
+    monkeypatch.setattr(r, "_write_binder_fasta", lambda *a, **k: None,
+                        raising=False)
+    monkeypatch.setattr(r, "_slim_binder_top_k", lambda *a, **k: "name,iptm\nd1,0.9",
+                        raising=False)
+
+    def fake_run_stage(skill, q, ctx, out, **kw):
+        captured["query"] = q
+        return handoff
+
+    monkeypatch.setattr(r, "_run_stage", fake_run_stage, raising=False)
+    return r
+
+
+def _result(go):
+    from src.pipeline_runner import PipelineResult
+
+    res = PipelineResult(run_dir=None)
+    res.go_recommendation = go
+    return res
+
+
+class _Calib:
+    verdict = "STOP"
+    verdict_reason = "0 hits in 344 refolds; rule-of-three ceiling 0.9%"
+
+
+def test_analyst_cannot_upgrade_a_calibration_stop(monkeypatch, tmp_path):
+    """
+    `_run_binder_track` sets NO_GO from the calibration verdict, then calls
+    this stage to report on what the trial DID produce. The assignment used to
+    be unconditional, so an LLM looking at a flattering top-20 — which looks
+    good by construction, that being what a top-20 is — flipped a measured
+    STOP back to GO.
+    """
+    captured = {}
+    dirs = {"binder": tmp_path, "scoring": tmp_path}
+    r = _summary_runner(monkeypatch, {"go_recommendation": "GO"}, captured)
+    res = _result("NO_GO")
+    r._stage_binder_summary(tmp_path / "top_k.csv", {}, dirs, res,
+                            ranking=_FakeRanking(), calib={"result": _Calib()})
+    assert res.go_recommendation == "NO_GO"
+
+
+def test_analyst_verdict_still_applies_on_a_healthy_campaign(monkeypatch, tmp_path):
+    captured = {}
+    dirs = {"binder": tmp_path, "scoring": tmp_path}
+    r = _summary_runner(monkeypatch, {"go_recommendation": "conditional-go"},
+                        captured)
+    res = _result("GO")
+    r._stage_binder_summary(tmp_path / "top_k.csv", {}, dirs, res)
+    assert res.go_recommendation == "CONDITIONAL_GO"
+
+
+def test_a_junk_verdict_does_not_overwrite_anything(monkeypatch, tmp_path):
+    captured = {}
+    dirs = {"binder": tmp_path, "scoring": tmp_path}
+    r = _summary_runner(monkeypatch, {"go_recommendation": "looks great!"},
+                        captured)
+    res = _result("GO")
+    r._stage_binder_summary(tmp_path / "top_k.csv", {}, dirs, res)
+    assert res.go_recommendation == "GO"
+
+
+def test_the_analyst_is_told_what_the_run_already_decided(monkeypatch, tmp_path):
+    """It used to see only target gene, partner, intent and the top-20 — no
+    verdict, no funnel. Both completed campaigns wrote 'No red flags
+    identified' over funnels that discarded ~75% of refolds."""
+    captured = {}
+    dirs = {"binder": tmp_path, "scoring": tmp_path}
+    r = _summary_runner(monkeypatch, {"go_recommendation": "GO"}, captured)
+    res = _result("NO_GO")
+    res.hotspot_residues_json = '{"target_chain":"A","residues":[{"auth_seq_id":1},{"auth_seq_id":2}]}'
+    r._stage_binder_summary(tmp_path / "top_k.csv", {}, dirs, res,
+                            ranking=_FakeRanking(), calib={"result": _Calib()})
+    q = captured["query"]
+    assert "Track: foundry" in q
+    assert "STOP" in q and "rule-of-three" in q
+    assert "may not be\nGO" in q or "may not be GO" in q
+    assert "1,352" in q and "317" in q          # the funnel, not just the top-K
+    assert "clash_severe 391" in q              # the drop reasons
+    assert "2 hotspots" in q and "0.75" in q    # engagement is a fraction
+
+
+def test_missing_ranking_and_calib_do_not_break_the_stage(monkeypatch, tmp_path):
+    """A resume enters this stage with neither in hand."""
+    captured = {}
+    dirs = {"binder": tmp_path, "scoring": tmp_path}
+    r = _summary_runner(monkeypatch, {"go_recommendation": "GO"}, captured)
+    res = _result("INCOMPLETE")
+    r._stage_binder_summary(tmp_path / "top_k.csv", {}, dirs, res)
+    assert res.go_recommendation == "GO"
+    assert "Track: foundry" in captured["query"]

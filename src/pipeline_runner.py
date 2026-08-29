@@ -2691,22 +2691,77 @@ class PipelineRunner:
 
     def _stage_binder_summary(self, top_k_csv: Path, intel: dict[str, str],
                               dirs: dict[str, Path],
-                              result: PipelineResult) -> dict[str, str]:
+                              result: PipelineResult, *,
+                              ranking=None, calib: dict | None = None,
+                              ) -> dict[str, str]:
         fasta = self._write_binder_fasta(top_k_csv, dirs["scoring"] / "top_k.fasta")
         if fasta:
             logger.info(f"orderable sequences -> {fasta}")
         slim = self._slim_binder_top_k(top_k_csv)
+
+        # What the run already DECIDED, stated up front. Without it the analyst
+        # sees only a top-20 of the best surviving designs — which look good by
+        # construction, because that is what a top-20 is — and has no way to
+        # know the campaign was declared not worth scaling, or how many refolds
+        # were dropped to produce them. Both completed campaigns' reports say
+        # "No red flags identified" over funnels that discarded ~75% of refolds.
+        facts = [f"Track: foundry (RFD3 -> solubleMPNN -> RF3). The columns "
+                 f"below are foundry metrics, NOT BoltzGen's."]
+        if calib and calib.get("result") is not None:
+            cr = calib["result"]
+            facts.append(
+                f"Calibration verdict: {cr.verdict} — {cr.verdict_reason}")
+        if result.go_recommendation == "NO_GO":
+            facts.append(
+                "The pipeline has already recorded NO_GO for this campaign on "
+                "the calibration measurement above. Your verdict may not be "
+                "GO. Report the best of these designs plainly and put the "
+                "re-tune in Recommended next steps.")
+        if ranking is not None:
+            try:
+                facts.append(
+                    f"Gate funnel: {ranking.filter_stats.n_records:,} refolds "
+                    f"scored, {ranking.filter_stats.n_survivors:,} passed every "
+                    f"hard gate, top {len(ranking.top_k)} shown. Drop reasons:\n"
+                    f"{ranking.filter_stats.render()}")
+            except Exception as exc:      # a stats-shape change must not fail a run
+                logger.debug(f"could not render filter stats for the analyst: {exc}")
+        hs = result.hotspot_residues_json
+        if hs:
+            try:
+                facts.append(f"The interface stage declared "
+                             f"{len(json.loads(hs).get('residues') or [])} hotspots; "
+                             f"`hotspot_engagement` is the FRACTION of those a "
+                             f"design contacts, and the gate is 0.75, not 1.0.")
+            except Exception:
+                pass
+
         q = (f"Review the top designed binders against "
              f"{intel.get('target_gene', 'the target')} "
              f"({intel.get('partner_name', 'partner')} interface, "
-             f"{intel.get('design_intent', 'disrupt')} mode).\n\n{slim}")
+             f"{intel.get('design_intent', 'disrupt')} mode).\n\n"
+             + "\n\n".join(facts) + f"\n\n{slim}")
         out = dirs["binder"] / self._BINDER_STAGE_FILES["binder_summary"]
         handoff = self._run_stage("design-analyst", q, [], out,
                                   stage="binder_summary")
         result.stage_files["binder_summary"] = out
         result.stages_completed.append("binder_summary")
-        result.go_recommendation = handoff.get("go_recommendation",
-                                               result.go_recommendation)
+        # Validate the enum, and never let the analyst UPGRADE a deterministic
+        # NO_GO. `_run_binder_track` sets NO_GO from the calibration verdict and
+        # then calls this stage to report on what the trial did produce; an
+        # unconditional assignment here let an LLM looking at a flattering
+        # top-20 flip a measured STOP back to GO. The PPI sibling
+        # (`_stage_summary`) has had the enum check for a while; this path had
+        # neither it nor the floor.
+        go = (handoff.get("go_recommendation") or "").upper().replace("-", "_")
+        if go in ("GO", "CONDITIONAL_GO", "NO_GO"):
+            if result.go_recommendation == "NO_GO" and go != "NO_GO":
+                logger.warning(
+                    f"  ⚠ design-analyst returned {go} for a campaign the "
+                    f"calibration gate already declared NO_GO — keeping NO_GO. "
+                    f"Its written report is still in {out.name}.")
+            else:
+                result.go_recommendation = go
         return handoff
 
     def _run_site_trials(
@@ -3202,7 +3257,9 @@ class PipelineRunner:
                     # Still score and rank what the calibration produced — an
                     # ITERATE round has real designs worth looking at.
                     scored = self._stage_binder_scoring(dirs, result, calib=calib)
-                    self._stage_binder_summary(scored["top_k"], intel, dirs, result)
+                    self._stage_binder_summary(
+                        scored["top_k"], intel, dirs, result,
+                        ranking=scored.get("ranking"), calib=calib)
                     self._generate_binder_report(dirs["binder"])
                     return result
                 if not auto_mode or self._stop_after == "calibration":
@@ -3231,7 +3288,8 @@ class PipelineRunner:
             # ── B8: analyst review ──────────────────────────────────────────
             if start_idx <= 8:
                 H["binder_summary"] = self._stage_binder_summary(
-                    scored["top_k"], intel, dirs, result)
+                    scored["top_k"], intel, dirs, result,
+                    ranking=scored.get("ranking"), calib=locals().get("calib"))
 
             self._generate_binder_report(dirs["binder"])
 
