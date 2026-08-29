@@ -192,9 +192,18 @@ membrane-topology resolution for a PPI-bridged target (falls back to
 `_stage_trim`'s "extracellular" default rather than binder-target-intel's
 own UniProt-topology check); `--trial-sites` multi-epitope comparison isn't
 wired into the bridge (PPI's structure stage picks exactly one interface);
-no real end-to-end GPU run has proven the bridge's output quality yet
-(current tests stub `_run_binder_track` — this is unit-level verification of
-the hand-off, not a campaign). BoltzGen's own `design_metrics`/
+`--trial-sites` multi-epitope comparison isn't
+wired into the bridge (PPI's structure stage picks exactly one interface).
+**The "no real GPU run has proven the bridge" gap is CLOSED** (2026-08-28):
+`projects/mesothelioma_showcase` went from the one-sentence query "Design cancer
+therapeutics to target key nodes in mesothelioma." through pathway → literature
+→ structure → bridge → trim → spec → pilot → calibration → production → scoring
+→ summary, unattended, for $0.79 of API spend and ~22 GPU-h. It picked
+YAP1/TEAD1 on 3KYS, calibrated at an 18.5% backbone hit rate (95% CI
+15.3–22.2%), and returned 317 gated survivors from 1,352 refolds with a best
+ipTM of 0.937 / dock-RMSD 0.63 Å. That run is also the first multi-segment trim
+(3 segments, 2 chain breaks) — the derived `max_chainbreaks` held, prefilter
+kept 86%. BoltzGen's own `design_metrics`/
 `design_ranking` path is untouched and stays fully live as a deliberate
 escape hatch, not oversight.
 
@@ -300,6 +309,19 @@ them without re-reading this list is how they get silently reverted.
   when it is planned, so `prefilter_rate_observed()` returns 0 there;
   `_persisted_prefilter_rate` reads the rate the trial measured back out of
   `calibration.json` instead of falling through to the default.
+- **RF3 refold cost scales with complex size — `SEC_PER_RF3_REFOLD` is an
+  anchor, not a flat rate.** Fitted over four campaigns (timed from `rf3_out`
+  directory mtimes, not log ticks, which include the driver's retry gaps):
+  9.7 s/refold at 195 tokens, 11.0 at 245, 15.7 at 264, 18.1 at 285. The old
+  flat 8.4 s was 14% low at the small end and **54% low at the large end**,
+  which is how a 3 GPU-h estimate became an 8.8 h run. `rf3_seconds_per_refold`
+  scales it as `(tokens/195)**1.62` — between linear and quadratic, because
+  attention is O(N²) but much of the network is O(N); do not "correct" the
+  exponent to 2.0 without re-measuring. Better still, `sec_per_refold_observed`
+  reads the rate a PREVIOUS stage of the same campaign actually achieved
+  (`_earlier_refold_rate`), which tracked production within 10–17% on all three
+  campaigns that ran both. This feeds `est_gpu_hours`, and through
+  `choose_compute()` the local-vs-cluster decision.
 - **Disk, not GPU, is the binding constraint**: ~2.5 MB per RF3 design directory,
   ~120 GB for a full production campaign. `plan_campaign` clamps `n_batches` to the
   disk budget, and `prune_confidences` deletes PAE matrices for non-survivors.

@@ -525,3 +525,48 @@ def test_the_rate_actually_changes_the_expected_refold_count():
     """The whole point: 392 designs is 924 refolds at 0.59 and 1,300 at 0.83."""
     assert int(392 * 0.59) * 4 == 924
     assert int(392 * 0.8293) * 4 == 1300
+
+
+# --- RF3 refold cost scales with complex size, and is measured when possible --
+# A flat per-refold constant mis-sizes every campaign that is not the one it was
+# calibrated on: against four real campaigns the old 8.4 s was 14% low at 195
+# tokens and 54% low at 285. That drives est_gpu_hours, and through
+# choose_compute() the local-vs-cluster decision.
+
+def test_refold_estimate_grows_with_complex_size():
+    from src.foundry_runner import rf3_seconds_per_refold as f
+    assert f(195) < f(245) < f(285)
+    assert f(None) == f(0) == pytest.approx(9.1)
+
+
+@pytest.mark.parametrize("tokens,measured", [(195, 9.7), (264, 15.7), (285, 18.1)])
+def test_the_estimate_tracks_the_campaigns_it_was_fitted_on(tokens, measured):
+    """Within 15% on the three campaigns that have a production run behind them."""
+    from src.foundry_runner import rf3_seconds_per_refold as f
+    assert abs(f(tokens) - measured) / measured < 0.15
+
+
+def test_a_measured_rate_overrides_the_estimate(tmp_path):
+    from src.foundry_runner import FoundryPaths, plan_campaign
+    paths = FoundryPaths.under(tmp_path / "pilot")
+    paths.mkdirs()
+    cfg = {"foundry": {"pilot": {"n_batches": 10}}}
+    slow = plan_campaign(cfg, paths, mode="pilot", n_tokens=285)
+    fast = plan_campaign(cfg, paths, mode="pilot", n_tokens=285, sec_per_refold=2.0)
+    assert fast.est_gpu_hours < slow.est_gpu_hours
+
+
+def test_observed_rate_needs_enough_refolds_to_mean_anything(tmp_path):
+    from src.foundry_runner import FoundryPaths, sec_per_refold_observed
+    paths = FoundryPaths.under(tmp_path / "pilot")
+    paths.mkdirs()
+    for i in range(10):
+        (paths.rf3_dir / f"d{i}").mkdir()
+    assert sec_per_refold_observed(paths) == 0.0      # too few to time
+
+
+def test_binder_length_comes_from_the_contig():
+    from src.pipeline_runner import _binder_midpoint
+    assert _binder_midpoint("70-86,/0,A195-229") == 78
+    assert _binder_midpoint("40-120,/0,A1-169") == 80
+    assert _binder_midpoint("nonsense") == 78

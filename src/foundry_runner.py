@@ -48,7 +48,58 @@ from src.job_registry import JobRegistry, JobRecord, STATUS_RUNNING
 # Measured on the RTX PRO 4500 Blackwell (32 GB) for a ~175-token complex.
 SEC_PER_RFD3_DESIGN = 5.4
 SEC_PER_MPNN_SEQ = 0.36
-SEC_PER_RF3_REFOLD = 8.4
+
+# RF3 refold cost grows with complex size, so a flat constant mis-sizes every
+# campaign that is not the one it was measured on. Fitted over four real
+# campaigns (pdl1_e2e, validate_bridge_kras, il7ra_e2e, mesothelioma_showcase;
+# pilot + calibration + production each, timed from rf3_out directory mtimes):
+#
+#     tokens   measured s/refold   flat-8.4 error
+#        195         9.7               -14%
+#        245        11.0               -23%
+#        264        15.7               -47%
+#        285        18.1               -54%
+#
+# t = 9.1 * (tokens/195)**1.62 fits those to within 7%, except the 245-token
+# point (+20%, and the only one without a production run behind it). The
+# exponent is between linear and quadratic because attention is O(N^2) but much
+# of the network is O(N) — do not "correct" it to 2.0 without re-measuring.
+SEC_PER_RF3_REFOLD = 9.1          # at REF_TOKENS
+REF_TOKENS = 195                  # the anchor campaign's complex size
+RF3_SIZE_EXPONENT = 1.62
+
+
+def rf3_seconds_per_refold(n_tokens: int | None) -> float:
+    """Estimated RF3 seconds per refold for a complex of ``n_tokens`` residues.
+
+    A MEASURED rate always beats this — see ``sec_per_refold_observed`` — but
+    the first stage of a campaign has nothing to measure yet.
+    """
+    if not n_tokens or n_tokens <= 0:
+        return SEC_PER_RF3_REFOLD
+    return SEC_PER_RF3_REFOLD * (n_tokens / REF_TOKENS) ** RF3_SIZE_EXPONENT
+
+
+def sec_per_refold_observed(paths: FoundryPaths) -> float:
+    """Seconds per refold actually achieved, from the refold directory mtimes.
+
+    Timed from the files themselves rather than from log lines: the driver
+    restarts RF3 through its own retry loops, so wall-clock between log ticks
+    includes gaps that are not refold time. Needs enough directories to be
+    meaningful; returns 0.0 when it cannot say.
+
+    This is the honest input for sizing the NEXT stage — it captures target
+    size, GPU, and whatever else the box is doing, none of which a constant can.
+    """
+    try:
+        stamps = sorted(e.stat().st_mtime for e in os.scandir(paths.rf3_dir)
+                        if e.is_dir())
+    except (OSError, AttributeError):
+        return 0.0
+    if len(stamps) < 50:
+        return 0.0
+    span = stamps[-1] - stamps[0]
+    return span / (len(stamps) - 1) if span > 0 else 0.0
 BYTES_PER_RF3_DIR = 2.5e6
 
 
@@ -200,6 +251,8 @@ def plan_campaign(
     mode: str = "production",
     n_batches: int | None = None,
     prefilter_rate: float = 0.59,
+    n_tokens: int | None = None,
+    sec_per_refold: float | None = None,
 ) -> CampaignPlan:
     """
     Size a campaign and check it against the disk budget.
@@ -219,9 +272,12 @@ def plan_campaign(
     expected_mpnn = int(expected_rfd3 * prefilter_rate) * n_seq
     expected_rf3 = expected_mpnn
 
+    # A rate this campaign actually achieved beats any formula; fall back to
+    # the size-scaled estimate when there is nothing measured yet.
+    per_refold = sec_per_refold or rf3_seconds_per_refold(n_tokens)
     seconds = (expected_rfd3 * SEC_PER_RFD3_DESIGN
                + expected_mpnn * SEC_PER_MPNN_SEQ
-               + expected_rf3 * SEC_PER_RF3_REFOLD)
+               + expected_rf3 * per_refold)
     disk = expected_rf3 * BYTES_PER_RF3_DIR / 1e9
     have = free_gb(paths.campaign_dir)
     budget_gb = float(f.get("disk_budget_gb", 120))
@@ -243,7 +299,7 @@ def plan_campaign(
         expected_rf3 = expected_mpnn
         seconds = (expected_rfd3 * SEC_PER_RFD3_DESIGN
                    + expected_mpnn * SEC_PER_MPNN_SEQ
-                   + expected_rf3 * SEC_PER_RF3_REFOLD)
+                   + expected_rf3 * per_refold)
         disk = expected_rf3 * BYTES_PER_RF3_DIR / 1e9
 
     plan = CampaignPlan(
@@ -252,10 +308,13 @@ def plan_campaign(
         expected_mpnn=expected_mpnn, expected_rf3=expected_rf3,
         est_gpu_hours=round(seconds / 3600.0, 1), est_disk_gb=round(disk, 1),
         free_disk_gb=round(have, 1), warnings=warnings)
+    basis = ("measured" if sec_per_refold
+             else f"{n_tokens}-token estimate" if n_tokens else "default")
     logger.info(
         f"{mode} plan: {expected_rfd3:,} designs -> ~{expected_mpnn:,} sequences "
         f"-> {expected_rf3:,} refolds | ~{plan.est_gpu_hours:,.0f} GPU-h, "
-        f"~{plan.est_disk_gb:,.0f} GB (free {have:,.0f} GB)")
+        f"~{plan.est_disk_gb:,.0f} GB (free {have:,.0f} GB) | "
+        f"{per_refold:.1f} s/refold ({basis}), prefilter {prefilter_rate:.2f}")
     for w in warnings:
         logger.warning(w)
     return plan

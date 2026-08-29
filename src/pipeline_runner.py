@@ -181,6 +181,17 @@ class PipelineError(RuntimeError):
     """Non-recoverable pipeline failure."""
 
 
+def _binder_midpoint(contig: str, default: int = 78) -> int:
+    """Midpoint of the binder length range at the head of an RFD3 contig.
+
+    A contig looks like ``70-86,/0,A195-229`` — the leading token is the
+    binder's length range. Used only to size the folded complex for a runtime
+    estimate, so the midpoint is enough and a malformed contig just falls back.
+    """
+    m = re.match(r"\s*(\d+)\s*-\s*(\d+)", contig or "")
+    return (int(m.group(1)) + int(m.group(2))) // 2 if m else default
+
+
 class PipelineBlockedError(PipelineError):
     """Pipeline cannot continue automatically — user input required."""
 
@@ -1731,7 +1742,8 @@ class PipelineRunner:
 
         from src.foundry_runner import (
             collect, plan_campaign, prefilter_rate_observed, progress,
-            render_progress, resume, run_design, wait_for_campaign,
+            render_progress, resume, run_design, sec_per_refold_observed,
+            wait_for_campaign,
         )
 
         cfg = self._binder_cfg()
@@ -1749,8 +1761,17 @@ class PipelineRunner:
         observed = (prefilter_rate_observed(paths)
                     or self._persisted_prefilter_rate(dirs)
                     or 0.59)
+        # Same argument for the refold rate: a rate this target actually
+        # achieved on this GPU beats any constant. Prefer this stage's own
+        # (a resume mid-stage has one), then whatever the earlier stages
+        # measured; failing both, plan_campaign scales its default by the
+        # complex size, which a flat constant under-called by up to 54%.
+        n_tokens = trim.n_residues_after + _binder_midpoint(trim.contig)
+        rate = (sec_per_refold_observed(paths)
+                or self._earlier_refold_rate(dirs, mode))
         plan = plan_campaign(cfg, paths, mode=mode, n_batches=n_batches,
-                             prefilter_rate=observed)
+                             prefilter_rate=observed, n_tokens=n_tokens,
+                             sec_per_refold=rate or None)
 
         if paths.driver_path.exists():
             job = resume(paths, cfg, plan)
@@ -2053,6 +2074,24 @@ class PipelineRunner:
         if res.verdict not in ("SCALE_UP", "SCALE_UP_PARTIAL") or not designs:
             return None
         return max(1, int(designs / max(dbs, 1) / max(n_gpus, 1)))
+
+    def _earlier_refold_rate(self, dirs: dict[str, Path], mode: str) -> float:
+        """Seconds per refold measured by a stage that already ran.
+
+        Stages get cheaper-to-more-expensive (pilot -> calibration ->
+        production) against the same target on the same GPU, so an earlier
+        stage's achieved rate is the best available predictor for the next
+        one. Measured within ~10-17% of production on all three campaigns that
+        have run both.
+        """
+        from src.foundry_runner import sec_per_refold_observed
+        order = ["pilot", "calibration", "production"]
+        earlier = order[:order.index(mode)] if mode in order else []
+        for prior in reversed(earlier):          # nearest in size wins
+            rate = sec_per_refold_observed(self._binder_paths(dirs, prior))
+            if rate:
+                return rate
+        return 0.0
 
     def _persisted_prefilter_rate(self, dirs: dict[str, Path]) -> float:
         """The prefilter rate the calibration trial measured, or 0.0.
