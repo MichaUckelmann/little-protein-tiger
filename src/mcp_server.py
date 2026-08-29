@@ -137,7 +137,13 @@ def get_fingerprint(identifier: str) -> str:
     fp = load_fingerprint(paper_key, _FINGERPRINT_DIR)
     if fp is None:
         return json.dumps({"error": f"No fingerprint found for '{identifier}'"})
-    return json.dumps(fp, ensure_ascii=False, indent=2)
+    # Same view as the CLI transport. These two used to disagree: the CLI
+    # stripped `methodology` / `contradictions_and_negative_results` and this
+    # one stripped nothing, so the SAME skill saw different fields depending on
+    # how it was invoked. See src/skill_runner._llm_fingerprint.
+    from src.skill_runner import _llm_fingerprint
+
+    return json.dumps(_llm_fingerprint(fp), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()

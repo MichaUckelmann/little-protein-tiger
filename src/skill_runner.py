@@ -824,6 +824,48 @@ def _filter_tools(defs: list[dict], skill_name: str) -> list[dict]:
     return defs
 
 
+# Taxa common enough in this corpus to be worth naming. Anything else is
+# reported as a bare NCBI id, which is still a usable signal: "not 9606".
+_TAXON_NAMES = {
+    9606: "Homo sapiens", 10090: "Mus musculus", 10116: "Rattus norvegicus",
+    7227: "Drosophila melanogaster", 6239: "Caenorhabditis elegans",
+    7955: "Danio rerio", 559292: "Saccharomyces cerevisiae",
+    284812: "Schizosaccharomyces pombe", 83333: "Escherichia coli",
+    3702: "Arabidopsis thaliana", 9986: "Oryctolagus cuniculus",
+    9913: "Bos taurus", 8355: "Xenopus laevis",
+}
+
+
+def _llm_fingerprint(fp: dict) -> dict:
+    """
+    The LLM-facing view of a curated fingerprint.
+
+    This used to strip `methodology` and `contradictions_and_negative_results`
+    as "fields never used by any skill" — which was exactly backwards.
+    `skills/molecular-biology-expert/SKILL.md` instructs the model to read both
+    by name (lines 154 and 160), so under the CLI transport it could never see
+    them and read their absence as "this paper reports no contradictions". The
+    MCP transport stripped nothing, so the same skill behaved differently on
+    the two transports. Measured over 300 real fingerprints, those two blocks
+    are 11.6% of the payload.
+
+    What actually is dead weight is `protein_identifiers` — 36.5%, the largest
+    block in the file, a machine sidecar read only by `src/_corpus_graph.py`
+    and named in no skill prompt. It is dropped, except for the one field in it
+    the model genuinely wants and has never been shown: the organism the
+    paper's proteins are native to. A worm paper otherwise renders as a list of
+    gene names with nothing marking it non-human.
+    """
+    out = dict(fp)
+    ids = out.pop("protein_identifiers", None) or {}
+    out.pop("curation_metadata", None)
+    taxon = ids.get("native_taxon_resolved") if isinstance(ids, dict) else None
+    if taxon:
+        name = _TAXON_NAMES.get(int(taxon))
+        out["native_organism"] = (f"{name} ({taxon})" if name else str(taxon))
+    return out
+
+
 def _find_pdb_structures(proteins: list[str], fingerprint_dir: Path) -> dict:
     """
     Scan all corpus fingerprints for PDB accessions associated with the given proteins.
@@ -1224,12 +1266,8 @@ class SkillRunner:
                 fp = load_fingerprint(paper_key, self._fingerprint_dir)
                 if fp is None:
                     return json.dumps({"error": f"No fingerprint found for '{identifier}'"})
-                # Strip fields never used by any skill to reduce token cost.
-                # Skills that need methodology or contradictions can override this.
-                fp.pop("curation_metadata", None)
-                fp.pop("contradictions_and_negative_results", None)
-                fp.pop("methodology", None)
-                return json.dumps(fp, ensure_ascii=False, indent=2)
+                return json.dumps(_llm_fingerprint(fp), ensure_ascii=False,
+                                  indent=2)
 
             if name == "find_pdb_structures":
                 result = _find_pdb_structures(

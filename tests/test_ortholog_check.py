@@ -439,3 +439,58 @@ def test_the_targets_own_accession_short_circuits_before_any_fetch(monkeypatch):
     monkeypatch.setattr("src.ortholog_check.uniprot_entry", boom)
     assert classify_chain(identity=0.4, uniprot="Q15561", gene="TEAD4",
                           chain_accessions=["Q15561"]).verdict == MATCH
+
+
+# ---------------------------------------------------------------------------
+# get_fingerprint's LLM-facing view, and transport parity
+# ---------------------------------------------------------------------------
+
+def test_the_fields_the_skill_is_told_to_read_survive():
+    """
+    The view used to strip `methodology` and
+    `contradictions_and_negative_results` as "never used by any skill".
+    molecular-biology-expert reads both by name, so under the CLI transport it
+    saw their absence as "this paper reports no contradictions".
+    """
+    from pathlib import Path
+
+    from src.skill_runner import _llm_fingerprint
+
+    skill = Path("skills/molecular-biology-expert/SKILL.md").read_text()
+    view = _llm_fingerprint({
+        "key_findings": [], "methodology": {"experimental_methods_used": ["NMR"]},
+        "contradictions_and_negative_results": [{"finding": "x"}],
+        "protein_identifiers": {"native_taxon_resolved": 6239, "entries": [1] * 50},
+        "curation_metadata": {"model": "x"},
+    })
+    for field in ("methodology", "contradictions_and_negative_results"):
+        assert field in skill, f"skill no longer reads {field}; revisit the view"
+        assert field in view
+
+
+def test_the_sidecar_no_skill_reads_is_dropped_but_its_organism_kept():
+    """`protein_identifiers` is 36.5% of a fingerprint and is read only by
+    _corpus_graph — except for the one field in it the model wants and has
+    never been shown."""
+    from src.skill_runner import _llm_fingerprint
+
+    view = _llm_fingerprint(
+        {"protein_identifiers": {"native_taxon_resolved": 6239, "entries": [1] * 50}})
+    assert "protein_identifiers" not in view
+    assert view["native_organism"] == "Caenorhabditis elegans (6239)"
+
+    unknown = _llm_fingerprint({"protein_identifiers": {"native_taxon_resolved": 999999}})
+    assert unknown["native_organism"] == "999999"
+    assert "native_organism" not in _llm_fingerprint({"key_findings": []})
+
+
+def test_both_transports_return_the_same_fingerprint_view():
+    """They diverged silently: the CLI stripped three blocks, MCP stripped
+    none, so one skill behaved differently depending on how it was invoked."""
+    import re
+    from pathlib import Path
+
+    mcp = Path("src/mcp_server.py").read_text()
+    body = re.search(r"def get_fingerprint\(.*?(?=\n@mcp\.tool)", mcp, re.S)
+    assert body, "get_fingerprint not found in the MCP server"
+    assert "_llm_fingerprint(fp)" in body.group(0)
