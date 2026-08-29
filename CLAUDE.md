@@ -351,6 +351,23 @@ them without re-reading this list is how they get silently reverted.
   third segment that cost a chain break. Both the residue enumeration and `write_trimmed`
   now keep anything carrying N/CA/C, whatever it is called — found by benchmarking the
   trim across 19 complexes, not by a test.
+- **The trim only runs when the target does NOT fit.** It used to reduce to the
+  hotspot-carrying domain(s) regardless of size, so a 252-residue chain became 205 and a
+  364-residue one became 19 even though the budget is 220. If the whole chain fits
+  `design.foundry.target_residue_budget` it is now kept whole — 200 residues is
+  comfortable on a local GPU, and dropping a second interface is the operator's call,
+  not a silent default. Three refusals guard what remains, all measured on a 19-complex
+  benchmark: `MIN_TARGET_RESIDUES = 80` (a 19-residue "target" passed every other check
+  because its 4 hotspots survived), and the newly-exposed-hydrophobic rules below.
+- **A cut may not open hydrophobic core.** `MAX_EXPOSED_HYDROPHOBIC = 2` away from the
+  epitope, and ZERO within `EXPOSED_HOTSPOT_CLEARANCE_A = 10` Å of a hotspot — a fresh
+  hydrophobic face is what RFD3 preferentially binds (the same reason TM helices are
+  stripped), and one on the epitope competes with the site being designed for. Measured
+  per residue as ΔSASA > 15 Å² between the original and trimmed structures, **amino
+  acids only and one chain only in both**: include waters and you measure desolvation
+  instead — with solvent stripping on, a no-op trim of 7CZD "exposed" Met18 by 71 Å².
+  Both thresholds are `trim_target` kwargs, like `min_bsa_retention`; tests that
+  deliberately force an aggressive cut pass `max_exposed_hydrophobic=None`.
 - **Solvent never reaches the design or the interface maths.** `write_trimmed` drops
   waters and crystallisation additives (`structure_tools.is_solvent_or_additive` — a
   conservative denylist that checks `_is_protein_residue` FIRST, so MSE/SEP/TPO/PTR/PCA

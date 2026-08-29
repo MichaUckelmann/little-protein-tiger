@@ -69,6 +69,21 @@ MIN_DOMAIN_RESIDUES = 40
 # Requiring both halves of a split to clear MIN_DOMAIN_RESIDUES would make a
 # 36-residue TM/cytoplasmic tail unsheddable.
 MIN_SPLIT_TAIL = 15
+
+# A target smaller than this is not a designable surface — RFD3 needs something
+# to pack against, and the interface analysis downstream needs a fold, not a
+# fragment. Benchmarking the trim across 19 complexes produced a 364-residue
+# chain cropped to 19: every check passed, because the four hotspots it kept
+# were retained, but the result was not a target.
+MIN_TARGET_RESIDUES = 80
+
+# Newly exposed hydrophobic residues tolerated on the cut face. Zero is the
+# ideal — a fresh hydrophobic slab is what RFD3 preferentially binds, and it is
+# the documented failure mode for transmembrane helices — but a couple of edge
+# residues is normal and harmless as long as they are away from the epitope.
+MAX_EXPOSED_HYDROPHOBIC = 2
+EXPOSED_SASA_DELTA_A2 = 15.0     # below this a residue has not really been exposed
+EXPOSED_HOTSPOT_CLEARANCE_A = 10.0   # "not right at the hotspot site"
 # Segments shorter than this are noise, not structure: a two-residue island
 # contributes nothing a binder can engage but does cost RFD3 a chain break.
 MIN_SEGMENT = 6
@@ -631,6 +646,24 @@ def plan_trim(
         d.n_designable = len(designable(
             r["auth"] for r in residues if d.contains(r["auth"])))
 
+    # A target that already fits is not trimmed. Domain selection would still
+    # drop the non-hotspot domains, which is how a 252-residue chain became 205
+    # and a 364-residue one became 19 — cropping that buys nothing, since the
+    # budget is what the GPU actually cares about and 200 residues is
+    # comfortable locally. Removing a second interface is a real reason to cut,
+    # but it is the operator's call, not a silent default.
+    all_designable = designable(r["auth"] for r in residues)
+    if len(all_designable) <= budget:
+        if len(all_designable) < MIN_TARGET_RESIDUES:
+            raise TrimError(
+                f"the target is {len(all_designable)} residues, below the "
+                f"{MIN_TARGET_RESIDUES}-residue floor — too small to design "
+                f"against. Pick a larger construct or a different interface.")
+        logger.info(
+            f"target is {len(all_designable)} residues, within the {budget} "
+            f"budget — keeping it whole, no trim")
+        return all_designable, warnings
+
     orphan = [h for h in hot if not any(d.contains(h) for d in domains)]
     if orphan:
         warnings.append(
@@ -748,6 +781,13 @@ def plan_trim(
             f"after boundary refinement the trim is {len(auths)} residues, over "
             f"the {budget} budget — the extra residues are hotspot shell or SSE "
             f"integrity and were not dropped")
+    if len(auths) < MIN_TARGET_RESIDUES:
+        raise TrimError(
+            f"the trim would leave {len(auths)} residues, below the "
+            f"{MIN_TARGET_RESIDUES}-residue floor — that is a fragment, not a "
+            f"target. The hotspot-carrying domain is too small to design "
+            f"against on its own; widen the interface selection or raise "
+            f"design.foundry.target_residue_budget so neighbouring domains fit.")
     return auths, warnings
 
 
@@ -1044,6 +1084,8 @@ def trim_target(
     chainsaw_cmd: Sequence[str] | None = None,
     min_bsa_retention: float = 0.90,
     allowed_auth: set[int] | None = None,
+    max_exposed_hydrophobic: int | None = MAX_EXPOSED_HYDROPHOBIC,
+    exposed_hotspot_clearance_A: float = EXPOSED_HOTSPOT_CLEARANCE_A,
 ) -> TrimResult:
     """
     Crop `target_chain` to `budget` residues on domain boundaries.
@@ -1156,6 +1198,34 @@ def trim_target(
     warnings += _hotspot_exposure_warnings(
         structure_path, cif_path, target_chain, retained)
 
+    # A cut that reveals hydrophobic core gives RFD3 an artificial site to bind
+    # that cannot work in solution. Zero is the ideal; a couple of edge residues
+    # away from the epitope is tolerable, one ON the epitope is not.
+    away, near = ([], []) if max_exposed_hydrophobic is None else _exposed_hydrophobic(
+        structure_path, cif_path, target_chain, retained,
+        clearance_A=exposed_hotspot_clearance_A)
+    if near:
+        raise TrimError(
+            f"the trim exposed hydrophobic residues at the epitope itself: "
+            f"{', '.join(f'{n}{a} +{d} A^2' for n, a, d, _ in near[:4])}. A fresh "
+            f"hydrophobic face within {exposed_hotspot_clearance_A:.0f} A of a "
+            f"hotspot competes with the site being designed for. Choose a cut "
+            f"that leaves the epitope's surroundings intact, or design against "
+            f"the untrimmed target.")
+    if max_exposed_hydrophobic is not None and len(away) > max_exposed_hydrophobic:
+        raise TrimError(
+            f"the trim newly exposed {len(away)} hydrophobic residues "
+            f"({', '.join(f'{n}{a}' for n, a, _, _ in away[:6])}), over the "
+            f"{max_exposed_hydrophobic} tolerated. That is buried core turned "
+            f"into an artificial binding surface, which RFD3 will preferentially "
+            f"target. Cut on a different boundary, or raise "
+            f"design.foundry.target_residue_budget so less has to come off.")
+    if away:
+        warnings.append(
+            f"the trim exposed {len(away)} hydrophobic residue(s) away from the "
+            f"epitope ({', '.join(f'{n}{a} +{d} A^2' for n, a, d, _ in away)}) — "
+            f"within tolerance, but they are new surface RFD3 can see")
+
     # A disulfide whose partner was cut leaves a free cysteine that will not
     # behave like the deposited structure. Surfaced, never auto-mutated.
     warnings += _disulfide_warnings(structure_path, target_chain, kept_set)
@@ -1197,6 +1267,93 @@ def trim_target(
         f"trim [{method_used}]: {len(residues)} -> {len(keep)} residues, "
         f"{len(segments)} segment(s), BSA retention {retention:.1%}")
     return result
+
+
+_HYDROPHOBIC_AA = frozenset({"ALA", "VAL", "LEU", "ILE", "MET", "PHE", "TRP",
+                             "CYS", "TYR", "PRO"})
+
+
+def _exposed_hydrophobic(original: Path, trimmed: Path, chain: str,
+                         hotspots: Sequence[dict],
+                         clearance_A: float = EXPOSED_HOTSPOT_CLEARANCE_A
+                         ) -> tuple[list[tuple], list[tuple]]:
+    """Hydrophobic residues the CUT newly exposed, split by hotspot proximity.
+
+    Returns (away_from_epitope, near_epitope). Both SASAs are of the target
+    chain alone, so the partner cancels and what is left is what cutting
+    revealed. A fresh hydrophobic face is what RFD3 preferentially binds — the
+    same reason transmembrane helices are stripped before design — and one
+    sitting ON the epitope competes directly with the site being designed for.
+    """
+    def sasa(path: Path) -> dict[int, tuple[str, float]]:
+        """Per-residue SASA of the target chain's POLYPEPTIDE alone.
+
+        Amino acids only, and one chain only, in both files — otherwise this
+        measures the wrong thing twice over. Waters are stripped from the
+        trimmed structure but not the deposited one, so including them reports
+        desolvation as exposure: on 7CZD, a trim that removed nothing at all
+        showed Met18 gaining 71 A^2. Excluding the partner likewise stops the
+        interface itself reading as a fresh hydrophobic face.
+        """
+        import biotite.structure as struc
+        from biotite.structure.io.pdbx import CIFFile, get_structure
+        from biotite.structure.io.pdb import PDBFile
+
+        pth = Path(path)
+        if pth.suffix.lower() in (".pdb", ".ent"):
+            arr = PDBFile.read(str(pth)).get_structure(model=1)
+        else:
+            arr = get_structure(CIFFile.read(str(pth)), model=1)
+        arr = arr[struc.filter_amino_acids(arr) & (arr.chain_id == chain)]
+        arr = arr[~np.isnan(arr.coord).any(axis=1)]
+        if arr.array_length() == 0:
+            return {}
+        vals = struc.sasa(arr, vdw_radii="Single")
+        out: dict[int, list] = {}
+        for i in range(arr.array_length()):
+            if vals[i] != vals[i]:
+                continue
+            rid = int(arr.res_id[i])
+            out.setdefault(rid, [str(arr.res_name[i]).upper(), 0.0])
+            out[rid][1] += float(vals[i])
+        return {k: (v[0], v[1]) for k, v in out.items()}
+
+    try:
+        before, after = sasa(original), sasa(trimmed)
+    except Exception as exc:
+        logger.debug(f"hydrophobic exposure check unavailable: {exc}")
+        return [], []
+
+    hot = set(_hotspot_auths(hotspots))
+    try:
+        import gemmi
+        st = gemmi.read_structure(str(original))
+        cas = {int(r.seqid.num): r.find_atom("CA", "*")
+               for c in st[0] if c.name == chain for r in c
+               if r.find_atom("CA", "*") is not None}
+    except Exception:
+        cas = {}
+
+    away, near = [], []
+    for auth, (name, a_after) in after.items():
+        prev = before.get(auth)
+        if prev is None or name not in _HYDROPHOBIC_AA:
+            continue
+        delta = a_after - prev[1]
+        if delta < EXPOSED_SASA_DELTA_A2:
+            continue
+        d_hot = None
+        if auth in cas and hot:
+            ds = [cas[auth].pos.dist(cas[h].pos) for h in hot if h in cas]
+            d_hot = min(ds) if ds else None
+        rec = (name, auth, round(delta, 1), None if d_hot is None else round(d_hot, 1))
+        if auth in hot or (d_hot is not None and d_hot <= clearance_A):
+            near.append(rec)
+        else:
+            away.append(rec)
+    away.sort(key=lambda r: -r[2])
+    near.sort(key=lambda r: -r[2])
+    return away, near
 
 
 def _hotspot_exposure_warnings(original: Path, trimmed: Path, chain: str,
