@@ -356,3 +356,40 @@ def test_vector_store_uses_prefilter():
              if ".where(" in ln and "prefilter" in ln]
     assert calls, "no prefilter-bearing .where() call in VectorStore.search"
     assert all("prefilter=True" in c for c in calls), calls
+
+
+# ---------------------------------------------------------------------------
+# The trim's marginal-overshoot fallback
+# ---------------------------------------------------------------------------
+
+def test_residue_count_matches_the_trim_s_own_definition(tmp_path):
+    """Counted by BACKBONE, like structure_trim — so the number compared
+    against the budget is the number the trim compares against it."""
+    from pathlib import Path
+
+    from src.pipeline_runner import PipelineRunner
+
+    cif = Path("data/structures/5GN0_ba1.cif")
+    if not cif.exists():
+        pytest.skip("5GN0 not downloaded")
+    assert PipelineRunner._target_chain_residue_count(cif, "A") == 222
+    assert PipelineRunner._target_chain_residue_count(cif, "Z") == 0
+
+
+@pytest.mark.parametrize("n_target,budget,fires", [
+    (222, 220, True),    # the real TEAD4 case: 2 residues over
+    (253, 220, True),    # exactly at the 15% ceiling
+    (254, 220, False),   # past it — a real cut is genuinely needed
+    (200, 220, False),   # under budget: the trim never runs at all
+    (0, 220, False),     # chain unreadable: do not guess
+])
+def test_overshoot_fallback_band(n_target, budget, fires):
+    """
+    The band the fallback covers. A campaign died because a 222-residue TEAD4
+    had to shed two residues and the only cut that did opened hydrophobic core
+    inside 10 A of the epitope. Keeping the target whole is strictly safer for
+    the design and costs only GPU time; a target far over budget still has to
+    be cut, and that decision stays with the operator.
+    """
+    ceiling = round(budget * 1.15)
+    assert bool(n_target and budget < n_target <= ceiling) is fires

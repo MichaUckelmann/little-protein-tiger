@@ -683,7 +683,18 @@ def run_design(
     second one on the same GPU.
     """
     paths.mkdirs()
-    max_target = ((cfg.get("foundry") or {}).get("target_residue_budget"))
+    # The same allowance `_stage_trim` uses when it keeps a marginally-oversized
+    # target whole rather than accept a cut that fails a quality guard. The trim
+    # never exceeds the plain budget on its own, so widening the ceiling here
+    # admits exactly that fallback's output and nothing else — without it, the
+    # trim stage's decision was overruled two stages later by a second read of
+    # the same config key, and a 222-residue target against a 220 budget died
+    # anyway.
+    _foundry = cfg.get("foundry") or {}
+    max_target = _foundry.get("target_residue_budget")
+    if max_target:
+        max_target = round(int(max_target) * (
+            1.0 + float(_foundry.get("target_budget_overshoot", 0.15))))
     try:
         validate_spec(spec_path, kept_segments=kept_segments,
                       max_target_residues=max_target)

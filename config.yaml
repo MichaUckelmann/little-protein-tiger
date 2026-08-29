@@ -254,6 +254,12 @@ design:
     # attention is O(N^2) in tokens; re-measure by bisecting n_batches=2 runs at
     # increasing target size until OOM, then take 80% of the last passing value.
     target_residue_budget: 220
+    # If a trim fails one of its own quality guards (a cut that opens
+    # hydrophobic core, or loses too much interface) AND the target is within
+    # this fraction over target_residue_budget, keep the target whole instead
+    # of failing the campaign. Keeping it whole is strictly safer for the
+    # design; it costs only GPU time, and RF3 scales as (tokens/195)**1.62.
+    target_budget_overshoot: 0.15
     # RF3 output is ~2.5 MB per design directory, so disk — not GPU — is the
     # binding constraint: 48,000 refolds is ~120 GB.
     disk_budget_gb: 120

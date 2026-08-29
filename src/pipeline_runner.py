@@ -1808,15 +1808,15 @@ class PipelineRunner:
                             f"the hotspots are actually on, or any to disable "
                             f"the topology restriction entirely.")
 
-        try:
-            res = trim_target(
+        def _trim(with_budget: int):
+            return trim_target(
                 structure,
                 target_chain=hs["target_chain"],
                 partner_chain=hs.get("partner_chain"),
                 hotspots=hs["residues"],
                 allowed_auth=(restrict.allowed_auth
                               if restrict and restrict.applies else None),
-                budget=budget,
+                budget=with_budget,
                 out_dir=dirs["trim"],
                 pdb_id=result.pdb_id,
                 binder_min=int(intel.get("binder_length_min", 70)),
@@ -1824,8 +1824,61 @@ class PipelineRunner:
                 chainsaw_cmd=trim_cfg.get("chainsaw_cmd"),
                 min_bsa_retention=float(trim_cfg.get("min_bsa_retention", 0.90)),
             )
+
+        try:
+            res = _trim(budget)
         except (TrimError, TrimBudgetError) as exc:
-            raise PipelineError(f"target trimming failed: {exc}") from exc
+            # A trim that fails a QUALITY guard is telling us this particular
+            # cut is bad, not that the target is undesignable — and its own
+            # error already names the alternative ("design against the
+            # untrimmed target"). Nothing used to take it.
+            #
+            # It matters most exactly where the trim is least worth doing. A
+            # 227-residue TEAD4 against a 220 budget has to shed SEVEN
+            # residues, and the cut that does it opened hydrophobic core
+            # inside 10 A of the epitope — so a campaign died over a 3%
+            # overshoot. Keeping the target whole is strictly safer for the
+            # design (no fresh hydrophobic face at all); it only costs GPU
+            # time, and RF3 scales as (tokens/195)**1.62, so 15% more target
+            # is ~18% more refold time on a stage the calibration gate sizes
+            # from measurement anyway.
+            #
+            # Only for a marginal overshoot, and only once: a target far over
+            # budget genuinely has to be cut, and re-raising there keeps the
+            # operator's decision in front of them.
+            overshoot = float((cfg.get("foundry") or {}).get(
+                "target_budget_overshoot", 0.15))
+            n_target = self._target_chain_residue_count(
+                structure, hs["target_chain"])
+            # round(), not int(): 220 * 1.15 is 252.99999... in binary, so a
+            # truncating ceiling quietly excludes the residue count the
+            # allowance was written to include.
+            ceiling = round(budget * (1.0 + overshoot))
+            if n_target and budget < n_target <= ceiling:
+                logger.warning(
+                    f"  ⚠ the trim failed its own quality guard ({exc}). The "
+                    f"target is {n_target} residues against a {budget} budget "
+                    f"— only {n_target - budget} over, within the "
+                    f"{overshoot:.0%} overshoot allowance — so it is kept "
+                    f"WHOLE instead. This costs GPU time, not design quality.")
+                try:
+                    res = _trim(n_target)
+                except (TrimError, TrimBudgetError) as exc2:
+                    raise PipelineError(
+                        f"target trimming failed: {exc}; keeping the "
+                        f"{n_target}-residue target whole failed too: "
+                        f"{exc2}") from exc2
+                res.warnings.append(
+                    f"the trim was skipped: its cut failed a quality guard "
+                    f"({exc}), and at {n_target} residues the target is only "
+                    f"{n_target - budget} over the {budget} budget, so it is "
+                    f"used whole")
+                self._binder_checkpoint(
+                    "trim_skipped_overshoot", "trim", "gate",
+                    {"n_target": n_target, "budget": budget,
+                     "overshoot_allowance": overshoot, "reason": str(exc)})
+            else:
+                raise PipelineError(f"target trimming failed: {exc}") from exc
 
         if res.bsa_retention < 0.95 or res.warnings:
             self._binder_checkpoint(
@@ -4622,6 +4675,29 @@ class PipelineRunner:
         ``src/binder_report.py`` can reuse it without depending on this class.
         """
         return _handoff.parse_hotspot_residues(text, handoff)
+
+    @staticmethod
+    def _target_chain_residue_count(structure: Path, chain: str) -> int:
+        """
+        Designable residues in the target chain, or 0 if it cannot be read.
+
+        Counted the way `structure_trim` counts them — anything carrying an
+        N/CA/C backbone, whatever the residue is called — so the number
+        compared against the budget here is the same number the trim compares
+        against it.
+        """
+        try:
+            import gemmi
+
+            from src.structure_tools import is_chain_residue
+
+            st = gemmi.read_structure(str(structure))
+            for ch in st[0]:
+                if ch.name == chain:
+                    return sum(1 for r in ch if is_chain_residue(r))
+        except Exception as exc:
+            logger.debug(f"could not count residues in chain {chain}: {exc}")
+        return 0
 
     @staticmethod
     def _alphafold_accession(pdb_id: str) -> str:
