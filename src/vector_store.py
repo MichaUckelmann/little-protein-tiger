@@ -393,9 +393,10 @@ class VectorStore:
 
         query_vec = encoder.encode(query, normalize_embeddings=True).tolist()
 
-        # Over-fetch when filtering so post-filter has headroom
-        any_filter = study_type is not None or study_category is not None
-        fetch_limit = top_k if not any_filter else top_k * 4
+        # No over-fetch: the filter is applied BEFORE the search (see the
+        # prefilter note below), so `limit` already means "this many rows that
+        # match the filter" rather than "this many rows, some of which may".
+        fetch_limit = top_k
 
         search_builder = (
             table.search(query_vec)
@@ -416,8 +417,21 @@ class VectorStore:
             clauses.append(f"study_category = {_sql_quote(study_category)}")
         if clauses:
             predicate = " AND ".join(clauses)
+            # prefilter=True — filter first, THEN search the matching rows.
+            #
+            # Post-filtering (prefilter=False) runs the ANN search first and
+            # drops non-matching rows afterwards, so a filtered query only ever
+            # sees the `limit` globally-nearest rows. Any category rarer than
+            # ~1-in-limit is filtered to nothing, and the caller cannot tell
+            # that apart from "the corpus has no such papers". Measured on this
+            # corpus: `study_category='structural_biology'` (327 papers, 2.6%)
+            # returned 0 rows at limit=20 and 20 rows with prefilter on. The
+            # two categories that DID work — biochemistry and pathway_biology —
+            # are 90% of the corpus between them, which is why this survived.
+            # It mattered: molecular-biology-expert is told to prefer
+            # `experimental_structural`, i.e. exactly the starved case.
             try:
-                search_builder = search_builder.where(predicate, prefilter=False)
+                search_builder = search_builder.where(predicate, prefilter=True)
             except TypeError:      # older lancedb without the kwarg
                 search_builder = search_builder.where(predicate)
 

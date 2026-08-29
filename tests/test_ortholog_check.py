@@ -300,3 +300,59 @@ def test_gate_fails_open_when_conservation_cannot_be_computed(monkeypatch):
     v = ChainVerdict(verdict=ORTHOLOG, chain_uniprot="O43043")
     _gate_runner(v)._check_ortholog_conservation(_HOTSPOTS, "5GRS", res)
     assert res.ortholog_conservation is None
+
+
+# ---------------------------------------------------------------------------
+# search_corpus recall on a rare category
+# ---------------------------------------------------------------------------
+
+def test_a_rare_study_category_is_not_silently_filtered_to_nothing(tmp_path):
+    """
+    Post-filtering ran the ANN search first and dropped non-matching rows
+    afterwards, so a filtered query only ever saw the `limit` globally-nearest
+    rows: any category rarer than ~1-in-limit came back empty, and the caller
+    could not tell that apart from "the corpus has no such papers". Two
+    categories dominate this corpus (90% between them) which is why it
+    survived — and the starved case was exactly the one the literature skill
+    is told to prefer.
+
+    Built here as a synthetic table so the assertion is about the query, not
+    about whatever happens to be in `data/vectors`.
+    """
+    pytest.importorskip("lancedb")
+    import lancedb
+
+    dim = 8
+    rows = []
+    # 200 rows of the common category clustered at the query vector, and 5 of
+    # a rare one further away — the exact shape that starves a post-filter.
+    for i in range(200):
+        rows.append({"vector": [1.0] + [0.0] * (dim - 1),
+                     "study_category": "biochemistry", "paper_key": f"c{i}"})
+    for i in range(5):
+        rows.append({"vector": [0.9, 0.1] + [0.0] * (dim - 2),
+                     "study_category": "structural_biology", "paper_key": f"r{i}"})
+    db = lancedb.connect(str(tmp_path / "db"))
+    table = db.create_table("t", data=rows)
+
+    query = [1.0] + [0.0] * (dim - 1)
+    where = "study_category = 'structural_biology'"
+    post = table.search(query).metric("cosine").limit(5).where(
+        where, prefilter=False).to_arrow().num_rows
+    pre = table.search(query).metric("cosine").limit(5).where(
+        where, prefilter=True).to_arrow().num_rows
+
+    assert post == 0, "fixture no longer reproduces the starvation it guards"
+    assert pre == 5
+
+
+def test_vector_store_uses_prefilter():
+    """The one-word setting the test above is about, pinned at the call site."""
+    import inspect
+
+    from src.vector_store import VectorStore
+
+    calls = [ln.strip() for ln in inspect.getsource(VectorStore.search).splitlines()
+             if ".where(" in ln and "prefilter" in ln]
+    assert calls, "no prefilter-bearing .where() call in VectorStore.search"
+    assert all("prefilter=True" in c for c in calls), calls
