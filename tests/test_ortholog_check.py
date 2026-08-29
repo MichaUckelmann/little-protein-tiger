@@ -393,3 +393,49 @@ def test_overshoot_fallback_band(n_target, budget, fires):
     """
     ceiling = round(budget * 1.15)
     assert bool(n_target and budget < n_target <= ceiling) is fires
+
+
+def test_a_close_ortholog_is_still_an_ortholog(monkeypatch):
+    """
+    Accession before identity. Mouse Tead4 (Q62296) is 96% identical to human
+    TEAD4 — past every "same protein" threshold — so an identity-first test
+    calls it a match and never checks the epitope against the human sequence.
+    It happens to be 12/12 conserved on that target, but that is a
+    measurement, and the only way to have it is to take it.
+    """
+    name = "Transcriptional enhancer factor TEF-3"
+    monkeypatch.setattr("src.ortholog_check.uniprot_entry", lambda acc, **k: {
+        "Q15561": {"full_name": name, "organism": "Homo sapiens",
+                   "taxid": 9606, "gene": "TEAD4"},
+        "Q62296": {"full_name": name, "organism": "Mus musculus",
+                   "taxid": 10090, "gene": "Tead4"},
+    }.get(acc, {}))
+    v = classify_chain(identity=0.96, uniprot="Q15561", gene="TEAD4",
+                       description=name, chain_accessions=["Q62296"])
+    assert v.verdict == ORTHOLOG
+    assert v.taxid == 10090
+
+
+def test_a_human_chain_at_high_identity_is_a_match_not_an_ortholog(monkeypatch):
+    """The accession-first rule must not turn every structure into an
+    ortholog: a human accession under a different id is still human."""
+    name = "Transcriptional enhancer factor TEF-3"
+    monkeypatch.setattr("src.ortholog_check.uniprot_entry", lambda acc, **k: {
+        "Q15561": {"full_name": name, "organism": "Homo sapiens",
+                   "taxid": 9606, "gene": "TEAD4"},
+        "Q15562": {"full_name": name, "organism": "Homo sapiens",
+                   "taxid": 9606, "gene": "TEAD2"},
+    }.get(acc, {}))
+    v = classify_chain(identity=0.96, uniprot="Q15561", gene="TEAD4",
+                       description=name, chain_accessions=["Q15562"])
+    assert v.verdict == MATCH
+
+
+def test_the_targets_own_accession_short_circuits_before_any_fetch(monkeypatch):
+    """No UniProt round-trip when SIFTS already names the target accession."""
+    def boom(*a, **k):
+        raise AssertionError("uniprot_entry should not be called here")
+
+    monkeypatch.setattr("src.ortholog_check.uniprot_entry", boom)
+    assert classify_chain(identity=0.4, uniprot="Q15561", gene="TEAD4",
+                          chain_accessions=["Q15561"]).verdict == MATCH

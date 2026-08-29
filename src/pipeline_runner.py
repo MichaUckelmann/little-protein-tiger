@@ -1385,6 +1385,24 @@ class PipelineRunner:
                                 f"  chain assignment OK — target_chain "
                                 f"{target_chain} is {target_id:.0%} identical "
                                 f"to {uniprot}")
+                            # High identity settles WHICH PROTEIN this is, not
+                            # which ORGANISM. Mouse Tead4 is 96% identical to
+                            # human TEAD4 — past every "same protein" threshold
+                            # — so returning here skipped the conservation
+                            # check entirely on a non-human structure. It is
+                            # 12/12 conserved on that target, and the only way
+                            # to know is to measure it; the alternative is
+                            # trusting the discovery stage's prose.
+                            verdict = self._classify_target_chain(
+                                pdb_id, target_chain, target_id, gene, uniprot)
+                            if verdict.is_ortholog:
+                                self._ortholog = verdict
+                                self._ortholog_human_acc = uniprot
+                                logger.info(
+                                    f"  — but it is a NON-HUMAN ortholog: "
+                                    f"{verdict.reason}. The declared hotspots "
+                                    f"will be checked for conservation in human "
+                                    f"{gene or uniprot}.")
                             return
                         partner_id = self._chain_identity_to_uniprot(
                             structure_path, partner_chain, ref_seq)

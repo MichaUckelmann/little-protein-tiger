@@ -221,6 +221,50 @@ def classify_chain(
         v.verdict = MATCH
         v.reason = f"SIFTS maps chain to {uniprot}"
         return v
+
+    # Accession before identity, deliberately. A close ortholog is still an
+    # ortholog: mouse Tead4 (Q62296) is 96% identical to human TEAD4, well past
+    # any "same protein" threshold, so an identity-first test calls it a match
+    # and the epitope is never checked against the human sequence at all. It
+    # happens to be 12/12 conserved there — but that is a measurement, and the
+    # only way to have it is to take it. Costs one UniProt GET, and only when
+    # the chain's accession differs from the target's.
+    # Lazy: the two branches below both want the target's own protein name, and
+    # neither is always reached. Fetching it eagerly would add a UniProt GET to
+    # every run of every structure that never needs one.
+    _ref: list[str | None] = [None]
+
+    def ref_name() -> str:
+        if _ref[0] is None:
+            _ref[0] = (uniprot_entry(uniprot).get("full_name") or "") \
+                if uniprot else ""
+        return _ref[0]
+
+    for acc in accs:
+        chain_entry = uniprot_entry(acc)
+        if not chain_entry:
+            continue
+        v.organism = chain_entry.get("organism") or v.organism
+        v.taxid = chain_entry.get("taxid") or v.taxid
+        v.chain_uniprot = acc
+        name_hit = (
+            _same_protein_name(chain_entry.get("full_name", ""), ref_name())
+            or _same_protein_name(chain_entry.get("full_name", ""), description)
+            or (bool(gene) and gene.upper() == (chain_entry.get("gene") or "").upper())
+        )
+        non_human = v.taxid is not None and int(v.taxid) != HUMAN_TAXID
+        if name_hit and non_human and (identity is None
+                                       or identity >= MIN_ORTHOLOG_IDENTITY):
+            v.verdict = ORTHOLOG
+            v.reason = (
+                f"chain maps to {acc} ({chain_entry.get('full_name')!r}, "
+                f"{chain_entry.get('organism')}, taxid {chain_entry.get('taxid')}) "
+                f"— the same protein as human {gene or uniprot} in another "
+                f"organism"
+                + (f", {identity:.0%} identical" if identity is not None else "")
+            )
+            return v
+
     if identity is not None and identity >= SAME_PROTEIN_IDENTITY:
         v.verdict = MATCH
         v.reason = f"{identity:.0%} identical to {uniprot or gene}"
@@ -230,33 +274,9 @@ def classify_chain(
         v.reason = "no sequence comparison was possible"
         return v
 
-    human = uniprot_entry(uniprot) if uniprot else {}
-    ref_name = human.get("full_name") or ""
-    for acc in accs:
-        chain_entry = uniprot_entry(acc)
-        if not chain_entry:
-            continue
-        v.organism = chain_entry.get("organism") or v.organism
-        v.taxid = chain_entry.get("taxid") or v.taxid
-        v.chain_uniprot = acc
-        name_hit = (
-            _same_protein_name(chain_entry.get("full_name", ""), ref_name)
-            or _same_protein_name(chain_entry.get("full_name", ""), description)
-            or (bool(gene) and gene.upper() == (chain_entry.get("gene") or "").upper())
-        )
-        if name_hit and identity >= MIN_ORTHOLOG_IDENTITY:
-            v.verdict = ORTHOLOG
-            v.reason = (
-                f"chain maps to {acc} ({chain_entry.get('full_name')!r}, "
-                f"{chain_entry.get('organism')}, taxid {chain_entry.get('taxid')}) "
-                f"— the same protein as human {gene or uniprot} in another "
-                f"organism, {identity:.0%} identical"
-            )
-            return v
-
     # No accession settled it. Fall back to the RCSB description, which for many
     # entries spells the protein's full name out.
-    if ref_name and _same_protein_name(description, ref_name) \
+    if ref_name() and _same_protein_name(description, ref_name()) \
             and identity >= MIN_ORTHOLOG_IDENTITY:
         v.verdict = ORTHOLOG
         v.reason = (
