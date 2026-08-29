@@ -610,3 +610,103 @@ def test_missing_ranking_and_calib_do_not_break_the_stage(monkeypatch, tmp_path)
     r._stage_binder_summary(tmp_path / "top_k.csv", {}, dirs, res)
     assert res.go_recommendation == "GO"
     assert "Track: foundry" in captured["query"]
+
+
+# ---------------------------------------------------------------------------
+# The LLM-facing view of a structure-tool result
+# ---------------------------------------------------------------------------
+
+def _iface_fixture():
+    return {
+        "interface": {"chain_a": "A", "chain_b": "I", "bsa_total_A2": 5785.1,
+                      "n_hbonds": 23,
+                      "bsa_per_residue": [
+                          {"residue": "GLY", "chain": "A", "resnum": 567,
+                           "sasa_free_A2": 92.9, "sasa_complex_A2": 12.0,
+                           "bsa_A2": 80.9}]},
+        "chain_a_interface_residues": [
+            {"residue": "TRP", "chain": "A", "resnum": 568, "one_letter": "W",
+             "type": "aromatic", "hydrophobicity": -0.9, "n_contacts": 2,
+             "gap_flag": False, "ddg_estimate_kcal_mol": 1.4,
+             "contacts": [{"target_res": "SER", "target_chain": "I",
+                           "target_resnum": 1004, "min_dist_A": 3.4,
+                           "interaction": "h_bond"}]}],
+        "chain_b_interface_residues": [],
+        "chain_a_categories": {"aromatic": 1},
+        "plddt_at_interface": {},
+    }
+
+
+def test_the_view_keeps_every_field_a_skill_names():
+    """
+    `binder-optimizer` reads `one_letter` and `hydrophobicity` off each
+    interface residue by name. `hydrophobicity` is a pure Kyte-Doolittle
+    lookup on the residue name and so is information-theoretically redundant —
+    it stays anyway, because the alternative is the model recalling the KD
+    scale from memory while choosing hydrophobic hotspots.
+    """
+    from pathlib import Path
+
+    from src._tool_views import llm_view_interface
+
+    skill = Path("skills/binder-optimizer/SKILL.md").read_text()
+    row = llm_view_interface(_iface_fixture())["chain_a_interface_residues"][0]
+    for field in ("residue", "resnum", "one_letter", "type", "hydrophobicity",
+                  "n_contacts", "gap_flag", "contacts"):
+        assert field in skill, f"skill stopped naming {field}; revisit the view"
+        assert field in row, f"the view dropped {field}, which the skill reads"
+    assert row["contacts"][0]["min_dist_A"] == 3.4
+    assert row["ddg_estimate_kcal_mol"] == 1.4
+
+
+def test_the_view_drops_only_constants_and_a_retained_difference():
+    from src._tool_views import llm_view_interface
+
+    v = llm_view_interface(_iface_fixture())
+    assert "chain" not in v["chain_a_interface_residues"][0]
+    assert "target_chain" not in v["chain_a_interface_residues"][0]["contacts"][0]
+    per_res = v["interface"]["bsa_per_residue"][0]
+    assert "sasa_free_A2" not in per_res and "sasa_complex_A2" not in per_res
+    # ...but the value derived from them is what the prompts read, and stays.
+    assert per_res["bsa_A2"] == 80.9
+    # Chain identity is still available where it is not a per-row constant.
+    assert v["interface"]["chain_a"] == "A"
+
+
+def test_get_sequence_map_is_left_alone():
+    """Whitespace only. `residues[]` is the anti-hallucination lookup: models
+    have twice produced systematically wrong label_seq_ids by counting."""
+    from src._tool_views import llm_view_sequence_map
+
+    r = {"sequence": "ACD", "auth_to_label": {"1": 1},
+         "residues": [{"auth_seq_id": 1, "three_letter": "ALA"}]}
+    assert llm_view_sequence_map(r) == r
+
+
+def test_compact_dumps_is_lossless_and_smaller():
+    import json
+
+    from src._tool_views import dumps
+
+    obj = _iface_fixture()
+    assert json.loads(dumps(obj)) == obj
+    assert len(dumps(obj)) < len(json.dumps(obj, indent=2))
+
+
+def test_an_error_result_passes_through_untouched():
+    from src._tool_views import llm_view_interface
+
+    err = {"error": "chain Z not found"}
+    assert llm_view_interface(err) == err
+
+
+def test_both_transports_use_the_same_view():
+    """They drifted once already — `get_fingerprint` stripped three blocks on
+    one transport and nothing on the other."""
+    from pathlib import Path
+
+    for f in ("src/skill_runner.py", "src/structure_tools_server.py"):
+        src = Path(f).read_text()
+        assert "llm_view_interface(result)" in src, f
+        assert "json.dumps(result, indent=2)" not in src, \
+            f"{f} still pretty-prints a structure-tool result"

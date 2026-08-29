@@ -6,6 +6,8 @@ from pathlib import Path
 from fastmcp import FastMCP
 from loguru import logger
 
+from src import _tool_views as _tv
+
 ROOT = Path(__file__).resolve().parent.parent
 _log_file = ROOT / "data" / "structure_tools.log"
 logger.remove()
@@ -82,7 +84,7 @@ def tool_analyze_interface(
     """
     try:
         result = analyze_interface(_resolve(file_path), chain_a, chain_b, cutoff)
-        return json.dumps(result, indent=2)
+        return _tv.dumps(_tv.llm_view_interface(result))
     except Exception as e:
         logger.exception("analyze_interface failed")
         return json.dumps({"error": str(e)})
@@ -113,7 +115,7 @@ def tool_get_residue_contacts(
     """
     try:
         result = get_residue_contacts(_resolve(file_path), chain, resnum, partner_chain, cutoff)
-        return json.dumps(result, indent=2)
+        return _tv.dumps(result)
     except Exception as e:
         logger.exception("get_residue_contacts failed")
         return json.dumps({"error": str(e)})
@@ -155,7 +157,7 @@ def tool_check_mutation_clash(
         aa = one_to_three.get(aa, aa)
     try:
         result = check_mutation_clash(_resolve(file_path), chain, resnum, aa, partner_chain)
-        return json.dumps(result, indent=2)
+        return _tv.dumps(result)
     except Exception as e:
         logger.exception("check_mutation_clash failed")
         return json.dumps({"error": str(e)})
@@ -177,7 +179,7 @@ def tool_get_sequence_map(file_path: str, chain: str) -> str:
     """
     try:
         result = get_sequence_map(_resolve(file_path), chain)
-        return json.dumps(result, indent=2)
+        return _tv.dumps(result)
     except Exception as e:
         logger.exception("get_sequence_map failed")
         return json.dumps({"error": str(e)})
@@ -205,7 +207,7 @@ def tool_score_surface_patch(
     """
     try:
         result = score_surface_patch(_resolve(file_path), chain, residue_list)
-        return json.dumps(result, indent=2)
+        return _tv.dumps(result)
     except Exception as e:
         logger.exception("score_surface_patch failed")
         return json.dumps({"error": str(e)})
@@ -256,7 +258,7 @@ def tool_find_glue_pockets(
             min_periface_sasa=min_periface_sasa,
             top_n=top_n,
         )
-        return json.dumps(result, indent=2)
+        return _tv.dumps(result)
     except Exception as e:
         logger.exception("find_glue_pockets failed")
         return json.dumps({"error": str(e)})

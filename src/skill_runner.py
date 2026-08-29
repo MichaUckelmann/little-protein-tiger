@@ -20,6 +20,8 @@ import anthropic
 import requests
 from loguru import logger
 
+from src import _tool_views as _tv
+
 _ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(_ROOT))
@@ -1223,7 +1225,18 @@ class SkillRunner:
     # every interface residue; on TREM2 and KRAS that grew the conversation
     # 47k -> 84k -> 134k tokens in three calls and blew the per-call input limit.
     # A result the model cannot read is worse than a truncated one it can.
-    MAX_TOOL_RESULT_CHARS = 60_000
+    #
+    # This is CHARS, not tokens, and the two are not related the way the old
+    # comment here assumed. Dense structured JSON tokenises at ~2.0-2.4 chars
+    # per token, not ~4 — measured on real payloads — so the old 60,000 was
+    # admitting 25-31k tokens where it read as if it admitted 15k.
+    #
+    # 90,000 chars is ~41k tokens at that ratio. It is deliberately above the
+    # largest real payload seen (5GRS chains A/I, now 55,719 chars once
+    # `_tool_views` drops the whitespace and the constant chain labels) so that
+    # a structure of that size is no longer truncated at all, while a genuinely
+    # runaway result still is.
+    MAX_TOOL_RESULT_CHARS = 90_000
 
     def _execute_tool(self, name: str, input_dict: dict) -> str:
         raw = self._execute_tool_inner(name, input_dict)
@@ -1304,7 +1317,7 @@ class SkillRunner:
                         input_dict.get("periinterface_radius", 10.0)),
                     top_n=int(input_dict.get("top_n", 3)),
                 )
-                return json.dumps(result, indent=2)
+                return _tv.dumps(result)
 
             if name == "tool_analyze_interface":
                 from src.structure_tools import analyze_interface
@@ -1314,7 +1327,7 @@ class SkillRunner:
                     input_dict["chain_b"],
                     float(input_dict.get("cutoff", 4.5)),
                 )
-                return json.dumps(result, indent=2)
+                return _tv.dumps(_tv.llm_view_interface(result))
 
             if name == "tool_get_residue_contacts":
                 from src.structure_tools import get_residue_contacts
@@ -1325,7 +1338,7 @@ class SkillRunner:
                     input_dict["partner_chain"],
                     float(input_dict.get("cutoff", 4.5)),
                 )
-                return json.dumps(result, indent=2)
+                return _tv.dumps(result)
 
             if name == "tool_check_mutation_clash":
                 from src.structure_tools import check_mutation_clash
@@ -1339,7 +1352,7 @@ class SkillRunner:
                     aa,
                     input_dict["partner_chain"],
                 )
-                return json.dumps(result, indent=2)
+                return _tv.dumps(result)
 
             if name == "tool_get_sequence_map":
                 from src.structure_tools import get_sequence_map
@@ -1351,7 +1364,16 @@ class SkillRunner:
                 # Strip both for all other skills (molecular-biology-expert etc.).
                 if self.skill_name not in _NEEDS_INDEX_MAPS:
                     result = {"sequence": result["sequence"], "length": len(result["sequence"])}
-                return json.dumps(result, indent=2)
+                # `residues[]` is 81% of this payload and restates what
+                # `sequence` + the two maps already carry, with no Python
+                # consumer and no SKILL.md reference — and it stays anyway.
+                # Models have twice produced systematically wrong label_seq_ids
+                # by COUNTING rather than reading `auth_to_label` (23/23 on
+                # 5GRS, 10/10 on 5GN0); this list is the direct per-residue
+                # lookup that makes the correct answer easiest to reach, and
+                # dropping it plausibly makes that worse. Settle it with a
+                # measurement, not a byte count.
+                return _tv.dumps(_tv.llm_view_sequence_map(result))
 
             if name == "tool_score_surface_patch":
                 from src.structure_tools import score_surface_patch
@@ -1360,7 +1382,7 @@ class SkillRunner:
                     input_dict["chain"],
                     [int(r) for r in input_dict["residue_list"]],
                 )
-                return json.dumps(result, indent=2)
+                return _tv.dumps(result)
 
             if name == "write_file":
                 dest = Path(_resolve(input_dict["path"]))

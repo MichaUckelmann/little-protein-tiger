@@ -374,10 +374,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-tokens",
         type=int,
-        default=100_000,
+        default=150_000,
         metavar="N",
         dest="max_tokens",
-        help="Abort guard: stage aborts if input token count exceeds this. Default: 100000.",
+        help="Abort guard: stage aborts if a single request's input token "
+             "count exceeds this. Default: 150000. This is a runaway guard, "
+             "not a budget — it costs nothing unless a stage actually uses "
+             "the headroom, and aborting is a total loss of whatever the "
+             "stage already spent (a structure stage on a 12-chain assembly "
+             "died at 101,959 against the old 100000 default, mid-report, "
+             "having billed $0.82 for no output).",
     )
     return p
 
