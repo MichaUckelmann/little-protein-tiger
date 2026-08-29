@@ -2114,7 +2114,7 @@ class PipelineRunner:
         # has written — but the disk CLAMP is computed from the estimate, so a
         # campaign sized near the budget could be under-clamped.
         observed = (prefilter_rate_observed(paths)
-                    or self._persisted_prefilter_rate(dirs)
+                    or self._persisted_prefilter_rate(dirs, mode)
                     or 0.59)
         # Same argument for the refold rate: a rate this target actually
         # achieved on this GPU beats any constant. Prefer this stage's own
@@ -2448,22 +2448,56 @@ class PipelineRunner:
                 return rate
         return 0.0
 
-    def _persisted_prefilter_rate(self, dirs: dict[str, Path]) -> float:
-        """The prefilter rate the calibration trial measured, or 0.0.
+    def _persisted_prefilter_rate(self, dirs: dict[str, Path],
+                                  mode: str = "production") -> float:
+        """The prefilter rate an EARLIER stage measured, or 0.0.
 
-        `_stage_calibration` writes it to calibration.json alongside the batch
-        counts. Reading it back is what lets a production stage planned in a
-        FRESH process (the normal `--start-from production` case) size itself
-        on measurement rather than on the generic default.
+        Two sources, and both are needed. `_stage_calibration` writes its rate
+        to calibration.json alongside the batch counts, which is what lets a
+        production stage planned in a FRESH process (the normal
+        `--start-from production` case) size itself on measurement. But that
+        file does not exist yet when CALIBRATION itself is being planned, and
+        the pilot has already measured a rate by then — so fall back to
+        reading it off the earlier stages' directories directly, nearest in
+        size first, exactly as `_earlier_refold_rate` does for seconds per
+        refold.
+
+        That hop was missing, and it is not cosmetic. On the MASH/TEAD4
+        campaign the pilot measured 0.86 and calibration was nonetheless
+        planned at the 0.59 default: 580 backbones planned as
+        int(580*0.59)*4 = 1,368 refolds where the real figure is
+        int(580*0.86)*4 = 1,992, a 46% under-count of the work, and with it
+        the disk clamp, the GPU-hour estimate, and the local-vs-cluster
+        decision `choose_compute()` makes from it.
         """
+        from src.foundry_runner import prefilter_rate_observed
+
+        def _ok(rate: float) -> float:
+            # A nonsense rate would silently distort every downstream estimate.
+            return rate if 0.0 < rate <= 1.0 else 0.0
+
         path = dirs["calibration"] / "calibration.json"
         try:
-            rate = float(json.loads(path.read_text(encoding="utf-8"))
-                         .get("prefilter_rate") or 0.0)
+            rate = _ok(float(json.loads(path.read_text(encoding="utf-8"))
+                             .get("prefilter_rate") or 0.0))
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            return 0.0
-        # A nonsense rate would silently distort every downstream estimate.
-        return rate if 0.0 < rate <= 1.0 else 0.0
+            rate = 0.0
+        if rate:
+            return rate
+
+        order = ["pilot", "calibration", "production"]
+        earlier = order[:order.index(mode)] if mode in order else []
+        for prior in reversed(earlier):          # nearest in size wins
+            try:
+                rate = _ok(prefilter_rate_observed(self._binder_paths(dirs, prior)))
+            except Exception as exc:
+                logger.debug(f"could not read {prior} prefilter rate: {exc}")
+                continue
+            if rate:
+                logger.info(f"  prefilter rate {rate:.2f} measured by the "
+                            f"{prior} stage (default is 0.59)")
+                return rate
+        return 0.0
 
     def _resolve_production_plan(self, calib: dict | None, dirs: dict[str, Path],
                                   n_batches: int | None) -> tuple[int | None, str]:

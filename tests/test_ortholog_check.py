@@ -987,3 +987,80 @@ def test_the_design_skill_no_longer_says_copy_verbatim():
     md = Path("skills/protein-design-script/SKILL.md").read_text()
     assert "copied\n  verbatim from MODEL-READY HOTSPOTS" not in md
     assert "only valid for the file" in md
+
+
+# ---------------------------------------------------------------------------
+# The measured prefilter rate has to reach the NEXT stage's plan
+# ---------------------------------------------------------------------------
+
+def _dirs(root):
+    b = root / "binder"
+    return {"binder": b, "campaign": b / "campaign",
+            "pilot": b / "campaign/pilot",
+            "calibration": b / "campaign/calibration",
+            "production": b / "campaign/production",
+            "trim": b / "trim", "spec": b / "spec", "scoring": b / "scoring"}
+
+
+def test_calibration_is_planned_on_the_rate_the_pilot_measured(monkeypatch, tmp_path):
+    """
+    The pilot measured 0.86 and calibration was planned at the 0.59 default:
+    580 backbones as int(580*0.59)*4 = 1,368 refolds where the real figure is
+    int(580*0.86)*4 = 1,992. A 46% under-count of the work, and with it the
+    disk clamp, the GPU-hour estimate, and the local-vs-cluster decision.
+    """
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner.__new__(PipelineRunner)
+    d = _dirs(tmp_path)
+    d["calibration"].mkdir(parents=True)
+    monkeypatch.setattr(
+        "src.foundry_runner.prefilter_rate_observed",
+        lambda paths: 0.86 if "pilot" in str(paths.campaign_dir) else 0.0)
+    monkeypatch.setattr(r, "_binder_paths",
+                        lambda dirs, m: type("P", (), {
+                            "campaign_dir": dirs["campaign"] / m})(),
+                        raising=False)
+    assert r._persisted_prefilter_rate(d, "calibration") == 0.86
+
+
+def test_calibration_json_still_wins_for_production(monkeypatch, tmp_path):
+    """A resumed `--start-from production` in a fresh process reads the rate
+    calibration froze, not a re-measurement."""
+    import json as _json
+
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner.__new__(PipelineRunner)
+    d = _dirs(tmp_path)
+    d["calibration"].mkdir(parents=True)
+    (d["calibration"] / "calibration.json").write_text(
+        _json.dumps({"prefilter_rate": 0.83}))
+    monkeypatch.setattr("src.foundry_runner.prefilter_rate_observed",
+                        lambda paths: 0.5)
+    assert r._persisted_prefilter_rate(d, "production") == 0.83
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, 1.5, None, "x"])
+def test_a_nonsense_rate_is_refused_rather_than_propagated(bad, tmp_path):
+    import json as _json
+
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner.__new__(PipelineRunner)
+    d = _dirs(tmp_path)
+    d["calibration"].mkdir(parents=True)
+    (d["calibration"] / "calibration.json").write_text(
+        _json.dumps({"prefilter_rate": bad}))
+    r._binder_paths = lambda dirs, m: type("P", (), {
+        "campaign_dir": dirs["campaign"] / m})()
+    assert r._persisted_prefilter_rate(d, "pilot") == 0.0
+
+
+def test_the_pilot_has_no_earlier_stage_to_read():
+    from src.pipeline_runner import PipelineRunner
+    import inspect
+
+    src = inspect.getsource(PipelineRunner._persisted_prefilter_rate)
+    assert 'order[:order.index(mode)]' in src, \
+        "the earlier-stage walk must be ordered, so pilot reads nothing"
