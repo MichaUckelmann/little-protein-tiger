@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import gemmi
 import numpy as np
@@ -1511,3 +1511,91 @@ def _extract_plddt(chain, resnum_set: set[int]) -> dict[int, float]:
         if bfactors:
             result[rn] = round(bfactors[0], 1)
     return result
+
+
+def boltzgen_residue_indices(
+    file_path: str,
+    chain: str,
+    auth_seq_ids: Sequence[int] | None = None,
+) -> dict[int, int]:
+    """
+    `{auth_seq_id: index}` as BoltzGen itself would number one chain.
+
+    BoltzGen's `binding:` field is 1-indexed and converted to 0-indexed on
+    read (`parse_range`: "Single number. Convert it from 1 indexed to 0
+    indexed"), and the value it indexes depends on how BoltzGen parsed the
+    file:
+
+    - **mmCIF** — `data/parse/mmcif.py` uses `res.label_seq` directly
+      (`res_idx = res.label_seq - 1`), so the index IS the deposited
+      label_seq.
+    - **PDB** — a PDB file carries no label_seq at all, so
+      `data/parse/pdb_parser.py` synthesises one: it builds `full_sequence`
+      from the polymer subchain when the entity has none, aligns the subchain
+      to it, and assigns `sc[i].label_seq = j + 1`. With a sequence taken from
+      the subchain itself that alignment is the identity, so the index is the
+      1-based position of the residue among that chain's MODELLED polymer
+      residues, in file order.
+
+    The two disagree, and that is the point of this function. On the MASH
+    campaign, target residue auth 256 is label_seq **54** in the deposited
+    `5GN0_ba1.cif` (whose entity_poly_seq starts before the first modelled
+    residue) and index **53** in `trim/trimmed.pdb` (a contiguous 204-425
+    crop). A `binding:` list is therefore only meaningful relative to ONE
+    file, and copying it from a report written about a different file is an
+    off-by-one straight into the design spec — the documented cause of zero
+    hotspot occlusion on the YAP-TEAD run. Always compute against the file
+    that will appear in the yaml's `path:`.
+
+    `auth_seq_ids` restricts the result; omit for the whole chain. Author ids
+    absent from the chain are simply not in the returned mapping.
+    """
+    st = _load_gemmi(file_path)
+    st.setup_entities()
+    if len(st) == 0:
+        return {}
+
+    wanted = None if auth_seq_ids is None else {int(a) for a in auth_seq_ids}
+    out: dict[int, int] = {}
+
+    for entity in st.entities:
+        if entity.entity_type.name != "Polymer" or not entity.subchains:
+            continue
+        for sub_name in entity.subchains:
+            try:
+                sub = st[0].get_subchain(sub_name)
+            except Exception:
+                continue
+            if len(sub) == 0:
+                continue
+            # gemmi renames chains when a PDB is promoted to mmCIF internally
+            # ("A" -> "Axp"), so match on the author chain the residues carry.
+            auth_names = {r.subchain for r in sub}
+            if chain not in sub_name and chain not in auth_names \
+                    and not sub_name.startswith(chain):
+                continue
+
+            labels = [r.label_seq for r in sub]
+            if all(x is not None for x in labels):
+                idx = [int(x) for x in labels]
+            else:
+                # Reproduce pdb_parser.py's alignment fallback exactly.
+                full = list(entity.full_sequence) or [r.name for r in sub]
+                match = gemmi.align_sequence_to_polymer(
+                    full, sub, entity.polymer_type,
+                    gemmi.AlignmentScoring()).match_string
+                idx, i = [], 0
+                for j, a in enumerate(match):
+                    if a == "|":
+                        if i < len(sub):
+                            idx.append(j + 1)
+                        i += 1
+                if len(idx) != len(sub):        # alignment did not cover it
+                    idx = list(range(1, len(sub) + 1))
+            for res, n in zip(sub, idx):
+                auth = int(res.seqid.num)
+                if wanted is None or auth in wanted:
+                    out.setdefault(auth, n)
+            if out or wanted is None:
+                return out
+    return out

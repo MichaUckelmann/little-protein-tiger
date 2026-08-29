@@ -829,15 +829,19 @@ def test_the_correction_is_not_inside_the_swallowing_try():
     assert "_correct_label_seq_ids" in calls_within(tree)
 
 
-def test_a_structure_without_label_seq_declares_it_rather_than_inventing_one():
+def test_a_structure_without_label_seq_is_never_given_a_derived_number():
     """
     label_seq is an mmCIF concept: EVERY residue of a PDB-format file has
     none — including `trim/trimmed.pdb`, which this pipeline writes itself and
-    hands to RFD3 — and a real mmCIF still has none on het rows (5 of 227 on
-    5GN0). The map used to fall back to the residue's 1-indexed position,
-    which is the very counting this guard exists to catch, wearing a lab coat:
-    on a PDB input it replaced the model's counted numbers with different
-    counted numbers and reported the column verified.
+    hands to the design stage — and a real mmCIF still has none on het rows
+    (5 of 227 on 5GN0). The map used to fall back to the residue's 1-indexed
+    position in the chain, which is the very counting this guard exists to
+    catch, wearing a lab coat.
+
+    The number is still knowable — BoltzGen synthesises one and
+    `boltzgen_residue_indices` reproduces that exactly — so the cell is filled
+    from THAT, not from whatever the model wrote. The marker is only for the
+    case where even that cannot be computed.
     """
     from pathlib import Path
 
@@ -848,15 +852,44 @@ def test_a_structure_without_label_seq_declares_it_rather_than_inventing_one():
         pytest.skip("no trimmed.pdb on disk")
     fixed, warns = _lsq_runner()._resolve_unverified_label_seq_ids(
         _LSQ_TABLE, pdb, "A")
-    assert f"| {_LABEL_SEQ_UNAVAILABLE} |" in fixed
-    # The model's own counted list must not survive in the BoltzGen line —
-    # BoltzGen reads it AS label_seq.
-    assert "binding: 53,55,59,62" not in fixed
-    assert _LABEL_SEQ_UNAVAILABLE in [
-        ln for ln in fixed.splitlines() if ln.startswith("binding")][0]
-    assert any("NOT AVAILABLE" in w for w in warns)
+    # The model wrote 53,55,59,62 by counting; those happen to be right for
+    # THIS file, but they are now the computed values rather than the copied
+    # ones, and the report says which file they belong to.
+    assert "binding: 53,55,59,62" in fixed
+    assert _LABEL_SEQ_UNAVAILABLE not in fixed
+    assert any("carries no label_seq" in w for w in warns)
     # auth_seq_id is untouched — it is what RFD3's select_hotspots uses.
     assert "| 256 |" in fixed and "| 265 |" in fixed
+
+
+def test_the_marker_is_used_when_no_index_can_be_computed_at_all():
+    """Belt and braces: if BoltzGen indexing also fails, the cell must not
+    carry a number. Anything numeric here reads downstream as measured."""
+    from pathlib import Path
+
+    from src.pipeline_runner import _LABEL_SEQ_UNAVAILABLE
+
+    pdb = Path("projects/mash_e2e/runs/round-2/binder/trim/trimmed.pdb")
+    if not pdb.exists():
+        pytest.skip("no trimmed.pdb on disk")
+    import src.pipeline_runner as pr
+    real = pr.PipelineRunner._build_label_seq_id_map
+
+    def no_labels(cif, chain):
+        return {a: (None, n) for a, (_, n) in real(cif, chain).items()}
+
+    r = _lsq_runner()
+    import src.structure_tools as stools
+    orig = stools.boltzgen_residue_indices
+    stools.boltzgen_residue_indices = lambda *a, **k: {}
+    pr.PipelineRunner._build_label_seq_id_map = staticmethod(no_labels)
+    try:
+        fixed, _ = r._resolve_unverified_label_seq_ids(_LSQ_TABLE, pdb, "A")
+    finally:
+        stools.boltzgen_residue_indices = orig
+        pr.PipelineRunner._build_label_seq_id_map = staticmethod(real)
+    assert f"| {_LABEL_SEQ_UNAVAILABLE} |" in fixed
+    assert "binding: 53,55,59,62" not in fixed
 
 
 def test_missing_label_seq_is_not_a_run_ending_failure():
@@ -886,3 +919,71 @@ def test_the_map_reports_absence_as_none_not_as_a_position():
     # ...while a real mmCIF still yields real numbers.
     cif = PipelineRunner._build_label_seq_id_map(_cif(), "A")
     assert cif[256][0] == 54
+
+
+# ---------------------------------------------------------------------------
+# BoltzGen's own residue indexing
+# ---------------------------------------------------------------------------
+
+_HS_AUTH = [256, 258, 262, 265, 290, 292, 384, 407, 418, 422]
+
+
+def test_boltzgen_index_reads_label_seq_from_an_mmcif():
+    from src.structure_tools import boltzgen_residue_indices
+
+    idx = boltzgen_residue_indices(str(_cif()), "A", _HS_AUTH)
+    assert [idx[a] for a in _HS_AUTH] == [54, 56, 60, 63, 88, 90, 182, 205, 216, 220]
+
+
+def test_boltzgen_index_synthesises_one_for_a_pdb_the_way_boltzgen_does():
+    """A PDB file has no label_seq, so `pdb_parser.py` builds `full_sequence`
+    from the polymer subchain, aligns, and assigns `sc[i].label_seq = j + 1`."""
+    from pathlib import Path
+
+    from src.structure_tools import boltzgen_residue_indices
+
+    pdb = Path("projects/mash_e2e/runs/round-2/binder/trim/trimmed.pdb")
+    if not pdb.exists():
+        pytest.skip("no trimmed.pdb on disk")
+    idx = boltzgen_residue_indices(str(pdb), "A", _HS_AUTH)
+    assert [idx[a] for a in _HS_AUTH] == [53, 55, 59, 62, 87, 89, 181, 204, 215, 219]
+
+
+def test_the_same_residue_gets_a_different_index_in_a_different_file():
+    """The whole reason this function exists: a `binding:` list is meaningful
+    relative to ONE file. Copying it from a report written about another is an
+    off-by-one straight into the design spec."""
+    from pathlib import Path
+
+    from src.structure_tools import boltzgen_residue_indices
+
+    pdb = Path("projects/mash_e2e/runs/round-2/binder/trim/trimmed.pdb")
+    if not pdb.exists():
+        pytest.skip("no trimmed.pdb on disk")
+    assert boltzgen_residue_indices(str(_cif()), "A", [256])[256] == 54
+    assert boltzgen_residue_indices(str(pdb), "A", [256])[256] == 53
+
+
+def test_a_pdb_target_gets_real_numbers_not_the_unavailable_marker():
+    from pathlib import Path
+
+    from src.pipeline_runner import _LABEL_SEQ_UNAVAILABLE
+
+    pdb = Path("projects/mash_e2e/runs/round-2/binder/trim/trimmed.pdb")
+    if not pdb.exists():
+        pytest.skip("no trimmed.pdb on disk")
+    fixed, warns = _lsq_runner()._resolve_unverified_label_seq_ids(
+        _LSQ_TABLE, pdb, "A")
+    binding = [ln for ln in fixed.splitlines() if ln.startswith("binding")][0]
+    assert binding == "binding: 53,55,59,62"
+    assert _LABEL_SEQ_UNAVAILABLE not in fixed
+    # ...and the file-relative caveat is still stated.
+    assert any("valid for" in w and "ONLY" in w for w in warns)
+
+
+def test_the_design_skill_no_longer_says_copy_verbatim():
+    from pathlib import Path
+
+    md = Path("skills/protein-design-script/SKILL.md").read_text()
+    assert "copied\n  verbatim from MODEL-READY HOTSPOTS" not in md
+    assert "only valid for the file" in md

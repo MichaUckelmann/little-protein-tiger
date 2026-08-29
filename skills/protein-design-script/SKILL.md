@@ -131,8 +131,24 @@ entities:
 Notes:
 
 - `binding:` takes a **comma-separated list of integers** with no quotes and
-  no brackets — these are `label_seq_id` values (1-indexed mmCIF) copied
-  verbatim from MODEL-READY HOTSPOTS.
+  no brackets — 1-indexed residue positions, taken from the `label_seq_id`
+  column of MODEL-READY HOTSPOTS.
+- **Those integers are only valid for the file the hotspot table was written
+  about.** They are not a property of the residue; they are a property of the
+  residue *in one file*. BoltzGen reads `label_seq` straight out of an mmCIF,
+  but a PDB file has none, so it synthesises one as the 1-based position among
+  that chain's modelled residues — and the two disagree whenever the deposited
+  `entity_poly_seq` starts before the first modelled residue, or the structure
+  has been cropped. Measured on one campaign: target residue auth 256 is
+  `54` in the deposited `5GN0_ba1.cif` and `53` in the cropped
+  `trim/trimmed.pdb`.
+
+  So: if the `path:` you write into the yaml is the SAME structure the
+  MODEL-READY HOTSPOTS table was built from, copy the column as-is. If it is
+  any other file — a cropped target, a PDB export, a re-downloaded assembly —
+  the numbers must be recomputed against that file. Say which file you used in
+  your report; an off-by-one here silently constrains the binder to the wrong
+  residues, and every downstream metric still looks healthy.
 - For cyclic peptides include `cyclic: True` on the designed entity.
   For mini-proteins omit it.
 - For `inhibit_active_site` mode the structure has only a single target

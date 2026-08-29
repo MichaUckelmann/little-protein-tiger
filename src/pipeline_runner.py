@@ -5138,6 +5138,14 @@ class PipelineRunner:
         rows_seen = 0
         offsets: list[int] = []
         unavailable: list[int] = []
+        # What BoltzGen would call these residues in THIS file. Only consulted
+        # when the file itself has no label_seq to read.
+        try:
+            from src.structure_tools import boltzgen_residue_indices
+            bg_index = boltzgen_residue_indices(str(cif_path), target_chain)
+        except Exception as exc:
+            logger.debug(f"could not compute BoltzGen indices: {exc}")
+            bg_index = {}
 
         def _row_sub(match: re.Match) -> str:
             nonlocal substitutions, rows_seen
@@ -5178,15 +5186,21 @@ class PipelineRunner:
                 llm_label = None
 
             if true_label is None:
-                # The file does not carry a label_seq for this residue, so
-                # there is no value to verify against. Whatever the model
-                # wrote here it derived, and passing a derived number on as
-                # though it had been read is the failure this whole function
-                # exists to prevent. Say so in the cell instead.
+                # The file carries no label_seq for this residue (every
+                # residue of a PDB-format file). That does NOT mean the number
+                # is unknowable: BoltzGen synthesises one itself, and
+                # `boltzgen_residue_indices` reproduces that algorithm, so the
+                # right value is computed rather than left to the model — or
+                # to a marker the design script would have to work around.
+                bg = bg_index.get(auth_s)
                 unavailable.append(auth_s)
-                if llm_label is not None:
+                if bg is None:
+                    if llm_label is not None:
+                        substitutions += 1
+                    return f"{prefix} {_LABEL_SEQ_UNAVAILABLE} |"
+                if llm_label != bg:
                     substitutions += 1
-                return f"{prefix} {_LABEL_SEQ_UNAVAILABLE} |"
+                return f"{prefix} {bg} |"
 
             if llm_label != true_label:
                 substitutions += 1
@@ -5216,15 +5230,20 @@ class PipelineRunner:
                 "numbering to the design spec.")
 
         if unavailable:
+            resolved = sum(1 for a in unavailable if a in bg_index)
             warnings.append(
-                f"label_seq_id is NOT AVAILABLE for {len(unavailable)} of "
-                f"{rows_seen} hotspot row(s) in {cif_path.name}: the structure "
-                f"carries no label_seq for them (every residue of a "
-                f"PDB-format file, and het rows in an mmCIF). Those cells now "
-                f"read {_LABEL_SEQ_UNAVAILABLE} rather than a number the model "
-                f"derived. auth_seq_id is unaffected and is what RFD3's "
-                f"`select_hotspots` uses; only a BoltzGen `binding:` spec "
-                f"needs label_seq, and it cannot be built from this file.")
+                f"{cif_path.name} carries no label_seq for {len(unavailable)} "
+                f"of {rows_seen} hotspot row(s) — normal, since label_seq is an "
+                f"mmCIF concept and a PDB-format file has none. "
+                + (f"{resolved} were filled in with the index BoltzGen itself "
+                   f"would assign to this file (1-based position among the "
+                   f"chain's modelled polymer residues, per its pdb_parser), "
+                   f"not with a number the model derived. "
+                   if resolved else "")
+                + f"These indices are valid for {cif_path.name} ONLY: the same "
+                  f"residue can carry a different label_seq in a different "
+                  f"file, so a BoltzGen `binding:` list must be recomputed "
+                  f"against whatever path ends up in its yaml.")
 
         if offsets and len(offsets) >= 3 and len(set(offsets)) == 1:
             # Every disagreement identical means the column was DERIVED, not
