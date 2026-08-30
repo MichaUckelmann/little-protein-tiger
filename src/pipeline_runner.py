@@ -2312,7 +2312,9 @@ class PipelineRunner:
         from src.binder_ranking import EXCELLENT_IPSAE_MIN
         from src.campaign_calibration import calibrate, choose_compute, render_report
         from src.cluster_runner import ClusterConfig
-        from src.foundry_runner import prefilter_rate_observed
+        from src.foundry_runner import (prefilter_rate_observed,
+                                        rf3_seconds_per_refold,
+                                        sec_per_refold_observed)
 
         run = self._run_gpu_stage("calibration", spec_path, trim, dirs, result,
                                   attach=attach, n_batches=n_batches)
@@ -2340,6 +2342,18 @@ class PipelineRunner:
             n_seq=int((fcfg.get("mpnn") or {}).get("n_seq", 4)),
             prefilter_rate=(plan.prefilter_rate if run.get("cluster_cfg")
                            else (prefilter_rate_observed(paths) or plan.prefilter_rate)),
+            # The SAME refold rate `plan_campaign` sizes production with.
+            # Without this the gate costed every campaign at the flat 8.4 s
+            # anchor while the planner used a measured or size-scaled rate, so
+            # the gate's budget check and the plan it approved disagreed — by
+            # 2.45x on MASH/TEAD4 (63 GPU-h claimed, 138 planned), which is the
+            # difference between inside and outside the 120 h budget the
+            # SCALE_UP verdict and the auto-raised bar were both decided on.
+            sec_per_rf3_refold=(
+                sec_per_refold_observed(paths)
+                or self._earlier_refold_rate(dirs, "calibration")
+                or rf3_seconds_per_refold(
+                    trim.n_residues_after + _binder_midpoint(trim.contig))),
             disk_budget_gb=float(fcfg.get("disk_budget_gb", 120)),
             max_campaign_days=float(fcfg.get("max_campaign_days", 5)),
             adaptive_bar=bool(rcfg.get("adaptive_bar", True)),

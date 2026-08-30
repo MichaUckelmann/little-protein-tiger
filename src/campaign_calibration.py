@@ -42,6 +42,20 @@ from src.binder_ranking import (
 # Re-measure per target: RF3 attention is O(N^2) in tokens.
 SEC_PER_RFD3_DESIGN = 5.4
 SEC_PER_MPNN_SEQ = 0.36
+#: ANCHOR, not a flat rate. RF3 refold cost scales with complex size, and this
+#: value is only right near 175-195 tokens. `foundry_runner` has scaled it as
+#: `(tokens/195)**1.62` since the fit over four campaigns, and prefers a rate a
+#: previous stage of the same campaign actually achieved; this module never got
+#: that fix and kept costing every campaign at the flat anchor.
+#:
+#: It is the gate's own budget check, so the error is not cosmetic. On the
+#: MASH/TEAD4 campaign the measured rate was 20.6 s at ~300 tokens: the gate
+#: costed 22,197 refolds at 63 GPU-h and declared it "inside the 120 h budget",
+#: while `plan_campaign` costed the same 22,184 refolds at 138 GPU-h — outside
+#: it. SCALE_UP, and an auto-raised excellence bar, were both decided on a
+#: number 2.45x too low.
+#:
+#: Callers that know better MUST pass `sec_per_rf3_refold`.
 SEC_PER_RF3_REFOLD = 8.4
 BYTES_PER_RF3_DIR = 2.5e6
 
@@ -220,19 +234,21 @@ def choose_compute(res: CalibrationResult, *, max_local_hours: float = 48.0,
 # Core
 # ----------------------------------------------------------------------
 
-def _cost(required_refolds: float, *, n_seq: int, prefilter_rate: float
+def _cost(required_refolds: float, *, n_seq: int, prefilter_rate: float,
+          sec_per_rf3_refold: float = SEC_PER_RF3_REFOLD
           ) -> tuple[float, float, float]:
     """(required RFD3 designs, GPU hours, disk GB) for a refold count."""
     prefilter_rate = max(prefilter_rate, 1e-6)
     required_designs = required_refolds / max(n_seq, 1) / prefilter_rate
     seconds = (required_designs * SEC_PER_RFD3_DESIGN
                + required_refolds * SEC_PER_MPNN_SEQ
-               + required_refolds * SEC_PER_RF3_REFOLD)
+               + required_refolds * (sec_per_rf3_refold or SEC_PER_RF3_REFOLD))
     return required_designs, seconds / 3600.0, required_refolds * BYTES_PER_RF3_DIR / 1e9
 
 
 def _scale(rate: RateEstimate, p: float, *, basis: str, target: int,
-           n_seq: int, prefilter_rate: float, lower_bound: bool) -> ScaleEstimate:
+           n_seq: int, prefilter_rate: float, lower_bound: bool,
+           sec_per_rf3_refold: float = SEC_PER_RF3_REFOLD) -> ScaleEstimate:
     if p <= 0:
         return ScaleEstimate(basis, None, None, None, None, is_lower_bound=True)
     if rate.unit == "backbone":
@@ -242,7 +258,8 @@ def _scale(rate: RateEstimate, p: float, *, basis: str, target: int,
         required_refolds = target / p
         required_backbones = required_refolds / max(n_seq, 1)
     designs, hours, disk = _cost(required_refolds, n_seq=n_seq,
-                                 prefilter_rate=prefilter_rate)
+                                 prefilter_rate=prefilter_rate,
+                                 sec_per_rf3_refold=sec_per_rf3_refold)
     return ScaleEstimate(
         basis=basis,
         required_backbones=round(designs, 0),
@@ -290,6 +307,7 @@ def calibrate(
     thresholds: dict[str, Any] | None = None,
     n_seq: int = 4,
     prefilter_rate: float = 0.59,
+    sec_per_rf3_refold: float | None = None,
     disk_budget_gb: float = 120.0,
     max_campaign_days: float = 5.0,
     adaptive_bar: bool = True,
@@ -313,6 +331,7 @@ def calibrate(
     separate multiplier table anywhere. Never lowers the bar below what was
     asked for; only ever raises it, and only when the raise is affordable.
     """
+    sec_per_rf3_refold = sec_per_rf3_refold or SEC_PER_RF3_REFOLD
     if success_metric not in SUCCESS_METRICS:
         raise ValueError(
             f"success_metric must be one of {sorted(SUCCESS_METRICS)}, "
@@ -353,15 +372,18 @@ def calibrate(
         # becomes a LOWER bound on the required scale.
         central = _scale(backbone_rate, backbone_rate.p_high, basis="rule-of-three",
                          target=target_designs, n_seq=n_seq,
-                         prefilter_rate=prefilter_rate, lower_bound=True)
+                         prefilter_rate=prefilter_rate,
+                         sec_per_rf3_refold=sec_per_rf3_refold, lower_bound=True)
         pessimistic = central
     else:
         central = _scale(backbone_rate, backbone_rate.p_hat, basis="point estimate",
                          target=target_designs, n_seq=n_seq,
-                         prefilter_rate=prefilter_rate, lower_bound=False)
+                         prefilter_rate=prefilter_rate,
+                         sec_per_rf3_refold=sec_per_rf3_refold, lower_bound=False)
         pessimistic = _scale(backbone_rate, backbone_rate.p_pessimistic,
                              basis="Wilson 95% lower bound", target=target_designs,
                              n_seq=n_seq, prefilter_rate=prefilter_rate,
+                         sec_per_rf3_refold=sec_per_rf3_refold,
                              lower_bound=False)
 
     best_ipsae = max(
@@ -410,6 +432,7 @@ def calibrate(
             pessimistic_b = _scale(
                 rate_b, rate_b.p_pessimistic, basis="Wilson 95% lower bound",
                 target=target_designs, n_seq=n_seq, prefilter_rate=prefilter_rate,
+                         sec_per_rf3_refold=sec_per_rf3_refold,
                 lower_bound=False)
             if _fits_plain(pessimistic_b):
                 bar_raised_to = b
@@ -417,7 +440,8 @@ def calibrate(
                 backbone_rate = rate_b
                 central = _scale(rate_b, rate_b.p_hat, basis="point estimate",
                                  target=target_designs, n_seq=n_seq,
-                                 prefilter_rate=prefilter_rate, lower_bound=False)
+                                 prefilter_rate=prefilter_rate,
+                         sec_per_rf3_refold=sec_per_rf3_refold, lower_bound=False)
                 pessimistic = pessimistic_b
                 break
 

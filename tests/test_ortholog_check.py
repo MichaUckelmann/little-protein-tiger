@@ -1064,3 +1064,88 @@ def test_the_pilot_has_no_earlier_stage_to_read():
     src = inspect.getsource(PipelineRunner._persisted_prefilter_rate)
     assert 'order[:order.index(mode)]' in src, \
         "the earlier-stage walk must be ordered, so pilot reads nothing"
+
+
+# ---------------------------------------------------------------------------
+# The gate must cost a campaign the way the planner does
+# ---------------------------------------------------------------------------
+
+def _fake_rows(n=2000, hits=10):
+    """
+    Records shaped like binder_metrics output, with `hits` EXCELLENT ones on
+    `hits` DISTINCT backbones — backbones are the sizing unit, and the four
+    sequences sharing one are correlated rather than independent trials, so
+    clustering the hits would fall under MIN_HITS_FOR_ESTIMATE and the verdict
+    would be ITERATE for a reason that has nothing to do with cost.
+    """
+    rows = []
+    for i in range(n):
+        good = i % 4 == 0 and i // 4 < hits
+        rows.append({
+            "name": f"d_{i}", "design_family": f"bb_{i // 4}",
+            "iptm": 0.95 if good else 0.30,
+            "ipsae_min": 0.7 if good else 0.1,
+            "iface_pae": 3.0 if good else 20.0,
+            "binder_plddt": 0.90 if good else 0.50,
+            "binder_rmsd_dock": 1.0 if good else 30.0,
+            "binder_rmsd_fold": 1.0 if good else 10.0,
+            "epitope_recall": 0.9 if good else 0.1,
+            "hotspot_engagement": 1.0 if good else 0.1,
+            "clash_severe": 0,
+        })
+    return rows
+
+
+def test_the_refold_rate_actually_moves_the_cost():
+    from src.campaign_calibration import calibrate
+
+    rows = _fake_rows()
+    cheap = calibrate(rows, n_seq=4, prefilter_rate=0.9, sec_per_rf3_refold=8.4)
+    dear = calibrate(rows, n_seq=4, prefilter_rate=0.9, sec_per_rf3_refold=20.6)
+    assert cheap.pessimistic.required_refolds == dear.pessimistic.required_refolds
+    assert dear.pessimistic.est_gpu_hours > cheap.pessimistic.est_gpu_hours * 1.8
+
+
+def test_a_realistic_refold_rate_can_flip_the_verdict():
+    """
+    The MASH/TEAD4 shape: the gate costed 22,197 refolds at the flat 8.4 s
+    anchor as 63 GPU-h and called it "inside the 120 h budget", while
+    `plan_campaign` costed the same refolds at the measured 20.6 s as 138 —
+    outside it. SCALE_UP and an auto-raised excellence bar were both decided
+    on a number 2.45x too low.
+    """
+    from src.campaign_calibration import calibrate
+
+    rows = _fake_rows(n=2108, hits=10)
+    kw = dict(n_seq=4, prefilter_rate=0.909, disk_budget_gb=120.0,
+              max_campaign_days=5.0, target_designs=50)
+    cheap = calibrate(rows, sec_per_rf3_refold=8.4, **kw)
+    dear = calibrate(rows, sec_per_rf3_refold=20.6, **kw)
+    assert cheap.verdict == "SCALE_UP"
+    assert dear.verdict != "SCALE_UP", (
+        "a 2.45x more expensive refold must not still read as fully affordable")
+
+
+def test_omitting_the_rate_keeps_the_old_anchor():
+    """Back-compat: a caller that cannot measure gets the documented anchor."""
+    from src.campaign_calibration import SEC_PER_RF3_REFOLD, calibrate
+
+    rows = _fake_rows()
+    a = calibrate(rows, n_seq=4, prefilter_rate=0.9)
+    b = calibrate(rows, n_seq=4, prefilter_rate=0.9,
+                  sec_per_rf3_refold=SEC_PER_RF3_REFOLD)
+    assert a.pessimistic.est_gpu_hours == b.pessimistic.est_gpu_hours
+
+
+def test_the_gate_is_given_the_planners_rate():
+    """The two cost models drifted because only one of them was ever fixed."""
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner._stage_calibration)
+    assert "sec_per_rf3_refold=" in src
+    # ...and from the same three sources plan_campaign prefers, in order.
+    assert "sec_per_refold_observed(paths)" in src
+    assert "_earlier_refold_rate" in src
+    assert "rf3_seconds_per_refold" in src
