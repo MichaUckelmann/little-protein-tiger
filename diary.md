@@ -3661,3 +3661,77 @@ integration test).
 4. BoltzGen's own `design_metrics`/`design_ranking` path is untouched and
    remains fully live (the maintainer's explicit choice to keep it as an
    escape hatch) — no dead-code cleanup there, by design, not oversight.
+
+## 2026-08-30/31 — MASH/MASLD benchmark run: PAUSED at production
+
+`projects/mash_e2e` round-2 (TAZ/TEAD4 on 5GN0) is **paused before
+production, by operator decision**. Everything through calibration is
+complete and on disk; the manifest carries a `campaign_paused`
+checkpoint with the resume command and the numbers below.
+
+### Where it got to
+
+Discovery -> structure -> trim -> spec -> pilot -> calibration all
+finished, $2.21 of API spend against a $5 cap, ~17 GPU-h. The trial is
+good: 9/527 backbones produced an excellent design (1.71%, 95% CI
+1.71% point / 0.90-3.21%), best iPTM 0.9165, prefilter kept 91%, 15
+refolds cleared every hard gate out of 2,108 scored.
+
+### Why it is paused rather than running
+
+Production launched on a `SCALE_UP` verdict that was costed with
+`campaign_calibration`'s flat `SEC_PER_RF3_REFOLD = 8.4`. `foundry_runner`
+had long since stopped costing that way, so the log carried both numbers
+four lines apart — 63 GPU-h "inside the 120 h budget" from the gate,
+138 GPU-h from `plan_campaign` at the measured 20.6 s/refold, for the
+same 22,184 refolds. The target is ~300 tokens and the anchor is only
+right near 175-195.
+
+Killed at 16/6,104 designs. Cost model fixed; re-gating the trial data
+already on disk (no GPU) returns **SCALE_UP_PARTIAL** — ~43 of the 50
+target designs are affordable inside the budget — and the excellence bar
+stays at the requested 0.7 rather than the 0.8 the faulty cost had
+justified raising it to.
+
+**The open decision is machine time, not science.** Local at ~120 GPU-h
+(~5 days), or the cluster, which `choose_compute()` already chose at
+>48 h and which `--compute local` overrode.
+
+### What the run found on the way (all fixed, all committed)
+
+The point of the run was to shake out bugs, and it did. In order of what
+they would have cost:
+
+1. `_verify_hotspot_grounding` rebound `residues` before its comparison
+   loop, so it compared the structure against itself. The 8ZNL guard had
+   **never once fired**, on either track.
+2. The chain-assignment guard called a legitimate ortholog "a different
+   molecule" on sequence identity alone — a verdict identity cannot make,
+   since an S. pombe ortholog and the PD-L1 incident's VHH sit in the
+   same band. Now decided on the UniProt protein NAME, with a measured
+   epitope-conservation gate behind it and the human AlphaFold model
+   fetched alongside.
+3. The gate/planner cost drift above.
+4. `search_corpus` post-filtered, so every study_category outside the two
+   that make up 90% of the corpus returned zero — including the
+   `experimental_structural` the literature skill is told to prefer.
+5. `get_fingerprint` stripped the two blocks that skill reads by name and
+   kept the 36.5% one nothing reads.
+6. The design analyst could overwrite a deterministic STOP with GO, and
+   its prompt was written for BoltzGen's columns throughout.
+7. The trim failed a campaign to shed two residues off a 222-residue
+   target against a 220 budget.
+8. `label_seq_id` was being derived by counting in four places the
+   corrector did not reach — and the corrector's own fallback invented a
+   positional index when the file carried no label_seq, which is the same
+   counting one layer down.
+9. The measured prefilter rate never reached the next stage's plan.
+10. Structure-tool payloads were 40% whitespace and truncated mid-JSON.
+
+### Not addressed
+
+`_matches` in `find_pdb_structures` is a bare substring test with a
+3-char floor, so `BID` matches `cannaBIDiol` — which is how a de novo
+binder-design paper (8T5E) was reported as the CASP6 structure. Any
+short symbol (BID, BAX, SRC, MDM2) is polluted. Left alone; it needs a
+word-boundary match and a look at the whole ranking path around it.
