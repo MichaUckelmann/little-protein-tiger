@@ -127,6 +127,34 @@ the query from the orchestrator). Set the operating mode for this entire run:
   priority residues.
 - Not present → default to **DISRUPT mode**.
 
+### Membrane proteins: hotspots go on ONE extracellular face, never in the bilayer
+
+If the target is a membrane protein — any GPCR, any receptor tyrosine kinase, any
+single-pass or multi-pass receptor — the only residues a designed binder can
+engage are those exposed to solvent on one side of the membrane. A transmembrane
+helix in an isolated structure looks like an ideal hydrophobic patch and scores
+well on every contact metric here; in a cell that surface is buried in lipid and
+a binder against it cannot work.
+
+Concretely, when picking hotspots on such a target:
+
+- Keep to ONE face. The extracellular side is almost always the designable one:
+  the extracellular domain (class B/C GPCRs), the N-terminus, and the
+  extracellular loops.
+- Never select a residue in a transmembrane span, and never select an epitope
+  that straddles both faces — no single binder can engage that.
+- The orthosteric pocket of a class A GPCR sits INSIDE the helical bundle. For
+  lipid ligands (cannabinoid, S1P, LPA, prostaglandin) it is also reached
+  laterally from within the membrane. It is a small-molecule site, not a
+  mini-protein site: if `priority_residues` point there, say so in the report
+  and emit NO_GO rather than returning transmembrane hotspots.
+
+This is checked deterministically downstream — UniProt topology is mapped into
+author numbering and a hotspot annotated transmembrane halts the run — so
+returning them costs the campaign a stage and the user real money. A run on the
+CB1 receptor returned seven hotspots of which five were transmembrane; that
+target was never viable and the report should have said so.
+
 Record the mode explicitly: write `<!-- MODE: DISRUPT -->`, `<!-- MODE: STABILIZE -->`,
 or `<!-- MODE: INHIBIT_ACTIVE_SITE -->` at the top of your scratchpad so it stays
 visible throughout the analysis.

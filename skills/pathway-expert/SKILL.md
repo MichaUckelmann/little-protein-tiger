@@ -541,6 +541,56 @@ extracts the `PRIMARY RECOMMENDATION` block and passes it to Stage 1 automatical
   three-letter gene symbol as a substring of an unrelated word; and a second id was
   copied under three separate nodes, one of whose keys had returned nothing at all.
   Both are avoided by reading `title` and staying inside the key.
+### Membrane receptors: which site a designed binder can actually reach
+
+A binder is a folded protein in solution. It can only engage surface that is
+solvent-exposed on ONE face of the membrane. This rules out large parts of a
+GPCR, and the constraint is chemical, not a limitation of the pipeline — so
+choose the site accordingly rather than proposing one that will be refused.
+
+**Reachable, and clinically validated:**
+
+- **Class B ECD** (GCGR, GLP1R, CALCRL, PTH1R, CRHR). These use a two-domain
+  mechanism: the peptide hormone's C-terminus binds a genuine extracellular
+  domain, its N-terminus then inserts into the helical bundle. The ECD contact
+  is a real protein-protein interface and is fully extracellular. Erenumab
+  blocks the CALCRL/RAMP1 receptor this way and is an approved migraine drug;
+  anti-GCGR antibodies are in trials for diabetes.
+- **Class C Venus flytrap** (mGluR, CaSR, GABA-B) — the orthosteric site is
+  entirely extracellular and large.
+- **Class F CRD** (Frizzled, SMO).
+- **N-terminus and extracellular loops of PEPTIDE-binding class A receptors**
+  (chemokine receptors, angiotensin, opioid peptide receptors). The ligand has a
+  large extracellular footprint, and antibodies against these surfaces work
+  (mogamulizumab/CCR4, leronlimab/CCR5).
+- **Receptor / accessory-protein interfaces** such as CALCRL-RAMP1, where the
+  interface itself sits outside the membrane.
+
+**Not reachable — do not propose these:**
+
+- **The orthosteric pocket of a receptor whose ligand is a lipid or a
+  lipophilic small molecule** (cannabinoid, S1P, LPA, prostaglandin, free fatty
+  acid). These pockets are inside the helical bundle and there is strong
+  structural evidence that the ligand enters LATERALLY, from within the
+  bilayer, through gaps between transmembrane helices — S1P1 is capped by its
+  own N-terminal helix, and CB1 has lipid-facing portals. Nothing arriving from
+  solution can occupy that site.
+- **Deep aminergic pockets** (adrenergic, muscarinic, dopaminergic). Reached
+  from the extracellular side, but far too enclosed for a 70-86 residue
+  mini-protein; these are small-molecule sites.
+- **Any transmembrane surface at all.** In an isolated structure a TM helix
+  looks like an attractive hydrophobic patch; in a cell it is buried in lipid.
+
+A practical test before proposing a membrane target: *would an antibody work
+here?* If the answer is no because the site is inside the bundle, a designed
+mini-protein will not work either.
+
+The pipeline enforces this deterministically further down — UniProt topology is
+mapped into author numbering and the trim drops the transmembrane span and the
+opposite face, and a hotspot annotated transmembrane fails the run outright. So
+a receptor whose only druggable site is intramembrane is not a target for this
+pipeline: say so and pick another node rather than spending stages on it.
+
 **When the best target has no experimental structure, an AlphaFold model is a
 legal answer.** Emit `pdb_id: AF-<UniProt accession>` (e.g. the accession you
 resolved for that protein) and the pipeline fetches the predicted model. Two
