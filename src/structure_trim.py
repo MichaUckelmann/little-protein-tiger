@@ -292,8 +292,31 @@ def _nearest_observed(label: int, label_to_auth: dict[int, int],
     return None
 
 
+def _domain_from_span(index: int, beg: int, end: int, observed: set[int],
+                      source: str, label: str) -> "Domain | None":
+    """
+    A domain span, sized by the residues that are actually THERE.
+
+    `end - start + 1` is the wrong measure the moment author numbering has a
+    gap, and a fusion construct guarantees one: 5TGZ chain A is
+    CB1R-flavodoxin-CB1R and runs auth -2..1148, so two CATH spans that mapped
+    to non-existent endpoints (-2..2109, 333..2101) were sized 2112 and 1769 and
+    summed to a 3,881-residue "domain set" for a 439-residue chain. The budget
+    check then refused a target that fits comfortably.
+
+    Returns None when the span contains no observed residue at all, so a
+    mis-mapped annotation drops out instead of poisoning the sum.
+    """
+    n = sum(1 for a in observed if beg <= a <= end)
+    if n == 0:
+        return None
+    return Domain(index=index, start_auth=beg, end_auth=end, n_residues=n,
+                  source=source, label=label)
+
+
 def rcsb_domains(pdb_id: str, chain: str, auth_to_label: dict[int, int],
-                 timeout: float = 30.0) -> list[Domain]:
+                 timeout: float = 30.0,
+                 observed: set[int] | None = None) -> list[Domain]:
     """
     Domain spans from RCSB's CATH / SCOP2 / ECOD instance features.
 
@@ -344,14 +367,30 @@ def rcsb_domains(pdb_id: str, chain: str, auth_to_label: dict[int, int],
                         a_end = _nearest_observed(end, label_to_auth, -1)
                         if a_beg is None or a_end is None or a_beg > a_end:
                             continue
+                        # The label->auth map is built from the polymer entity,
+                        # which on a chimera spans the fusion partner too, so a
+                        # mapped endpoint can land on a residue the trim never
+                        # sees. Ground the span in the residue list the caller
+                        # actually works with, or drop it.
+                        if observed is not None and (
+                                a_beg not in observed or a_end not in observed):
+                            logger.debug(
+                                f"{pdb_id} chain {chain}: dropping {source} span "
+                                f"{a_beg}-{a_end} — endpoints are not observed "
+                                f"residues of this chain")
+                            continue
                         spans.append((a_beg, a_end, feat.get("name") or source))
         if spans:
             spans.sort()
+            obs = observed if observed is not None else set(label_to_auth.values())
             best = [
-                Domain(index=i, start_auth=b, end_auth=e, n_residues=e - b + 1,
-                       source=source.lower(), label=str(name))
-                for i, (b, e, name) in enumerate(spans)
+                d for d in (
+                    _domain_from_span(i, b, e, obs, source.lower(), str(name))
+                    for i, (b, e, name) in enumerate(spans))
+                if d is not None
             ]
+            if not best:
+                continue          # this source mapped to nothing real; try the next
             logger.info(
                 f"{pdb_id} chain {chain}: {len(best)} {source} domain(s) "
                 + ", ".join(f"{d.start_auth}-{d.end_auth}" for d in best)
@@ -365,6 +404,7 @@ def rcsb_domains(pdb_id: str, chain: str, auth_to_label: dict[int, int],
 # ----------------------------------------------------------------------
 
 def chainsaw_domains(path: Path, chain: str, chainsaw_cmd: Sequence[str] | None,
+                     observed: set[int] | None = None,
                      timeout: float = 300.0) -> list[Domain]:
     """
     Domain spans from Chainsaw, run as a subprocess in its own environment.
@@ -427,9 +467,12 @@ def chainsaw_domains(path: Path, chain: str, chainsaw_cmd: Sequence[str] | None,
         # connectivity filter later drops anything that is not actually joined.
         start = min(b[0] for b in bounds)
         end = max(b[1] for b in bounds)
-        domains.append(Domain(index=i, start_auth=start, end_auth=end,
-                              n_residues=end - start + 1, source="chainsaw",
-                              label=dom))
+        dom_obj = _domain_from_span(i, start, end, observed, "chainsaw", dom) \
+            if observed is not None else Domain(
+                index=i, start_auth=start, end_auth=end,
+                n_residues=end - start + 1, source="chainsaw", label=dom)
+        if dom_obj is not None:
+            domains.append(dom_obj)
     if domains:
         logger.info(f"Chainsaw: {len(domains)} domain(s) — {chopping}")
     return domains
@@ -517,16 +560,22 @@ def segment_domains(
     logged.
     """
     residues = residues or chain_residues(structure_path, chain)
+    # The residues the trim actually works with — the backbone-filtered
+    # list, which on a chimera is narrower than the polymer entity a domain
+    # annotation is expressed against.
+    observed_auth = {int(r["auth"]) for r in residues}
 
     if method in ("auto", "rcsb") and pdb_id and auth_to_label:
-        doms = rcsb_domains(pdb_id, chain, auth_to_label)
+        doms = rcsb_domains(pdb_id, chain, auth_to_label,
+                            observed=observed_auth)
         if doms:
             return doms, doms[0].source
         if method == "rcsb":
             raise TrimError(f"no RCSB domain annotation for {pdb_id} chain {chain}")
 
     if method in ("auto", "chainsaw"):
-        doms = chainsaw_domains(structure_path, chain, chainsaw_cmd)
+        doms = chainsaw_domains(structure_path, chain, chainsaw_cmd,
+                                observed=observed_auth)
         if doms:
             return doms, "chainsaw"
         if method == "chainsaw":

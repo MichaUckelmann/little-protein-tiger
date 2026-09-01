@@ -1603,6 +1603,71 @@ class PipelineRunner:
                 f"of reading this specific structure's residues — re-run the "
                 f"stage, or pick a different structure.")
 
+    @staticmethod
+    def _combine_allowed(restrict, chimera_keep: set[int] | None) -> set[int] | None:
+        """Intersect the topology restriction with the chimera filter.
+
+        Either may be absent. Both are "keep only these author ids", so the
+        conjunction is the intersection; None means no restriction at all.
+        """
+        topo = set(restrict.allowed_auth) if (restrict and restrict.applies) else None
+        if topo is None:
+            return chimera_keep
+        if chimera_keep is None:
+            return topo
+        return topo & chimera_keep
+
+    def _target_accession_residues(self, pdb_id: str, chain: str,
+                                   uniprot: str) -> set[int] | None:
+        """
+        On a CHIMERA, the author residues that are actually the target.
+
+        Crystallisation constructs routinely fuse a soluble partner into a
+        receptor to make it behave — 5XEZ is GCGR-endolysin, 5TGZ is
+        CB1R-flavodoxin — and RCSB reports both accessions on the one chain.
+        The fusion partner is not the target: it should never carry a hotspot,
+        never be trimmed *to*, and never count against the residue budget.
+
+        The deposited RCSB entity alignment already says which author residues
+        correspond to which UniProt sequence, so this needs no sequence
+        alignment of our own and no heuristic — the same primitive the membrane
+        topology path maps its segments through.
+
+        Returns None (meaning "no restriction") unless the chain really does
+        carry more than one accession and the mapping is non-empty, so a normal
+        single-protein chain is untouched.
+        """
+        if not (pdb_id and chain and uniprot):
+            return None
+        from src.membrane_topology import uniprot_to_auth
+        from src.target_resolve import entry_metadata
+
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+            accs = [a for a in ((meta.get("chains") or {}).get(chain) or {})
+                    .get("uniprots", []) if a]
+        except Exception as exc:
+            logger.debug(f"chimera check skipped for {pdb_id} {chain}: {exc}")
+            return None
+        if len(accs) < 2:
+            return None                      # not a fusion construct
+        try:
+            mapping = uniprot_to_auth(pdb_id, chain, uniprot)
+        except Exception as exc:
+            logger.warning(
+                f"  ⚠ {pdb_id} chain {chain} is a fusion construct ({accs}) but "
+                f"the {uniprot} alignment could not be read ({exc}) — the "
+                f"fusion partner is NOT being excluded")
+            return None
+        keep = {int(a) for a in mapping.values() if a is not None}
+        if not keep:
+            return None
+        logger.info(
+            f"  {pdb_id} chain {chain} is a fusion construct ({', '.join(accs)}); "
+            f"keeping the {len(keep)} residues that align to {uniprot} and "
+            f"excluding the fusion partner from the design target")
+        return keep
+
     def _designable_chain_sizes(self, pdb_id: str, chain_counts: dict[str, int],
                                 over: int) -> dict[str, int]:
         """
@@ -2180,8 +2245,10 @@ class PipelineRunner:
                 target_chain=hs["target_chain"],
                 partner_chain=hs.get("partner_chain"),
                 hotspots=hs["residues"],
-                allowed_auth=(restrict.allowed_auth
-                              if restrict and restrict.applies else None),
+                allowed_auth=self._combine_allowed(
+                    restrict,
+                    self._target_accession_residues(
+                        result.pdb_id, hs["target_chain"], uniprot or "")),
                 budget=with_budget,
                 out_dir=dirs["trim"],
                 pdb_id=result.pdb_id,

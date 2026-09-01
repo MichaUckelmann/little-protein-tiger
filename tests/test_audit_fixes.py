@@ -709,3 +709,89 @@ def test_a_membrane_chain_reports_its_designable_count(config, monkeypatch):
     # a restriction that keeps everything is not a reason to relax the policy
     _Restrict.allowed_auth = set(range(574))
     assert r._designable_chain_sizes("5XEZ", {"A": 574}, 500) == {}
+
+
+# ----------------------------------------------------------------------
+# 11. Domain spans must be grounded in residues that exist
+# ----------------------------------------------------------------------
+
+def test_a_domain_is_sized_by_observed_residues_not_by_arithmetic():
+    """
+    `end - start + 1` is wrong the moment author numbering has a gap, and a
+    fusion construct guarantees one. 5TGZ chain A is CB1R-flavodoxin-CB1R,
+    running auth -2..1148: two CATH spans mapped to endpoints that do not exist
+    (-2..2109, 333..2101), were sized 2112 and 1769, and summed to a 3,881
+    residue "domain set" for a 439-residue chain. The trim then refused a target
+    that fits the 220-residue budget comfortably.
+    """
+    from src.structure_trim import _domain_from_span
+
+    observed = set(range(1, 101)) | set(range(1001, 1051))   # a gap in the middle
+    d = _domain_from_span(0, 1, 1050, observed, "cath", "x")
+    assert d.n_residues == 150            # counted, not 1050
+    assert _domain_from_span(0, 500, 600, observed, "cath", "x") is None
+
+
+def test_rcsb_spans_that_miss_the_chain_are_dropped(monkeypatch):
+    """A mis-mapped annotation must fall through to the next tier, not poison
+    the budget check."""
+    from src import structure_trim
+
+    payload = {"data": {"entry": {"polymer_entities": [{
+        "polymer_entity_instances": [{
+            "rcsb_polymer_entity_instance_container_identifiers": {"auth_asym_id": "A"},
+            "rcsb_polymer_instance_feature": [{
+                "type": "CATH", "name": "bogus",
+                "feature_positions": [{"beg_seq_id": 1, "end_seq_id": 9}],
+            }],
+        }]}]}}}
+
+    class _Resp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return payload
+    monkeypatch.setattr("requests.post", lambda *a, **k: _Resp())
+
+    auth_to_label = {i: i for i in range(1, 10)}          # maps to auth 1..9
+    assert structure_trim.rcsb_domains("1ABC", "A", auth_to_label,
+                                       observed={500, 501}) == []
+    kept = structure_trim.rcsb_domains("1ABC", "A", auth_to_label,
+                                       observed=set(range(1, 10)))
+    assert len(kept) == 1 and kept[0].n_residues == 9
+
+
+def test_a_fusion_partner_is_excluded_from_the_design_target(config, monkeypatch):
+    """
+    Crystallisation chimeras (GCGR-endolysin, CB1R-flavodoxin) put a second
+    accession on the target chain. The fusion partner must never carry a
+    hotspot, be trimmed to, or count against the residue budget — and the
+    deposited RCSB entity alignment already says which residues are which.
+    """
+    from src.pipeline_runner import PipelineRunner
+
+    monkeypatch.setattr(
+        "src.target_resolve.entry_metadata",
+        lambda *a, **k: {"5TGZ": {"chains": {"A": {"uniprots": ["P00323", "P21554"]}}},
+                         "3KYS": {"chains": {"A": {"uniprots": ["P46937"]}}}})
+    monkeypatch.setattr("src.membrane_topology.uniprot_to_auth",
+                        lambda *a, **k: {i: i for i in range(1, 292)})
+
+    r = PipelineRunner(config, workflow="ppi")
+    assert len(r._target_accession_residues("5TGZ", "A", "P21554")) == 291
+    # a normal single-accession chain is left completely alone
+    assert r._target_accession_residues("3KYS", "A", "P46937") is None
+
+
+def test_topology_and_chimera_restrictions_compose(config):
+    """Both mean "keep only these", so the conjunction is the intersection."""
+    from src.pipeline_runner import PipelineRunner
+
+    class _R:
+        applies = True
+        allowed_auth = set(range(100, 400))
+
+    combine = PipelineRunner._combine_allowed
+    assert combine(_R(), None) == set(range(100, 400))
+    assert combine(None, {1, 2, 3}) == {1, 2, 3}
+    assert combine(_R(), set(range(350, 500))) == set(range(350, 400))
+    assert combine(None, None) is None
