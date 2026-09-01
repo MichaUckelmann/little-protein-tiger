@@ -135,6 +135,20 @@ def main():
              "scripts/compare_providers.py also needs them.")
     parser.add_argument("--dry-run", action="store_true", help="List papers without calling Claude")
     parser.add_argument("--paper-key", dest="paper_key", default=None, help="Process a single paper by key")
+    parser.add_argument(
+        "--paper-keys-file", dest="paper_keys_file", default=None,
+        help=("Curate ONLY the paper keys listed in this file, one per line. "
+              "The default queue is every downloaded-but-uncurated paper "
+              "ordered by priority_score, so after a targeted search expansion "
+              "`--limit N` spends the budget on the existing backlog rather "
+              "than on what was just fetched. Combine with --limit to cap the "
+              "run. Keys absent from the queue (not downloaded, or already "
+              "curated) are skipped and reported."))
+    parser.add_argument(
+        "--model", dest="model", default=None,
+        help=("Override the curation model for this run without editing "
+              "config.yaml (which curate_papers.py always reads, having no "
+              "--config flag). Applies to whichever provider is active."))
     parser.add_argument("--provider", default=None, choices=["claude", "gemini", "local"],
                         help="Override curation provider from config (claude, gemini, or local)")
     parser.add_argument("--skip-normalize", action="store_true",
@@ -156,6 +170,12 @@ def main():
     config = load_config()
     if args.provider:
         config["curation"]["provider"] = args.provider
+    if args.model:
+        provider = config["curation"].get("provider", "claude")
+        key = {"claude": "model", "gemini": "gemini_model",
+               "local": "local_model"}.get(provider, "model")
+        logger.info(f"curation model override: {provider}.{key} = {args.model}")
+        config["curation"][key] = args.model
     db_path = ROOT / config["paths"]["db_path"]
     fingerprint_dir = ROOT / config["paths"]["fingerprint_dir"]
     curation_cfg = config.get("curation", {})
@@ -185,6 +205,30 @@ def main():
         if not papers:
             logger.error(f"Paper key not found: {args.paper_key}")
             sys.exit(1)
+    elif args.paper_keys_file:
+        wanted = [ln.strip() for ln in
+                  Path(args.paper_keys_file).read_text(encoding="utf-8").splitlines()
+                  if ln.strip()]
+        wanted_set = set(wanted)
+        # Pull the whole queue, then intersect: `get_uncurated(limit=)` is
+        # ordered by priority_score across the ENTIRE backlog, so limiting
+        # first would return the top-N of the backlog and then filter almost
+        # all of it away.
+        queue = db.get_uncurated(limit=0)
+        # Keep the QUEUE's order (priority_score DESC), not the file's. The
+        # file is written by whatever produced it — a DB dump is in insertion
+        # order — so ranking by it would silently replace "best first" with
+        # "whatever order the caller happened to write", and `--limit` would
+        # then truncate an arbitrary subset rather than the lowest-scoring one.
+        papers = [p for p in queue if get_paper_key(p) in wanted_set]
+        missing = len(wanted_set) - len(papers)
+        logger.info(
+            f"--paper-keys-file: {len(wanted_set)} keys requested, "
+            f"{len(papers)} of them are downloaded and uncurated"
+            + (f" ({missing} not in the curation queue)" if missing else ""))
+        if args.limit:
+            papers = papers[: args.limit]
+            logger.info(f"--limit {args.limit}: curating {len(papers)}")
     else:
         papers = db.get_uncurated(limit=args.limit)
 

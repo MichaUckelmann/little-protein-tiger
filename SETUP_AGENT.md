@@ -173,7 +173,7 @@ If they do want to extend it, then and only then:
 4. `python scripts/curate_papers.py --limit N --provider gemini` — **state the
    estimate and wait for a yes.** Roughly **$0.03 per paper** on the default
    `gemini-3.7-flash` (~28k tokens each, measured), so ~$15 for 500. Setting
-   `curation.gemini_model: gemini-3.1-flash-lite-preview` is ~8x cheaper. Add
+   `curation.gemini_model: gemini-3.1-flash-lite` is ~8x cheaper. Add
    `--discard-documents` if they will not re-curate.
 
 Curation self-runs identifier normalisation, the graph rebuild and vector

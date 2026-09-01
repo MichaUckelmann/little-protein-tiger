@@ -1,6 +1,6 @@
 curation:
   delay_s: 1.0
-  gemini_model: gemini-3.1-flash-lite-preview
+  gemini_model: gemini-3.1-flash-lite
   local_endpoint: http://localhost:8000/v1
   local_model: Qwen/Qwen3.5-9B
   max_input_chars: 90000

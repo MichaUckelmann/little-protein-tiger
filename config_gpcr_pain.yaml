@@ -1,0 +1,287 @@
+# GPCR + pain-receptor corpus expansion.
+# The main corpus is chromatin/chaperone-weighted: orphan GPCRs were 48 of
+# 11,052 fingerprints (0.43%), 34 distinct receptors, mode 1 paper each.
+# Terms follow the house style: 2-3 AND clauses, all Title/Abstract.
+curation:
+  delay_s: 1.0
+  gemini_model: gemini-3.1-flash-lite
+  local_endpoint: http://localhost:11434/v1
+  local_model: gemma4:26b-a4b-it-q4_K_M
+  local_options:
+    num_ctx: 65536
+  local_request_timeout: 900
+  local_sampling:
+    reasoning_effort: none
+    response_format:
+      type: json_object
+    temperature: 0.1
+    top_p: 0.95
+  max_input_chars: 150000
+  max_retries: 3
+  max_tokens: 8000
+  model: claude-haiku-4-5
+  prompt_path: curation_prompt.md
+  provider: claude
+  schema_path: extraction_schema.json
+design:
+  backend: foundry
+  binder_metrics:
+    contact_cutoff: 8.0
+    ipsae_pae_cutoff: 10.0
+  binder_ranking:
+    adaptive_bar: true
+    excellence_bar: 0.7
+    excellence_ipsae_min: 0.5
+    max_per_backbone: 1
+    mmr:
+      lambda_: 0.5
+      seq_identity_cap: 0.7
+    rosetta:
+      enabled: true
+      max_designs: 300
+      relax: true
+      weights:
+        neg_rosetta_ddg: 1.5
+        neg_rosetta_vbuns: 0.5
+        rosetta_cms: 1.0
+    success_metric: iptm
+    target_designs: 50
+    thresholds:
+      binder_plddt_min: 0.75
+      binder_rmsd_dock_max: 5.0
+      binder_rmsd_fold_max: 2.0
+      epitope_recall_min: 0.5
+      hotspot_engagement_min: 0.75
+      iface_pae_max: 15.0
+      ipsae_min_min: null
+      iptm_min: 0.5
+      require_no_clash: true
+    top_k: 20
+    weights:
+      binder_plddt: 1.5
+      epitope_recall: 1.0
+      hotspot_engagement: 0.5
+      ipsae_min: 2.0
+      iptm: 1.0
+      neg_binder_rmsd_dock: 1.5
+      neg_iface_pae: 1.0
+  cluster:
+    calibration:
+      n_batches: 145
+    diffusion_batch_size: 4
+    enabled: false
+    msa_source: protenix_hosted
+    n_gpus: 8
+    n_seq: 4
+    pilot:
+      n_batches: 25
+    pipeline_root: null
+    poll_hint_s: 1800
+    production:
+      n_batches: 3000
+    protenix_repo: null
+    protenix_venv: .venv
+    refold_backend: protenix
+    stage_subdir: examples
+    submit_instructions: 'ssh <cluster-login-node>
+
+      cd <pipeline_root-as-seen-from-the-cluster>
+
+      '
+    use_msa: true
+  constraints:
+    binder_sizes:
+      cyclic_peptide:
+        max: 15
+        min: 12
+      mini_protein:
+        max: 86
+        min: 70
+    max_target_residues: 500
+    target_residues_warn: 250
+  foundry:
+    calibration:
+      n_batches: 145
+    ckpt:
+      mpnn: solublempnn
+      rf3: rf3
+      rfd3: rfd3
+    cuda_device: 0
+    disk_budget_gb: 120
+    launcher:
+    - uv
+    - run
+    max_campaign_days: 5
+    max_local_hours: 48
+    max_rf3_attempts: 20
+    max_rfd3_attempts: 10
+    min_free_gb: 20
+    mpnn:
+      chunk_size: 250
+      n_seq: 4
+      omit: CYS
+      temperature: 0.1
+    mpnn_bin: .venv-blackwell/bin/mpnn
+    pilot:
+      n_batches: 25
+    poll_interval_s: 120
+    prefilter:
+      max_backbone_clashes: 0
+      max_chainbreaks: null
+      max_sidechain_clashes: 0
+      min_non_loop: 0.6
+    production:
+      n_batches: 3000
+    prune_confidences: false
+    rf3:
+      diffusion_batch_size: 1
+      seed: 0
+      template: target
+    rf3_bin: .venv-blackwell/bin/rf3
+    rfd3:
+      diffusion_batch_size: 4
+      infer_ori_strategy: hotspots
+      inference_sampler:
+        gamma_0: 0.2
+        step_scale: 3
+      is_non_loopy: true
+    rfd3_bin: .venv-blackwell/bin/rfd3
+    root: null
+    target_budget_overshoot: 0.15
+    target_residue_budget: 220
+  pathway:
+    mode: standard
+  pilot:
+    budget: 30
+    min_completion_rate: 0.5
+    min_final_fill_rate: 0.5
+    num_designs: 1000
+  production:
+    budget: 100
+    num_designs: 20000
+  pyrosetta:
+    enabled: auto
+    init_flags: -mute all -ignore_unrecognized_res -load_PDB_components false
+    python_executable: null
+  ranking:
+    enrich_top_k: 200
+    mmr:
+      lambda_: 0.5
+      seq_identity_cap: 0.7
+    top_k: 20
+    weights:
+      complex_plddt: 1.0
+      design_to_target_iptm: 2.0
+      lpt_hotspot_sasa_delta: 1.5
+      neg_min_design_to_target_pae: 1.5
+  thresholds:
+    hotspot_sasa_delta_min: 30.0
+    ipae_max: 10.0
+    iptm_min: 0.6
+    require_boltzgen_pass: true
+  trim:
+    chainsaw_cmd: null
+    foldseek_bin: null
+    min_bsa_retention: 0.9
+  workstation:
+    boltzgen_executable: null
+    cuda_device: 0
+    timeout_hours: 24
+keywords:
+- GPCR[Title/Abstract] AND molecular mechanism[Title/Abstract]
+- G protein coupled receptor[Title/Abstract] AND structure[Title/Abstract]
+- GPCR[Title/Abstract] AND cryo-EM[Title/Abstract]
+- GPCR[Title/Abstract] AND heterotrimeric G protein[Title/Abstract]
+- GPCR[Title/Abstract] AND arrestin[Title/Abstract] AND signaling[Title/Abstract]
+- GPCR[Title/Abstract] AND allosteric modulator[Title/Abstract]
+- GPCR[Title/Abstract] AND biased agonism[Title/Abstract]
+- GPCR dimerization[Title/Abstract] AND heteromer[Title/Abstract]
+- class B GPCR[Title/Abstract] AND peptide hormone[Title/Abstract]
+- receptor activity modifying protein[Title/Abstract] AND RAMP[Title/Abstract]
+- orphan GPCR[Title/Abstract] AND structure[Title/Abstract]
+- orphan receptor[Title/Abstract] AND deorphanization[Title/Abstract]
+- orphan GPCR[Title/Abstract] AND metabolic disease[Title/Abstract]
+- orphan GPCR[Title/Abstract] AND ligand identification[Title/Abstract]
+- free fatty acid receptor[Title/Abstract] AND metabolic[Title/Abstract]
+- bile acid receptor[Title/Abstract] AND TGR5[Title/Abstract]
+- GPCR[Title/Abstract] AND cholesterol metabolism[Title/Abstract]
+- GPCR[Title/Abstract] AND obesity[Title/Abstract] AND signaling[Title/Abstract]
+- chronic pain[Title/Abstract] AND drug target[Title/Abstract]
+- nociception[Title/Abstract] AND molecular mechanism[Title/Abstract]
+- nociceptor[Title/Abstract] AND dorsal root ganglion[Title/Abstract]
+- opioid receptor[Title/Abstract] AND structure[Title/Abstract]
+- mu opioid receptor[Title/Abstract] AND biased agonist[Title/Abstract]
+- CGRP receptor[Title/Abstract] AND migraine[Title/Abstract]
+- Nav1.7[Title/Abstract] AND pain[Title/Abstract]
+- SCN9A[Title/Abstract] AND pain[Title/Abstract]
+- TRPV1[Title/Abstract] AND pain[Title/Abstract] AND mechanism[Title/Abstract]
+- P2X3 receptor[Title/Abstract] AND pain[Title/Abstract]
+- NGF TrkA[Title/Abstract] AND pain[Title/Abstract]
+- sodium channel[Title/Abstract] AND analgesic[Title/Abstract] AND selectivity[Title/Abstract]
+models:
+  claude:
+    default: claude-sonnet-5
+    refusal_fallbacks:
+    - gemini:gemini-3.7-flash
+    - claude-opus-5
+    - claude-haiku-4-5
+    stages:
+      binder_summary: claude-haiku-4-5
+      summary: claude-haiku-4-5
+    thinking_upgrade: claude-sonnet-5
+  gemini:
+    default: gemini-3.7-flash
+    refusal_fallbacks:
+    - claude-opus-5
+    - claude-haiku-4-5
+  pricing:
+    claude-fable-5:
+      input: 10.0
+      output: 50.0
+    claude-haiku-4-5:
+      input: 1.0
+      output: 5.0
+    claude-opus-5:
+      input: 5.0
+      output: 25.0
+    claude-sonnet-5:
+      input: 3.0
+      output: 15.0
+    gemini-3.1-flash-lite:
+      input: 0.1
+      output: 0.4
+    gemini-3.1-flash-lite-preview:
+      input: 0.1
+      output: 0.4
+    gemini-3.7-flash:
+      input: 0.75
+      output: 3.75
+paths:
+  db_path: data/literature.db
+  fingerprint_dir: data/fingerprints
+  pdf_dir: data/pdfs
+  structures_dir: data/structures
+quality:
+  exclude_pub_types:
+  - Congress
+  - Meeting Abstract
+  min_score_to_download: 0.0
+  require_tiered_journal: true
+  tier1_extra: []
+  tier2_extra: []
+rate_limits:
+  download_delay_s: 1.0
+  europepmc_delay_s: 0.5
+  max_retries: 3
+  ncbi_delay_s: 0.34
+  s2_delay_s: 1.1
+search:
+  europepmc_sources:
+  - ppr
+  max_results_per_query: 200
+  ncbi_pmc: true
+  semantic_scholar: true
+vector_store:
+  db_path: data/vectors
+  embedding_model: NeuML/pubmedbert-base-embeddings
+  top_k_default: 5
