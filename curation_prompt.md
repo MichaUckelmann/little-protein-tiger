@@ -61,6 +61,9 @@ Set `study_category` using the following closed enum. This is **orthogonal** to 
 - `biochemistry` — binding assays, inhibitor characterisation, affinity measurements (Kd/Ki), mutagenesis mapping binding energy; the focus is molecular interaction at the protein or chemical level
 - `pathway_biology` — signalling cascade mechanisms, disease-specific pathway dysregulation, genetic dependency (CRISPR essentiality, siRNA screens), oncogenic mechanisms, upstream/downstream node relationships
 - `structural_biology` — primarily structural determination (X-ray, cryo-EM, NMR) with minimal functional or binding data; structure is the end goal
+- `enzymology` — catalytic mechanism, kinetics (kcat, Km, kcat/Km), active-site chemistry, substrate specificity; the focus is how an enzyme turns substrate over, not what it binds
+- `biocatalysis` — enzymes engineered or applied for synthesis, directed evolution campaigns, process/industrial biocatalysis
+- `computational_chemistry` — QM/MM, free-energy calculations, docking or MD as the primary result rather than a supporting method
 - `host_pathogen` — protein-level interactions between a pathogen (bacterial, viral, fungal) and host proteins; includes virulence factor mechanisms, immune evasion, effector-host protein binding, and antimicrobial resistance mechanisms at the molecular level
 - `clinical` — patient cohort data, clinical outcomes, biomarker studies, epidemiology
 - `review` — literature review, meta-analysis, or perspective with no original experimental data

@@ -1138,14 +1138,41 @@ def test_omitting_the_rate_keeps_the_old_anchor():
 
 
 def test_the_gate_is_given_the_planners_rate():
-    """The two cost models drifted because only one of them was ever fixed."""
+    """
+    The two cost models drifted because only one of them was ever fixed.
+
+    The size-law fallback now lives inside `calibrate()` rather than being
+    spelled out at this one call site, so the guarantee is stronger than it
+    was: ANY caller that supplies `n_tokens` gets the planner's law, and one
+    that supplies neither a rate nor a size is warned rather than silently
+    costed at the 195-token anchor. The call site's job is reduced to handing
+    over the two things only it knows — a measured rate if one exists, and the
+    complex size.
+    """
     import inspect
 
     from src.pipeline_runner import PipelineRunner
 
     src = inspect.getsource(PipelineRunner._stage_calibration)
     assert "sec_per_rf3_refold=" in src
-    # ...and from the same three sources plan_campaign prefers, in order.
+    # ...preferring, in order, the same rates plan_campaign prefers.
     assert "sec_per_refold_observed(paths)" in src
     assert "_earlier_refold_rate" in src
-    assert "rf3_seconds_per_refold" in src
+    # `or None`, not `or 0.0`: sec_per_refold_observed returns 0.0 when it has
+    # too few timestamps, and calibrate() must see None to reach the size law.
+    assert "or None" in src
+    assert "n_tokens=" in src
+
+
+def test_calibrate_owns_the_size_law_so_it_cannot_drift_again():
+    """One anchor and one law, shared with the planner by import."""
+    import src.campaign_calibration as cc
+    import src.foundry_runner as fr
+    from src.campaign_calibration import calibrate
+
+    assert cc.SEC_PER_RF3_REFOLD == fr.SEC_PER_RF3_REFOLD
+
+    rows = _fake_rows()
+    anchor = calibrate(rows, n_seq=4, prefilter_rate=0.9, n_tokens=fr.REF_TOKENS)
+    big = calibrate(rows, n_seq=4, prefilter_rate=0.9, n_tokens=300)
+    assert big.pessimistic.est_gpu_hours > anchor.pessimistic.est_gpu_hours

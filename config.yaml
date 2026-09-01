@@ -150,13 +150,16 @@ models:
     claude-haiku-4-5:   {input: 1.00,  output: 5.00}
     claude-fable-5:     {input: 10.00, output: 50.00}
     gemini-3.7-flash:              {input: 0.75, output: 3.75}   # intro rate through 2026-12-31; 1.50/7.50 after
+    gemini-3.1-flash-lite:         {input: 0.10, output: 0.40}
+    # Retired name, kept so ledger lines written before the GA rename
+    # still price rather than logging as unpriced.
     gemini-3.1-flash-lite-preview: {input: 0.10, output: 0.40}
 
 curation:
   provider: "claude"            # "claude" | "gemini" | "local". Override per-run with --provider.
   model: "claude-haiku-4-5"    # options: "claude-haiku-4-5" and "claude-sonnet-5"
   gemini_model: "gemini-3.7-flash"  # used when provider = "gemini"
-  # alternatives: "gemini-3-flash-preview" (standard), "gemini-3.1-flash-lite-preview" (high-volume/lower-cost)
+  # alternatives: "gemini-3-flash-preview" (standard), "gemini-3.1-flash-lite" (high-volume/lower-cost)
 
   # ── Local provider ────────────────────────────────────────────────────────
   # Default points at Ollama's OpenAI-compatible endpoint.
@@ -316,6 +319,28 @@ design:
     # on this workstation's GPU; otherwise a cluster package is staged
     # instead. Overridable per invocation via --max-local-hours.
     max_local_hours: 48
+
+    # Wall-clock budget the CALIBRATION VERDICT is decided against
+    # (src/campaign_calibration.calibrate -> _decide): a plan whose
+    # Wilson-pessimistic cost exceeds max_campaign_days * 24 GPU-hours cannot
+    # return SCALE_UP, and `adaptive_bar` will not raise the excellence bar to
+    # a rung that does not fit it. Read by _stage_calibration with a hardcoded
+    # default of 5 (= 120 GPU-h); declared here so the budget that decides
+    # SCALE_UP vs SCALE_UP_PARTIAL is tunable without a code edit.
+    max_campaign_days: 5
+
+    # Delete the PAE matrices (`*_confidences.json`) of designs that did NOT
+    # survive the hard gates, once scoring has finished. They are ~50% of an
+    # RF3 output tree (405 KB of a typical 792 KB design directory) and disk —
+    # not GPU — is the binding constraint on a production campaign.
+    #
+    # OFF by default because it is IRREVERSIBLE: ipSAE is computed from these
+    # matrices and cannot be recomputed once they are gone, so re-gating an
+    # existing campaign at a softer bar (exactly what an ITERATE verdict
+    # recommends) would no longer be possible for the pruned designs. Turn it
+    # on for long production campaigns where disk is tight. Survivors are
+    # always kept, and pruning is skipped entirely when nothing survived.
+    prune_confidences: false
 
   # Cluster compute path (src/cluster_runner.py): an ALTERNATIVE to the local
   # `foundry` GPU path above, for campaigns too big for one workstation. LPT

@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "relevant": true,
-  "study_category": "enum[biochemistry, pathway_biology, structural_biology, clinical, review]",
+  "study_category": "enum[biochemistry, pathway_biology, structural_biology, enzymology, biocatalysis, computational_chemistry, host_pathogen, clinical, review]",
   "pathway_context": {
     "pathways": ["string"],
     "disease_associations": [
@@ -40,7 +40,8 @@
     "doi": "string",
     "study_type": "enum[experimental_in_vitro, experimental_in_vivo, experimental_structural, computational, review, case_study]",
     "situational_context_hook": "string (100-150 words)",
-    "pdb_accessions": ["string"]
+    "pdb_accessions": ["string"],
+    "pmcid": "string | null"
   },
   "methodology": {
     "experimental_methods_used": ["string"],

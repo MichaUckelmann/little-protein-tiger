@@ -101,6 +101,7 @@ _TOOL_DEFS: list[dict[str, Any]] = [
                     ),
                     "enum": [
                         "biochemistry", "pathway_biology", "structural_biology",
+                        "enzymology", "biocatalysis", "computational_chemistry",
                         "host_pathogen", "clinical", "review",
                     ],
                 },

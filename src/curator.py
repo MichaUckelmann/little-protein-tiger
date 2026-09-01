@@ -18,6 +18,95 @@ from pydantic import BaseModel, field_validator
 
 
 # ---------------------------------------------------------------------------
+# Closed enums — READ FROM extraction_schema.json, not restated here
+# ---------------------------------------------------------------------------
+# `extraction_schema.json` is one of the three files CLAUDE.md says must agree
+# (schema / validator / prompt), but nothing had ever loaded it: the models
+# below declared `study_category: Optional[str]` and `study_type: str`, so the
+# "closed enums" were prompt guidance only. Measured on the shipped corpus that
+# let 565 of 11,052 fingerprints (5.1%) through with a category in neither the
+# prompt nor the schema — and `search_corpus`'s category filter is an exact
+# equality prefilter advertising a fixed enum, so those papers are unreachable
+# through the documented filter values.
+#
+# Parsing the enums OUT of the schema file makes it load-bearing, so the pair
+# cannot drift again: change the schema and the validator changes with it.
+# `tests/test_curation_enums.py` pins schema <-> prompt <-> tool-definition
+# agreement in the other direction.
+_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "extraction_schema.json"
+
+#: Used only if the schema file is missing or unparseable — curation must not
+#: die because a documentation artifact was deleted.
+_FALLBACK_ENUMS: dict[str, tuple[str, ...]] = {
+    "study_category": (
+        "biochemistry", "pathway_biology", "structural_biology", "enzymology",
+        "biocatalysis", "computational_chemistry", "host_pathogen", "clinical",
+        "review",
+    ),
+    "study_type": (
+        "experimental_in_vitro", "experimental_in_vivo",
+        "experimental_structural", "computational", "review", "case_study",
+    ),
+}
+
+
+def _parse_enum(spec: object) -> tuple[str, ...] | None:
+    """``"enum[a, b, c]"`` -> ``("a", "b", "c")``; None for any other value."""
+    if not isinstance(spec, str) or not spec.startswith("enum["):
+        return None
+    inner = spec[len("enum["):].rstrip("]")
+    return tuple(v.strip() for v in inner.split(",") if v.strip())
+
+
+def load_schema_enums(path: Path | None = None) -> dict[str, tuple[str, ...]]:
+    """Read the closed enums out of `extraction_schema.json`."""
+    path = Path(path) if path is not None else _SCHEMA_PATH
+    enums = dict(_FALLBACK_ENUMS)
+    try:
+        schema = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            f"could not read {path.name} ({exc}); validating study_category / "
+            f"study_type against the built-in fallback enums instead")
+        return enums
+    for key, spec in (("study_category", schema.get("study_category")),
+                      ("study_type", (schema.get("paper_metadata") or {})
+                                     .get("study_type"))):
+        values = _parse_enum(spec)
+        if values:
+            enums[key] = values
+        else:
+            logger.warning(
+                f"{path.name} declares no enum for {key}; using the fallback")
+    return enums
+
+
+SCHEMA_ENUMS = load_schema_enums()
+STUDY_CATEGORIES: tuple[str, ...] = SCHEMA_ENUMS["study_category"]
+STUDY_TYPES: tuple[str, ...] = SCHEMA_ENUMS["study_type"]
+
+
+def _check_enum(value, allowed: tuple[str, ...], field: str):
+    """
+    Reject an out-of-enum value so the retry loop can correct it.
+
+    Raising is the point: `curate_paper` feeds a ValidationError back into the
+    SAME conversation as a correction turn, so the model sees exactly which
+    field was wrong and re-answers. Coercing to a default would silently
+    mislabel the paper instead, and warning-only would reproduce the bug this
+    replaces. `None` stays legal — an absent category is honest; a wrong one
+    is not.
+    """
+    if value is None:
+        return None
+    normalised = str(value).strip().lower().replace(" ", "_").replace("-", "_")
+    if normalised in allowed:
+        return normalised
+    raise ValueError(
+        f"{field} must be one of {', '.join(allowed)} (got {value!r})")
+
+
+# ---------------------------------------------------------------------------
 # Pydantic validation models
 # ---------------------------------------------------------------------------
 
@@ -44,6 +133,11 @@ class PaperMetadata(BaseModel):
     # skills' structure selection.
     pdb_accessions: list[str] = []
     pmcid: Optional[str] = None
+
+    @field_validator("study_type")
+    @classmethod
+    def _validate_study_type(cls, v: str) -> str:
+        return _check_enum(v, STUDY_TYPES, "study_type")
 
 
 class Methodology(BaseModel):
@@ -133,6 +227,11 @@ class Fingerprint(BaseModel):
     key_findings: list[KeyFinding] = []
     contradictions_and_negative_results: list[Contradiction] = []
     entities: Optional[Entities] = None
+
+    @field_validator("study_category")
+    @classmethod
+    def _validate_study_category(cls, v):
+        return _check_enum(v, STUDY_CATEGORIES, "study_category")
 
 
 # ---------------------------------------------------------------------------

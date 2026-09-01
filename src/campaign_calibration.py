@@ -37,26 +37,36 @@ from loguru import logger
 from src.binder_ranking import (
     DEFAULT_THRESHOLDS, EXCELLENT_IPSAE_MIN, FilterStats, _as_float, filter_records,
 )
+# ONE anchor and ONE size law for the whole codebase. `foundry_runner` owns
+# both because it is where they were fitted (four campaigns, timed from
+# `rf3_out` directory mtimes); importing rather than restating them is what
+# stops the gate and the planner drifting apart again — see
+# SEC_PER_RF3_REFOLD below. No cycle: `foundry_runner` imports only
+# env_config / foundry_spec / job_registry.
+from src.foundry_runner import (
+    REF_TOKENS, SEC_PER_RF3_REFOLD, rf3_seconds_per_refold,
+)
 
 # Measured on the RTX PRO 4500 Blackwell (32 GB) for a ~175-token complex.
 # Re-measure per target: RF3 attention is O(N^2) in tokens.
 SEC_PER_RFD3_DESIGN = 5.4
 SEC_PER_MPNN_SEQ = 0.36
-#: ANCHOR, not a flat rate. RF3 refold cost scales with complex size, and this
-#: value is only right near 175-195 tokens. `foundry_runner` has scaled it as
-#: `(tokens/195)**1.62` since the fit over four campaigns, and prefers a rate a
-#: previous stage of the same campaign actually achieved; this module never got
-#: that fix and kept costing every campaign at the flat anchor.
+#: `SEC_PER_RF3_REFOLD` is re-exported from `foundry_runner` and is an ANCHOR
+#: at `REF_TOKENS` (195), not a flat rate: RF3 refold cost scales with complex
+#: size as `(tokens/195)**1.62`.
 #:
-#: It is the gate's own budget check, so the error is not cosmetic. On the
-#: MASH/TEAD4 campaign the measured rate was 20.6 s at ~300 tokens: the gate
-#: costed 22,197 refolds at 63 GPU-h and declared it "inside the 120 h budget",
-#: while `plan_campaign` costed the same 22,184 refolds at 138 GPU-h — outside
-#: it. SCALE_UP, and an auto-raised excellence bar, were both decided on a
-#: number 2.45x too low.
+#: This module used to hold its own flat 8.4 while the planner had long since
+#: stopped costing that way, and it is the GATE's own budget check, so the
+#: error was not cosmetic. On the MASH/TEAD4 campaign the measured rate was
+#: 20.6 s at ~300 tokens: the gate costed 22,197 refolds at 63 GPU-h and
+#: declared it "inside the 120 h budget" while `plan_campaign` costed the same
+#: 22,184 refolds at 138 GPU-h — outside it. SCALE_UP, and an auto-raised
+#: excellence bar, were both decided on a number 2.45x too low.
 #:
-#: Callers that know better MUST pass `sec_per_rf3_refold`.
-SEC_PER_RF3_REFOLD = 8.4
+#: `calibrate()` now derives the rate itself when given `n_tokens`, and warns
+#: when it has to fall back to the bare anchor. Callers with a MEASURED rate
+#: (`foundry_runner.sec_per_refold_observed`, or an earlier stage of the same
+#: campaign) should still pass `sec_per_rf3_refold` — it beats both.
 BYTES_PER_RF3_DIR = 2.5e6
 
 Z95 = 1.959963984540054
@@ -308,6 +318,7 @@ def calibrate(
     n_seq: int = 4,
     prefilter_rate: float = 0.59,
     sec_per_rf3_refold: float | None = None,
+    n_tokens: int | None = None,
     disk_budget_gb: float = 120.0,
     max_campaign_days: float = 5.0,
     adaptive_bar: bool = True,
@@ -330,8 +341,26 @@ def calibrate(
     one falls straight through to the unchanged behaviour below, with no
     separate multiplier table anywhere. Never lowers the bar below what was
     asked for; only ever raises it, and only when the raise is affordable.
+
+    Refold-rate precedence, most trustworthy first:
+
+    1. `sec_per_rf3_refold` — a rate this campaign (or an earlier stage of it)
+       actually achieved, via `foundry_runner.sec_per_refold_observed`;
+    2. `n_tokens` — the complex size, run through the same
+       `rf3_seconds_per_refold` size law the planner uses;
+    3. the bare `SEC_PER_RF3_REFOLD` anchor, which is only right near
+       `REF_TOKENS` (195) and is warned about, because costing a ~300-token
+       target at the anchor under-calls it by ~2x.
     """
-    sec_per_rf3_refold = sec_per_rf3_refold or SEC_PER_RF3_REFOLD
+    if sec_per_rf3_refold is None and n_tokens:
+        sec_per_rf3_refold = rf3_seconds_per_refold(n_tokens)
+    if not sec_per_rf3_refold:
+        logger.warning(
+            f"calibrate(): no measured refold rate and no n_tokens — costing at "
+            f"the {SEC_PER_RF3_REFOLD} s anchor, which is only right near "
+            f"{REF_TOKENS} tokens. A larger complex will be under-costed and "
+            f"the SCALE_UP / budget decision made on it is not trustworthy.")
+        sec_per_rf3_refold = SEC_PER_RF3_REFOLD
     if success_metric not in SUCCESS_METRICS:
         raise ValueError(
             f"success_metric must be one of {sorted(SUCCESS_METRICS)}, "

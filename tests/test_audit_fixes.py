@@ -1,0 +1,588 @@
+"""
+Regression tests for six defects found by a source audit of the working tree.
+
+Each test names the failure it prevents, because none of these were caught by
+the existing suite: the BoltzGen analysis stage is unreachable in the default
+config, `prune_confidences` had no call site to test, the calibration module's
+stale refold anchor was only correct via one call site's keyword, the curation
+enums were never validated at all, vector ingestion's add-only dedup looks
+correct until a fingerprint changes, and `max_campaign_days` was read from a
+key that did not exist.
+"""
+
+from __future__ import annotations
+
+import builtins
+import symtable
+import json
+from pathlib import Path
+
+import pytest
+import yaml
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="module")
+def config() -> dict:
+    return yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
+
+
+# ----------------------------------------------------------------------
+# 1. Undefined names in pipeline stages
+# ----------------------------------------------------------------------
+
+def _undefined_names(path: Path) -> dict[str, set[str]]:
+    """
+    Names a function body loads that are bound in no scope it can see.
+
+    Uses `symtable` rather than a hand-rolled AST walk: the interpreter's own
+    scope analyser already knows about closures, comprehension scopes, lambda
+    parameters, `global`/`nonlocal` and walrus bindings, all of which a naive
+    walk gets wrong in this file. A symbol that is `is_global()` and never
+    assigned, yet is not a module-level name or a builtin, is a `NameError`
+    waiting for the branch to be reached.
+    """
+    src = path.read_text(encoding="utf-8")
+    top = symtable.symtable(src, path.name, "exec")
+    # Module dunders exist at runtime but only appear in the symbol table if
+    # the module body itself mentions them.
+    module_names = {s.get_name() for s in top.get_symbols()} | {
+        "__file__", "__name__", "__doc__", "__package__", "__spec__",
+        "__loader__", "__builtins__", "__debug__",
+    }
+    found: dict[str, set[str]] = {}
+
+    def walk(table, qualname: str) -> None:
+        if table.get_type() == "function":
+            missing = {
+                s.get_name() for s in table.get_symbols()
+                if s.is_global() and not s.is_assigned()
+                and s.get_name() not in module_names
+                and not hasattr(builtins, s.get_name())
+            }
+            if missing:
+                found[qualname] = missing
+        for child in table.get_children():
+            walk(child, f"{qualname}.{child.get_name()}".lstrip("."))
+
+    walk(top, "")
+    return found
+
+
+@pytest.mark.parametrize("module", sorted(
+    p.name for p in (_ROOT / "src").glob("*.py") if not p.name.startswith("_")))
+def test_no_function_loads_an_undefined_name(module):
+    """
+    `_stage_analysis` called `check_available(cfg)` with no `cfg` in scope.
+
+    It is unreachable in the default configuration — `design.backend: foundry`
+    bridges `--workflow ppi` past the BoltzGen stages — so it failed only under
+    `--design-engine boltzgen` / `--modality cyclic_peptide`, and it failed as a
+    caught `NameError` recorded in `result.error` three stages after the work
+    that mattered. Nothing in the suite ever entered the function, which is
+    exactly why this checks every function in `src/` rather than that one.
+    """
+    offenders = _undefined_names(_ROOT / "src" / module)
+    assert not offenders, f"undefined names in {module}: {offenders}"
+
+
+# ----------------------------------------------------------------------
+# 2. prune_confidences is wired, guarded, and off by default
+# ----------------------------------------------------------------------
+
+def _fake_rf3_tree(root: Path, names: list[str]) -> Path:
+    rf3 = root / "rf3_out"
+    for n in names:
+        d = rf3 / n
+        d.mkdir(parents=True)
+        (d / f"{n}_summary_confidences.json").write_text("{}", encoding="utf-8")
+        (d / f"{n}_confidences.json").write_text("x" * 1000, encoding="utf-8")
+    return rf3
+
+
+def test_prune_confidences_has_a_call_site(config):
+    """It was defined and documented as running, but never called."""
+    from src.pipeline_runner import PipelineRunner
+
+    assert "prune_confidences" in (
+        _ROOT / "src" / "pipeline_runner.py").read_text(encoding="utf-8")
+    assert hasattr(PipelineRunner, "_prune_scored_confidences")
+
+
+def test_pruning_is_off_by_default_and_keeps_survivors(config, tmp_path):
+    """
+    Default off: deleting the PAE matrices is irreversible (ipSAE cannot be
+    recomputed), so the operator opts in. When on, survivors are kept.
+    """
+    from src.pipeline_runner import PipelineRunner
+
+    rf3 = _fake_rf3_tree(tmp_path, ["keep_me", "drop_me"])
+    survivors = [{"name": "keep_me"}]
+
+    r = PipelineRunner(config, workflow="binder")
+    assert r._prune_scored_confidences(rf3, survivors) == ""
+    assert (rf3 / "drop_me" / "drop_me_confidences.json").exists()
+
+    on = json.loads(json.dumps(config))
+    on["design"]["foundry"]["prune_confidences"] = True
+    r2 = PipelineRunner(on, workflow="binder")
+    note = r2._prune_scored_confidences(rf3, survivors)
+
+    assert "Pruned" in note
+    assert (rf3 / "keep_me" / "keep_me_confidences.json").exists()
+    assert not (rf3 / "drop_me" / "drop_me_confidences.json").exists()
+    # The summary file is the campaign's completion key — never pruned.
+    assert (rf3 / "drop_me" / "drop_me_summary_confidences.json").exists()
+
+
+def test_pruning_is_skipped_when_nothing_survived(config, tmp_path):
+    """
+    A zero-survivor campaign is the one an ITERATE verdict tells you to re-gate
+    at a softer bar. Pruning it would delete the only evidence that allows it.
+    """
+    from src.pipeline_runner import PipelineRunner
+
+    rf3 = _fake_rf3_tree(tmp_path, ["a", "b"])
+    on = json.loads(json.dumps(config))
+    on["design"]["foundry"]["prune_confidences"] = True
+
+    assert PipelineRunner(on, workflow="binder")._prune_scored_confidences(rf3, []) == ""
+    assert (rf3 / "a" / "a_confidences.json").exists()
+    assert (rf3 / "b" / "b_confidences.json").exists()
+
+
+def test_pruning_never_touches_a_cluster_tree(config, tmp_path):
+    """`rf3_dir` is None for a cluster campaign: a Protenix tree has a
+    different layout and lives on shared storage."""
+    from src.pipeline_runner import PipelineRunner
+
+    on = json.loads(json.dumps(config))
+    on["design"]["foundry"]["prune_confidences"] = True
+    r = PipelineRunner(on, workflow="binder")
+    assert r._prune_scored_confidences(None, [{"name": "x"}]) == ""
+
+
+# ----------------------------------------------------------------------
+# 3. One refold anchor, one size law
+# ----------------------------------------------------------------------
+
+def test_the_calibration_gate_and_the_planner_share_one_anchor():
+    """
+    The gate held a flat 8.4 s while the planner had long since scaled the rate
+    with complex size. On MASH/TEAD4 that made the same 22k refolds cost 63
+    GPU-h at the gate and 138 GPU-h in the plan — the difference between inside
+    and outside the 120 h budget SCALE_UP is decided against.
+    """
+    import src.campaign_calibration as cc
+    import src.foundry_runner as fr
+
+    assert cc.SEC_PER_RF3_REFOLD == fr.SEC_PER_RF3_REFOLD
+    assert cc.SEC_PER_RF3_REFOLD != 8.4
+
+
+def test_calibrate_derives_the_refold_rate_from_complex_size():
+    """`n_tokens` must cost a large complex above the 195-token anchor."""
+    from src.campaign_calibration import calibrate
+    from tests.test_binder_ranking import rec
+
+    records = [rec(name=f"d{i}", design_family=f"f{i}", iptm=0.9) for i in range(40)]
+    small = calibrate(records, target_designs=10, n_tokens=195)
+    large = calibrate(records, target_designs=10, n_tokens=300)
+
+    assert large.pessimistic.est_gpu_hours > small.pessimistic.est_gpu_hours
+
+    explicit = calibrate(records, target_designs=10,
+                         sec_per_rf3_refold=99.0, n_tokens=300)
+    assert explicit.pessimistic.est_gpu_hours > large.pessimistic.est_gpu_hours
+
+
+def test_max_campaign_days_is_declared_in_config(config):
+    """It was read with a hardcoded default from a key that did not exist, so
+    the 120 GPU-h budget behind every SCALE_UP verdict was not tunable."""
+    foundry = config["design"]["foundry"]
+    assert "max_campaign_days" in foundry
+    assert float(foundry["max_campaign_days"]) > 0
+    assert "prune_confidences" in foundry
+    assert foundry["prune_confidences"] is False
+
+
+# ----------------------------------------------------------------------
+# 4. The curation enums are actually closed
+# ----------------------------------------------------------------------
+
+def test_the_enums_are_read_from_the_schema_file():
+    """
+    `extraction_schema.json` is one of three files CLAUDE.md says must agree,
+    and nothing had ever loaded it. Parsing the enums out of it is what makes
+    the pair impossible to drift.
+    """
+    from src.curator import STUDY_CATEGORIES, STUDY_TYPES, load_schema_enums
+
+    schema = json.loads(
+        (_ROOT / "extraction_schema.json").read_text(encoding="utf-8"))
+    assert schema["study_category"].startswith("enum[")
+    assert schema["paper_metadata"]["study_type"].startswith("enum[")
+
+    loaded = load_schema_enums()
+    assert loaded["study_category"] == STUDY_CATEGORIES
+    assert loaded["study_type"] == STUDY_TYPES
+
+
+@pytest.mark.parametrize("bad", ["proteomics", "", "pathway biology!", "chemistry"])
+def test_an_out_of_enum_category_is_rejected(bad):
+    """
+    Rejection is the point: `curate_paper` feeds the ValidationError back into
+    the same conversation as a correction turn. Coercing would mislabel the
+    paper; warning would reproduce the bug — 565 of 11,052 shipped fingerprints
+    carry a category that reaches neither the prompt nor `search_corpus`'s
+    filter enum.
+    """
+    from pydantic import ValidationError
+
+    from src.curator import Fingerprint
+
+    with pytest.raises(ValidationError):
+        Fingerprint(relevant=True, study_category=bad)
+
+
+def test_a_missing_category_is_still_allowed():
+    """An absent category is honest; a wrong one is not."""
+    from src.curator import Fingerprint
+
+    assert Fingerprint(relevant=True, study_category=None).study_category is None
+
+
+def test_every_category_in_the_shipped_corpus_is_in_the_enum():
+    """
+    The three domains the corpus actually uses (`enzymology`, `biocatalysis`,
+    `computational_chemistry`) were added to the enum rather than folded into
+    `biochemistry`: 565 existing papers use them, and collapsing them would
+    lose the distinction going forward as well as leaving those papers
+    unreachable.
+    """
+    from src.curator import STUDY_CATEGORIES
+
+    for observed in ("biochemistry", "pathway_biology", "structural_biology",
+                     "enzymology", "biocatalysis", "computational_chemistry",
+                     "host_pathogen", "clinical", "review"):
+        assert observed in STUDY_CATEGORIES
+
+
+def test_prompt_and_tool_definitions_list_the_same_categories():
+    """schema <-> prompt <-> tool definition, the trio CLAUDE.md pairs."""
+    from src.curator import STUDY_CATEGORIES
+    from src.skill_runner import _TOOL_DEFS
+    from src.vector_store import VectorStore
+
+    prompt = (_ROOT / "curation_prompt.md").read_text(encoding="utf-8")
+    for cat in STUDY_CATEGORIES:
+        assert f"`{cat}`" in prompt, f"{cat} missing from curation_prompt.md"
+
+    search = next(d for d in _TOOL_DEFS if d["name"] == "search_corpus")
+    runner_enum = search["parameters"]["properties"]["study_category"]["enum"]
+    mcp_enum = (VectorStore.SEARCH_TOOL_DEFINITION["input_schema"]
+                ["properties"]["study_category"]["enum"])
+    assert set(runner_enum) == set(STUDY_CATEGORIES)
+    assert set(mcp_enum) == set(STUDY_CATEGORIES)
+
+
+def test_an_out_of_enum_study_type_is_rejected():
+    from pydantic import ValidationError
+
+    from src.curator import PaperMetadata
+
+    with pytest.raises(ValidationError):
+        PaperMetadata(title="t", study_type="wet_lab", situational_context_hook="h")
+
+    ok = PaperMetadata(title="t", study_type="Experimental In Vitro",
+                       situational_context_hook="h")
+    assert ok.study_type == "experimental_in_vitro"
+
+
+# ----------------------------------------------------------------------
+# 5. Vector ingestion is no longer add-only
+# ----------------------------------------------------------------------
+
+class _FakeTable:
+    """Minimal duck type for the three LanceDB calls `ingest` makes."""
+
+    def __init__(self, rows: list[dict] | None = None) -> None:
+        self.rows = list(rows or [])
+
+    def to_arrow(self):
+        import pyarrow as pa
+
+        return pa.table({
+            "paper_key": [r["paper_key"] for r in self.rows],
+            "embed_text": [r["embed_text"] for r in self.rows],
+        })
+
+    def add(self, records) -> None:
+        self.rows.extend(records)
+
+    def delete(self, predicate: str) -> None:
+        inner = predicate.split("(", 1)[1].rstrip(")")
+        keys = {v.strip().strip("'").replace("''", "'") for v in inner.split(",")}
+        self.rows = [r for r in self.rows if r["paper_key"] not in keys]
+
+
+class _FakeEncoder:
+    def encode(self, texts, **kw):
+        import numpy as np
+
+        return np.zeros((len(texts), 768), dtype="float32")
+
+
+def _store_with(tmp_path, rows):
+    from src.vector_store import VectorStore
+
+    store = VectorStore(db_path=tmp_path / "vec")
+    table = _FakeTable(rows)
+    store._get_db = lambda: None                       # type: ignore[assignment]
+    store._get_table = lambda create_if_missing=False: table  # type: ignore[assignment]
+    store._get_encoder = lambda: _FakeEncoder()        # type: ignore[assignment]
+    return store, table
+
+
+def _write_fp(d: Path, doi: str, hook: str) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"doi_{doi.replace('/', '_')}.json").write_text(json.dumps({
+        "relevant": True,
+        "paper_metadata": {"doi": doi, "title": "t",
+                           "situational_context_hook": hook},
+        "entities": {"proteins": ["YAP1"]},
+        "key_findings": [{"claim": "a claim."}],
+    }), encoding="utf-8")
+
+
+def test_a_changed_fingerprint_is_re_embedded(tmp_path):
+    """
+    Dedup used to be on `paper_key` alone, so a re-curated fingerprint kept its
+    stale vector until someone ran a full `--rebuild`.
+    """
+    fps = tmp_path / "fingerprints"
+    _write_fp(fps, "10.1/a", "original hook")
+
+    store, table = _store_with(tmp_path, [])
+    assert store.ingest(fps) == 1
+    assert store.last_ingest_stats["added"] == 1
+
+    # Unchanged: nothing to do.
+    store2, _ = _store_with(tmp_path, table.rows)
+    assert store2.ingest(fps) == 0
+    assert store2.last_ingest_stats["unchanged"] == 1
+
+    # Re-curated: exactly one row, carrying the NEW text.
+    _write_fp(fps, "10.1/a", "revised hook after re-curation")
+    store3, table3 = _store_with(tmp_path, table.rows)
+    assert store3.ingest(fps) == 1
+    assert store3.last_ingest_stats["updated"] == 1
+    assert len(table3.rows) == 1
+    assert "revised hook" in table3.rows[0]["embed_text"]
+
+
+def test_orphaned_rows_are_reported_and_only_pruned_on_request(tmp_path):
+    """
+    The shipped index carries ~1,700 rows whose fingerprint file is gone; they
+    still match `search_corpus` while `get_fingerprint` fails on them.
+    """
+    fps = tmp_path / "fingerprints"
+    _write_fp(fps, "10.1/a", "hook")
+    stale = [{"paper_key": "doi:10.1/gone", "embed_text": "old"}]
+
+    store, table = _store_with(tmp_path, stale)
+    store.ingest(fps)
+    assert store.last_ingest_stats["orphans_seen"] == 1
+    assert store.last_ingest_stats["pruned"] == 0
+    assert any(r["paper_key"] == "doi:10.1/gone" for r in table.rows)
+
+    store2, table2 = _store_with(tmp_path, stale)
+    store2.ingest(fps, prune_orphans=True)
+    assert store2.last_ingest_stats["pruned"] == 1
+    assert not any(r["paper_key"] == "doi:10.1/gone" for r in table2.rows)
+
+
+def test_an_unreadable_index_refuses_rather_than_duplicating(tmp_path):
+    """
+    The old handler logged "will re-index all" and continued with an empty key
+    set. `table.add` has no primary key, so that appends a second copy of the
+    whole corpus rather than re-indexing anything.
+    """
+    fps = tmp_path / "fingerprints"
+    _write_fp(fps, "10.1/a", "hook")
+
+    store, table = _store_with(tmp_path, [])
+
+    def _boom():
+        raise RuntimeError("corrupt manifest")
+
+    table.to_arrow = _boom  # type: ignore[assignment]
+    with pytest.raises(RuntimeError, match="--rebuild"):
+        store.ingest(fps)
+
+
+# ----------------------------------------------------------------------
+# 6. A stage may not redefine its way past the chain guards
+# ----------------------------------------------------------------------
+
+def test_partner_guard_runs_on_both_entry_points():
+    """
+    The PPI track and the binder track reach the interface skill by different
+    routes, and the fix must ADD a check to each rather than move one.
+    `_stage_binder_interface` keeps all three of its original guards.
+    """
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    ppi = inspect.getsource(PipelineRunner._stage_structure)
+    binder = inspect.getsource(PipelineRunner._stage_binder_interface)
+
+    for src in (ppi, binder):
+        assert "_verify_partner_chain_is_requested" in src
+    # nothing removed from the binder track
+    for guard in ("_verify_target_chain_assignment", "_verify_hotspot_grounding",
+                  "_check_ortholog_conservation"):
+        assert guard in binder, f"{guard} disappeared from the binder track"
+    # nothing removed from the PPI track
+    for guard in ("_verify_ppi_chain_assignment", "_verify_hotspot_grounding",
+                  "_check_ortholog_conservation"):
+        assert guard in ppi, f"{guard} disappeared from the PPI track"
+
+
+def test_the_ppi_guards_are_given_the_upstream_complex():
+    """
+    A stage that renames `target_complex` to whatever it analysed must not get
+    to validate its own substitution — the guards take the value the pathway
+    and literature stages settled on.
+    """
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner._stage_structure)
+    assert "requested_complex = result.target_complex or target_complex" in src
+    assert "_verify_ppi_chain_assignment(\n            requested_complex" in src
+    assert "renamed the target complex" in src
+
+
+@pytest.mark.parametrize("requested,expect_call", [
+    ("CALCRL / RAMP1", True),        # two named proteins -> checkable
+    ("DPP4 (active site)", False),   # single protein -> nothing to check
+    ("", False),
+])
+def test_partner_guard_only_applies_to_a_named_pair(config, requested, expect_call, monkeypatch):
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner(config, workflow="ppi")
+    seen = {}
+    monkeypatch.setattr(r, "_binder_structure_path",
+                        lambda pdb: seen.setdefault("path", Path("/nonexistent.cif")))
+    r._verify_partner_chain_is_requested(requested, {"partner_chain": "B"},
+                                         "1ABC", source="test")
+    assert ("path" in seen) is expect_call
+
+
+def test_partner_guard_fails_open_without_a_partner_chain(config):
+    """No partner chain named -> nothing to verify, and no crash."""
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner(config, workflow="ppi")
+    r._verify_partner_chain_is_requested("A / B", {}, "1ABC", source="test")
+
+
+# ----------------------------------------------------------------------
+# 7. AlphaFold models are legal, but only for the single-chain mode
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("intent", ["disrupt", "stabilize"])
+def test_an_af_model_cannot_be_used_for_a_ppi(intent):
+    """An AlphaFold model is a monomer: there is no partner in it to disrupt."""
+    from src.pipeline_runner import PipelineBlockedError, PipelineRunner
+
+    with pytest.raises(PipelineBlockedError, match="single chain"):
+        PipelineRunner._check_af_model_intent(
+            {"pdb_id": "AF-Q96CH1", "design_intent": intent})
+
+
+def test_an_af_model_defaults_to_the_single_chain_mode():
+    from src.pipeline_runner import PipelineRunner
+
+    h = {"pdb_id": "AF-Q96CH1", "design_intent": ""}
+    PipelineRunner._check_af_model_intent(h)
+    assert h["design_intent"] == "inhibit_active_site"
+
+    ok = {"pdb_id": "AF-Q96CH1", "design_intent": "inhibit_active_site"}
+    PipelineRunner._check_af_model_intent(ok)          # no raise
+    experimental = {"pdb_id": "6E3Y", "design_intent": "disrupt"}
+    PipelineRunner._check_af_model_intent(experimental)  # untouched
+    assert experimental["design_intent"] == "disrupt"
+
+
+def test_both_target_selecting_skills_know_af_ids_are_legal():
+    """
+    The orphan-GPCR run wrote "de novo AlphaFold structural modeling is
+    required" and fell back to a downstream complex, because the skill did not
+    know `_ensure_structure` already accepts an AF- pseudo-id.
+    """
+    for name in ("pathway-expert", "wildcard-expert"):
+        text = (_ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+        assert "AF-<UniProt accession>" in text, name
+        assert "inhibit_active_site" in text, name
+
+
+# ----------------------------------------------------------------------
+# 8. Organism is checked at target-selection time
+# ----------------------------------------------------------------------
+
+def test_organism_is_checked_before_the_literature_stage():
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner.run)
+    i_check = src.index("_check_structure_organism")
+    i_lit = src.index("_stage_literature(")
+    assert i_check < i_lit, "organism pre-check must run before paying for stage 1"
+    assert "_check_af_model_intent" in src
+
+
+@pytest.mark.parametrize("pdb", ["", "NOT_FOUND", "AF-Q12770"])
+def test_organism_check_skips_what_it_cannot_answer(config, pdb):
+    """No id, no structure chosen, or a predicted model -> nothing to look up."""
+    from src.pipeline_runner import PipelineRunner
+
+    PipelineRunner(config, workflow="ppi")._check_structure_organism(pdb, "A / B")
+
+
+# ----------------------------------------------------------------------
+# 9. Token counting asks the provider that can answer
+# ----------------------------------------------------------------------
+
+def test_gemini_stages_do_not_call_anthropics_token_counter(config, monkeypatch):
+    """
+    Anthropic's count_tokens 404s on a Gemini model id, and Gemini is the
+    default provider — so every stage paid a wasted round trip and logged a
+    scary failure before falling back to the heuristic anyway.
+    """
+    import anthropic
+
+    from src.pipeline_runner import PipelineRunner
+
+    called = []
+    monkeypatch.setattr(anthropic, "Anthropic",
+                        lambda *a, **k: called.append(1))
+
+    class _Runner:
+        skill_name = "pathway-expert"
+        system_prompt = "x" * 4000
+
+    r = PipelineRunner(config, workflow="ppi")
+    usage = r._estimate_stage_usage(_Runner(), "q" * 100, None,
+                                    "gemini-3.7-flash", "gemini")
+    assert not called, "asked Anthropic to count Gemini tokens"
+    assert usage.cache_creation_tokens == (4000 + 100) // 4
+
+    r._estimate_stage_usage(_Runner(), "q" * 100, None, "claude-sonnet-5", "claude")
+    assert called, "the Claude path must still use the real counter"

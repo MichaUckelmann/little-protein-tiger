@@ -600,6 +600,14 @@ class PipelineRunner:
                         )
                     raise PipelinePausedError("pathway_choice", {"choices": choices})
 
+            # Two deterministic checks on what the pathway stage just chose,
+            # BEFORE paying for another LLM stage. Neither needs the structure
+            # on disk; between them they cost one GraphQL call.
+            if start_idx <= 1 and result.pdb_id:
+                self._check_af_model_intent(handoff)
+                self._check_structure_organism(
+                    result.pdb_id, result.target_complex or "")
+
             # ── Stage 1: molecular-biology-expert ────────────────────────────
             # Runs BEFORE structure: literature-derived target_site_hint goes
             # into the next stage's query so structure analysis focuses on
@@ -1105,6 +1113,17 @@ class PipelineRunner:
                 "the interface stage produced no MODEL-READY HOTSPOTS table; the "
                 "RFD3 spec cannot be built without atom-level hotspots")
         self._verify_target_chain_assignment(intel, handoff, result.pdb_id or pdb)
+        # ADDED alongside the three existing guards, not in place of any of
+        # them. The binder track is less exposed than PPI — `target_gene` comes
+        # from target_intel and the interface stage cannot rewrite it — but the
+        # interface stage does choose `partner_chain`, and nothing checked that
+        # it is still the partner target_intel picked out of the candidate
+        # table. Same failure shape as the PPI CALCRL/CGRP swap.
+        self._verify_partner_chain_is_requested(
+            " / ".join(n for n in (intel.get("target_gene"),
+                                   intel.get("partner_name")) if n),
+            handoff, result.pdb_id or pdb,
+            source="The target-intel stage")
         self._verify_hotspot_grounding(hotspots, result.pdb_id or pdb)
         self._check_ortholog_conservation(hotspots, result.pdb_id or pdb, result)
         result.hotspot_residues_json = hotspots
@@ -1583,6 +1602,217 @@ class PipelineRunner:
                 f"textbook/literature numbering for a well-known protein instead "
                 f"of reading this specific structure's residues — re-run the "
                 f"stage, or pick a different structure.")
+
+    def _check_structure_organism(self, pdb_id: str, target_complex: str) -> None:
+        """
+        Say at TARGET-SELECTION time that the chosen structure is not human.
+
+        The conservation gate (`_check_ortholog_conservation`) is the thing
+        that can actually refuse a non-human epitope, and it cannot run until
+        hotspots exist — two LLM stages later. On the orphan-GPCR run that cost
+        $0.57 and three stages to reach a stop that was foreseeable at stage 0:
+        the pathway report itself printed "5GRS (Schizosaccharomyces pombe —
+        ortholog)" next to the id it had just chosen.
+
+        This does not refuse anything. An ortholog is often a perfectly good
+        template — that is *why* the conservation check measures rather than
+        assumes — so this warns, names the human alternatives if RCSB has any,
+        and records a checkpoint. Costs one GraphQL call and no LLM tokens.
+        """
+        if (not pdb_id or pdb_id.upper().startswith("AF-")
+                or pdb_id.upper() == "NOT_FOUND"):
+            return
+        names = self._split_target_complex_names(target_complex)[:2]
+        if not names:
+            return
+        from src.target_resolve import (
+            entry_metadata, find_complex_structures, resolve_target,
+        )
+
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+        except Exception as exc:
+            logger.debug(f"organism pre-check skipped for {pdb_id}: {exc}")
+            return
+        chains = meta.get("chains") or {}
+        if not chains:
+            return
+        present = {str(a).upper()
+                   for info in chains.values()
+                   for a in (info.get("uniprots") or []) if a}
+        if not present:
+            return
+
+        missing: list[tuple[str, str]] = []
+        for name in names:
+            try:
+                resolved = resolve_target(name)
+            except Exception:
+                continue
+            acc = resolved.uniprot if (resolved and resolved.ok) else ""
+            if acc and acc.upper() not in present:
+                missing.append((name, acc))
+        if not missing:
+            return
+
+        alternatives: list[str] = []
+        try:
+            alternatives = [
+                pid for pid in find_complex_structures(missing[0][1], rows=25)
+                if pid.upper() != pdb_id.upper()
+            ][:5]
+        except Exception as exc:
+            logger.debug(f"human-alternative lookup failed: {exc}")
+
+        detail = ", ".join(f"{n} ({acc})" for n, acc in missing)
+        logger.warning(
+            f"  ⚠ {pdb_id} carries no human accession for {detail} — this is "
+            f"very likely an ortholog structure. The epitope will not be "
+            f"checked against the human protein until after the structure "
+            f"stage, so a non-conserved site costs two more LLM stages before "
+            f"it is caught."
+            + (f" Human structures containing {missing[0][0]}: "
+               f"{', '.join(alternatives)}." if alternatives else
+               " RCSB lists no human co-complex for it."))
+        self._binder_checkpoint(
+            "non_human_structure", "pathway", "gate",
+            {"pdb_id": pdb_id, "target_complex": target_complex,
+             "not_present_as_human": [{"name": n, "human_uniprot": a}
+                                      for n, a in missing],
+             "human_alternatives": alternatives})
+
+    @staticmethod
+    def _check_af_model_intent(handoff: dict) -> None:
+        """
+        An AlphaFold model is a MONOMER, so it cannot supply a PPI interface.
+
+        `_ensure_structure` accepts an `AF-<accession>` pseudo-id and fetches
+        the model, which is what makes a structure-less target designable at
+        all — the orphan-GPCR run wrote "de novo AlphaFold structural modeling
+        is required" and then fell back to a downstream complex, because the
+        pathway skill did not know the id was legal. It is legal now, but only
+        for the single-chain mode: `disrupt` and `stabilize` both need two
+        chains to compute an interface from, and there is only one here.
+        """
+        pdb_id = str(handoff.get("pdb_id") or "")
+        if not pdb_id.upper().startswith("AF-"):
+            return
+        intent = str(handoff.get("design_intent") or "").strip().lower()
+        if intent in ("", "inhibit_active_site"):
+            handoff["design_intent"] = "inhibit_active_site"
+            return
+        raise PipelineBlockedError(
+            f"design_intent={intent!r} was chosen with the AlphaFold model "
+            f"{pdb_id}, but an AlphaFold model is a single chain — there is no "
+            f"partner in it to disrupt or stabilise. Either target it as a "
+            f"single-chain pocket (design_intent: inhibit_active_site), or "
+            f"pick an experimental co-complex structure.")
+
+    def _verify_partner_chain_is_requested(
+        self, requested_complex: str, handoff: dict, pdb_id: str, *,
+        source: str,
+    ) -> None:
+        """
+        The partner chain must be a protein the campaign was JUSTIFIED against.
+
+        `_verify_ppi_chain_assignment` cannot catch a substitution here, by
+        construction: it reads `target_complex` out of the SAME handoff whose
+        chain choice is under test, so an analysing stage that rewrites the
+        complex to name whatever it actually looked at ends up validating its
+        own substitution. This guard is given the complex the UPSTREAM stages
+        settled on and never lets the analysing stage redefine it.
+
+        Caught on a real run. Asked for the CALCRL/RAMP1 heterodimer in 6E3Y —
+        where chain E *is* RAMP1 — the structure stage analysed CALCRL against
+        chain P, the 38-residue CGRP agonist PEPTIDE, and rewrote
+        target_complex to "CALCRL / CGRP". Chain R really is CALCRL, so the
+        chain-assignment guard, hotspot grounding and the identity check all
+        passed. The substitution is also what put three hotspots inside the
+        membrane: the CGRP peptide binds down a class-B vestibule that
+        penetrates the TM bundle, which the RAMP1 interface does not.
+
+        Accepts when the partner chain is EITHER requested protein — a
+        deliberate target/partner swap is legitimate, the interface skill is
+        explicitly told to correct a backwards assignment — or an ORTHOLOG of
+        one, which is the ortholog guard's business, not this one. Hard fails
+        only when it is neither. Fail-open wherever the evidence is missing,
+        like every other verify here.
+        """
+        names = self._split_target_complex_names(requested_complex)[:2]
+        if len(names) < 2:
+            return  # single-protein / inhibit_active_site mode has no partner
+        partner_chain = str(handoff.get("partner_chain")
+                            or handoff.get("chain_b") or "").strip()
+        if not partner_chain or not pdb_id:
+            return
+        structure_path = self._binder_structure_path(pdb_id)
+        if not structure_path.exists():
+            logger.warning(
+                f"  ⚠ partner chain not verified — {structure_path} is not on "
+                f"disk")
+            return
+
+        from src.ortholog_check import MISMATCH
+        from src.target_resolve import fetch_uniprot_sequence, resolve_target
+
+        verdicts: dict[str, object] = {}
+        for name in names:
+            try:
+                resolved = resolve_target(name)
+            except Exception as exc:
+                logger.debug(f"could not resolve {name!r}: {exc}")
+                continue
+            acc = resolved.uniprot if (resolved and resolved.ok) else ""
+            if not acc:
+                continue
+            identity = None
+            ref_seq = fetch_uniprot_sequence(acc)
+            if ref_seq:
+                identity = self._chain_identity_to_uniprot(
+                    structure_path, partner_chain, ref_seq)
+            verdict = self._classify_target_chain(
+                pdb_id, partner_chain, identity, resolved.gene or name, acc)
+            verdicts[name] = verdict
+            if verdict.verdict != MISMATCH:
+                logger.info(
+                    f"  partner chain OK — {partner_chain} in {pdb_id} is "
+                    f"{name} ({verdict.verdict}): {verdict.reason}")
+                return
+
+        if not verdicts:
+            logger.warning(
+                f"  ⚠ partner chain not verified — could not resolve either of "
+                f"{names} to a UniProt accession")
+            return
+
+        detail = "; ".join(f"vs {n}: {v.reason}" for n, v in verdicts.items())
+        raise PipelineError(
+            f"partner_chain={partner_chain} in {pdb_id} is not one of the "
+            f"proteins this campaign was chosen for. {source} settled on "
+            f"{requested_complex!r}, but chain {partner_chain} matches neither "
+            f"of {names}. {detail}. "
+            f"{self._chain_inventory(pdb_id)} "
+            f"Designing here would target an interface nobody selected — "
+            f"re-run the stage against the intended partner, or change the "
+            f"target upstream if the substitution was deliberate.")
+
+    @staticmethod
+    def _chain_inventory(pdb_id: str) -> str:
+        """One-line 'what is actually in this entry' for a guard message."""
+        from src.target_resolve import entry_metadata
+
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+        except Exception:
+            return ""
+        chains = meta.get("chains") or {}
+        if not chains:
+            return ""
+        listing = ", ".join(
+            f"{cid}={(info.get('description') or '?')[:40]}"
+            f" ({info.get('length')} aa)"
+            for cid, info in sorted(chains.items()))
+        return f"Chains in {pdb_id.upper()}: {listing}."
 
     def _verify_ppi_chain_assignment(self, target_complex: str,
                                      handoff: dict[str, str], pdb_id: str) -> None:
@@ -2313,7 +2543,6 @@ class PipelineRunner:
         from src.campaign_calibration import calibrate, choose_compute, render_report
         from src.cluster_runner import ClusterConfig
         from src.foundry_runner import (prefilter_rate_observed,
-                                        rf3_seconds_per_refold,
                                         sec_per_refold_observed)
 
         run = self._run_gpu_stage("calibration", spec_path, trim, dirs, result,
@@ -2349,11 +2578,16 @@ class PipelineRunner:
             # 2.45x on MASH/TEAD4 (63 GPU-h claimed, 138 planned), which is the
             # difference between inside and outside the 120 h budget the
             # SCALE_UP verdict and the auto-raised bar were both decided on.
+            # `or None`, not `or 0.0`: sec_per_refold_observed returns 0.0 when
+            # it has too few timestamps to fit a rate, and calibrate() must see
+            # None to fall through to the n_tokens size law rather than to the
+            # bare anchor. The size-law fallback now lives in calibrate(), so
+            # the gate and the planner cannot drift apart again.
             sec_per_rf3_refold=(
                 sec_per_refold_observed(paths)
                 or self._earlier_refold_rate(dirs, "calibration")
-                or rf3_seconds_per_refold(
-                    trim.n_residues_after + _binder_midpoint(trim.contig))),
+                or None),
+            n_tokens=trim.n_residues_after + _binder_midpoint(trim.contig),
             disk_budget_gb=float(fcfg.get("disk_budget_gb", 120)),
             max_campaign_days=float(fcfg.get("max_campaign_days", 5)),
             adaptive_bar=bool(rcfg.get("adaptive_bar", True)),
@@ -2589,6 +2823,11 @@ class PipelineRunner:
         # this a `--compute auto`/`--compute cluster` production campaign
         # could never be scored.
         rows, source = None, None
+        # Set ONLY for a local RF3 campaign. `prune_confidences` walks the RF3
+        # layout (`<id>/<id>_summary_confidences.json`), which a cluster
+        # Protenix tree does not have, and a cluster tree is on shared storage
+        # this process should not be deleting from anyway.
+        scored_rf3_dir: Path | None = None
         for mode in ("production", "calibration", "pilot"):
             if self._binder_compute_for_mode(mode, dirs, calib) == "cluster":
                 from src.cluster_runner import ClusterConfig, refold_counts
@@ -2609,6 +2848,7 @@ class PipelineRunner:
                 if count_rf3(paths.rf3_dir):
                     rows = self._score_campaign(paths, dirs, dirs["scoring"])
                     source = mode
+                    scored_rf3_dir = paths.rf3_dir
                     break
         if rows is None:
             scores = dirs["calibration"] / "refold_scores.csv"
@@ -2684,6 +2924,8 @@ class PipelineRunner:
             ranking = gated
         paths_out = write_ranking_outputs(ranking, dirs["scoring"])
 
+        prune_note = self._prune_scored_confidences(scored_rf3_dir, gated.survivors)
+
         out = dirs["binder"] / self._BINDER_STAGE_FILES["binder_scoring"]
         self._write_binder_report(
             out, "Design scoring and ranking",
@@ -2691,7 +2933,7 @@ class PipelineRunner:
             f"```\n{ranking.filter_stats.render()}\n```\n\n"
             f"{len(gated.survivors):,} survivors across "
             f"{gated.n_backbones:,} distinct backbones; "
-            f"top {len(ranking.top_k)} selected.{rosetta_note}",
+            f"top {len(ranking.top_k)} selected.{rosetta_note}{prune_note}",
             {"scores_csv": str(dirs["scoring"] / "refold_scores.csv"),
              "top_k_csv": str(paths_out["top_k"]),
              "n_scored": len(rows), "n_survivors": len(ranking.survivors)})
@@ -2700,6 +2942,59 @@ class PipelineRunner:
         result.stage_files["binder_scoring"] = out
         result.stages_completed.append("binder_scoring")
         return {"ranking": ranking, "top_k": paths_out["top_k"]}
+
+    def _prune_scored_confidences(self, rf3_dir: Path | None,
+                                  survivors: list[dict]) -> str:
+        """
+        Delete the PAE matrices of gate FAILURES, once scoring has finished.
+
+        `*_confidences.json` is ~half an RF3 design directory (405 KB of a
+        typical 792 KB), and disk — not GPU — is the binding constraint on a
+        production campaign. This is the only call site of
+        `binder_metrics.prune_confidences`, and it is deliberately placed after
+        `write_ranking_outputs`: ipSAE is computed FROM these matrices and
+        cannot be recomputed once they are gone, so nothing may run before the
+        scores and the ranking are on disk.
+
+        Three guards, in order:
+
+        * off unless `design.foundry.prune_confidences` is set — it is
+          irreversible, so the default keeps the data;
+        * local RF3 campaigns only (`rf3_dir` is None for a cluster run);
+        * **skipped entirely when nothing survived** — a zero-survivor run is
+          exactly the one an ITERATE verdict tells you to re-gate at a softer
+          bar, and pruning would delete the evidence needed to do that.
+
+        Returns a markdown note for the stage report ("" when nothing ran), so
+        a reader of the report knows the tree is no longer re-gateable.
+        """
+        if not bool((self.config.get("design") or {}).get("foundry", {})
+                    .get("prune_confidences", False)):
+            return ""
+        if rf3_dir is None:
+            logger.info("confidence pruning skipped: not a local RF3 campaign")
+            return ""
+        if not survivors:
+            logger.warning(
+                "confidence pruning skipped: nothing survived the gates, so the "
+                "PAE matrices are the only way to re-gate this campaign at a "
+                "softer bar")
+            return ""
+
+        from src.binder_metrics import prune_confidences
+
+        keep = {str(r.get("name", "")) for r in survivors if r.get("name")}
+        try:
+            removed = prune_confidences(rf3_dir, keep)
+        except OSError as exc:  # never fail a scored campaign over housekeeping
+            logger.warning(f"confidence pruning failed: {exc}")
+            return ""
+        return (
+            f"\n\nPruned **{removed / 1e9:.2f} GB** of PAE matrices from "
+            f"{len(keep):,} kept / all scored designs "
+            f"(`design.foundry.prune_confidences`). ipSAE cannot be recomputed "
+            f"for the pruned designs — re-gating this campaign at a softer bar "
+            f"would need a re-fold.")
 
     # Columns the analyst actually needs. `binder_seq` is deliberately ABSENT:
     # the sequences are not needed to review a ranking, and including them
@@ -3534,7 +3829,20 @@ class PipelineRunner:
                                   stage="structure")
         result.stages_completed.append("structure")
         result.stage_files["structure"] = output_file
-        result.target_complex = handoff.get("target_complex") or result.target_complex
+        # What the pathway/literature stages actually settled on, captured
+        # BEFORE this stage's handoff is allowed to overwrite it. Both verify
+        # guards below are given THIS value: a stage that renames the complex
+        # to whatever it happened to analyse must not get to validate its own
+        # substitution (see _verify_partner_chain_is_requested).
+        requested_complex = result.target_complex or target_complex
+        delivered_complex = handoff.get("target_complex") or result.target_complex
+        if (requested_complex and delivered_complex
+                and delivered_complex.strip() != requested_complex.strip()):
+            logger.warning(
+                f"  ⚠ the structure stage renamed the target complex: "
+                f"{requested_complex!r} -> {delivered_complex!r}. Verifying "
+                f"chain assignment against the requested complex.")
+        result.target_complex = delivered_complex
         result.structure_handoff = handoff  # persist so _stage_design can compare modalities
 
         # Extract MODEL-READY HOTSPOTS as JSON so the analysis stage can compute
@@ -3582,7 +3890,13 @@ class PipelineRunner:
         # the failure that burned a full campaign, and it is most likely
         # precisely when the report is malformed enough to break parsing.
         self._verify_ppi_chain_assignment(
-            result.target_complex or target_complex, handoff, verify_pdb)
+            requested_complex or result.target_complex, handoff, verify_pdb)
+        # Separate question, separate guard: the one above asks "is the TARGET
+        # chain one of the named proteins", which chain R (CALCRL) passes even
+        # when the partner has been swapped for an unrelated molecule.
+        self._verify_partner_chain_is_requested(
+            requested_complex or result.target_complex, handoff, verify_pdb,
+            source="The pathway and literature stages")
 
         # Grounding genuinely needs the hotspot table. If it's missing, say so
         # loudly rather than letting "no table" read as "table verified".
@@ -3992,7 +4306,13 @@ class PipelineRunner:
         # as a design-quality problem.
         from src.pyrosetta_sasa import check_available
 
-        sasa_available, sasa_reason = check_available(cfg)
+        # `design_cfg`, not `cfg`: this stage has no `cfg` local (unlike
+        # `_stage_binder_scoring`, whose `cfg = self._binder_cfg()` is the same
+        # `design` sub-tree). `check_available` reads `cfg["pyrosetta"]`, so
+        # `design_cfg` is the right object; passing an undefined name raised
+        # NameError here and failed the whole run with "name 'cfg' is not
+        # defined" three stages after the real work.
+        sasa_available, sasa_reason = check_available(design_cfg)
         if sasa_available:
             enrich_with_hotspot_sasa(
                 records,
@@ -4474,7 +4794,7 @@ class PipelineRunner:
             from src.token_budget import price
 
             estimate = self._estimate_stage_usage(
-                runner, query, context_text, model_id)
+                runner, query, context_text, model_id, provider)
             projected_usd = price(model_id, estimate)
             try:
                 self._ledger.preflight(stage=stage_key, model=model_id,
@@ -4611,6 +4931,7 @@ class PipelineRunner:
         query: str,
         context_text: str | None,
         model_id: str,
+        provider: str = "claude",
     ) -> Usage:
         """
         Project a stage's token usage for the pre-flight budget check.
@@ -4619,23 +4940,35 @@ class PipelineRunner:
         calls 2..n read it back at ~0.1x while the message history grows. This
         is a guard, not accounting — any failure degrades to a rough character
         heuristic rather than blocking the run.
+
+        The counter is provider-specific. Anthropic's `count_tokens` 404s on a
+        non-Claude model id, and the default provider is Gemini, so EVERY stage
+        used to pay a wasted round trip and log a scary "count_tokens
+        unavailable (404 ... model: gemini-3.7-flash)" before landing on the
+        heuristic anyway. Ask only the provider that can answer.
         """
         n_calls = self._STAGE_CALL_PRIOR.get(runner.skill_name, 8)
         first_input = context_text and len(context_text) or 0
-        system_tokens = 0
-        try:
-            import anthropic
+        # ~4 chars/token is close enough for a ceiling check.
+        heuristic = (len(runner.system_prompt) + first_input + len(query)) // 4
+        system_tokens = heuristic
+        if provider == "claude":
+            try:
+                import anthropic
 
-            client = anthropic.Anthropic()
-            system_tokens = client.messages.count_tokens(
-                model=model_id,
-                system=[{"type": "text", "text": runner.system_prompt}],
-                messages=[{"role": "user", "content": (context_text or "") + query}],
-            ).input_tokens
-        except Exception as exc:
-            # ~4 chars/token is close enough for a ceiling check.
-            system_tokens = (len(runner.system_prompt) + first_input + len(query)) // 4
-            logger.debug(f"count_tokens unavailable ({exc}); using char heuristic")
+                client = anthropic.Anthropic()
+                system_tokens = client.messages.count_tokens(
+                    model=model_id,
+                    system=[{"type": "text", "text": runner.system_prompt}],
+                    messages=[{"role": "user",
+                               "content": (context_text or "") + query}],
+                ).input_tokens
+            except Exception as exc:
+                system_tokens = heuristic
+                logger.debug(f"count_tokens unavailable ({exc}); using char heuristic")
+        else:
+            logger.debug(
+                f"no token counter for provider {provider!r}; using char heuristic")
 
         # Each turn re-sends every prior turn, so the total input across a stage
         # is quadratic in the call count. Per-call input is capped at the same

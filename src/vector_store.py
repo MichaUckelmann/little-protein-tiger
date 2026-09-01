@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import pyarrow as pa   # noqa: F401 — schema only; ships in the base install
 from loguru import logger
@@ -119,6 +119,9 @@ class VectorStore:
                         "biochemistry",
                         "pathway_biology",
                         "structural_biology",
+                        "enzymology",
+                        "biocatalysis",
+                        "computational_chemistry",
                         "host_pathogen",
                         "clinical",
                         "review",
@@ -273,10 +276,15 @@ class VectorStore:
     # Public API
     # ------------------------------------------------------------------
 
+    #: Populated by every `ingest()` call. Keys: added, updated, unchanged,
+    #: pruned, skipped_irrelevant, skipped_empty, orphans_seen.
+    last_ingest_stats: dict[str, int]
+
     def ingest(
         self,
         fingerprint_dir: str | Path,
         rebuild: bool = False,
+        prune_orphans: bool = False,
     ) -> int:
         """
         Embed and index all relevant fingerprint JSONs.
@@ -287,11 +295,18 @@ class VectorStore:
             Directory containing ``*.json`` fingerprint files.
         rebuild : bool
             If True, drop and recreate the table before ingesting.
+        prune_orphans : bool
+            Delete indexed rows whose fingerprint file no longer exists.
+            Off by default because it is destructive; without it those rows
+            keep matching searches that a `get_fingerprint` follow-up cannot
+            then resolve.
 
         Returns
         -------
         int
-            Number of new records ingested.
+            Rows written (new + re-embedded). `last_ingest_stats` carries the
+            full breakdown: added / updated / unchanged / pruned /
+            skipped_irrelevant / skipped_empty / orphans_seen.
         """
         fingerprint_dir = Path(fingerprint_dir)
         db = self._get_db()
@@ -303,15 +318,33 @@ class VectorStore:
 
         table = self._get_table(create_if_missing=True)
 
-        # Collect already-indexed keys to enable incremental ingestion
-        existing_keys: set[str] = set()
+        stats = {"added": 0, "updated": 0, "unchanged": 0, "pruned": 0,
+                 "skipped_irrelevant": 0, "skipped_empty": 0, "orphans_seen": 0}
+        self.last_ingest_stats = stats
+
+        # Existing key -> the embed_text that was actually embedded for it.
+        # Keying on the TEXT, not just the key, is what makes a re-curated
+        # fingerprint re-embed: ingestion used to be add-only on `paper_key`,
+        # so an edited fingerprint kept its stale vector forever and only a
+        # full `--rebuild` could fix it.
+        existing: dict[str, str] = {}
         if not rebuild:
             try:
                 arrow_tbl = table.to_arrow()
-                existing_keys = set(arrow_tbl["paper_key"].to_pylist())
-                logger.info(f"{len(existing_keys)} fingerprints already indexed.")
+                existing = dict(zip(arrow_tbl["paper_key"].to_pylist(),
+                                    arrow_tbl["embed_text"].to_pylist()))
+                logger.info(f"{len(existing)} fingerprints already indexed.")
             except Exception as exc:
-                logger.warning(f"Could not read existing keys (will re-index all): {exc}")
+                # Deliberately fatal. The old behaviour logged "will re-index
+                # all" and carried on with an EMPTY key set, which does not
+                # re-index — `table.add` has no primary key, so it appends a
+                # second copy of the entire corpus.
+                raise RuntimeError(
+                    f"could not read the existing vector index ({exc}). "
+                    f"Refusing to continue: ingestion is an append, so running "
+                    f"without the current key set would duplicate every row. "
+                    f"Re-run with --rebuild to recreate the table from scratch."
+                ) from exc
 
         encoder = self._get_encoder()
 
@@ -320,6 +353,8 @@ class VectorStore:
 
         batch_texts: list[str] = []
         batch_meta: list[dict] = []
+        stale_keys: list[str] = []
+        seen_keys: set[str] = set()
 
         for fp_file in fp_files:
             try:
@@ -329,16 +364,28 @@ class VectorStore:
                 continue
 
             if not fp.get("relevant", True):
+                stats["skipped_irrelevant"] += 1
                 continue
 
             paper_key = self._derive_paper_key(fp, fp_file.stem)
-            if paper_key in existing_keys:
-                continue
+            seen_keys.add(paper_key)
 
             embed_text = self._build_embed_text(fp)
             if not embed_text:
                 logger.warning(f"No embeddable text for {fp_file.name} — skipping.")
+                stats["skipped_empty"] += 1
                 continue
+
+            if paper_key in existing:
+                if existing[paper_key] == embed_text:
+                    stats["unchanged"] += 1
+                    continue
+                # Re-curated (or re-normalised) since it was embedded: drop the
+                # old row and embed the new text in this same pass.
+                stale_keys.append(paper_key)
+                stats["updated"] += 1
+            else:
+                stats["added"] += 1
 
             batch_texts.append(embed_text)
             batch_meta.append({
@@ -351,8 +398,28 @@ class VectorStore:
                 "fingerprint_json": json.dumps(fp, ensure_ascii=False),
             })
 
+        # Rows whose fingerprint file is gone. Add-only ingestion could never
+        # remove them, so the shipped index carries ~1,700 rows that
+        # `get_fingerprint` cannot resolve. Destructive, therefore opt-in.
+        orphans = sorted(set(existing) - seen_keys)
+        stats["orphans_seen"] = len(orphans)
+        if orphans and not prune_orphans:
+            logger.warning(
+                f"{len(orphans)} indexed rows have no fingerprint file on disk "
+                f"and will keep returning from search_corpus (a get_fingerprint "
+                f"follow-up on them fails). Pass --prune-orphans to delete them.")
+        if orphans and prune_orphans:
+            stats["pruned"] = self._delete_keys(table, orphans)
+            logger.info(f"Pruned {stats['pruned']} orphaned rows.")
+
+        if stale_keys:
+            removed = self._delete_keys(table, stale_keys)
+            logger.info(f"Re-embedding {removed} changed fingerprints.")
+
         if not batch_meta:
-            logger.info("Nothing new to ingest.")
+            logger.info(
+                f"Nothing to embed (unchanged {stats['unchanged']}, "
+                f"pruned {stats['pruned']}).")
             return 0
 
         logger.info(f"Encoding {len(batch_texts)} fingerprints...")
@@ -369,8 +436,34 @@ class VectorStore:
         ]
 
         table.add(records)
-        logger.info(f"Ingested {len(records)} fingerprints.")
+        logger.info(
+            f"Ingested {len(records)} fingerprints "
+            f"(new {stats['added']}, re-embedded {stats['updated']}, "
+            f"unchanged {stats['unchanged']}, pruned {stats['pruned']}).")
         return len(records)
+
+    @staticmethod
+    def _delete_keys(table, keys: Sequence[str], chunk: int = 200) -> int:
+        """
+        Delete rows by ``paper_key``, in chunks.
+
+        One predicate per key would be thousands of round trips; one predicate
+        for all of them overflows LanceDB's filter parser on a full corpus.
+        Values go through `_sql_quote` for the same reason search filters do —
+        a `paper_key` is a DOI, and DOIs are allowed to contain quotes.
+        """
+        deleted = 0
+        for i in range(0, len(keys), chunk):
+            batch = keys[i:i + chunk]
+            predicate = "paper_key IN (%s)" % ", ".join(
+                _sql_quote(k) for k in batch)
+            try:
+                table.delete(predicate)
+                deleted += len(batch)
+            except Exception as exc:  # noqa: BLE001 - one bad chunk must not
+                logger.warning(  # abort an otherwise-good ingest
+                    f"could not delete {len(batch)} rows: {exc}")
+        return deleted
 
     def search(
         self,
