@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from src.pipeline_runner import PipelineError
+
 _ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -586,3 +588,124 @@ def test_gemini_stages_do_not_call_anthropics_token_counter(config, monkeypatch)
 
     r._estimate_stage_usage(_Runner(), "q" * 100, None, "claude-sonnet-5", "claude")
     assert called, "the Claude path must still use the real counter"
+
+
+def test_an_unresolvable_partner_name_fails_open(config, monkeypatch, tmp_path):
+    """
+    An antibody, nanobody or peptide partner has no gene symbol, so
+    `resolve_target` returns nothing for it. The guard must then take the
+    partner chain on trust — it has no evidence either way.
+
+    Caught on a live GCGR run: `GCGR / mAb1` resolved only GCGR, so the loop
+    compared the mAb1 chain against GCGR's OWN accession, got the mismatch that
+    comparison must produce, and hard-failed a correct chain assignment. The
+    same shape would have failed the PD-L1 / anti-PD-L1 VHH campaign this whole
+    guard family exists because of.
+    """
+    from src.ortholog_check import MATCH, MISMATCH, ChainVerdict
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner(config, workflow="ppi")
+    structure = tmp_path / "x.cif"
+    structure.write_text("", encoding="utf-8")
+    monkeypatch.setattr(r, "_binder_structure_path", lambda pdb: structure)
+    monkeypatch.setattr("src.target_resolve.fetch_uniprot_sequence", lambda a: "SEQ")
+    monkeypatch.setattr(r, "_chain_identity_to_uniprot", lambda *a, **k: 0.99)
+
+    class _R:
+        def __init__(self, ok, uniprot=""): self.ok, self.uniprot, self.gene = ok, uniprot, "G"
+    monkeypatch.setattr("src.target_resolve.resolve_target",
+                        lambda n: _R(True, "P47871") if n == "GCGR" else _R(False))
+
+    # target chain matches the one resolvable name -> the partner is the
+    # unresolvable one -> nothing to verify, must not raise.
+    monkeypatch.setattr(r, "_classify_target_chain",
+                        lambda *a, **k: ChainVerdict(verdict=MATCH, reason="x"))
+    r._verify_partner_chain_is_requested(
+        "GCGR / mAb1", {"target_chain": "A", "partner_chain": "C"}, "5XEZ",
+        source="test")
+
+    # ...but when BOTH names resolve, a genuine substitution still raises.
+    monkeypatch.setattr("src.target_resolve.resolve_target",
+                        lambda n: _R(True, "P47871" if n == "GCGR" else "O60894"))
+    monkeypatch.setattr(r, "_classify_target_chain",
+                        lambda *a, **k: ChainVerdict(verdict=MISMATCH, reason="different molecule"))
+    with pytest.raises(PipelineError, match="not one of the proteins"):
+        r._verify_partner_chain_is_requested(
+            "CALCRL / RAMP1", {"target_chain": "R", "partner_chain": "P"}, "6E3Y",
+            source="test")
+
+
+# ----------------------------------------------------------------------
+# 10. Size policy judged on what will actually be designed
+# ----------------------------------------------------------------------
+
+def test_designable_size_is_gated_on_the_foundry_engine():
+    """
+    `--design-engine boltzgen` has no trim stage, so there the RAW chain length
+    is the operative number and refusing an oversized chain is correct. The
+    designable count may only relax the policy when a trim will actually follow.
+    """
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner._stage_structure)
+    i_gate = src.index('self._design_engine == "foundry"')
+    i_call = src.index("_designable_chain_sizes(")
+    assert i_gate < i_call, "the designable-size lookup must sit behind the engine gate"
+
+
+def test_no_oversized_chain_means_no_lookup(config, monkeypatch):
+    """The common case must cost nothing — no metadata call, no topology call."""
+    from src.pipeline_runner import PipelineRunner
+
+    called = []
+    monkeypatch.setattr("src.target_resolve.entry_metadata",
+                        lambda *a, **k: called.append(1) or {})
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._designable_chain_sizes("5XEZ", {"A": 120, "B": 90}, 500) == {}
+    assert not called
+
+
+def test_a_soluble_chain_keeps_its_raw_size(config, monkeypatch):
+    """Only membrane proteins have a transmembrane span to strip."""
+    from src.pipeline_runner import PipelineRunner
+
+    monkeypatch.setattr("src.target_resolve.entry_metadata",
+                        lambda *a, **k: {"1ABC": {"chains": {"A": {"uniprots": ["P00001"]}}}})
+
+    class _Topo:
+        fetched, is_membrane, segments = True, False, []
+    monkeypatch.setattr("src.membrane_topology.fetch_topology", lambda a: _Topo())
+
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._designable_chain_sizes("1ABC", {"A": 600}, 500) == {}
+
+
+def test_a_membrane_chain_reports_its_designable_count(config, monkeypatch):
+    """
+    5XEZ chain A: a 574-residue GCGR-endolysin fusion that the structure stage
+    refused against a 500-residue limit, recommending exactly the crop the trim
+    stage performs automatically. 167 residues survive TM stripping.
+    """
+    from src.pipeline_runner import PipelineRunner
+
+    monkeypatch.setattr("src.target_resolve.entry_metadata",
+                        lambda *a, **k: {"5XEZ": {"chains": {"A": {"uniprots": ["P47871"]}}}})
+
+    class _Topo:
+        fetched, is_membrane, segments = True, True, []
+
+    class _Restrict:
+        applies = True
+        allowed_auth = set(range(167))
+    monkeypatch.setattr("src.membrane_topology.fetch_topology", lambda a: _Topo())
+    monkeypatch.setattr("src.membrane_topology.restriction_for",
+                        lambda *a, **k: _Restrict())
+
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._designable_chain_sizes("5XEZ", {"A": 574}, 500) == {"A": 167}
+    # a restriction that keeps everything is not a reason to relax the policy
+    _Restrict.allowed_auth = set(range(574))
+    assert r._designable_chain_sizes("5XEZ", {"A": 574}, 500) == {}

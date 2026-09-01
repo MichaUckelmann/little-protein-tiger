@@ -1603,6 +1603,74 @@ class PipelineRunner:
                 f"of reading this specific structure's residues — re-run the "
                 f"stage, or pick a different structure.")
 
+    def _designable_chain_sizes(self, pdb_id: str, chain_counts: dict[str, int],
+                                over: int) -> dict[str, int]:
+        """
+        For each oversized chain, how many residues survive TM stripping.
+
+        A membrane protein's raw chain length is not the number that will be
+        designed against. `structure_trim` drops the transmembrane span AND the
+        opposite face before anything reaches RFD3 — always, because in an
+        isolated structure a TM helix is an exposed hydrophobic slab that
+        preferentially attracts binders which cannot work in a cell. Judging the
+        target-size policy on the raw length therefore refuses targets that are
+        comfortably designable once cropped.
+
+        Measured on the run that motivated this: 5XEZ chain A is a
+        GCGR-endolysin fusion, 574 residues, so the structure stage returned
+        NO_GO against a 500-residue limit and recommended "crop to the ECD or
+        use an isolated-ECD PDB" — which is exactly what the trim stage two
+        steps later does automatically. GCGR's UniProt topology leaves 167
+        extracellular residues, inside even the 220-residue trim budget, and all
+        four declared hotspots sit in the 26-136 ECD.
+
+        No new heuristic: the segments are deposited UniProt annotation mapped
+        into author numbering through the deposited RCSB entity alignment, and
+        the real cut still happens in `structure_trim` with every one of its
+        refusals intact (MIN_TARGET_RESIDUES, the exposed-hydrophobic rules,
+        BSA retention). This only stops the structure stage refusing early on a
+        number that is not the operative one.
+
+        Returns `{chain: designable_count}` for oversized chains where the
+        answer is both known and smaller. Silent for soluble proteins, for
+        chains with no resolvable accession, and whenever the topology lookup
+        fails — in each case the caller keeps the raw number.
+        """
+        from src.membrane_topology import fetch_topology, restriction_for
+        from src.target_resolve import entry_metadata
+
+        oversized = {c: n for c, n in chain_counts.items() if n and n > over}
+        if not oversized:
+            return {}
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+        except Exception as exc:
+            logger.debug(f"designable-size lookup skipped for {pdb_id}: {exc}")
+            return {}
+        chains = meta.get("chains") or {}
+
+        out: dict[str, int] = {}
+        for chain, raw in oversized.items():
+            accs = [a for a in ((chains.get(chain) or {}).get("uniprots") or []) if a]
+            for acc in accs:
+                try:
+                    topo = fetch_topology(acc)
+                    if not (topo.fetched and topo.is_membrane):
+                        continue
+                    restrict = restriction_for(pdb_id, chain, acc,
+                                               side="extracellular", topology=topo)
+                except Exception as exc:
+                    logger.debug(f"topology lookup failed for {acc}: {exc}")
+                    continue
+                if restrict.applies and 0 < len(restrict.allowed_auth) < raw:
+                    out[chain] = len(restrict.allowed_auth)
+                    logger.info(
+                        f"  chain {chain} is {raw} residues but only "
+                        f"{out[chain]} are designable once the trim drops the "
+                        f"transmembrane span and the cytoplasmic face")
+                    break
+        return out
+
     def _check_structure_organism(self, pdb_id: str, target_complex: str) -> None:
         """
         Say at TARGET-SELECTION time that the chosen structure is not human.
@@ -1755,35 +1823,68 @@ class PipelineRunner:
         from src.ortholog_check import MISMATCH
         from src.target_resolve import fetch_uniprot_sequence, resolve_target
 
-        verdicts: dict[str, object] = {}
-        for name in names:
-            try:
-                resolved = resolve_target(name)
-            except Exception as exc:
-                logger.debug(f"could not resolve {name!r}: {exc}")
-                continue
-            acc = resolved.uniprot if (resolved and resolved.ok) else ""
-            if not acc:
-                continue
+        def classify(chain: str, gene: str, acc: str):
             identity = None
             ref_seq = fetch_uniprot_sequence(acc)
             if ref_seq:
                 identity = self._chain_identity_to_uniprot(
-                    structure_path, partner_chain, ref_seq)
-            verdict = self._classify_target_chain(
-                pdb_id, partner_chain, identity, resolved.gene or name, acc)
+                    structure_path, chain, ref_seq)
+            return self._classify_target_chain(pdb_id, chain, identity, gene, acc)
+
+        resolved: dict[str, tuple[str, str]] = {}
+        for name in names:
+            try:
+                r = resolve_target(name)
+            except Exception as exc:
+                logger.debug(f"could not resolve {name!r}: {exc}")
+                continue
+            if r and r.ok and r.uniprot:
+                resolved[name] = (r.gene or name, r.uniprot)
+        if not resolved:
+            logger.warning(
+                f"  ⚠ partner chain not verified — could not resolve either of "
+                f"{names} to a UniProt accession")
+            return
+
+        # Which requested protein is the TARGET? Everything else is the partner.
+        # Without this the loop below compares the partner chain against the
+        # TARGET's accession, gets a mismatch, and raises — which is how an
+        # antibody partner (`mAb1`, `anti-PD-L1 VHH`, `Nanobody 35`: none of
+        # them resolve to a gene) turned a correct chain assignment into a hard
+        # failure on a real GCGR run.
+        target_chain = str(handoff.get("target_chain")
+                           or handoff.get("chain_a") or "").strip()
+        # No `len(resolved) > 1` shortcut here: the case that matters most is
+        # exactly the one where only ONE name resolved, because then the
+        # unresolved one is the partner and there is nothing to check it with.
+        target_name = None
+        if target_chain:
+            for name, (gene, acc) in resolved.items():
+                if classify(target_chain, gene, acc).verdict != MISMATCH:
+                    target_name = name
+                    break
+
+        partner_candidates = {n: v for n, v in resolved.items() if n != target_name}
+        if not partner_candidates:
+            unresolved = [n for n in names if n not in resolved]
+            logger.warning(
+                f"  ⚠ partner chain not verified — the requested partner "
+                f"{unresolved or names} did not resolve to a UniProt accession "
+                f"(antibodies, nanobodies and peptides usually do not). "
+                f"Chain {partner_chain} is taken on trust.")
+            return
+
+        # A target/partner swap is legitimate, so accept EITHER requested
+        # protein; only "neither" is evidence of a substitution.
+        verdicts: dict[str, object] = {}
+        for name, (gene, acc) in resolved.items():
+            verdict = classify(partner_chain, gene, acc)
             verdicts[name] = verdict
             if verdict.verdict != MISMATCH:
                 logger.info(
                     f"  partner chain OK — {partner_chain} in {pdb_id} is "
                     f"{name} ({verdict.verdict}): {verdict.reason}")
                 return
-
-        if not verdicts:
-            logger.warning(
-                f"  ⚠ partner chain not verified — could not resolve either of "
-                f"{names} to a UniProt accession")
-            return
 
         detail = "; ".join(f"vs {n}: {v.reason}" for n, v in verdicts.items())
         raise PipelineError(
@@ -3739,6 +3840,13 @@ class PipelineRunner:
         max_target = int(constraints_cfg.get("max_target_residues", 500))
         warn_target = int(constraints_cfg.get("target_residues_warn", 250))
 
+        # Only when a trim will actually follow. `--design-engine boltzgen` has
+        # no trim stage, so there the raw length IS the operative number and
+        # the existing refusal is correct.
+        designable: dict[str, int] = {}
+        if self._design_engine == "foundry":
+            designable = self._designable_chain_sizes(pdb_id, chain_counts, max_target)
+
         chain_hint = ""
         if chain_descs or chain_counts:
             lines: list[str] = []
@@ -3746,6 +3854,9 @@ class PipelineRunner:
                 desc = chain_descs.get(ch, "")
                 n = chain_counts.get(ch)
                 size_tag = f" [{n} residues]" if n is not None else ""
+                if ch in designable:
+                    size_tag = (f" [{n} residues raw, {designable[ch]} designable "
+                                f"after transmembrane stripping]")
                 lines.append(f"  Chain {ch}: {desc}{size_tag}")
             chain_hint = (
                 "\n\nChain entity descriptions and sizes from the mmCIF header "
@@ -3757,7 +3868,16 @@ class PipelineRunner:
                 f"≤ {warn_target} is preferred. If no candidate chain fits, recommend "
                 f"cropping to the binding domain or selecting a different PDB rather "
                 f"than proceeding.\n"
-                f"\nSelect the chains that form the biologically relevant "
+                + ("\n**Judge the policy on the DESIGNABLE count where one is "
+                   "given.** That chain is a membrane protein, and the pipeline's "
+                   "own trim stage drops its transmembrane span and its "
+                   "cytoplasmic face automatically before any design runs — a "
+                   "binder against lipid-buried surface cannot work in a cell. "
+                   "The raw length is not what will be designed against, so do "
+                   "not return NO_GO on it, and do not recommend cropping the "
+                   "structure by hand: that is what the next stage does. Pick "
+                   "hotspots on the extracellular face.\n" if designable else "")
+                + f"\nSelect the chains that form the biologically relevant "
                 f"{target_complex} interface. "
                 f"Do NOT analyse crystal-packing contacts between identical chain copies."
             )
