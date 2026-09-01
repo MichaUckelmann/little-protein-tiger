@@ -29,7 +29,12 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
    2. **graph rebuild** (`build_and_cluster`) — refreshes `data/depmap_edges.parquet` and `data/clusters.json` so cluster tools see new papers. Skip with `--skip-graph-rebuild`.
    3. **vector ingestion** (`run_ingest`) — embeds new fingerprints into LanceDB so `search_corpus` can find them. Skip with `--skip-vector-ingest`.
 
-   All three are idempotent and skip cleanly when there's nothing to do. The standalone scripts (`normalize_identifiers.py`, `cluster_corpus.py`, `ingest_vectors.py`) remain available for migrations, force-rebuilds, and debugging. The in-process `_GRAPH_CACHE` in `src/_corpus_graph.py` is mtime-invalidated so a long-running MCP server picks up new fingerprints without restart.
+   All three are idempotent and skip cleanly when there's nothing to do. Vector
+   ingestion additionally **re-embeds a fingerprint whose text has changed**
+   (dedup keys on `paper_key` + the embedded text, not the key alone — on the
+   shipped corpus 704 rows carry a vector older than their fingerprint), and
+   reports rows whose fingerprint file is gone; deleting those needs an explicit
+   `--prune-orphans`. The standalone scripts (`normalize_identifiers.py`, `cluster_corpus.py`, `ingest_vectors.py`) remain available for migrations, force-rebuilds, and debugging. The in-process `_GRAPH_CACHE` in `src/_corpus_graph.py` is mtime-invalidated so a long-running MCP server picks up new fingerprints without restart.
 
 2. **Expert skill execution** (`skills/` + `src/skill_runner.py` + `src/pipeline_runner.py`):
    Each `skills/<name>/SKILL.md` is a system prompt plus tool-call protocol. Skills run in **two modes**:
@@ -322,9 +327,21 @@ them without re-reading this list is how they get silently reverted.
   (`_earlier_refold_rate`), which tracked production within 10–17% on all three
   campaigns that ran both. This feeds `est_gpu_hours`, and through
   `choose_compute()` the local-vs-cluster decision.
+  **There is now ONE anchor and ONE law**: `campaign_calibration` imports both
+  from `foundry_runner` instead of holding its own (it kept a stale flat 8.4,
+  and it is the GATE's budget check, so on MASH/TEAD4 the gate costed 22,197
+  refolds at 63 GPU-h — "inside the 120 h budget" — while the planner costed the
+  same work at 138 GPU-h). `calibrate()` takes `n_tokens` and applies the size
+  law itself, so a caller that passes neither a measured rate nor a size gets a
+  warning rather than a silently under-costed SCALE_UP.
 - **Disk, not GPU, is the binding constraint**: ~2.5 MB per RF3 design directory,
   ~120 GB for a full production campaign. `plan_campaign` clamps `n_batches` to the
-  disk budget, and `prune_confidences` deletes PAE matrices for non-survivors.
+  disk budget, and `prune_confidences` deletes PAE matrices for non-survivors —
+  wired into `_stage_binder_scoring` after `write_ranking_outputs`, and **off
+  unless `design.foundry.prune_confidences` is set**, because ipSAE cannot be
+  recomputed once the matrices are gone. It is skipped for a cluster campaign
+  and skipped entirely when nothing survived (that is exactly the run an
+  ITERATE verdict tells you to re-gate at a softer bar).
 - **Trims preserve author numbering** so hotspot ids stay valid. They prefer a single
   contiguous segment, but NOT because RFD3 has to build across the gaps — it doesn't. The
   target is fixed conditioning: the sidecar's `sampled_contig` reads
@@ -617,7 +634,17 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 
 - **Strict provenance**: every claim carries a `source_span` (e.g. `"Page 4, Para 2"`). Tool consumers may reject fingerprints without it.
 - **Units are normalised at extraction time**: `affinities_kd_Molar` and `inhibitory_constant_Ki` are floats in **Molar** (not nM/µM). `protein_origin_organism` is an **NCBI taxonomy integer ID** (e.g. 9606). `confidence_score` is 0.0–1.0.
-- **Closed enums**: `study_type` and `study_category` are validated against the schema — adding a new category means updating both the schema and any pathway-expert / complex-expert skill prompts that filter on it.
+- **Closed enums**: `study_type` and `study_category` are validated against the
+  schema, and the enums are **parsed out of `extraction_schema.json` at import**
+  (`curator.load_schema_enums`) rather than restated in Python — that file is now
+  load-bearing, so schema and validator cannot drift. An out-of-enum value raises
+  a `ValidationError`, which the retry loop feeds back into the same conversation
+  as a correction turn. Adding a category means editing `extraction_schema.json`,
+  `curation_prompt.md`, and the `study_category` enum in BOTH tool definitions
+  (`skill_runner._TOOL_DEFS`, `vector_store.SEARCH_TOOL_DEFINITION`) — pinned by
+  `tests/test_audit_fixes.py`. `study_category` has nine values: the six original
+  plus `enzymology`, `biocatalysis` and `computational_chemistry`, which 565
+  shipped fingerprints already used before anything validated them.
 - **Curator output is strict JSON only**, no prose. Parsing in `src/curator.py` will fail loudly otherwise.
 
 ## Identifier resolution: official symbols win, ambiguity is refused
@@ -719,9 +746,26 @@ it.
 - `src/network_svg.py` — the single renderer for every interaction/DepMap map; see
   its module docstring for the visual grammar. Don't hand-roll a second one.
 - `_verify_target_chain_assignment` ⇄ `_verify_ppi_chain_assignment` ⇄ `_verify_hotspot_grounding`
-  — the PD-L1/8ZNL guards. Now called from BOTH `_stage_binder_interface` (binder) and
-  `_stage_structure` (PPI); a future stage that also calls `complex-structure-analysis`
-  needs the same two calls, not a reason to skip them.
+  ⇄ `_verify_partner_chain_is_requested` — the PD-L1/8ZNL/6E3Y guards. All called from
+  BOTH `_stage_binder_interface` (binder) and `_stage_structure` (PPI); a future stage
+  that also calls `complex-structure-analysis` needs the same calls, not a reason to
+  skip them. **The partner guard must be given the complex the UPSTREAM stage settled
+  on, never `handoff["target_complex"]`**: a stage that renames the complex to whatever
+  it actually analysed would otherwise validate its own substitution. Asked for
+  CALCRL/RAMP1 in 6E3Y (chain E *is* RAMP1), the structure stage analysed chain P — the
+  38-residue CGRP agonist peptide — and renamed the complex to "CALCRL / CGRP"; chain R
+  really is CALCRL, so every other guard passed. That substitution is also what put
+  three hotspots inside the membrane, since the CGRP vestibule penetrates the TM bundle.
+- `_check_structure_organism` runs at TARGET-SELECTION time (after pathway, before
+  literature) and only warns: an ortholog is often a fine template, which is why
+  `_check_ortholog_conservation` measures rather than assumes. It costs one GraphQL
+  call and names the human alternatives — on 5GRS it reports that human SCAP structures
+  6M49/7ETW exist, two LLM stages before the conservation gate would refuse the yeast one.
+- **An `AF-<accession>` pseudo-id is a legal `pdb_id`** — `_ensure_structure` fetches the
+  AlphaFold model — but ONLY with `design_intent: inhibit_active_site`, because the model
+  is a monomer with no partner to disrupt. `_check_af_model_intent` enforces that pairing;
+  both target-selecting skills now know the id is available, which is what a
+  well-evidenced target with no PDB entry needs.
 - `_bridge_ppi_to_foundry` ⇄ `_run_binder_track`'s `"target_intel"`/`"interface"` stage-file
   loading (`_load_binder_handoff`) — the bridge writes synthetic/copied artifacts at those
   exact paths (`_BINDER_STAGE_FILES`) because `_run_binder_track` always reads them off disk

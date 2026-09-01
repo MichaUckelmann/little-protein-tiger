@@ -50,8 +50,8 @@ Identify:
   or a process ("ciliogenesis", "macroautophagy initiation", "spindle assembly
   checkpoint"). The novelty mandate applies equally to both — many tractable
   PPIs in basic biology have no disease anchor yet.
-- `pathway_hint` — optional; e.g. "Hippo", "KRAS signaling", "cGAS-STING",
-  "Wnt", "AMPK", "Integrated Stress Response"
+- `pathway_hint` — optional; a pathway name supplied by the caller. Use it only if
+  given; never invent one, and never carry an example from this prompt into a report.
 - `mode` — derived: `disease_anchored` if a disease/indication was named,
   `basic_biology` if only a pathway/process was named. This determines whether
   downstream queries include disease-essentiality terms or focus on
@@ -581,6 +581,26 @@ If `metadata_available` is `false`, use PDB IDs as-is and note it in the report.
   proteins (Phase 2 proteins first) as a fallback. Apply the same selection
   criteria. If a suitable structure is found, use its PDB ID in the handoff.
   If no suitable structure found from either source, write `NOT_FOUND`.
+
+---
+
+**When the best target has no experimental structure, an AlphaFold model is a
+legal answer.** Emit `pdb_id: AF-<UniProt accession>` (e.g. the accession you
+resolved for that protein) and the pipeline fetches the predicted model. Two
+conditions, both hard:
+
+1. **Only with `design_intent: inhibit_active_site`.** An AlphaFold model is a
+   single chain, so there is no partner in it to disrupt or stabilise. A run
+   that pairs `AF-` with `disrupt` or `stabilize` is refused before any spend.
+2. **Only when no experimental co-complex exists.** An experimental structure of
+   the real complex always wins; check with `search_rcsb_pdb` first and say in
+   the report that you looked.
+
+This matters most for the case that used to dead-end: a well-evidenced target
+with no PDB entry. Recommending a *downstream* complex instead is a real option,
+but it answers a different question than the user asked — if you do that, say so
+in one clause in PRIMARY RECOMMENDATION and keep the original target in the
+landscape at its own tier.
 
 ---
 

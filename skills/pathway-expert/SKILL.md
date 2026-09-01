@@ -48,7 +48,8 @@ target (PPI or direct-inhibition) and PDB ID(s) ready to pass downstream.
 
 Identify:
 - `disease_or_cancer` — e.g. "mesothelioma", "PDAC", "NSCLC", "HCC", "AML", "Alzheimer's", "rheumatoid arthritis"
-- `pathway_hint` — optional; e.g. "Hippo", "KRAS signaling", "cGAS-STING", "SCAP-SREBP"
+- `pathway_hint` — optional; a pathway name supplied by the caller. Use it only if
+  given; never invent one, and never carry an example from this prompt into a report.
 - `constraint` — optional; e.g. "focus on extracellular PPIs", "cyclic peptide accessible"
 - `disease_category` — classify the disease into one of the categories below and resolve the three
   query term variables used in Phase 2. If the disease spans multiple categories, pick the most
@@ -272,8 +273,8 @@ use the PDB IDs as-is and note in the report that resolution/method/organism dat
 unavailable — an unstated organism is itself a finding, not a blank to leave silent.
 
 **Stating the organism.** Every PDB id you cite anywhere in the report — node
-assessment, landscape, PRIMARY RECOMMENDATION — must carry its source organism, e.g.
-`5GRS (Schizosaccharomyces pombe — ortholog)`, `3KYS (Homo sapiens)`. Where the
+assessment, landscape, PRIMARY RECOMMENDATION — must carry its source organism, in the
+form `<PDB ID> (<organism>)`, adding `— ortholog` when it is not human. Where the
 recommended structure is an ortholog, say in one clause why no human structure was
 used (none solved / none in corpus) and which human protein it stands in for. The
 downstream stages run a deterministic conservation check on an ortholog epitope and
@@ -389,7 +390,8 @@ For each candidate target node — max 4 nodes total, 6 bullet lines per node:
 - Dysregulation: <one sentence — cite source_span + DOI>
 - Genetic dependency: <evidence, or omit if absent>
 - Prior therapeutic strategies: <prior targeting, or omit if absent>
-- Suggested PDB structures: <IDs, each with its source organism — e.g. "5GRS (S. pombe — ortholog), 4YHC (S. pombe — ortholog)"; only IDs returned under THIS protein's own key; omit if absent>
+- Suggested PDB structures: <IDs, each annotated `<ID> (<organism>)` and `— ortholog`
+  when not human; ONLY ids returned by a tool under THIS protein's own key; omit if absent>
 - Inferred PPI opportunity: <max 2 sentences: named partner, evidence, consequence of disruption — or "Insufficient evidence." if Phase 4a conditions not met>
 
 ### TARGET OPPORTUNITY LANDSCAPE
@@ -434,7 +436,7 @@ structural tractability, and novelty value). If the user has provided a constrai
   "ortholog" marker where non-human; "Not found in corpus" if absent —
   provide RCSB search terms and ask user to confirm before proceeding>
 - **Structure organism**: <organism of the recommended PDB, e.g. "Homo sapiens" or
-  "Schizosaccharomyces pombe (ortholog of human SCAP/SREBF1)". If an ortholog, add one
+  `<organism> (ortholog of human <GENE>)`. If an ortholog, add one
   clause on why no human structure was used and which site is expected to be conserved>
 - **Proposed next step**: Run complex-structure-analysis on PDB <ID>
   (only if PDB confirmed from corpus; otherwise await user input)
@@ -534,11 +536,29 @@ extracts the `PRIMARY RECOMMENDATION` block and passes it to Stage 1 automatical
   is present in any fingerprint for the recommended complex, write `"Not found in corpus"`
   and provide the user with RCSB search terms to look it up manually.
 - **Never move a PDB id between nodes.** An id is only evidence for the protein whose
-  own `by_protein` key returned it. Two real failures from one run: `8T5E` was listed
-  under CASP6 but is titled "De novo design of high-affinity protein binders to
-  bioactive helical peptides" and came back under a *BID* query; and `5GRS` was listed
-  under three separate nodes including CASP2, whose key returned nothing at all. Both
-  are avoided by reading `title` and staying inside the key.
+  own `by_protein` key returned it. Two real failures from one run: an id listed under
+  a caspase node turned out to be a de novo binder-design entry that had matched a
+  three-letter gene symbol as a substring of an unrelated word; and a second id was
+  copied under three separate nodes, one of whose keys had returned nothing at all.
+  Both are avoided by reading `title` and staying inside the key.
+**When the best target has no experimental structure, an AlphaFold model is a
+legal answer.** Emit `pdb_id: AF-<UniProt accession>` (e.g. the accession you
+resolved for that protein) and the pipeline fetches the predicted model. Two
+conditions, both hard:
+
+1. **Only with `design_intent: inhibit_active_site`.** An AlphaFold model is a
+   single chain, so there is no partner in it to disrupt or stabilise. A run
+   that pairs `AF-` with `disrupt` or `stabilize` is refused before any spend.
+2. **Only when no experimental co-complex exists.** An experimental structure of
+   the real complex always wins; check with `search_rcsb_pdb` first and say in
+   the report that you looked.
+
+This matters most for the case that used to dead-end: a well-evidenced target
+with no PDB entry. Recommending a *downstream* complex instead is a real option,
+but it answers a different question than the user asked — if you do that, say so
+in one clause in PRIMARY RECOMMENDATION and keep the original target in the
+landscape at its own tier.
+
 - **Never report a PDB id without its source organism.** Whether the entry is human or
   an ortholog changes what the downstream stages have to verify, and the organism is in
   the tool payload — there is no reason to leave it out or to guess it.
