@@ -226,6 +226,38 @@ to focus its geometry pass).
 Use `source_span` values from fingerprints to cite provenance (e.g., "Page 3,
 Para 1" of DOI 10.7554/eLife.25068).
 
+### On a membrane protein, only propose residues a binder can reach
+
+`priority_residues` is treated as AUTHORITATIVE by the structure stage — it is
+told to confirm your residues geometrically, not to re-derive which ones matter.
+So a residue you propose inside the membrane becomes a residue the pipeline
+tries to design against, and the run is refused several stages later.
+
+A designed binder is a folded protein in solution. On any membrane protein —
+GPCR, receptor kinase, ion channel, single-pass receptor — it can only engage
+surface exposed on ONE face of the bilayer:
+
+- **Propose**: extracellular domains (class B/C GPCR ECDs, receptor
+  ectodomains), N-termini, extracellular loops, and the ligand-binding surfaces
+  of secreted-factor / receptor pairs.
+- **Never propose**: any transmembrane residue, any intracellular residue, or
+  the orthosteric pocket of a class A GPCR — the last is inside the helical
+  bundle and, for lipid ligands, is reached laterally from within the membrane.
+- **Never mix faces** in one hint. An epitope split across the membrane is not
+  a site one binder can engage.
+
+Literature reports the residues that matter *mechanistically*, which for a
+receptor routinely includes pocket-lining transmembrane residues. Those are
+correct biology and the wrong design target: filter them out, and say in the
+report that you did. If the only residues the corpus gives you are
+intramembrane, that is a genuine finding — set `tractability: Poor` and explain,
+rather than passing them on.
+
+Worked example from a real run: for the CGRP receptor the useful hint was
+`RAMP1 F83/W84/P85` — the extracellular domain, the epitope the approved
+antibody erenumab engages. The same hint also carried `CALCRL W254/Y255/H295`,
+which are transmembrane by UniProt annotation and cost the run a stage.
+
 ---
 
 ## Report Format
