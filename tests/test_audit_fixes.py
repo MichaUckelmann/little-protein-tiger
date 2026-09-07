@@ -839,3 +839,95 @@ def test_the_structure_prompt_carries_the_measured_interfaces():
     src = inspect.getsource(PipelineRunner._stage_structure)
     assert src.count("_ppi_interface_options(") == 2, \
         "both query-construction branches must carry the measured interfaces"
+
+
+# ----------------------------------------------------------------------
+# 13. Structure choice: best-evidenced != best to design against
+# ----------------------------------------------------------------------
+
+_SIX = {"chains": {
+    "A": {"length": 394, "description": "Guanine nucleotide-binding protein G(s) subunit", "uniprots": ["P63092"]},
+    "B": {"length": 350, "description": "Guanine nucleotide-binding protein G(I)/G(S)", "uniprots": ["P62873"]},
+    "E": {"length": 149, "description": "Receptor activity-modifying protein 1", "uniprots": ["O60894"]},
+    "N": {"length": 138, "description": "Nanobody 35", "uniprots": []},
+    "P": {"length": 38, "description": "Calcitonin gene-related peptide 1", "uniprots": ["P06881"]},
+    "R": {"length": 490, "description": "Calcitonin gene-related peptide type 1 receptor", "uniprots": ["Q16602"]},
+}, "resolution_A": 3.3, "method": "ELECTRON MICROSCOPY"}
+
+_ECD = {"chains": {
+    "A": {"length": 115, "description": "Calcitonin gene-related peptide type 1 receptor", "uniprots": ["Q16602"]},
+    "C": {"length": 96, "description": "Receptor activity-modifying protein 1", "uniprots": ["O60894"]},
+}, "resolution_A": 2.1, "method": "X-RAY DIFFRACTION"}
+
+
+def _patch_rcsb(monkeypatch, meta):
+    class _R:
+        def __init__(self, ok, uniprot="", gene=""):
+            self.ok, self.uniprot, self.gene = ok, uniprot, gene
+    monkeypatch.setattr("src.target_resolve.resolve_target",
+                        lambda n: _R(True, "Q16602", "CALCRL") if "CALCRL" in n.upper()
+                        else _R(True, "O60894", "RAMP1"))
+    monkeypatch.setattr("src.target_resolve.find_complex_structures",
+                        lambda *a, **k: list(meta))
+    monkeypatch.setattr("src.target_resolve.entry_metadata",
+                        lambda ids, *a, **k: {i: meta[i] for i in ids if i in meta})
+
+
+def test_a_scaffolded_complex_is_swapped_for_the_clean_ectodomain(config, monkeypatch):
+    """
+    The corpus cites the landmark structure, which for a receptor is the
+    full-length agonist-bound cryo-EM complex — carrying a nanobody, a
+    heterotrimeric G protein and the peptide ligand. The same interface exists
+    in a 2.1 A ectodomain crystal structure with nothing else in the box.
+    """
+    from src.pipeline_runner import PipelineRunner
+
+    _patch_rcsb(monkeypatch, {"6E3Y": _SIX, "3N7S": _ECD})
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._select_designable_structure("CALCRL / RAMP1", "6E3Y",
+                                          operator_pinned=False) == "3N7S"
+
+
+def test_an_operator_pinned_pdb_is_never_overridden(config, monkeypatch):
+    from src.pipeline_runner import PipelineRunner
+
+    _patch_rcsb(monkeypatch, {"6E3Y": _SIX, "3N7S": _ECD})
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._select_designable_structure("CALCRL / RAMP1", "6E3Y",
+                                          operator_pinned=True) is None
+
+
+def test_a_clean_complex_is_left_alone(config, monkeypatch):
+    """Only a measurable defect in the chosen entry justifies overriding an
+    evidence-based choice."""
+    from src.pipeline_runner import PipelineRunner
+
+    _patch_rcsb(monkeypatch, {"3N7S": _ECD, "6E3Y": _SIX})
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._select_designable_structure("CALCRL / RAMP1", "3N7S",
+                                          operator_pinned=False) is None
+
+
+def test_an_entry_without_both_proteins_is_not_a_candidate(config, monkeypatch):
+    """The alternative must actually contain the requested interface."""
+    from src.pipeline_runner import PipelineRunner
+
+    lone = {"chains": {"A": {"length": 115, "description": "CGRP receptor",
+                             "uniprots": ["Q16602"]}},
+            "resolution_A": 1.5, "method": "X-RAY DIFFRACTION"}
+    _patch_rcsb(monkeypatch, {"6E3Y": _SIX, "9XXX": lone})
+    r = PipelineRunner(config, workflow="ppi")
+    # 9XXX is higher resolution and has no scaffolding, but lacks RAMP1
+    assert r._select_designable_structure("CALCRL / RAMP1", "6E3Y",
+                                          operator_pinned=False) is None
+
+
+def test_structure_choice_is_settled_before_the_structure_stage():
+    """It cannot happen later: by the time the structure stage emits a handoff
+    it has already analysed one entry, and its hotspots are those coordinates."""
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner.run)
+    assert src.index("_select_designable_structure") < src.index("_stage_literature(")

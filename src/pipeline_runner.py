@@ -605,6 +605,16 @@ class PipelineRunner:
             # on disk; between them they cost one GraphQL call.
             if start_idx <= 1 and result.pdb_id:
                 self._check_af_model_intent(handoff)
+                # Structure choice has to be settled HERE. The structure stage
+                # cannot switch entries — by the time it emits a handoff it has
+                # already analysed one, and its hotspots refer to those
+                # coordinates.
+                better = self._select_designable_structure(
+                    result.target_complex or "", result.pdb_id,
+                    operator_pinned=bool(pdb_id))
+                if better:
+                    result.pdb_id = better
+                    handoff["pdb_id"] = better
                 self._check_structure_organism(
                     result.pdb_id, result.target_complex or "")
 
@@ -1735,6 +1745,128 @@ class PipelineRunner:
                         f"transmembrane span and the cytoplasmic face")
                     break
         return out
+
+    #: Chains that are crystallisation or cryo-EM scaffolding rather than
+    #: biology: a designed binder never targets them, and their presence means
+    #: the entry was solved to study something other than the requested pair.
+    _SCAFFOLD_MARKERS = (
+        "nanobody", "fab ", "antibody", "single-chain", "scfv",
+        "guanine nucleotide-binding", "g(s) subunit", "g(i)/g(s)",
+        "lysozyme", "endolysin", "flavodoxin", "bril", "apocytochrome",
+        "rubredoxin", "thermostabilised apocytochrome", "green fluorescent",
+        "maltose", "thioredoxin", "legobody",
+    )
+
+    def _select_designable_structure(self, target_complex: str, chosen: str,
+                                     operator_pinned: bool) -> str | None:
+        """
+        Prefer a structure whose dominant interface IS the requested one.
+
+        "Best-evidenced structure" and "best structure to design against" are
+        different questions, and the pathway stage only answers the first: it
+        takes whichever PDB id the corpus cites, which is normally the landmark
+        paper's. For a receptor that is typically the full-length, agonist-bound,
+        G-protein-coupled cryo-EM complex — the hardest possible design target,
+        carrying a nanobody, a heterotrimeric G protein and a fusion partner,
+        with the requested interface buried among them.
+
+        On CALCRL the corpus cites 6E3Y (3.3 A, 7 chains, Gs + Nb35 + CGRP).
+        RCSB also holds 3N7S: CALCRL ECD with RAMP1 ECD at 2.1 A and nothing
+        else in the box. Same interface, better resolution, no scaffolding.
+
+        Deliberately conservative — this OVERRIDES an evidence-based choice, so
+        it only fires when the chosen entry is measurably unfit and a candidate
+        is measurably fit. All from metadata; no interfaces are computed here.
+        Never fires when the operator pinned `--pdb`.
+        """
+        if operator_pinned or not chosen or chosen.upper().startswith("AF-"):
+            return None
+        names = self._split_target_complex_names(target_complex)[:2]
+        if len(names) < 2:
+            return None
+        from src.target_resolve import (
+            entry_metadata, find_complex_structures, resolve_target,
+        )
+
+        try:
+            resolved = [resolve_target(n) for n in names]
+            accs = [r.uniprot for r in resolved if r and r.ok and r.uniprot]
+            if len(accs) < 2:
+                return None
+            ids = find_complex_structures(accs[0], rows=40)
+            if chosen.upper() not in {i.upper() for i in ids}:
+                ids = [chosen] + ids
+            meta = entry_metadata(ids[:25])
+        except Exception as exc:
+            logger.debug(f"structure preference skipped: {exc}")
+            return None
+        if not meta:
+            return None
+
+        def profile(entry: dict) -> dict | None:
+            chains = entry.get("chains") or {}
+            if not chains:
+                return None
+            have = {a.upper() for i in chains.values()
+                    for a in (i.get("uniprots") or []) if a}
+            if not {a.upper() for a in accs} <= have:
+                return None                      # requested pair not both present
+            target_chains = [i for i in chains.values()
+                             if accs[0].upper() in
+                             {a.upper() for a in (i.get("uniprots") or [])}]
+            chimeric = any(len([a for a in (i.get("uniprots") or []) if a]) > 1
+                           for i in target_chains)
+            scaffold = sum(
+                1 for i in chains.values()
+                if any(m in (i.get("description") or "").lower()
+                       for m in self._SCAFFOLD_MARKERS))
+            return {
+                "chimeric": chimeric,
+                "scaffold": scaffold,
+                "entities": len({(i.get("description") or "") for i in chains.values()}),
+                "res": entry.get("resolution_A") or 99.0,
+                "target_len": min((i.get("length") or 9999) for i in target_chains),
+            }
+
+        profiles = {pid: pr for pid, entry in meta.items()
+                    if (pr := profile(entry)) is not None}
+        here = profiles.get(chosen.upper())
+        if not profiles:
+            return None
+
+        def rank(item):
+            pid, pr = item
+            return (pr["chimeric"], pr["scaffold"], pr["entities"], pr["res"])
+
+        best_id, best = min(profiles.items(), key=rank)
+        if best_id == chosen.upper():
+            return None
+
+        # Only override on a measurable defect in what was chosen.
+        if here is None:
+            reason = f"{chosen} does not contain both {names[0]} and {names[1]}"
+        elif here["chimeric"] and not best["chimeric"]:
+            reason = (f"{chosen}'s {names[0]} chain is a fusion construct and "
+                      f"{best_id}'s is not")
+        elif here["scaffold"] - best["scaffold"] >= 2 and best["res"] <= here["res"]:
+            reason = (f"{chosen} carries {here['scaffold']} scaffolding chain(s) "
+                      f"(nanobody / G protein / fusion partner) against "
+                      f"{best['scaffold']} in {best_id}, at no worse resolution "
+                      f"({best['res']} A vs {here['res']} A)")
+        else:
+            return None
+
+        logger.warning(
+            f"  ⚠ switching design structure {chosen} -> {best_id}: {reason}. "
+            f"Both contain {names[0]} and {names[1]}; {best_id} is the cleaner "
+            f"target for the requested interface. Pin --pdb {chosen} to keep "
+            f"the original.")
+        self._binder_checkpoint(
+            "structure_switched", "pathway", "choice",
+            {"from": chosen.upper(), "to": best_id, "reason": reason,
+             "profiles": {k: v for k, v in profiles.items()
+                          if k in (chosen.upper(), best_id)}})
+        return best_id
 
     def _ppi_interface_options(self, pdb_id: str, target_complex: str) -> str:
         """
