@@ -613,6 +613,26 @@ class PipelineRunner:
                     result.target_complex or "", result.pdb_id,
                     operator_pinned=bool(pdb_id))
                 if better:
+                    # Rewrite the FREE-TEXT fields too. `structure_query` is
+                    # prose the pathway stage wrote naming the old entry, and it
+                    # flows into the literature prompt — leaving it stale made
+                    # the literature stage reason about, and cite, a structure
+                    # the pipeline was no longer using. Behaviour was correct
+                    # (the trim and the interface measurement both used the new
+                    # entry); the narrative in the artifacts and the report was
+                    # not, which is worse than useless to a reader.
+                    stale = result.pdb_id
+                    for field in ("structure_query", "design_query"):
+                        text = handoff.get(field)
+                        if text and stale:
+                            handoff[field] = re.sub(
+                                re.escape(stale), better, text,
+                                flags=re.IGNORECASE)
+                    handoff["structure_query"] = (
+                        (handoff.get("structure_query") or "").rstrip()
+                        + f" (Structure switched from {stale} to {better} "
+                          f"deterministically: cleaner entry for this "
+                          f"interface. Analyse {better}.)")
                     result.pdb_id = better
                     handoff["pdb_id"] = better
                 self._check_structure_organism(

@@ -931,3 +931,32 @@ def test_structure_choice_is_settled_before_the_structure_stage():
 
     src = inspect.getsource(PipelineRunner.run)
     assert src.index("_select_designable_structure") < src.index("_stage_literature(")
+
+
+def test_a_structure_switch_rewrites_the_prose_too(config, monkeypatch):
+    """
+    `structure_query` is prose the pathway stage wrote naming the old entry, and
+    it flows into the literature prompt. Left stale, the literature stage
+    reasoned about and cited 6E3Y while the pipeline ran on 3N7S — correct
+    behaviour, wrong narrative, and the narrative is what reaches the report.
+    """
+    import re as _re
+
+    handoff = {
+        "pdb_id": "6E3Y",
+        "structure_query": "Analyze PDB 6E3Y at data/structures/6E3Y.cif.",
+        "design_query": "Generate inputs for CALCRL / RAMP1, PDB 6e3y.",
+    }
+    stale, better = "6E3Y", "3N7S"
+    for field in ("structure_query", "design_query"):
+        handoff[field] = _re.sub(_re.escape(stale), better, handoff[field],
+                                 flags=_re.IGNORECASE)
+    assert "6E3Y" not in handoff["structure_query"]
+    assert "6e3y" not in handoff["design_query"]          # case-insensitive
+    assert "3N7S" in handoff["structure_query"]
+
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+    src = inspect.getsource(PipelineRunner.run)
+    assert "structure_query" in src and "Structure switched from" in src
