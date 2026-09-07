@@ -795,3 +795,47 @@ def test_topology_and_chimera_restrictions_compose(config):
     assert combine(None, {1, 2, 3}) == {1, 2, 3}
     assert combine(_R(), set(range(350, 500))) == set(range(350, 400))
     assert combine(None, None) is None
+
+
+# ----------------------------------------------------------------------
+# 12. The PPI track measures interfaces instead of guessing chains
+# ----------------------------------------------------------------------
+
+def test_interface_options_are_skipped_when_they_cannot_help(config):
+    """No target name, no PDB, or an AlphaFold monomer -> nothing to measure."""
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._ppi_interface_options("", "A / B") == ""
+    assert r._ppi_interface_options("6E3Y", "") == ""
+    assert r._ppi_interface_options("AF-Q16602", "CALCRL / RAMP1") == ""
+
+
+def test_interface_options_fail_open(config, monkeypatch, tmp_path):
+    """Advisory only: any lookup failure must leave the stage running as before."""
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner(config, workflow="ppi")
+    monkeypatch.setattr(r, "_binder_structure_path", lambda p: tmp_path / "missing.cif")
+    assert r._ppi_interface_options("6E3Y", "CALCRL / RAMP1") == ""
+
+    def _boom(*a, **k):
+        raise RuntimeError("RCSB down")
+    monkeypatch.setattr("src.target_resolve.resolve_target", _boom)
+    assert r._ppi_interface_options("6E3Y", "CALCRL / RAMP1") == ""
+
+
+def test_the_structure_prompt_carries_the_measured_interfaces():
+    """
+    Two independent runs on 6E3Y both picked the 38-residue CGRP peptide over
+    chain E (RAMP1), because an agonist-bound cryo-EM structure makes the ligand
+    the conspicuous interface and nothing had measured the alternative. The
+    stage now gets both, with numbers.
+    """
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner._stage_structure)
+    assert src.count("_ppi_interface_options(") == 2, \
+        "both query-construction branches must carry the measured interfaces"

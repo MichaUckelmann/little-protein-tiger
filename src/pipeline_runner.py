@@ -1736,6 +1736,116 @@ class PipelineRunner:
                     break
         return out
 
+    def _ppi_interface_options(self, pdb_id: str, target_complex: str) -> str:
+        """
+        MEASURED interfaces in the chosen entry, plus alternatives, for the prompt.
+
+        The binder track resolves its target to UniProt and ranks real,
+        computed interfaces before an LLM sees anything
+        (`target_resolve.build_candidate_table`). The PPI track had no
+        equivalent: its pathway stage picks whichever PDB id the corpus
+        mentions, and the structure stage then infers the chain pair from
+        entity descriptions alone. That is how two independent runs on 6E3Y
+        both chose the 38-residue CGRP peptide over chain E, RAMP1 — the
+        peptide is the most conspicuous thing in an agonist-bound cryo-EM
+        structure, and nothing had measured the alternative.
+
+        This gives the same stage measured ground truth: every chain pair in
+        the entry that buries a real interface with the target, ranked, with
+        BSA and H-bond counts. Advisory only — the skill still chooses, and the
+        deterministic guards still check what it chose.
+
+        Bounded cost, deliberately: interfaces are computed for THIS entry
+        only, and alternative entries are listed from metadata without
+        analysing them. Returns "" on any failure; the stage runs as before.
+        """
+        names = self._split_target_complex_names(target_complex)
+        if not names or not pdb_id or pdb_id.upper().startswith("AF-"):
+            return ""
+        from src.target_resolve import (
+            analyse_entry, entry_metadata, find_complex_structures,
+            rank_interfaces, resolve_target,
+        )
+
+        try:
+            resolved = resolve_target(names[0])
+            uniprot = resolved.uniprot if (resolved and resolved.ok) else ""
+            if not uniprot:
+                return ""
+            path = self._binder_structure_path(pdb_id)
+            if not path.exists():
+                return ""
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+            cands = rank_interfaces(analyse_entry(path, pdb_id, meta, uniprot))
+        except Exception as exc:
+            logger.debug(f"interface options unavailable for {pdb_id}: {exc}")
+            return ""
+        if not cands:
+            return ""
+
+        rows = "\n".join(
+            f"  {c.target_chain} / {c.partner_chain}  "
+            f"BSA {c.bsa_A2:>7.0f} A^2  {c.n_interface_residues:>3} residues  "
+            f"{c.n_hbonds:>2} H-bonds  partner: {c.partner_entity[:44]}"
+            for c in cands[:6])
+
+        alt = ""
+        others_for_manifest: list[dict] = []
+        try:
+            others = [p for p in find_complex_structures(uniprot, rows=25)
+                      if p.upper() != pdb_id.upper()][:6]
+            ometa = entry_metadata(others) if others else {}
+            lines = []
+            for oid in others:
+                m = ometa.get(oid.upper()) or {}
+                partners = ", ".join(
+                    sorted({(i.get("description") or "")[:30]
+                            for c, i in (m.get("chains") or {}).items()
+                            if uniprot not in (i.get("uniprots") or [])}))[:70]
+                lines.append(
+                    f"  {oid}  {m.get('method', '?')[:12]:12s} "
+                    f"{(str(m.get('resolution_A')) + ' A') if m.get('resolution_A') else '':>8s}  "
+                    f"partners: {partners or '(none - unbound)'}")
+                others_for_manifest.append(
+                    {"pdb_id": oid, "method": m.get("method"),
+                     "resolution_A": m.get("resolution_A"), "partners": partners})
+            if lines:
+                alt = ("\n\nOther deposited structures containing "
+                       f"{resolved.gene or names[0]} (NOT analysed — metadata only):\n"
+                       + "\n".join(lines))
+        except Exception as exc:
+            logger.debug(f"alternative-entry listing failed: {exc}")
+
+        logger.info(
+            f"  measured {len(cands)} interface(s) in {pdb_id}; best is "
+            f"{cands[0].target_chain}/{cands[0].partner_chain} at "
+            f"{cands[0].bsa_A2:.0f} A^2")
+        # Recorded, not acted on. The structure stage cannot switch entries —
+        # by the time it emits a handoff it has already analysed this one — so
+        # choosing a better STRUCTURE has to happen before this stage runs.
+        # Until it does, put the ranked options where an operator will see them
+        # and can re-run with `--pdb <id>`.
+        self._binder_checkpoint(
+            "structure_alternatives", "structure", "choice",
+            {"chosen": pdb_id.upper(),
+             "measured_interfaces": [
+                 {"target_chain": c.target_chain, "partner_chain": c.partner_chain,
+                  "partner": c.partner_entity, "bsa_A2": round(c.bsa_A2, 1),
+                  "n_hbonds": c.n_hbonds} for c in cands[:6]],
+             "other_entries": others_for_manifest})
+        return (
+            f"\n\nMEASURED interfaces in {pdb_id.upper()} involving "
+            f"{resolved.gene or names[0]}, computed from the coordinates and "
+            f"ranked (BSA, H-bonds, hydrophobic fraction, smaller target "
+            f"preferred):\n{rows}\n"
+            f"\nThese are measurements, not suggestions — use them instead of "
+            f"guessing the chain pair from entity descriptions. Pick the pair "
+            f"that matches the interface the campaign was chosen for, which is "
+            f"not always the largest: an agonist-bound structure buries a lot "
+            f"of area against its LIGAND, and designing there targets a "
+            f"different biology than a receptor/accessory-protein interface."
+            + alt)
+
     def _check_structure_organism(self, pdb_id: str, target_complex: str) -> None:
         """
         Say at TARGET-SELECTION time that the chosen structure is not human.
@@ -3961,7 +4071,7 @@ class PipelineRunner:
             query = handoff_query.replace(str(asu_path), str(analysis_path))
             if str(analysis_path) not in query:
                 query = query + f"\n\nStructure file to use: {analysis_path}"
-            query += chain_hint
+            query += chain_hint + self._ppi_interface_options(pdb_id, target_complex)
         else:
             # Non-primary choice: look up the matching entry in choices_json to get
             # the correct complex name, design_intent, and evidence context.
@@ -3972,7 +4082,7 @@ class PipelineRunner:
                 prev_handoff=pathway_handoff,
                 context_files=context_files,
             )
-            query += chain_hint
+            query += chain_hint + self._ppi_interface_options(pdb_id, target_complex)
 
         # Append literature-derived design_intent + target_site_hint so the
         # structure stage knows whether to run DISRUPT / STABILIZE /
