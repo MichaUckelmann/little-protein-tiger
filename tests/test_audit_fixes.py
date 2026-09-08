@@ -960,3 +960,42 @@ def test_a_structure_switch_rewrites_the_prose_too(config, monkeypatch):
     from src.pipeline_runner import PipelineRunner
     src = inspect.getsource(PipelineRunner.run)
     assert "structure_query" in src and "Structure switched from" in src
+
+
+# ----------------------------------------------------------------------
+# 14. A resumed trim must carry everything the later stages read
+# ----------------------------------------------------------------------
+
+def test_trim_from_disk_has_every_attribute_the_gpu_stages_use():
+    """
+    `--start-from production` is the documented normal case after a multi-day
+    campaign, and it was broken from 2026-08-29 until this test: `plan_campaign`
+    sizes RF3 cost from `trim.n_residues_after`, `_TrimFromDisk` never defined
+    it, and the run died before launching anything with
+
+        '_TrimFromDisk' object has no attribute 'n_residues_after'
+
+    The value was in trim_map.json the whole time. Checked by reflection over
+    what the module actually reads, so a future `trim.<field>` cannot silently
+    reintroduce it.
+    """
+    import re
+
+    from src.pipeline_runner import _TrimFromDisk
+
+    src = (_ROOT / "src" / "pipeline_runner.py").read_text(encoding="utf-8")
+    used = set(re.findall(r"\btrim\.([a-z_][a-z0-9_]*)", src))
+    stub = _TrimFromDisk({"kept_segments": [[27, 110]], "n_segments": 1,
+                          "contig": "70-86,/0,D27-110", "trimmed_path": "/x.cif"})
+    missing = {f for f in used if not hasattr(stub, f)}
+    assert not missing, f"_TrimFromDisk is missing {sorted(missing)}"
+
+
+def test_trim_from_disk_falls_back_to_the_segments():
+    """A trim_map written before the field existed must still resume."""
+    from src.pipeline_runner import _TrimFromDisk
+
+    t = _TrimFromDisk({"kept_segments": [[27, 110]], "contig": "70-86,/0,D27-110"})
+    assert t.n_residues_after == 84          # 110 - 27 + 1
+    t2 = _TrimFromDisk({"kept_segments": [[1, 10], [21, 30]]})
+    assert t2.n_residues_after == 20

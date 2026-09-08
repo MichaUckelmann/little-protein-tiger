@@ -160,6 +160,18 @@ class _TrimFromDisk:
         self.trimmed_path = Path(mapping.get("trimmed_path")
                                  or mapping.get("source", ""))
         self.bsa_retention = float(mapping.get("bsa_retention", 1.0))
+        # Needed by `plan_campaign`'s token estimate, which sizes RF3 cost as
+        # (tokens/195)**1.62. Missing here since the size law landed (b9eb184,
+        # 2026-08-29), so EVERY fresh-process resume — `--start-from
+        # production` is the documented normal case after a multi-day campaign
+        # — died with "'_TrimFromDisk' object has no attribute
+        # 'n_residues_after'" before launching anything. trim_map.json has
+        # carried the value all along; nothing read it.
+        self.n_residues_after = int(
+            mapping.get("n_residues_after")
+            or sum(hi - lo + 1 for lo, hi in self.kept_segments))
+        self.n_residues_before = int(
+            mapping.get("n_residues_before") or self.n_residues_after)
         self.target_chain = mapping.get("target_chain", "")
         self.partner_chain = mapping.get("partner_chain", "")
         self.pdb_id = mapping.get("pdb_id", "")
