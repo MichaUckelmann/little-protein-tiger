@@ -156,10 +156,19 @@ models:
     gemini-3.1-flash-lite-preview: {input: 0.10, output: 0.40}
 
 curation:
-  provider: "claude"            # "claude" | "gemini" | "local". Override per-run with --provider.
+  # gemini, like every other LLM stage in this repo. It was "claude" long
+  # after the pipeline-wide default moved, which meant the onboarding docs
+  # ("Gemini is the default provider") and the code disagreed, and a user
+  # with only a Gemini key had every paper in a batch fail on the same
+  # missing ANTHROPIC_API_KEY.
+  provider: "gemini"            # "claude" | "gemini" | "local". Override per-run with --provider.
   model: "claude-haiku-4-5"    # options: "claude-haiku-4-5" and "claude-sonnet-5"
-  gemini_model: "gemini-3.7-flash"  # used when provider = "gemini"
-  # alternatives: "gemini-3-flash-preview" (standard), "gemini-3.1-flash-lite" (high-volume/lower-cost)
+  # flash-lite over flash: curation is high-volume and schema-constrained
+  # (strict JSON against extraction_schema.json, with a validator that feeds
+  # errors back as a correction turn), which is the shape of work the smaller
+  # model handles at ~1/8 the cost.
+  gemini_model: "gemini-3.1-flash-lite"
+  # alternatives: "gemini-3.7-flash" (stronger, ~8x the cost), "gemini-3-flash-preview"
 
   # ── Local provider ────────────────────────────────────────────────────────
   # Default points at Ollama's OpenAI-compatible endpoint.
