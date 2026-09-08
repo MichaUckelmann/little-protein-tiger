@@ -103,8 +103,10 @@ never break LPT's own venv.
     `resolve_checkpoint()` globs the registry for the alias so this fails at
     config time rather than after RFD3 has already run for an hour.
 
-  Requirements: a CUDA GPU with **≥32 GB** VRAM and **~120 GB free disk** for
-  a full production campaign (~2.5 MB per RF3 design directory).
+  Requirements: a CUDA GPU — **24 GB VRAM** is enough for small-to-moderate
+  designs, and larger targets scale from there — plus **~120 GB free disk**
+  for a full production campaign (~2.5 MB per RF3 design directory). Disk is
+  usually the binding constraint, not VRAM.
 - **Protenix** (`LPT_CLUSTER_PROTENIX_REPO`) — only needed for the cluster
   refold path's MSA fetch; a separate checkout with its own venv, subprocessed
   the same way as everything else here. If you don't have one,

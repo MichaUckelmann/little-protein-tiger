@@ -250,8 +250,9 @@ It reports the checkout, the engine binaries and the weights. LPT finds the
 foundry venv itself whatever it is called; if you have more than one it will
 ask you to name it, since the wrong one may be built for a different GPU.
 
-Any NVIDIA card works — you need **≥32 GB VRAM** and **~120 GB free disk** for
-a full production campaign.
+**24 GB VRAM** runs small-to-moderate designs. Bigger targets want more.
+Budget **~120 GB free disk** for a full production campaign — disk is usually
+the binding constraint, not the GPU.
 
 ## What a full GPU run costs
 
