@@ -766,6 +766,56 @@ it.
   is a monomer with no partner to disrupt. `_check_af_model_intent` enforces that pairing;
   both target-selecting skills now know the id is available, which is what a
   well-evidenced target with no PDB entry needs.
+## PPI structure and chain selection is deterministic, not prompted
+
+The binder track has always resolved its target to UniProt and ranked REAL
+computed interfaces before an LLM sees anything (`target_resolve.
+build_candidate_table`). The PPI track had none of that — it took whichever PDB
+the corpus cited and inferred the chain pair from entity descriptions — and three
+live runs showed that prompt guidance does not fix a mechanical choice. Four
+deterministic steps now sit between the pathway stage and the structure stage:
+
+- **`_select_designable_structure`** (between pathway and literature) prefers an
+  entry whose dominant interface IS the requested one. Best-evidenced and
+  best-designable are different questions: the corpus cites the landmark paper,
+  which for a receptor is the full-length agonist-bound cryo-EM complex. On
+  CALCRL it switches 6E3Y (3.3 Å, 7 chains, Gs + Nb35 + CGRP, 490-residue
+  7TM target) to 3N7S, the 2.1 Å ectodomain complex — CALCRL ECD 115 aa with
+  RAMP1 ECD 96 aa and nothing else. It **must** run here: the structure stage
+  cannot switch entries, because by the time it emits a handoff its hotspots
+  refer to one. It overrides an evidence-based choice, so it fires only on a
+  measurable defect (partner absent, target chain is a fusion construct, or ≥2
+  more scaffolding chains at no better resolution) and `--pdb` always wins.
+  A switch rewrites the free-text `structure_query`/`design_query` too — leaving
+  those stale made the literature stage cite a structure the run was not using.
+- **`_ppi_interface_options`** hands the structure stage MEASURED interfaces for
+  the chosen entry instead of letting it guess from descriptions. Measured, the
+  two interfaces in 6E3Y are the same size (R/P 3858 Å², R/E 3862 Å²), so the
+  stage was choosing the most conspicuous, not the largest. Bounded cost:
+  interfaces for this entry only, alternatives listed from metadata.
+- **`_verify_partner_chain_is_requested`** — see the guard list above.
+- **`_check_structure_organism`** and **`_designable_chain_sizes`** — organism
+  and size judged at selection time, on the number that will actually be
+  designed against (a 574-residue GPCR fusion is 167 designable residues once
+  the trim drops the TM span and the cytoplasmic face).
+
+**Membrane targets: which site a binder can reach** is now stated in all four
+skills that pick targets or residues (`pathway-expert`, `wildcard-expert`,
+`molecular-biology-expert`, `complex-structure-analysis` — the last had no
+mention of membranes at all). Reachable and clinically validated: class B ECDs
+(erenumab blocks CALCRL/RAMP1), class C Venus flytraps, class F CRDs, and the
+N-termini/ECLs of peptide-binding class A receptors. Not reachable: the
+orthosteric pocket of a lipid-ligand receptor — inside the bundle and entered
+LATERALLY from the bilayer — deep aminergic pockets, and any TM surface.
+
+**`_TrimFromDisk` must carry every attribute the GPU stages read.** It rebuilds a
+trim from `trim_map.json` so a resume need not redo it, and it silently lacked
+`n_residues_after` from the day `plan_campaign` started sizing RF3 by token
+count — which killed EVERY fresh-process `--start-from pilot|calibration|
+production` for ten days, the documented normal case after a multi-day campaign.
+`tests/test_audit_fixes.py` checks it by reflection over every `trim.<attr>` in
+the module, so the next field added to `TrimResult` cannot reintroduce it.
+
 - `_bridge_ppi_to_foundry` ⇄ `_run_binder_track`'s `"target_intel"`/`"interface"` stage-file
   loading (`_load_binder_handoff`) — the bridge writes synthetic/copied artifacts at those
   exact paths (`_BINDER_STAGE_FILES`) because `_run_binder_track` always reads them off disk
