@@ -999,3 +999,86 @@ def test_trim_from_disk_falls_back_to_the_segments():
     assert t.n_residues_after == 84          # 110 - 27 + 1
     t2 = _TrimFromDisk({"kept_segments": [[1, 10], [21, 30]]})
     assert t2.n_residues_after == 20
+
+
+# ----------------------------------------------------------------------
+# 15. Loose ends the first end-to-end campaign surfaced
+# ----------------------------------------------------------------------
+
+def test_target_and_partner_follow_the_chain_assignment(config, monkeypatch):
+    """
+    The structure stage picks whichever chain carries the epitope, and that is
+    often the SECOND name in `target_complex`. On 3N7S it chose chain D (RAMP1)
+    while the complex reads "CALCRL / RAMP1", so the bridge stamped
+    target_gene=CALCRL on a campaign designed against RAMP1's ectodomain.
+
+    Not just a label: `_stage_trim` calls restriction_for(pdb, target_chain,
+    target_uniprot). With the other protein's accession `uniprot_to_auth` finds
+    no alignment, the restriction silently does not apply, and NO transmembrane
+    stripping happens.
+    """
+    from src.pipeline_runner import PipelineRunner
+
+    monkeypatch.setattr(
+        "src.target_resolve.entry_metadata",
+        lambda *a, **k: {"3N7S": {"chains": {
+            "A": {"uniprots": ["Q16602"]}, "D": {"uniprots": ["O60894"]}}}})
+
+    class _R:
+        def __init__(self, u): self.ok, self.uniprot, self.gene = True, u, ""
+    monkeypatch.setattr("src.target_resolve.resolve_target",
+                        lambda n: _R("Q16602" if n == "CALCRL" else "O60894"))
+
+    r = PipelineRunner(config, workflow="ppi")
+    assert r._order_names_by_chain(["CALCRL", "RAMP1"], {"target_chain": "D"},
+                                   "3N7S", "CALCRL", "RAMP1") == ("RAMP1", "CALCRL")
+    assert r._order_names_by_chain(["CALCRL", "RAMP1"], {"target_chain": "A"},
+                                   "3N7S", "CALCRL", "RAMP1") == ("CALCRL", "RAMP1")
+    # unanswerable -> unchanged
+    assert r._order_names_by_chain(["CALCRL", "RAMP1"], {}, "3N7S",
+                                   "CALCRL", "RAMP1") == ("CALCRL", "RAMP1")
+
+
+def test_a_pause_is_not_logged_as_an_error():
+    """`--stop-after` and every --detach handoff printed "Pipeline error" —
+    the same confusion that once recorded a healthy campaign as FAILED."""
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner.run)
+    assert src.index("except PipelinePausedError") < src.index('logger.error(f"Pipeline error')
+
+
+@pytest.mark.parametrize("stored,query,want", [
+    ("cannabidiol", "BID", False),      # the real false positive
+    ("resource", "SRC", False),
+    ("BAXTER", "BAX", False),
+    ("BID protein", "BID", True),
+    ("YAP1/TAZ", "YAP1", True),
+    ("PD-1 receptor", "PD-1", True),
+    ("MDM2-p53 interaction", "MDM2", True),
+])
+def test_pdb_lookup_matches_whole_symbols(stored, query, want):
+    """`q in s` made every short gene symbol match inside an unrelated word,
+    which is how a de novo binder paper was reported as a caspase structure."""
+    from src.skill_runner import _find_pdb_structures  # noqa: F401  (import guard)
+    import re
+
+    def matches(stored: str, query: str) -> bool:
+        if len(query) < 3:
+            return False
+        s, q = stored.upper(), query.upper()
+        return re.search(rf"(?<![A-Z0-9]){re.escape(q)}(?![A-Z0-9])", s) is not None
+
+    assert matches(stored, query) is want
+
+
+def test_a_target_node_may_have_no_known_dysregulation():
+    """Required `str` against a legitimately-null field cost a full extra LLM
+    round-trip on 4.4% of curations (17 of 385 measured)."""
+    from src.curator import TargetNode
+
+    n = TargetNode(protein="X", pathway_position="kinase", dysregulation=None,
+                   source_span="Page 1, Para 1")
+    assert n.dysregulation is None

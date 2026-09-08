@@ -3909,15 +3909,31 @@ structure with explicit instructions not to; the structure choice needed code;
 the domain spans needed code. Anything that must be true should be checked, not
 requested.
 
-### Not addressed
+### Reading the finished report turned up one more
 
-- The pause is logged at ERROR level (`Pipeline error: Paused at
-  calibration_verdict`). `PipelinePausedError` subclasses `PipelineError`; same
-  family as the bug that once recorded a healthy detached campaign as FAILED.
-- `TargetNode.dysregulation` is a required `str` but legitimately null, costing a
-  full extra LLM round-trip on 4.4% of curations (17 of 385).
-- `_matches` in `find_pdb_structures` is still a bare substring test with a
-  3-char floor.
+The report's own title read "occupy the RAMP1 interface on CALCRL" while the
+trim contig said `D27-110` — chain D of 3N7S is RAMP1. `_bridge_ppi_to_foundry`
+took `names[0]` from "CALCRL / RAMP1" as target_gene, but the structure stage had
+chosen the SECOND protein's chain as the target. Not just a label:
+`_stage_trim` calls `restriction_for(pdb, target_chain, target_uniprot)`, and
+with the other protein's accession `uniprot_to_auth` finds no alignment, the
+restriction silently does not apply, and NO transmembrane stripping happens.
+Harmless on an ectodomain-only entry; silent on a full-length one.
+`_order_names_by_chain` now orders the pair by the chain assignment.
+
+### Cleaned up afterwards
+
+- A pause is no longer logged as `Pipeline error` — every `--stop-after` and
+  every `--detach` handoff printed one.
+- `Target complex: unknown` in the completion banner on a mid-track resume:
+  target_intel carries both names, nothing read them.
+- `TargetNode.dysregulation` is Optional, like its sibling
+  `genetic_dependency_evidence`. As a required `str` against a legitimately-null
+  field it cost a full extra LLM round-trip on 4.4% of curations.
+- `find_pdb_structures` matches whole symbols. `q in s` meant BID matched
+  "cannaBIDiol", SRC matched "reSouRCe", BAX matched "BAXter".
+
+### Not addressed
 - 1,786 GPCR/pain papers indexed and blocked by the tier gate.
 - Two-structure design (hotspots on the complex, design on a clean ectodomain)
   was scoped and deferred — the numbering transfer is now safe via

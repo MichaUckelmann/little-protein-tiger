@@ -189,7 +189,11 @@ class DiseaseAssociation(BaseModel):
 class TargetNode(BaseModel):
     protein: str
     pathway_position: str
-    dysregulation: str
+    # Optional, like its sibling `genetic_dependency_evidence`. A target node
+    # legitimately has no known dysregulation, and the model correctly emits
+    # null — which as a required `str` cost a full extra LLM round-trip through
+    # the correction loop on 4.4% of papers (17 of 385 in one measured batch).
+    dysregulation: Optional[str] = None
     genetic_dependency_evidence: Optional[str] = None
     prior_therapeutic_targeting: Optional[str] = None
     suggested_pdb_structures: list[str] = []

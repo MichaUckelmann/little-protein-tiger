@@ -811,6 +811,15 @@ class PipelineRunner:
 
         except PipelineBlockedError:
             raise
+        except PipelinePausedError as exc:
+            # A pause is a checkpoint, not a failure — state is saved and the
+            # run resumes with --start-from. It subclasses PipelineError, so
+            # without this branch every `--stop-after` and every --detach
+            # handoff was logged as "Pipeline error", the same confusion that
+            # once recorded a healthy detached campaign as FAILED.
+            logger.info(f"Paused at {exc.pause_point} — state checkpointed, "
+                        f"resume when ready")
+            raise
         except Exception as exc:
             result.error = str(exc)
             logger.error(f"Pipeline error: {exc}")
@@ -2320,6 +2329,44 @@ class PipelineRunner:
                  for n in re.split(r"\s*/\s*", target_complex or "")]
         return [n for n in names if n]
 
+    def _order_names_by_chain(self, names: list[str], structure_handoff: dict,
+                              pdb_id: str, primary: str, partner: str
+                              ) -> tuple[str, str]:
+        """
+        Which of the two named proteins is on `target_chain`?
+
+        Returns (target_name, partner_name) ordered to match the structure
+        stage's chain assignment, or the inputs unchanged when the question
+        cannot be answered — the accessions do not resolve, the entry metadata
+        is unavailable, or the target chain carries neither accession.
+        """
+        target_chain = str(structure_handoff.get("target_chain") or "").strip()
+        if len(names) < 2 or not target_chain or not pdb_id:
+            return primary, partner
+        from src.target_resolve import entry_metadata, resolve_target
+
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+            accs = {a.upper() for a in
+                    ((meta.get("chains") or {}).get(target_chain) or {})
+                    .get("uniprots", []) if a}
+            if not accs:
+                return primary, partner
+            for name in names[:2]:
+                r = resolve_target(name)
+                if r and r.ok and r.uniprot and r.uniprot.upper() in accs:
+                    other = next(n for n in names[:2] if n != name)
+                    if name != primary:
+                        logger.info(
+                            f"  target/partner ordered by chain assignment: "
+                            f"chain {target_chain} of {pdb_id} is {name}, not "
+                            f"{primary} — swapping so target_gene matches the "
+                            f"chain actually being designed against")
+                    return name, other
+        except Exception as exc:
+            logger.debug(f"could not order names by chain: {exc}")
+        return primary, partner
+
     def _bridge_ppi_to_foundry(
         self, query: str, run_dir: Path, result: PipelineResult, *,
         auto_mode: bool,
@@ -2369,6 +2416,22 @@ class PipelineRunner:
         partner_name = names[1] if len(names) > 1 else ""
 
         from src.target_resolve import resolve_target
+        # Order the pair by the CHAIN ASSIGNMENT the structure stage made, not
+        # by the order they happen to appear in `target_complex`. The structure
+        # stage picks whichever chain carries the epitope, and that is often the
+        # second name: on 3N7S it chose chain D (RAMP1) as the target while
+        # `target_complex` reads "CALCRL / RAMP1", so target_gene said CALCRL
+        # for a campaign designed against RAMP1's ectodomain.
+        #
+        # More than a label. `_stage_trim` does fetch_topology(target_uniprot)
+        # and restriction_for(pdb, target_chain, target_uniprot): with the
+        # accession of the OTHER protein, `uniprot_to_auth` finds no alignment,
+        # the restriction quietly does not apply, and NO transmembrane stripping
+        # happens. Harmless on an ectodomain-only entry, silent on a full-length
+        # one.
+        primary_name, partner_name = self._order_names_by_chain(
+            names, (result.structure_handoff or {}), result.pdb_id or "",
+            primary_name, partner_name)
         resolved = resolve_target(primary_name)
 
         design_intent = (lit.get("design_intent") or pathway.get("design_intent")
@@ -3953,6 +4016,16 @@ class PipelineRunner:
                     })
             intel = H["target_intel"]
             result.pdb_id = result.pdb_id or intel.get("pdb_id")
+            # A `--start-from production` resume never runs the discovery
+            # stages, so nothing else repopulates this and the completion
+            # banner printed "Target complex: unknown" for a campaign that knew
+            # exactly what it was designing against. target_intel has both.
+            if not result.target_complex:
+                gene = intel.get("target_gene")
+                partner = intel.get("partner_name")
+                if gene:
+                    result.target_complex = (
+                        f"{gene} / {partner}" if partner else gene)
 
             # ── Site trials: compare epitopes by measured yield ─────────────
             # Reasoning cannot settle which of two defensible sites is more

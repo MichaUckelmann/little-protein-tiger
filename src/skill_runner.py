@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -884,10 +885,20 @@ def _find_pdb_structures(proteins: list[str], fingerprint_dir: Path) -> dict:
     import re as _re
 
     def _matches(stored: str, query: str) -> bool:
+        """
+        Whole-symbol match, not a bare substring.
+
+        `q in s` made every short gene symbol match inside an unrelated word:
+        BID hits "cannaBIDiol", SRC hits "reSouRCe", BAX and MDM2 likewise. That
+        is how a de novo binder-design paper was once reported as a caspase
+        structure. Symbols are matched on word boundaries, where the separators
+        are anything that is not alphanumeric — so "YAP1" still finds "YAP1/TAZ"
+        and "PD-1" still finds "PD-1 receptor", but not "cannabidiol".
+        """
         if len(query) < 3:
             return False
         s, q = stored.upper(), query.upper()
-        return q in s or s.startswith(q)
+        return re.search(rf"(?<![A-Z0-9]){re.escape(q)}(?![A-Z0-9])", s) is not None
 
     queries = [p.strip() for p in proteins if p.strip()]
     # {query → ordered list of PDB IDs}
