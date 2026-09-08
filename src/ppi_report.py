@@ -44,7 +44,9 @@ from src.report_common import (
     histogram as _histogram,
     markdown_html as _markdown_html,
     read_text as _read_text,
+    safe_json,
     section_before_handoff as _section_before_handoff,
+    stage_documents as _stage_documents,
 )
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -61,6 +63,28 @@ _STAGE_FILES = {
     "analysis": "05_analysis.md",
     "summary": "06_summary.md",
 }
+
+# The appendix renders each of those files WHOLE — the sections above quote
+# only a slice of each (the prose before its handoff, the hotspot rationale,
+# the verdict). Keyed on _STAGE_FILES so a renamed stage file can't leave the
+# appendix pointing at a path that no longer exists.
+_APPENDIX_STAGES: list[tuple[str, str, str]] = [
+    ("00", "Pathway and target selection", "pathway"),
+    ("01", "Literature and tractability", "literature"),
+    ("02", "Structure and hotspots", "structure"),
+    ("03", "Design spec", "design"),
+    ("04", "Execution", "execution"),
+    ("05", "Analysis", "analysis"),
+    ("06", "Analyst summary", "summary"),
+]
+
+
+def _appendix(run_dir: Path) -> list[dict]:
+    """Every stage report for this run, rendered whole. Missing files are
+    skipped — a run reported before its summary stage simply has none."""
+    return _stage_documents(
+        [(num, label, run_dir / _STAGE_FILES[key]) for num, label, key in _APPENDIX_STAGES],
+        rel_to=run_dir)
 
 
 # ---------------------------------------------------------------------
@@ -281,6 +305,7 @@ def _hero_and_rail(pathway_handoff: dict, lit_handoff: dict, struct_handoff: dic
             {"href": "#confidence", "label": "05 · Ranking"},
             {"href": "#designs", "label": "06 · Top designs"},
             {"href": "#verdict", "label": "07 · Analyst verdict"},
+            {"href": "#appendix", "label": "08 · Full stage reports"},
         ],
         "stats": (
             ([{"k": "Verdict", "v": verdict, "color": "var(--good)" if verdict == "GO" else None}]
@@ -425,6 +450,7 @@ def build_report(run_dir: Path, out_path: Path | None = None,
         "verdict": verdict,
         "verdict_reason": verdict_reason,
         "summary_html": summary_html,
+        "appendix": _appendix(run_dir),
         "footer_html": _footer_html(run_dir, generated_at),
     }
 
@@ -462,9 +488,6 @@ def _render(report_data: dict, structures: dict, title: str) -> str:
     app_js = (_TEMPLATE_DIR / "app.js").read_text(encoding="utf-8")
     molstar_js = (_MOLSTAR_DIR / "molstar.js").read_text(encoding="utf-8")
     molstar_css = (_MOLSTAR_DIR / "molstar.css").read_text(encoding="utf-8")
-
-    def safe_json(obj: Any) -> str:
-        return json.dumps(obj, ensure_ascii=False).replace("</script", "<\\/script").replace("<!--", "<\\!--")
 
     html = shell
     # LLM-derived target name going straight into <title>.

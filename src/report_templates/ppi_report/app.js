@@ -212,6 +212,7 @@ const explorer = createStructureExplorer({
 renderDesignCards(explorer);
 renderStructurePicker(explorer);
 renderVerdictSection();
+renderAppendix();
 renderFooter();
 
 const startKey = STRUCTS.native ? 'native' : (designKeys().find(k => STRUCTS[k]) || null);

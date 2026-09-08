@@ -106,6 +106,28 @@ def markdown_html(text: str) -> str:
         _markdown_lib.markdown(text, extensions=_MD_EXTENSIONS))
 
 
+def safe_json(obj: Any) -> str:
+    r"""Serialize a report payload for embedding in an inline ``<script>``.
+
+    Two sequences would let embedded markup escape the script element and be
+    parsed as HTML: ``</script`` ends it outright, and ``<!--`` puts the
+    parser into script-data-escaped state, where a later ``</script>`` no
+    longer ends it. Both are neutralised with escapes that are valid in JSON
+    *and* in a JavaScript string literal: ``\/`` (JSON's solidus escape) and
+    ``\u003c`` for the ``<``.
+
+    The earlier ``<\!--`` was neither. JavaScript quietly drops the backslash
+    from an unknown escape, so the page rendered fine and the payload simply
+    stopped being parseable JSON — which only surfaced once the stage-report
+    appendix started carrying a stage's own HTML comment
+    (``<!-- MODE: DISRUPT -->``) into the blob, and every test that reads
+    REPORT back out of a built report failed at once.
+    """
+    return (json.dumps(obj, ensure_ascii=False)
+            .replace("</script", r"<\/script")
+            .replace("<!--", r"\u003c!--"))
+
+
 def escape_html(text: str) -> str:
     """Escape a plain-text value for interpolation into an HTML template.
 
@@ -158,3 +180,175 @@ def histogram(values: list[float], lo: float, hi: float, nbins: int) -> dict:
         idx = max(0, min(nbins - 1, idx))
         counts[idx] += 1
     return {"edges": [round(lo + i * width, 4) for i in range(nbins + 1)], "counts": counts}
+
+
+# ---------------------------------------------------------------------
+# full stage-report appendix
+# ---------------------------------------------------------------------
+#
+# The narrative sections above each render ONE slice of a stage's markdown
+# (the prose before its handoff, the hotspot rationale, the analyst verdict).
+# The appendix renders every stage file WHOLE, so one report file carries the
+# complete run record — including the parts no section quotes: the handoff
+# blocks themselves, the trim/spec/pilot arithmetic, the citation checks.
+# Nothing here re-derives anything; it is the same markdown, rendered.
+
+_HANDOFF_BLOCK_RE = re.compile(
+    r"(^#{2,4}[ \t]+PIPELINE HANDOFF[ \t]*$)(.*?)(?=^#|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL)
+# Same shape `handoff.parse_handoff` accepts: '- key: value' or bare 'key: value'.
+_HANDOFF_KV_RE = re.compile(r"^\s*(?:-\s+)?(\w+):\s*(.+)$")
+_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+
+
+def _handoff_block_to_table(text: str) -> str:
+    """Rewrite ``### PIPELINE HANDOFF`` bullet blocks as markdown tables.
+
+    A handoff is a field list, and reads like one — two aligned columns beat
+    twenty ``- key: value`` bullets when a reader is scanning for the one
+    field that explains what the next stage was told. Purely presentational:
+    the parse that the PIPELINE consumes is `handoff.parse_handoff` over the
+    original file, never this. A block that isn't purely key/value (a model
+    wrote prose into it) is left exactly as it was, rather than half-converted.
+    """
+    def repl(m: re.Match) -> str:
+        heading, body = m.group(1), m.group(2)
+        rows: list[tuple[str, str]] = []
+        for line in body.splitlines():
+            if not line.strip() or _FENCE_RE.match(line):
+                continue
+            kv = _HANDOFF_KV_RE.match(line)
+            if not kv:
+                return m.group(0)  # not a clean field list — leave it alone
+            rows.append((kv.group(1).strip(), kv.group(2).strip()))
+        if not rows:
+            return m.group(0)
+        cells = "\n".join(
+            f"| `{k}` | {v.replace('|', chr(92) + '|')} |" for k, v in rows)
+        return f"{heading}\n\n| field | value |\n|---|---|\n{cells}\n"
+
+    return _HANDOFF_BLOCK_RE.sub(repl, text)
+
+
+# A stage report is written to be read in a terminal first, so its
+# column-aligned blocks (calibration's "required scale" / "yield at softer
+# bars" ladders) are indented TWO spaces, not markdown's four. Markdown reads
+# that as a paragraph and collapses every run of spaces, which turns an
+# aligned ladder into an unreadable sentence of numbers. Fence them so the
+# alignment their author intended survives.
+_LIST_RE = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s|\|)")
+_INDENTED_RE = re.compile(r"^ {2,3}\S")
+_ALIGNED_RE = re.compile(r"^ {2,3}\S.*?\S {2,}\S")  # ...and an interior column gap
+
+
+def _preserve_aligned_blocks(text: str) -> str:
+    lines = text.split("\n")
+    out: list[str] = []
+    i, in_fence = 0, False
+    while i < len(lines):
+        line = lines[i]
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        prev = out[-1] if out else ""
+        starts_block = not prev.strip() or prev.lstrip().startswith("#")
+        if (in_fence or not starts_block
+                or not _INDENTED_RE.match(line) or _LIST_RE.match(line)):
+            out.append(line)
+            i += 1
+            continue
+        # Gather the run, keeping interior blank lines that separate two
+        # indented lines — one ladder, visually, is one block.
+        j, run = i, []
+        while j < len(lines):
+            cur = lines[j]
+            nxt = lines[j + 1] if j + 1 < len(lines) else ""
+            if _FENCE_RE.match(cur):
+                break
+            if _INDENTED_RE.match(cur) and not _LIST_RE.match(cur):
+                run.append(cur)
+            elif (not cur.strip() and _INDENTED_RE.match(nxt)
+                    and not _LIST_RE.match(nxt)):
+                run.append(cur)
+            else:
+                break
+            j += 1
+        body = [ln for ln in run if ln.strip()]
+        if len(body) >= 2 and any(_ALIGNED_RE.match(ln) for ln in body):
+            out += ["```"] + run + ["```"]
+        else:
+            out += run
+        i = j
+    return "\n".join(out)
+
+
+def stage_markdown_html(text: str) -> str:
+    """A complete stage report as HTML — prose, tables, handoff and all."""
+    return markdown_html(_preserve_aligned_blocks(_handoff_block_to_table(text)))
+
+
+def stage_documents(entries: list[tuple[str, str, Path]],
+                     rel_to: Path | None = None) -> list[dict]:
+    """Render `(num, label, path)` stage files into appendix documents.
+
+    Missing and empty files are skipped silently — a run paused after
+    calibration simply has no production report to append, which is a fact
+    about the run, not an error. `rel_to` shortens the displayed path (a
+    reader needs to know WHICH file a section came from; the absolute path
+    of a directory they already opened tells them nothing).
+    """
+    docs: list[dict] = []
+    by_text: dict[str, dict] = {}
+    for num, label, path in entries:
+        path = Path(path)
+        text = read_text(path)
+        if not text or not text.strip():
+            continue
+        shown = path
+        if rel_to is not None:
+            try:
+                shown = path.relative_to(rel_to)
+            except ValueError:
+                pass
+        # A PPI-bridged campaign has two stage files with identical bytes:
+        # `_bridge_ppi_to_foundry` copies 02_structure.md verbatim as the
+        # binder track's 21_interface.md rather than paying for a second,
+        # redundant call to the same skill. Rendering both twice reads as
+        # the interface stage having repeated the structure stage. Show it
+        # once and name the other path — which also documents the copy.
+        prior = by_text.get(text)
+        if prior is not None:
+            prior.setdefault("also", []).append(str(shown))
+            continue
+        doc = {
+            "id": "doc-" + path.stem.replace("_", "-"),
+            "num": num,
+            "label": label,
+            "path": str(shown),
+            "html": stage_markdown_html(text),
+        }
+        by_text[text] = doc
+        docs.append(doc)
+    return docs
+
+
+def display_root(start: Path, marker: str = "manifest.json", max_levels: int = 6) -> Path:
+    """Nearest ancestor of `start` holding `marker` — the shortest path prefix
+    a reader still recognises.
+
+    A binder appendix spans two directories (``binder/2*.md`` plus, for a
+    PPI-bridged run, ``0*.md`` one level up), so paths are shown relative to
+    the project root rather than to either of them. Falls back to `start`'s
+    parent when no marker is found — a legacy ``outputs/<slug>_<date>/`` run
+    has no manifest.
+    """
+    d = Path(start)
+    for _ in range(max_levels + 1):
+        if (d / marker).exists():
+            return d
+        if d.parent == d:
+            break
+        d = d.parent
+    return Path(start).parent

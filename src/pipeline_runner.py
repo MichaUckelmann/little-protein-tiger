@@ -2717,12 +2717,12 @@ class PipelineRunner:
 
         out = dirs["binder"] / self._BINDER_STAGE_FILES["trim"]
         body = "\n".join([
-            f"Method: **{res.method}**",
-            *( [f"Topology: {restrict.note}"] if restrict else [] ),
-            f"Residues: {res.n_residues_before} -> {res.n_residues_after} "
+            f"- Method: **{res.method}**",
+            *( [f"- Topology: {restrict.note}"] if restrict else [] ),
+            f"- Residues: {res.n_residues_before} -> {res.n_residues_after} "
             f"in {res.n_segments} segment(s) {res.kept_segments}",
-            f"Interface area of the kept residues retained: {res.bsa_retention:.1%}",
-            f"Hotspots kept: {len(res.hotspots_retained)}/"
+            f"- Interface area of the kept residues retained: {res.bsa_retention:.1%}",
+            f"- Hotspots kept: {len(res.hotspots_retained)}/"
             f"{len(res.hotspots_retained) + len(res.hotspots_lost)}",
             "",
             *(f"- warning: {w}" for w in res.warnings),

@@ -126,6 +126,29 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
   extend a track's own `app.js` when the content is genuinely specific to
   that track — don't grow one at the expense of the other's readability.
 
+  **Every report ends with the stage reports themselves.** The narrative
+  sections each render ONE slice of a stage's markdown (the prose before its
+  handoff, the hotspot rationale, the verdict); the `#appendix` section
+  renders every stage file WHOLE, so a single `report.html` is the complete
+  run record and not a set of quoted excerpts —
+  `report_common.stage_documents` builds it and each track only decides which
+  files go in the list. A PPI-bridged campaign's binder report therefore also
+  carries `00_pathway.md`/`01_literature.md`/`02_structure.md` from one level
+  up, which is where the "why this target" reasoning actually lives. Two
+  presentational transforms are needed because a stage report is written to
+  be read in a TERMINAL first: handoff bullets become a two-column table, and
+  the two-space-indented cost ladders (`25_calibration.md`) are fenced, since
+  markdown's own code-block rule is four spaces and it otherwise collapses an
+  aligned ladder into a run-on sentence of numbers. Both act on the rendered
+  copy only — `handoff.parse_handoff` still reads the file on disk.
+
+  **`report_common.safe_json`, not a local copy.** Escaping `<!--` as `<\!--`
+  (both reports used to) produces a payload the BROWSER accepts — JavaScript
+  drops the backslash from an unknown escape — that is not valid JSON, so
+  every test reading `REPORT` back out of a built report breaks the moment a
+  stage's own HTML comment reaches the blob. The shared version uses `\/` and
+  `\u003c`, which are valid in both.
+
 ## The PPI -> foundry bridge (`design_engine`, foundry by default)
 
 Scoped in `UNIFY_DESIGN_BACKEND_NOTES.md`, unification work started there.
@@ -728,7 +751,8 @@ it.
   parses, without depending on `PipelineRunner`. All call sites must keep using the
   module, not a re-implementation, or they will silently drift on the next skill-prompt edit.
 - `src/report_common.py` (markdown rendering, `### PIPELINE HANDOFF` section splitting,
-  `## CITATION VERIFICATION` extraction, histogram binning) ⇄ `src/binder_report.py` ⇄
+  `## CITATION VERIFICATION` extraction, histogram binning, the full-stage-report
+  appendix, `safe_json`) ⇄ `src/binder_report.py` ⇄
   `src/ppi_report.py` — same reasoning as the `handoff.py` pairing above, one level up:
   both report generators read the SAME shape of markdown-plus-handoff stage output, so the
   reading logic lives once. `src/report_templates/_shared/{base.css,base.js}` is the

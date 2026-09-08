@@ -3951,6 +3951,41 @@ backfilled from its checkpoint.
 - `find_pdb_structures` matches whole symbols. `q in s` meant BID matched
   "cannaBIDiol", SRC matched "reSouRCe", BAX matched "BAXter".
 
+### One report, the whole run
+
+Following the same thread — the record a reader can actually open — every
+report now ends with an appendix that renders each stage's own markdown WHOLE,
+not the slice a section quotes. A binder report for a PPI-bridged campaign
+therefore carries `00_pathway.md` / `01_literature.md` / `02_structure.md` from
+one level up alongside its own `20`..`28`, which is exactly the set of files I
+was flipping between while chasing the 6E3Y question.
+
+Two things had to be fixed for the markdown to survive the trip, both because a
+stage report is written to be read in a terminal first:
+
+- Handoff blocks are bullets. Twenty `- key: value` lines are a field list, so
+  they render as a two-column table now. Presentational only — `parse_handoff`
+  still reads the file on disk, and a block a model wrote prose into is left
+  exactly as it was rather than half-converted.
+- `25_calibration.md`'s cost ladders are indented TWO spaces. Markdown's
+  code-block rule is four, so it read them as a paragraph and collapsed every
+  run of spaces: an aligned ladder of designs/refolds/GPU-h became one run-on
+  sentence of numbers. They are fenced now. Checked across all 110 stage files
+  on disk: the transform touches those files and nothing else.
+
+`22_trim.md` had the same shape of problem at the source — five facts on five
+lines, which markdown folds into one paragraph — so it writes bullets now.
+
+**And the appendix immediately found a real bug.** `safe_json` escaped `<!--`
+as `<\!--`. JavaScript drops the backslash from an unknown escape, so every
+report ever generated rendered correctly, but the payload was not valid JSON —
+and nothing noticed, because no stage narrative had ever contained an HTML
+comment. The appendix carries whole files, `21_interface.md` opens with
+`<!-- MODE: DISRUPT -->`, and three binder-report tests failed at once. Both
+reports had their own copy of that function; it is now one shared
+`report_common.safe_json` using `\/` and `\u003c`, valid in JSON and in
+JavaScript alike.
+
 ### Not addressed
 - 1,786 GPCR/pain papers indexed and blocked by the tier gate.
 - Two-structure design (hotspots on the complex, design on a clean ectodomain)
