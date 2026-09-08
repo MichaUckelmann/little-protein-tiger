@@ -281,7 +281,8 @@ def _call_gemini(
         "contents": contents,
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
-    resp = requests.post(url, params={"key": api_key}, json=payload, timeout=120)
+    resp = requests.post(url, headers={"x-goog-api-key": api_key},
+                         json=payload, timeout=120)
     resp.raise_for_status()
     body = resp.json()
     text = body["candidates"][0]["content"]["parts"][0]["text"]

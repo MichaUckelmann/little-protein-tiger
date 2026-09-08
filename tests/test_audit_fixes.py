@@ -1157,10 +1157,11 @@ def test_doctor_does_not_accept_an_unedited_env_example_as_configured():
             assert doctor._key_state(var)[0]
 
 
-def test_the_literature_track_treats_an_anthropic_key_as_required():
-    """`scripts/ask_corpus.py` has no Gemini path and `curation.provider`
-    defaults to claude, so reporting the key as merely optional for the
-    literature track sent users at a REPL that could not start."""
+def test_every_track_reports_exactly_one_anthropic_key_row():
+    """Each track gets its own severity and its own reason: the key is a
+    fallback for the design tracks and a curation requirement for the
+    literature track. Two rows for one track would print the variable
+    twice with contradictory advice."""
     import importlib
     doctor = importlib.import_module("scripts.doctor")
     rep = doctor.Report()
@@ -1173,7 +1174,9 @@ def test_the_literature_track_treats_an_anthropic_key_as_required():
         assert len(rows) == 1, f"{track}: expected one ANTHROPIC row, got {len(rows)}"
         return rows[0].status
 
-    assert status_for("literature") == doctor.FAIL
+    # Querying the corpus defaults to gemini, so this is a warning, not a
+    # failure — but it is still reported, because CURATION needs it.
+    assert status_for("literature") == doctor.WARN
     # ...but still only a warning for the design tracks, where Gemini is the
     # real default and Claude is the fallback.
     assert status_for("ppi") == doctor.WARN

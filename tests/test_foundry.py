@@ -580,3 +580,72 @@ def test_binder_length_comes_from_the_contig():
     assert _binder_midpoint("70-86,/0,A195-229") == 78
     assert _binder_midpoint("40-120,/0,A1-169") == 80
     assert _binder_midpoint("nonsense") == 78
+
+
+# ---------------------------------------------------------------------
+# Engine-binary resolution (beta onboarding, 2026-09-08)
+# ---------------------------------------------------------------------
+
+class TestFoundryBinResolution:
+    """`.venv-blackwell` is the name of ONE machine's hand-built venv, built
+    because its card is sm_120 and the shipped container's torch was not
+    built for it. It is the default in config.yaml, so every user on any
+    other GPU had a config landmine named after our hardware: the driver
+    launched, retried a nonexistent binary ten times over five minutes, and
+    aborted without naming the cause.
+    """
+
+    def _stub(self, root: Path, venv: str) -> None:
+        for engine in ("rfd3", "mpnn", "rf3"):
+            p = root / venv / "bin" / engine
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def test_the_configured_path_wins_when_it_exists(self, tmp_path):
+        from src.foundry_runner import _resolve_foundry_bin
+        self._stub(tmp_path, ".venv-blackwell")
+        self._stub(tmp_path, ".venv")
+        # Ambiguity is fine as long as the configured one is real.
+        assert _resolve_foundry_bin(
+            tmp_path, ".venv-blackwell/bin/rfd3", "rfd3") == ".venv-blackwell/bin/rfd3"
+
+    def test_a_differently_named_venv_is_found(self, tmp_path):
+        """The A100/H100 case: foundry installed normally, venv called .venv."""
+        from src.foundry_runner import _resolve_foundry_bin
+        self._stub(tmp_path, ".venv")
+        assert _resolve_foundry_bin(
+            tmp_path, ".venv-blackwell/bin/rfd3", "rfd3") == ".venv/bin/rfd3"
+
+    def test_two_candidates_refuse_rather_than_guess(self, tmp_path):
+        """Picking one would silently run the build for the wrong GPU."""
+        from src.foundry_runner import _resolve_foundry_bin, FoundryValidationError
+        self._stub(tmp_path, ".venv")
+        self._stub(tmp_path, ".venv-cuda12")
+        with pytest.raises(FoundryValidationError, match="2 candidate rfd3"):
+            _resolve_foundry_bin(tmp_path, "absent/bin/rfd3", "rfd3")
+
+    def test_no_binary_names_the_config_key_and_the_blackwell_trap(self, tmp_path):
+        from src.foundry_runner import _resolve_foundry_bin, FoundryValidationError
+        with pytest.raises(FoundryValidationError) as exc:
+            _resolve_foundry_bin(tmp_path, ".venv-blackwell/bin/rf3", "rf3")
+        msg = str(exc.value)
+        assert "design.foundry.rf3_bin" in msg
+        assert "Blackwell" in msg          # says WHY the default is wrong for them
+        assert "doctor.py" in msg
+
+    def test_the_driver_uses_the_resolved_path_not_the_default(
+            self, design_cfg, tmp_path, real_spec, monkeypatch):
+        """End-to-end: the rendered driver must call the binary that exists."""
+        spec_path, _, _ = real_spec
+        root = tmp_path / "foundry-a100"
+        self._stub(root, ".venv")
+        monkeypatch.setenv("LPT_FOUNDRY_ROOT", str(root))
+        paths = FoundryPaths.under(tmp_path)
+        paths.mkdirs()
+        plan = plan_campaign(design_cfg, paths, mode="pilot")
+        driver = write_campaign_driver(
+            design_cfg, spec_path, paths, plan).read_text()
+        assert ".venv/bin/rfd3" in driver
+        assert ".venv/bin/mpnn" in driver
+        assert ".venv/bin/rf3" in driver
+        assert ".venv-blackwell" not in driver

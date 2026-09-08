@@ -565,6 +565,34 @@ Celery writers); a rollup is mirrored into `manifest.json["budget"]` once per st
 replayed **with their `signature`**, or the next turn is rejected with
 `messages.N.content.0.thinking.signature: Field required`.
 
+## One agentic loop, not one per entry point
+
+`scripts/ask_corpus.py` is a thin front-end over `SkillRunner` running the
+`corpus-explorer` skill — it does NOT have its own loop. It used to, hardcoded
+to Anthropic with `search_corpus` as its only tool, and that second
+implementation silently missed everything the shared runner had learned:
+Gemini support, connection/429 retries, cross-provider refusal fallback, token
+accounting, and the other seventeen corpus tools. Any new conversational entry
+point goes through `SkillRunner` too.
+
+**The Gemini key goes in the `x-goog-api-key` HEADER, never the query string.**
+`requests` embeds the request URL in every exception it raises, so a key passed
+as `params={"key": ...}` is printed in full by any connection error, timeout or
+HTTP failure — to the terminal, into logs, and into whatever a user pastes into
+a bug report. Observed live: an SSL failure printed a working key.
+
+## foundry's venv name is one machine's accident
+
+`design.foundry.{rfd3,mpnn,rf3}_bin` default to `.venv-blackwell/bin/*` because
+this project's reference workstation had to hand-build that venv (its card is
+sm_120, which the shipped container's torch was not built for). Nothing else is
+Blackwell-specific, and every other GPU's foundry install uses a different venv
+name. `foundry_runner._resolve_foundry_bin` therefore globs the checkout for
+the binary when the configured path is absent, and refuses to guess between
+several candidates — picking one could run a build compiled for a different
+GPU. It resolves at `write_campaign_driver` time, so a wrong path fails before
+the detached driver launches rather than after ten retries and five minutes.
+
 ## Safety-classifier refusals are an operational fact of this pipeline
 
 The binder track's `interface` stage (`complex-structure-analysis`) is routinely

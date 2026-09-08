@@ -515,11 +515,11 @@ log "campaign finished: rfd3=$(count_rfd3) mpnn=$(count_mpnn) rf3=$(count_rf3)"
 
 
 def _rfd3_command(cfg: dict, spec_path: Path, paths: FoundryPaths,
-                  plan: CampaignPlan) -> str:
+                  plan: CampaignPlan, *, bin_: str | None = None) -> str:
     f = cfg.get("foundry") or {}
     rfd3 = f.get("rfd3") or {}
     sampler = rfd3.get("inference_sampler") or {}
-    bin_ = f.get("rfd3_bin", ".venv-blackwell/bin/rfd3")
+    bin_ = bin_ or f.get("rfd3_bin", ".venv-blackwell/bin/rfd3")
     launcher = " ".join(f.get("launcher") or ["uv", "run"])
     rfd3_ckpt = f.get("ckpt", {}).get("rfd3", "rfd3")
     parts = [
@@ -536,6 +536,55 @@ def _rfd3_command(cfg: dict, spec_path: Path, paths: FoundryPaths,
         if key in sampler:
             parts.append(f"inference_sampler.{key}={sampler[key]}")
     return " \\\n      ".join(parts)
+
+
+# foundry's engines live in a uv venv inside the foundry checkout, and the
+# DEFAULT paths here say `.venv-blackwell` because that is what this repo's
+# reference workstation had to hand-build (its card is sm_120, which the
+# shipped container's torch was not built for). That name is an accident of
+# one machine's GPU. Anyone whose foundry venv is called something else —
+# which is everyone not on a Blackwell card — would otherwise get a driver
+# that launches, retries a nonexistent binary ten times over five minutes,
+# and aborts, with the real cause named nowhere.
+_VENV_GLOBS = (".venv*", "venv*", "env*")
+
+
+def _resolve_foundry_bin(root: Path, configured: str, name: str) -> str:
+    """Path (relative to `root`) of one foundry engine binary.
+
+    Uses the configured path when it exists. Otherwise looks for exactly one
+    venv under the checkout that provides the binary, and says so. Ambiguity
+    and absence both raise here — at config time, before a detached campaign
+    launches — rather than inside the driver five minutes later.
+    """
+    if (root / configured).exists():
+        return configured
+    found = sorted({
+        candidate for pattern in _VENV_GLOBS
+        for candidate in root.glob(f"{pattern}/bin/{name}")
+        if candidate.is_file()
+    })
+    if len(found) == 1:
+        rel = found[0].relative_to(root).as_posix()
+        logger.info(
+            f"foundry {name}: configured {configured!r} not present, using "
+            f"{rel!r} (set design.foundry.{name}_bin to silence this)")
+        return rel
+    if not found:
+        raise FoundryValidationError(
+            f"foundry's {name} binary was not found under {root}.\n"
+            f"Looked for {configured!r} (the configured path) and for "
+            f"{'/'.join(_VENV_GLOBS)}/bin/{name}.\n"
+            f"The default names a venv this project's reference machine "
+            f"hand-built for a Blackwell (sm_120) card; your foundry install "
+            f"almost certainly uses a different one. Point "
+            f"design.foundry.{name}_bin at yours — the path is relative to "
+            f"LPT_FOUNDRY_ROOT — and check the install with "
+            f"`python scripts/doctor.py`.")
+    raise FoundryValidationError(
+        f"foundry has {len(found)} candidate {name} binaries under {root}: "
+        + ", ".join(f.relative_to(root).as_posix() for f in found)
+        + f".\nSet design.foundry.{name}_bin to the one built for your GPU.")
 
 
 def write_campaign_driver(
@@ -565,6 +614,14 @@ def write_campaign_driver(
             "this machine's foundry checkout (the directory containing "
             ".venv-blackwell). There is no cross-machine default.")
 
+    root_path = Path(foundry_root)
+    rfd3_bin = _resolve_foundry_bin(
+        root_path, f.get("rfd3_bin", ".venv-blackwell/bin/rfd3"), "rfd3")
+    mpnn_bin = _resolve_foundry_bin(
+        root_path, f.get("mpnn_bin", ".venv-blackwell/bin/mpnn"), "mpnn")
+    rf3_bin = _resolve_foundry_bin(
+        root_path, f.get("rf3_bin", ".venv-blackwell/bin/rf3"), "rf3")
+
     text = _DRIVER_TEMPLATE.format(
         foundry=foundry_root,
         campaign=paths.campaign_dir,
@@ -577,7 +634,7 @@ def write_campaign_driver(
         max_rfd3_attempts=int(f.get("max_rfd3_attempts", 10)),
         max_rf3_attempts=int(f.get("max_rf3_attempts", 20)),
         min_free_gb=int(f.get("min_free_gb", 20)),
-        rfd3_cmd=_rfd3_command(cfg, spec_path, paths, plan),
+        rfd3_cmd=_rfd3_command(cfg, spec_path, paths, plan, bin_=rfd3_bin),
         max_chainbreaks=int(max_cb),
         min_non_loop=float(prefilter.get("min_non_loop", 0.6)),
         # Rendered explicitly rather than left to foundry_stages' own
@@ -586,10 +643,10 @@ def write_campaign_driver(
         max_sidechain_clashes=int(prefilter.get("max_sidechain_clashes", 0)),
         max_backbone_clashes=int(prefilter.get("max_backbone_clashes", 0)),
         mpnn_ckpt=(f.get("ckpt") or {}).get("mpnn", "solublempnn"),
-        mpnn_bin=f.get("mpnn_bin", ".venv-blackwell/bin/mpnn"),
+        mpnn_bin=mpnn_bin,
         mpnn_chunk=int(mpnn.get("chunk_size", 250)),
         rf3_ckpt=(f.get("ckpt") or {}).get("rf3", "rf3"),
-        rf3_bin=f.get("rf3_bin", ".venv-blackwell/bin/rf3"),
+        rf3_bin=rf3_bin,
         rf3_template=rf3.get("template", "target"),
         rf3_dbs=int(rf3.get("diffusion_batch_size", 1)),
         rf3_seed=int(rf3.get("seed", 0)),

@@ -171,11 +171,10 @@ def _key_state(name: str) -> tuple[bool, str]:
 
 
 def check_api_keys(rep: Report) -> None:
-    # Gemini is the default provider for every PIPELINE stage — but not for
-    # everything. `scripts/ask_corpus.py` (the conversational corpus query) is
-    # Anthropic-only, and `curation.provider` in config.yaml is still
-    # "claude", so the literature track genuinely needs an Anthropic key and
-    # reporting it as merely "optional" there was misleading.
+    # Gemini is the default provider for every pipeline stage AND for
+    # `scripts/ask_corpus.py`. It is not the default for CURATION —
+    # `curation.provider` in config.yaml is still "claude" — so extending the
+    # corpus needs an Anthropic key even though querying it does not.
     gem, gem_why = _key_state("GEMINI_API_KEY")
     ant, ant_why = _key_state("ANTHROPIC_API_KEY")
     rep.add("GEMINI_API_KEY", OK if gem else FAIL,
@@ -189,11 +188,11 @@ def check_api_keys(rep: Report) -> None:
             "" if ant else "Optional here. Add ANTHROPIC_API_KEY to .env to enable it.",
             tracks=("ppi", "binder"))
     # Literature track: required, not optional.
-    rep.add("ANTHROPIC_API_KEY", OK if ant else FAIL,
-            "set" if ant else f"{ant_why} — ask_corpus.py is Anthropic-only",
-            "" if ant else "Add ANTHROPIC_API_KEY to .env: scripts/ask_corpus.py "
-                           "has no Gemini path, and curation.provider in "
-                           "config.yaml defaults to claude.",
+    rep.add("ANTHROPIC_API_KEY", OK if ant else WARN,
+            "set" if ant else f"{ant_why} — needed to EXTEND the corpus",
+            "" if ant else "Optional for querying (ask_corpus.py defaults to "
+                           "gemini). Needed to curate new papers: "
+                           "curation.provider in config.yaml is 'claude'.",
             tracks=("literature",))
     email, email_why = _key_state("NCBI_EMAIL")
     rep.add("NCBI_EMAIL", OK if email else WARN,

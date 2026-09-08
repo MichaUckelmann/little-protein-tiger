@@ -85,7 +85,7 @@ cp .env.example .env
 | Key | Required for |
 |-----|---|
 | `GEMINI_API_KEY` | **The default provider for every pipeline stage** |
-| `ANTHROPIC_API_KEY` | Curation, `scripts/ask_corpus.py` (no Gemini path), `--provider claude`, and the refusal fallback |
+| `ANTHROPIC_API_KEY` | Curation (`curation.provider` is `claude`), `--provider claude`, and the refusal fallback |
 | `NCBI_EMAIL` | Polite crawling (NCBI rate limits) |
 | `NCBI_API_KEY` | Higher NCBI rate limit (optional) |
 | `S2_API_KEY` | Higher Semantic Scholar rate limit (optional) |
@@ -333,7 +333,7 @@ Query the corpus in a conversational loop using Claude + semantic search.
 python scripts/ask_corpus.py
 
 # Options
-python scripts/ask_corpus.py --model claude-sonnet-5 --top-k 10
+python scripts/ask_corpus.py --provider claude --top-k 10
 ```
 
 ### 5. Run expert skills from the CLI

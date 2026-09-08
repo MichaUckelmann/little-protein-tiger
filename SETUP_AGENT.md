@@ -67,8 +67,9 @@ Ask, and wait for answers:
 - **API keys.** `GEMINI_API_KEY` is the default provider for every pipeline
   stage. `ANTHROPIC_API_KEY` is optional for the pipeline (used by
   `--provider claude` and as the refusal fallback) but **required by
-  `scripts/ask_corpus.py`**, which talks to Claude directly and has no Gemini
-  path — so a literature-track user who wants that REPL needs it. Neither key
+  curation** (`curation.provider` in config.yaml is still `"claude"`), so a
+  user who wants to EXTEND the corpus needs it. Querying the corpus does not:
+  `scripts/ask_corpus.py` defaults to gemini like everything else. Neither key
   is needed for the `structure` track.
 - **Do you already have foundry / PyRosetta / BoltzGen anywhere?** Before
   proposing an install, search: `find ~ -maxdepth 4 -name "foundry" -o -maxdepth 4 -name "*rcfoundry*" 2>/dev/null`,

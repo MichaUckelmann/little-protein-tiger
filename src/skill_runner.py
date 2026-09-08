@@ -1041,6 +1041,12 @@ def _to_gemini_tools(defs: list[dict]) -> list[dict]:
 _GEMINI_GENERATE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
+# The key goes in the `x-goog-api-key` HEADER, never in the query string.
+# `requests` embeds the full URL in every exception it raises, so a key
+# passed as `params={"key": ...}` is printed verbatim by any connection
+# error, timeout or HTTP failure — to the terminal, into log files, and into
+# whatever a user pastes into a bug report. Observed: an SSL failure on this
+# call printed a live key in full.
 
 
 # Appended to EVERY skill's system prompt, both transports. Output goes to a
@@ -2000,7 +2006,8 @@ class SkillRunner:
                 # multi-hour run here. Same budget as the status retries.
                 try:
                     resp = requests.post(
-                        url, params={"key": api_key}, json=payload, timeout=180
+                        url, headers={"x-goog-api-key": api_key},
+                        json=payload, timeout=180
                     )
                 except (requests.ConnectionError, requests.Timeout) as exc:
                     if attempt == 3:

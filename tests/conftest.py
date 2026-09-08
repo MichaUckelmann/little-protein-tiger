@@ -94,11 +94,20 @@ def foundry_root(tmp_path, monkeypatch) -> Path:
     `write_campaign_driver` refuses to emit a driver without a foundry root
     (correctly — there is no cross-machine default, and silently writing a
     driver that points nowhere is worse than failing). These tests assert on
-    the script's *contents*, so any existing directory will do; what they must
-    not do is depend on the maintainer's `.env` being populated.
+    the script's *contents*, so a stub checkout will do; what they must not do
+    is depend on the maintainer's `.env` being populated.
+
+    It does need the three engine binaries, because `write_campaign_driver`
+    resolves them against the checkout now — the configured paths default to
+    the `.venv-blackwell` this project's reference machine hand-built for its
+    sm_120 card, and every other GPU's foundry venv is named something else.
+    A checkout with no binaries at all is not one any user would have.
     """
     root = tmp_path / "foundry"
-    root.mkdir()
+    venv_bin = root / ".venv-blackwell" / "bin"
+    venv_bin.mkdir(parents=True)
+    for engine in ("rfd3", "mpnn", "rf3"):
+        (venv_bin / engine).write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setenv("LPT_FOUNDRY_ROOT", str(root))
     return root
 

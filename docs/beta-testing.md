@@ -19,7 +19,7 @@ the requirements differ sharply — check this table before installing anything.
 |---|---|---|---|---|
 | **A. Design from a named target** | "design binders against RING1B" → epitope, spec, campaign | Only past the spec stage | **No** | Gemini |
 | **B. Design from a broad prompt** | "inhibitors for pain receptors" → picks the target for you | Only past the spec stage | **Yes** | Gemini |
-| **C. Ask the literature** | conversational queries over ~11,000 curated papers | No | **Yes** | Anthropic |
+| **C. Ask the literature** | conversational queries over ~11,000 curated papers | No | **Yes** | Gemini |
 
 Two things to know before you plan your testing:
 
@@ -27,6 +27,9 @@ Two things to know before you plan your testing:
   stops right before the first GPU stage. That is a genuinely useful test — it
   exercises target resolution, structure selection, epitope choice, trimming
   and spec generation, which is where most of the interesting behaviour is.
+  **Start here even if you do have a GPU**, because the design engines are a
+  separate, non-trivial install — see
+  [the GPU section](#going-past-the-spec-stage-what-the-gpu-side-actually-needs).
 - **The literature corpus is a separate download** and gates B and C. See
   [step 4](#4-the-literature-corpus-tracks-b-and-c).
 
@@ -75,7 +78,7 @@ they counted as "set".
 | Variable | Needed for | Get it from |
 |---|---|---|
 | `GEMINI_API_KEY` | every design stage (the default provider) | [aistudio.google.com](https://aistudio.google.com/apikey) |
-| `ANTHROPIC_API_KEY` | **track C** (`ask_corpus.py` is Anthropic-only), and as the fallback when a safety classifier declines a design stage | [console.anthropic.com](https://console.anthropic.com/) |
+| `ANTHROPIC_API_KEY` | optional everywhere — `--provider claude`, and the fallback when a safety classifier declines a design stage | [console.anthropic.com](https://console.anthropic.com/) |
 | `NCBI_EMAIL` | only if you extend the corpus yourself | your own address |
 
 Gemini is the default because it is ~4× cheaper on input *and* declines fewer
@@ -150,7 +153,7 @@ python scripts/run_pipeline.py --workflow binder \
 | `--target RING1B` | a gene symbol, UniProt accession, or protein name |
 | `--project` | **required** — the campaign is resumable, and the manifest is what makes that work |
 | `--budget 2.00` | hard cap on API spend; the run pauses rather than overrunning |
-| `--stop-after spec` | stops before the first GPU stage — **drop this once you have a GPU** |
+| `--stop-after spec` | stops before the first GPU stage — drop it once foundry is installed, not merely once you have a GPU |
 
 Expect ~2 minutes and well under $1. You get:
 
@@ -221,11 +224,63 @@ pipeline sometimes deliberately substitutes a *different* structure than the
 literature recommends — it explains itself in a `## STRUCTURE SUBSTITUTION`
 section at the bottom of `00_pathway.md`.
 
+## Going past the spec stage: what the GPU side actually needs
+
+**An NVIDIA GPU is necessary but nowhere near sufficient.** Dropping
+`--stop-after spec` does not "just work" — the design engines are a separate
+project that LPT neither ships nor installs, and getting them running is the
+single hardest part of this setup. Budget an afternoon, not ten minutes.
+
+**foundry** (RFD3 → solubleMPNN → RF3) — <https://github.com/RosettaCommons/foundry>
+
+1. Clone it and follow **its own** setup instructions. It carries
+   **RosettaCommons' licence terms, not LPT's MIT** — read them before any
+   commercial use.
+2. **Download the model checkpoints.** Separate from the code, resolved
+   through foundry's own checkpoint registry (`~/pip_rcfoundry_ckpt/` by
+   default). Note the registry aliases work for `rfd3` and `rf3` but **not**
+   for `solublempnn` — MPNN's config takes a literal path, and it fails
+   *after* RFD3 has already run. LPT works around this, but you need the
+   checkpoints present.
+3. Point LPT at the checkout: `LPT_FOUNDRY_ROOT=/path/to/foundry` in `.env`.
+4. `python scripts/doctor.py --track binder` — it checks the root, the venv,
+   and the checkpoint directory.
+
+**Hardware:** a CUDA GPU with **≥32 GB VRAM**, and **~120 GB free disk** for a
+full production campaign (~2.5 MB per refold directory — disk, not GPU, is
+usually the binding constraint).
+
+### Will it work on a GPU that isn't Blackwell?
+
+**Yes — and probably more easily than on the card this was built on.** Nothing
+in LPT or foundry is Blackwell-specific. What was special about this project's
+reference workstation is that its card is **sm_120**, which the torch build
+shipped in foundry's container did *not* support, so the venv had to be
+hand-built. On Ampere (A100), Ada (L40S, 4090) or Hopper (H100), foundry's
+stock install path is more likely to work unmodified.
+
+One thing to know: LPT's config defaults still name that hand-built venv
+(`design.foundry.rfd3_bin: ".venv-blackwell/bin/rfd3"` and siblings). If your
+foundry venv is called something else — it almost certainly is — LPT now
+**finds it automatically**, logging which one it used. If you have several
+venvs it refuses to guess and asks you to set `design.foundry.{rfd3,mpnn,rf3}_bin`,
+because picking one could silently run a build compiled for a different GPU.
+Either way you find out at spec time, not five minutes into a detached
+campaign.
+
+**BoltzGen** is only needed for `--design-engine boltzgen` or
+`--modality cyclic_peptide` (RFD3 has no cyclic-peptide path). Set
+`LPT_BOLTZGEN_EXECUTABLE`.
+
+**PyRosetta** is genuinely optional — scoring only, after designs exist, and
+the pipeline skips those metrics with a warning if it is absent. Free for
+academic use, licensed for commercial. See `docs/pyrosetta_setup.md`.
+
+`docs/environment_setup.md` has the full detail on all three.
+
 ## What a full GPU run costs
 
-`--stop-after spec` is free of GPU cost. If you do have an NVIDIA GPU and a
-foundry install, drop the flag and the run continues into a calibrated
-campaign. Measured on real runs:
+Measured on real runs:
 
 | | LLM spend | GPU |
 |---|---|---|
@@ -261,8 +316,12 @@ python scripts/generate_binder_report.py projects/<slug>/runs/round-1/binder
 python scripts/ask_corpus.py "How does the FACT complex reposition the H2A-H2B dimer?"
 ```
 
-Runs an interactive session; each answer cites specific papers by title and
-DOI. Needs `ANTHROPIC_API_KEY` — this path has no Gemini option.
+Runs an interactive session on `gemini-3.7-flash`; each answer cites papers by
+title and DOI, and says explicitly what the corpus does *not* contain. It has
+the full corpus toolset, not just search — the interaction graph, DepMap
+co-essentiality, clusters and quantitative-evidence lookup — so questions like
+"what interacts with SPT16, and at what affinity?" return a sourced table.
+`--provider claude` switches models.
 
 For literal keyword matching instead of semantic search:
 
