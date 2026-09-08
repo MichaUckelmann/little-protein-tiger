@@ -15,7 +15,12 @@ from __future__ import annotations
 import builtins
 import symtable
 import json
+import os
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import yaml
@@ -1121,3 +1126,101 @@ def test_the_switch_note_never_breaks_a_run(config, tmp_path):
     r._note_structure_switch(res, "6E3Y", "3N7S")          # no pathway file
     res.stage_files["pathway"] = tmp_path / "missing.md"
     r._note_structure_switch(res, "6E3Y", "3N7S")          # file absent
+
+
+# ---------------------------------------------------------------------
+# Onboarding guards (beta-tester audit, 2026-09-08)
+#
+# Three failure modes that all present as "it worked" to a new user, which
+# is the worst way for a first run to go wrong.
+# ---------------------------------------------------------------------
+
+def test_doctor_does_not_accept_an_unedited_env_example_as_configured():
+    """`cp .env.example .env` and forgetting to edit it left every key
+    non-empty, so doctor.py reported a fully unconfigured checkout green and
+    the user found out from a provider 403 several stages later."""
+    import importlib
+    doctor = importlib.import_module("scripts.doctor")
+    env_example = dict(
+        line.split("=", 1)
+        for line in (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+        if "=" in line and not line.lstrip().startswith("#"))
+    for var in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "NCBI_EMAIL"):
+        shipped = env_example.get(var, "")
+        # The placeholder must be recognised as NOT usable...
+        with mock.patch.dict(os.environ, {var: shipped}, clear=False):
+            usable, why = doctor._key_state(var)
+        assert not usable, f"{var}={shipped!r} from .env.example counted as set"
+        assert why, f"{var} rejected without saying why"
+        # ...and a real-looking value must still pass.
+        with mock.patch.dict(os.environ, {var: "a-real-looking-value"}, clear=False):
+            assert doctor._key_state(var)[0]
+
+
+def test_the_literature_track_treats_an_anthropic_key_as_required():
+    """`scripts/ask_corpus.py` has no Gemini path and `curation.provider`
+    defaults to claude, so reporting the key as merely optional for the
+    literature track sent users at a REPL that could not start."""
+    import importlib
+    doctor = importlib.import_module("scripts.doctor")
+    rep = doctor.Report()
+    with mock.patch.dict(os.environ,
+                         {"GEMINI_API_KEY": "x", "ANTHROPIC_API_KEY": ""},
+                         clear=False):
+        doctor.check_api_keys(rep)
+    def status_for(track: str) -> str:
+        rows = [c for c in rep.for_track(track) if c.name == "ANTHROPIC_API_KEY"]
+        assert len(rows) == 1, f"{track}: expected one ANTHROPIC row, got {len(rows)}"
+        return rows[0].status
+
+    assert status_for("literature") == doctor.FAIL
+    # ...but still only a warning for the design tracks, where Gemini is the
+    # real default and Claude is the fallback.
+    assert status_for("ppi") == doctor.WARN
+    assert status_for("binder") == doctor.WARN
+
+
+def test_a_missing_vector_index_names_fetch_corpus_on_an_empty_checkout():
+    """`ingest_vectors.py` is the right fix only when there are fingerprints
+    to ingest. On a fresh clone it embeds nothing and changes nothing."""
+    from src.vector_store import VectorStore
+    import src.vector_store as vs_mod
+    with tempfile.TemporaryDirectory() as d:
+        fake = Path(d) / "src" / "vector_store.py"
+        fake.parent.mkdir(parents=True)
+        fake.write_text("", encoding="utf-8")
+        with mock.patch.object(vs_mod, "__file__", str(fake)):
+            store = VectorStore(db_path=Path(d) / "vectors")
+            with pytest.raises(RuntimeError) as exc:
+                store._get_table()
+    assert "fetch_corpus.py" in str(exc.value)
+    assert "ingest_vectors.py" not in str(exc.value)
+
+
+def test_a_gpu_stage_that_produced_nothing_is_not_recorded_as_complete():
+    """`wait_for_campaign` returns when the work is done OR the driver
+    stopped — its own docstring calls those independent facts. Recording the
+    stage complete regardless sent an empty campaign into calibration, which
+    then reported STOP phrased as a MEASURED rate. Nothing said "never ran".
+    """
+    src = (_ROOT / "src" / "pipeline_runner.py").read_text(encoding="utf-8")
+    idx = src.index("final = wait_for_campaign(")
+    # Everything between the wait and the stage being marked complete.
+    tail = src[idx:src.index('self._record_stage(mode, "complete", out, stage=mode)', idx)]
+    assert "final.n_rf3 == 0" in tail, "no zero-refold guard before recording complete"
+    assert "FoundryError" in tail, "zero refolds must raise, not warn"
+    assert "not final.complete" in tail, "a short campaign should still warn"
+
+
+def test_pathway_mode_is_reachable_from_the_cli():
+    """README documented `--pathway-mode` in two places while argparse had no
+    such flag: `error: unrecognized arguments: --pathway-mode wildcard`."""
+    from src.pipeline_runner import PipelineRunner
+    out = subprocess.run(
+        [sys.executable, str(_ROOT / "scripts" / "run_pipeline.py"), "--help"],
+        capture_output=True, text=True, timeout=120)
+    assert "--pathway-mode" in out.stdout
+    runner = PipelineRunner(
+        config=yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8")),
+        workflow="ppi", pathway_mode="wildcard")
+    assert runner._pathway_mode == "wildcard"

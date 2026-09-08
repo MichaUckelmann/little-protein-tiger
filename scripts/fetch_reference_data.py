@@ -3,9 +3,10 @@
 
 `data/` is gitignored, so a fresh clone has none of it. Two of these files are
 HARD requirements for the binder track's very first stage: without them
-`--workflow binder --target KRAS` dies in about two seconds with a bare
-FileNotFoundError, several layers below anything that names the file or says
-where to get it.
+`--workflow binder --target KRAS` stops about two seconds in. It now stops
+with `identifier_normalizer.ReferenceDataMissing`, which names both files and
+this script; before that guard existed it was a bare FileNotFoundError several
+layers below anything that said what the file was or where to get it.
 
     HUMAN_9606_idmapping.dat.gz   UniProt   ~35 MB   REQUIRED
     hgnc_complete_set.tsv         HGNC      ~17 MB   REQUIRED

@@ -2889,9 +2889,9 @@ class PipelineRunner:
                                            n_batches=n_batches)
 
         from src.foundry_runner import (
-            collect, plan_campaign, prefilter_rate_observed, progress,
-            render_progress, resume, run_design, sec_per_refold_observed,
-            wait_for_campaign,
+            FoundryError, collect, plan_campaign, prefilter_rate_observed,
+            progress, render_progress, resume, run_design,
+            sec_per_refold_observed, wait_for_campaign,
         )
 
         cfg = self._binder_cfg()
@@ -2955,6 +2955,37 @@ class PipelineRunner:
         final = wait_for_campaign(
             paths, plan,
             poll_s=float((cfg.get("foundry") or {}).get("poll_interval_s", 120)))
+        # `wait_for_campaign` returns when the work is done OR the driver
+        # stopped — its own docstring calls those independent facts. So a
+        # campaign that aborted (a half-installed foundry, a driver crash, a
+        # GPU fault) lands here exactly like a finished one, and recording it
+        # "complete" sends an empty campaign into calibration, which then
+        # reports a STOP verdict phrased as a MEASURED rate. Nothing in that
+        # chain ever says "this never ran".
+        #
+        # A campaign that produced FEWER refolds than planned is a different
+        # thing and stays legitimate — a disk clamp or a per-shard GPU ECC
+        # fault leaves a real, smaller sample, and the Wilson interval sizes
+        # correctly off it. Only zero is unrecoverable.
+        if final.n_rf3 == 0:
+            log_hint = paths.logs_dir / "driver.log"
+            raise FoundryError(
+                f"the {mode} campaign produced no refolds at all "
+                f"(RFD3 backbones: {final.n_rfd3:,}, MPNN sequences: "
+                f"{final.n_mpnn:,}, RF3 refolds: 0 of {plan.expected_rf3:,} "
+                f"planned). There is nothing to score, so this is not a weak "
+                f"result — the campaign did not run.\n"
+                f"The driver logs its own reason (look for a line starting "
+                f"'ABORT:'):\n    tail -40 {log_hint}\n"
+                f"Most common cause on a new machine is an incomplete foundry "
+                f"install — check it with `python scripts/doctor.py`.")
+        if not final.complete:
+            logger.warning(
+                f"[{mode}] campaign stopped short: {final.n_rf3:,} of "
+                f"{plan.expected_rf3:,} planned refolds. Scoring the "
+                f"{final.n_rf3:,} that exist — the interval widens, the "
+                f"verdict stays honest. Driver log: "
+                f"{paths.logs_dir / 'driver.log'}")
         summary = collect(paths)
         self._write_binder_report(
             out, f"{mode.title()} campaign", render_progress(final), summary)

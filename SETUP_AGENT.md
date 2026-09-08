@@ -36,6 +36,11 @@ and installing everything by default wastes gigabytes and hours.
    `scripts/setup_mcp_json.py`), or anything under `src/`. If setup seems to
    need a source change, stop and tell the user why.
 4. **Do not commit anything.**
+4b. **Never type, paste or echo an API key yourself.** Create `.env` from
+   `.env.example`, then ask the user to put their own key values in and tell
+   you when they have. Verify without printing the secret:
+   `grep -c '^GEMINI_API_KEY=.\+' .env`. A key you handle ends up in your own
+   transcript and in the user's shell history.
 5. **Never attempt to obtain licensed software from unofficial sources**, and
    never work around a licence check. foundry and PyRosetta both carry terms;
    if the user does not have them, say which tracks are unavailable and move on.
@@ -137,6 +142,14 @@ Do not duplicate its logic in your own checks — call it.
 minute.** A new user does not rebuild it: no LLM spend, no days of downloading,
 no PubMed rate limits.
 
+> **CHECK THIS FIRST — pre-release state.** The release asset may not be
+> published yet. `README.md`'s own top banner and `RELEASE_CHECKLIST.md` say so
+> when that is the case. Run `python scripts/fetch_corpus.py --check` before
+> promising the user a one-minute download. If it reports no `lpt-corpus*`
+> asset, that is a **known repo state, not a fault on this machine** — say
+> exactly that, and tell the user the binder track (`--workflow binder`) needs
+> no corpus and is fully usable meanwhile.
+
 ```bash
 python scripts/fetch_corpus.py
 ```
@@ -183,6 +196,17 @@ ingest afterwards; do not run those by hand.
 
 Each is a separate install with its own licence. LPT ships none of them.
 
+> **STOP AND ASK BEFORE STARTING ANY OF THIS.** Unlike every phase above, this
+> is not a scripted install: it needs licence acceptance the user must make
+> themselves, and a torch build matched to their specific GPU generation, which
+> can take hours and often needs judgement no doc can encode. Report what is
+> already present, say what each track would need, and let the user decide
+> whether to attempt it now. **Setup is not blocked on this** — say so:
+> `--stop-after spec` runs both design tracks' full reasoning path (target
+> resolution, epitope choice, trimming, spec generation) with an API key alone,
+> no GPU and no foundry. That is the right first run for a new user, and
+> `docs/beta-testing.md` has the exact command.
+
 - **foundry** (RFD3 / solubleMPNN / RF3) — https://github.com/RosettaCommons/foundry.
   **The hard dependency of the binder track.** RosettaCommons terms, not MIT —
   tell the user to read them before any commercial use. Expect a
@@ -206,6 +230,14 @@ Only if the user wants LPT's tools inside Claude Desktop or Claude Code:
 ```bash
 python scripts/setup_mcp_json.py
 ```
+
+Claude **Code** picks `.mcp.json` up from the project root on its next session.
+Claude **Desktop** needs the printed `mcpServers` block copied into
+`claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows,
+`~/Library/Application Support/Claude/` on macOS, `~/.config/Claude/` on Linux)
+— and then **STOP AND TELL THE USER TO RESTART CLAUDE DESKTOP.** It reads that
+file only at startup; without a restart the servers silently do not appear, and
+you cannot restart it for them.
 
 If they chose the literature track, warm the embedding cache too — the MCP
 launcher sets `HF_HUB_OFFLINE=1`, so an uncached model fails with a

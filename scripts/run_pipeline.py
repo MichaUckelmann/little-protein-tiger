@@ -186,6 +186,21 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--pathway-mode",
+        choices=["standard", "wildcard"],
+        default="standard",
+        dest="pathway_mode",
+        help=(
+            "--workflow ppi only. 'standard' (default) runs pathway-expert, "
+            "which picks the best-evidenced target for the disease context. "
+            "'wildcard' runs wildcard-expert instead, which triages on graph "
+            "novelty + DepMap co-essentiality and deliberately favours "
+            "under-studied targets — use it when you want a candidate the "
+            "literature has NOT already converged on. Leaving this at "
+            "'standard' falls through to design.pathway.mode in config.yaml, "
+            "so a project can set its own default."),
+    )
+    p.add_argument(
         "--design-engine",
         choices=["boltzgen", "foundry"],
         default=None,
@@ -556,6 +571,7 @@ def main() -> int:
         stop_after=args.stop_after,
         design_engine=design_engine,
         modality=args.modality,
+        pathway_mode=args.pathway_mode,
     )
 
     logger.info(f"Query: {query[:120]}{'...' if len(query) > 120 else ''}")

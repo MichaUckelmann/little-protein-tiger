@@ -14,9 +14,18 @@ An end-to-end pipeline for PPI drug target discovery. Covers automated paper dis
 ---
 
 
+> **New here / beta testing?** **[docs/beta-testing.md](docs/beta-testing.md)**
+> is the step-by-step path from a clean machine to your first design run and
+> your first literature query, with the prompts to try and what each one costs.
+>
 > **Setting up with a coding agent?** Paste
 > **[SETUP_AGENT.md](SETUP_AGENT.md)** into Claude Code from a fresh clone and
 > it will interview you, install only the tracks you need, and verify each step.
+>
+> **No GPU?** You can still run both design tracks' entire reasoning path —
+> target resolution, structure choice, epitope selection, trimming, spec
+> generation — with an API key alone. Add `--stop-after spec`, which halts
+> immediately before the first GPU stage.
 >
 > **Just want to see it work?** `python scripts/quickstart.py` — about 7
 > seconds, plus a one-off ~1 MB structure download on the first run. No API
@@ -75,10 +84,17 @@ cp .env.example .env
 `.env` keys:
 | Key | Required for |
 |-----|---|
-| `ANTHROPIC_API_KEY` | Curation, CLI skills with `--model claude` |
-| `GEMINI_API_KEY` | CLI skills with `--model gemini` |
+| `GEMINI_API_KEY` | **The default provider for every pipeline stage** |
+| `ANTHROPIC_API_KEY` | Curation, `scripts/ask_corpus.py` (no Gemini path), `--provider claude`, and the refusal fallback |
 | `NCBI_EMAIL` | Polite crawling (NCBI rate limits) |
 | `NCBI_API_KEY` | Higher NCBI rate limit (optional) |
+| `S2_API_KEY` | Higher Semantic Scholar rate limit (optional) |
+| `LPT_CA_BUNDLE` | CA bundle path, if a TLS-inspecting proxy breaks downloads |
+| `LPT_SSL_RELAX_STRICT` | `1` to clear one X.509 flag on Python 3.13+ behind such a proxy — keeps trust-chain, hostname and expiry checks |
+
+Tool paths (`LPT_FOUNDRY_ROOT`, `LPT_BOLTZGEN_EXECUTABLE`,
+`LPT_PYROSETTA_PYTHON`, `LPT_CLUSTER_PIPELINE_ROOT`) live in `.env` too — see
+`.env.example`, which documents every one.
 
 ---
 

@@ -113,7 +113,10 @@ def check_interpreter(rep: Report) -> None:
                   "TLS-inspecting proxy, "
                   "downloads can fail with 'Missing Authority Key Identifier' — "
                   "3.13 enforces stricter certificate rules and a CA bundle does "
-                  "not help. Use python3.12 if you hit that." if newer else ""),
+                  "not help. Either set LPT_SSL_RELAX_STRICT=1 in .env "
+                  "(see .env.example — it clears that one flag and keeps "
+                  "trust-chain, hostname and expiry checks) or use "
+                  "python3.12." if newer else ""),
             tracks=TRACKS)
 
 
@@ -147,24 +150,56 @@ def _module_available(name: str) -> bool:
         return False
 
 
+# The literal values shipped in .env.example. `cp .env.example .env` and
+# forgetting to edit it leaves every one of these non-empty, so a bare
+# `bool(os.environ.get(...))` reported a fully-unconfigured checkout as green
+# and the user found out several stages later from a provider-side 403.
+_PLACEHOLDERS = {
+    "GEMINI_API_KEY": ("", "..."),
+    "ANTHROPIC_API_KEY": ("", "...", "sk-ant-..."),
+    "NCBI_EMAIL": ("", "you@example.com"),
+}
+
+
+def _key_state(name: str) -> tuple[bool, str]:
+    """(usable, why-not) for one env var, placeholders counted as unset."""
+    raw = (os.environ.get(name) or "").strip()
+    if raw in _PLACEHOLDERS.get(name, ("",)):
+        return False, ("still the .env.example placeholder" if raw
+                       else "not set")
+    return True, ""
+
+
 def check_api_keys(rep: Report) -> None:
-    # Gemini is the default provider for every pipeline stage.
-    gem = bool(os.environ.get("GEMINI_API_KEY"))
-    ant = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    # Gemini is the default provider for every PIPELINE stage — but not for
+    # everything. `scripts/ask_corpus.py` (the conversational corpus query) is
+    # Anthropic-only, and `curation.provider` in config.yaml is still
+    # "claude", so the literature track genuinely needs an Anthropic key and
+    # reporting it as merely "optional" there was misleading.
+    gem, gem_why = _key_state("GEMINI_API_KEY")
+    ant, ant_why = _key_state("ANTHROPIC_API_KEY")
     rep.add("GEMINI_API_KEY", OK if gem else FAIL,
-            "set" if gem else "not set — the default provider for every stage",
-            "" if gem else "Add GEMINI_API_KEY to .env (see .env.example).",
+            "set" if gem else f"{gem_why} — the default provider for every stage",
+            "" if gem else "Add a real GEMINI_API_KEY to .env (see .env.example).",
             tracks=("literature", "ppi", "binder"))
+    # Design tracks: a nice-to-have (refusal fallback, --provider claude).
     rep.add("ANTHROPIC_API_KEY", OK if ant else WARN,
-            "set" if ant else "not set — needed for --provider claude "
+            "set" if ant else f"{ant_why} — needed for --provider claude "
                               "and as the refusal fallback",
-            "" if ant else "Optional. Add ANTHROPIC_API_KEY to .env to enable it.",
-            tracks=("literature", "ppi", "binder"))
-    if not os.environ.get("NCBI_EMAIL"):
-        rep.add("NCBI_EMAIL", WARN, "not set — PubMed will rate-limit harder",
-                "Add NCBI_EMAIL to .env.", tracks=("literature",))
-    else:
-        rep.add("NCBI_EMAIL", OK, "set", tracks=("literature",))
+            "" if ant else "Optional here. Add ANTHROPIC_API_KEY to .env to enable it.",
+            tracks=("ppi", "binder"))
+    # Literature track: required, not optional.
+    rep.add("ANTHROPIC_API_KEY", OK if ant else FAIL,
+            "set" if ant else f"{ant_why} — ask_corpus.py is Anthropic-only",
+            "" if ant else "Add ANTHROPIC_API_KEY to .env: scripts/ask_corpus.py "
+                           "has no Gemini path, and curation.provider in "
+                           "config.yaml defaults to claude.",
+            tracks=("literature",))
+    email, email_why = _key_state("NCBI_EMAIL")
+    rep.add("NCBI_EMAIL", OK if email else WARN,
+            "set" if email else f"{email_why} — PubMed will rate-limit harder",
+            "" if email else "Add your real NCBI_EMAIL to .env.",
+            tracks=("literature",))
 
 
 def check_reference_data(rep: Report) -> None:

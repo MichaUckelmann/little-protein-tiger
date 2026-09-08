@@ -25,9 +25,19 @@ python scripts/setup_mcp_json.py      # writes .mcp.json for THIS checkout
 
 `.mcp.json` holds absolute paths to your venv and launcher scripts, so it is
 gitignored and each checkout generates its own. Claude Code picks it up from the
-project root. For Claude Desktop, copy the `mcpServers` block into
-`claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows,
-`~/Library/Application Support/Claude/` on macOS).
+project root — start a new session and the servers are there.
+
+For Claude **Desktop**, copy the `mcpServers` block into
+`claude_desktop_config.json`:
+
+| OS | Path |
+|---|---|
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
+
+then **restart Claude Desktop** — it reads that file only at startup, so
+without a restart the servers simply will not appear and nothing says why.
 
 If you use the literature server, warm the embedding cache once — the launcher
 sets `HF_HUB_OFFLINE=1`, so an uncached model fails with a HuggingFace error

@@ -169,9 +169,21 @@ class VectorStore:
                 self.TABLE_NAME, schema=self.SCHEMA, mode="create"
             )
         else:
+            # `ingest_vectors.py` is the right answer only when fingerprints
+            # exist to ingest. On a fresh clone `data/` is gitignored and
+            # empty, so that command runs, embeds nothing, and leaves the
+            # user exactly where they started — the real fix is to fetch the
+            # published corpus. Name whichever one actually applies.
+            fp_dir = Path(__file__).resolve().parent.parent / "data" / "fingerprints"
+            has_fingerprints = fp_dir.is_dir() and any(fp_dir.glob("*.json"))
+            fix = ("python scripts/ingest_vectors.py" if has_fingerprints
+                   else "python scripts/fetch_corpus.py")
             raise RuntimeError(
                 f"LanceDB table '{self.TABLE_NAME}' not found at {self.db_path}. "
-                "Run `python scripts/ingest_vectors.py` first."
+                f"Run `{fix}` first."
+                + ("" if has_fingerprints else
+                   f"\n(no curated fingerprints under {fp_dir} either — this "
+                   f"checkout has no corpus yet, so there is nothing to ingest.)")
             )
         return self._table
 
