@@ -256,6 +256,10 @@ class PipelineResult:
     # Persisted handoff dicts so later stages can read fields from earlier
     # stages even when prev_handoff has been rebound. Set by _stage_pathway,
     # _stage_structure, and _stage_literature.
+    #: Set when `_select_designable_structure` overrode the pathway stage's
+    #: choice, so the substitution is visible in artifacts a person reads and
+    #: not only in the log and the manifest checkpoint.
+    structure_switch: dict | None = None
     pathway_handoff: dict | None = None
     structure_handoff: dict | None = None
     literature_handoff: dict | None = None
@@ -401,6 +405,7 @@ class PipelineRunner:
         self._trial_backbones = int(trial_backbones)
         self._escalate_to = escalate_to
         self._stop_after = stop_after
+        self._last_switch_reason: str | None = None
         # Set by _verify_target_chain_assignment when the target chain is an
         # ortholog rather than the human protein; read by
         # _check_ortholog_conservation, which is the gate that decides
@@ -645,6 +650,11 @@ class PipelineRunner:
                         + f" (Structure switched from {stale} to {better} "
                           f"deterministically: cleaner entry for this "
                           f"interface. Analyse {better}.)")
+                    result.structure_switch = {
+                        "from": stale, "to": better,
+                        "reason": self._last_switch_reason or "",
+                    }
+                    self._note_structure_switch(result, stale, better)
                     result.pdb_id = better
                     handoff["pdb_id"] = better
                 self._check_structure_organism(
@@ -1897,6 +1907,7 @@ class PipelineRunner:
         else:
             return None
 
+        self._last_switch_reason = reason
         logger.warning(
             f"  ⚠ switching design structure {chosen} -> {best_id}: {reason}. "
             f"Both contain {names[0]} and {names[1]}; {best_id} is the cleaner "
@@ -2329,6 +2340,47 @@ class PipelineRunner:
                  for n in re.split(r"\s*/\s*", target_complex or "")]
         return [n for n in names if n]
 
+    def _note_structure_switch(self, result: "PipelineResult", stale: str,
+                               better: str) -> None:
+        """
+        Write the substitution into the artifact whose choice it overrode.
+
+        The switch happens between stages, so `00_pathway.md` is already on
+        disk naming the entry that was replaced — on the first campaign that
+        used this, the pathway report said 6E3Y eight times, the structure
+        report said 3N7S, and the only account of why sat in a log line and a
+        manifest checkpoint. A reader of the run had no way to find it.
+
+        Appended rather than rewritten: what the pathway stage concluded, on
+        the evidence it had, is worth keeping intact.
+        """
+        path = result.stage_files.get("pathway")
+        if not path or not Path(path).exists():
+            return
+        reason = self._last_switch_reason or "a cleaner entry for this interface"
+        try:
+            with Path(path).open("a", encoding="utf-8") as fh:
+                fh.write(
+                    f"\n\n---\n\n## STRUCTURE SUBSTITUTION (deterministic, "
+                    f"post-stage)\n\n"
+                    f"This report recommends **{stale}**. The pipeline designed "
+                    f"against **{better}** instead.\n\n"
+                    f"- **Why:** {reason}\n"
+                    f"- **Decided by:** `_select_designable_structure`, between "
+                    f"the pathway and literature stages — structure choice has "
+                    f"to be settled before the structure stage analyses "
+                    f"anything, because its hotspots then refer to those "
+                    f"coordinates.\n"
+                    f"- **Both entries contain the requested proteins.** The "
+                    f"switch only fires on a measurable defect in the chosen "
+                    f"one: partner absent, target chain a fusion construct, or "
+                    f"materially more scaffolding at no better resolution.\n"
+                    f"- **To keep the original:** re-run with `--pdb {stale}`.\n"
+                    f"\nThe reasoning above is the pathway stage's own, on the "
+                    f"evidence it had, and is left unedited.\n")
+        except OSError as exc:
+            logger.warning(f"could not annotate {path} with the switch: {exc}")
+
     def _order_names_by_chain(self, names: list[str], structure_handoff: dict,
                               pdb_id: str, primary: str, partner: str
                               ) -> tuple[str, str]:
@@ -2470,6 +2522,12 @@ class PipelineRunner:
         target_intel_out = dirs["binder"] / self._BINDER_STAGE_FILES["target_intel"]
         self._write_binder_report(
             target_intel_out, "Target intelligence (bridged from PPI literature)",
+            (f"**Structure substituted:** the pathway stage recommended "
+             f"{result.structure_switch['from']}; this campaign was designed "
+             f"against {result.structure_switch['to']} instead — "
+             f"{result.structure_switch['reason']}. Re-run with `--pdb "
+             f"{result.structure_switch['from']}` to keep the original.\n\n"
+             if result.structure_switch else "") +
             f"Bridged from the PPI track's pathway/literature/structure stages "
             f"for {target_complex} — see 00_pathway.md / 01_literature.md / "
             f"02_structure.md for the full reasoning. This file exists only "

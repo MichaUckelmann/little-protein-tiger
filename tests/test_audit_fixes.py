@@ -1082,3 +1082,42 @@ def test_a_target_node_may_have_no_known_dysregulation():
     n = TargetNode(protein="X", pathway_position="kinase", dysregulation=None,
                    source_span="Page 1, Para 1")
     assert n.dysregulation is None
+
+
+def test_a_structure_switch_is_written_where_a_reader_will_find_it(config, tmp_path):
+    """
+    The switch happens between stages, so `00_pathway.md` is already on disk
+    naming the entry that was replaced. On the first campaign that used this,
+    the pathway report said 6E3Y eight times, the structure report said 3N7S,
+    and the only account of why lived in a log line and a manifest checkpoint —
+    neither of which a reader of the run or the HTML report ever sees.
+    """
+    from src.pipeline_runner import PipelineResult, PipelineRunner
+
+    pathway = tmp_path / "00_pathway.md"
+    pathway.write_text("# PATHWAY BIOLOGY REPORT\n\n- pdb_id: 6E3Y\n", encoding="utf-8")
+    r = PipelineRunner(config, workflow="ppi")
+    r._last_switch_reason = "4 scaffolding chains against 0, at no worse resolution"
+    res = PipelineResult(run_dir=tmp_path)
+    res.stage_files["pathway"] = pathway
+
+    r._note_structure_switch(res, "6E3Y", "3N7S")
+    text = pathway.read_text(encoding="utf-8")
+
+    assert "STRUCTURE SUBSTITUTION" in text
+    assert "recommends **6E3Y**" in text and "against **3N7S**" in text
+    assert "scaffolding chains" in text
+    assert "--pdb 6E3Y" in text                      # how to override it
+    assert "# PATHWAY BIOLOGY REPORT" in text        # original left intact
+    assert "- pdb_id: 6E3Y" in text
+
+
+def test_the_switch_note_never_breaks_a_run(config, tmp_path):
+    """Annotation is bookkeeping; a missing or unwritable file must not fail."""
+    from src.pipeline_runner import PipelineResult, PipelineRunner
+
+    r = PipelineRunner(config, workflow="ppi")
+    res = PipelineResult(run_dir=tmp_path)
+    r._note_structure_switch(res, "6E3Y", "3N7S")          # no pathway file
+    res.stage_files["pathway"] = tmp_path / "missing.md"
+    r._note_structure_switch(res, "6E3Y", "3N7S")          # file absent

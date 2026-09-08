@@ -3921,6 +3921,24 @@ restriction silently does not apply, and NO transmembrane stripping happens.
 Harmless on an ectodomain-only entry; silent on a full-length one.
 `_order_names_by_chain` now orders the pair by the chain assignment.
 
+### The swap was invisible to a reader
+
+Reading the finished campaign: `00_pathway.md` recommends 6E3Y eight times,
+`02_structure.md` says 3N7S, and nothing in between explains it. The account
+existed only in a log WARNING and a `structure_switched` manifest checkpoint —
+neither of which anyone reading the run's markdown or report.html will find. The
+earlier prose fix rewrote `structure_query`/`design_query`, which the NEXT STAGE
+consumes, not anything a person opens. (It also landed six minutes after that
+run started, so this campaign predates it entirely.)
+
+`_note_structure_switch` now appends a `## STRUCTURE SUBSTITUTION` section to
+the stage file whose choice was overridden — appended, not rewritten, because
+what the pathway stage concluded on the evidence it had is worth keeping intact
+— and the bridged `20_target_intel.md` carries the same note, so it reaches the
+HTML report's "Why this structure, why this site" section. Both name `--pdb
+<original>` as the way to override. The pain_receptors_v3 pathway report was
+backfilled from its checkpoint.
+
 ### Cleaned up afterwards
 
 - A pause is no longer logged as `Pipeline error` — every `--stop-after` and
