@@ -649,3 +649,40 @@ class TestFoundryBinResolution:
         assert ".venv/bin/mpnn" in driver
         assert ".venv/bin/rf3" in driver
         assert ".venv-blackwell" not in driver
+
+
+class TestCheckpointDirOverride:
+    """The weights are wherever a user's foundry install put them — often a
+    shared lab volume. `~/pip_rcfoundry_ckpt` was hardcoded in three places
+    with no way to say otherwise."""
+
+    def test_the_driver_bakes_in_the_configured_checkpoint_dir(
+            self, design_cfg, tmp_path, real_spec, monkeypatch):
+        """The driver runs detached with its own environment, so the path has
+        to be resolved at write time, not read from $HOME at run time."""
+        spec_path, _, _ = real_spec
+        root = tmp_path / "foundry"
+        for engine in ("rfd3", "mpnn", "rf3"):
+            p = root / ".venv-blackwell" / "bin" / engine
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("LPT_FOUNDRY_ROOT", str(root))
+        monkeypatch.setenv("LPT_FOUNDRY_CKPT_DIR", "/mnt/lab/rcfoundry_ckpt")
+        paths = FoundryPaths.under(tmp_path)
+        paths.mkdirs()
+        plan = plan_campaign(design_cfg, paths, mode="pilot")
+        driver = write_campaign_driver(
+            design_cfg, spec_path, paths, plan).read_text()
+        assert '--ckpt-dir "/mnt/lab/rcfoundry_ckpt"' in driver
+
+    def test_it_falls_back_to_foundrys_own_default(
+            self, design_cfg, tmp_path, real_spec, foundry_root, monkeypatch):
+        from pathlib import Path as _P
+        monkeypatch.delenv("LPT_FOUNDRY_CKPT_DIR", raising=False)
+        spec_path, _, _ = real_spec
+        paths = FoundryPaths.under(tmp_path)
+        paths.mkdirs()
+        plan = plan_campaign(design_cfg, paths, mode="pilot")
+        driver = write_campaign_driver(
+            design_cfg, spec_path, paths, plan).read_text()
+        assert str(_P.home() / "pip_rcfoundry_ckpt") in driver

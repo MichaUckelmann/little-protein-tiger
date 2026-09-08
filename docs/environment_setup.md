@@ -95,7 +95,9 @@ never break LPT's own venv.
     `mpnn_bin` keys (paths *relative to* `LPT_FOUNDRY_ROOT`) are where that
     gets recorded once your install works.
   - **Model checkpoints are a separate download**, resolved through foundry's
-    own checkpoint registry (`~/pip_rcfoundry_ckpt/` by default). Note the
+    own checkpoint registry (`~/pip_rcfoundry_ckpt/` by default; set
+    `LPT_FOUNDRY_CKPT_DIR` if yours live elsewhere, such as a shared lab
+    volume). Note the
     registry aliases `rfd3` and `rf3` work but `solublempnn` does **not** —
     MPNN's config takes a literal path. `src/foundry_stages.py`'s
     `resolve_checkpoint()` globs the registry for the alias so this fails at

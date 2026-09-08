@@ -333,12 +333,14 @@ def check_foundry(rep: Report) -> None:
             "generation; see docs/environment_setup.md.",
             tracks=tracks)
 
-    ckpt = Path.home() / "pip_rcfoundry_ckpt"
+    ckpt = Path(os.environ.get("LPT_FOUNDRY_CKPT_DIR")
+                or Path.home() / "pip_rcfoundry_ckpt")
     rep.add("foundry checkpoints", OK if ckpt.is_dir() else WARN,
             str(ckpt) if ckpt.is_dir() else "checkpoint registry not found",
             "" if ckpt.is_dir() else
             "RFD3/RF3 resolve checkpoints through foundry's registry "
-            "(~/pip_rcfoundry_ckpt). Fetch them per foundry's own docs.",
+            "Set LPT_FOUNDRY_CKPT_DIR in .env if your weights are "
+            "elsewhere, or fetch them per foundry's own docs.",
             tracks=tracks)
 
 

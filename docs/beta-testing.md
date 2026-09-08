@@ -27,9 +27,9 @@ Two things to know before you plan your testing:
   stops right before the first GPU stage. That is a genuinely useful test — it
   exercises target resolution, structure selection, epitope choice, trimming
   and spec generation, which is where most of the interesting behaviour is.
-  **Start here even if you do have a GPU**, because the design engines are a
-  separate, non-trivial install — see
-  [the GPU section](#going-past-the-spec-stage-what-the-gpu-side-actually-needs).
+  **Start here even if you do have a GPU** — going further needs foundry, a
+  separate install ([how to point LPT at
+  it](#going-past-the-spec-stage-point-lpt-at-foundry)).
 - **The literature corpus is a separate download** and gates B and C. See
   [step 4](#4-the-literature-corpus-tracks-b-and-c).
 
@@ -224,59 +224,34 @@ pipeline sometimes deliberately substitutes a *different* structure than the
 literature recommends — it explains itself in a `## STRUCTURE SUBSTITUTION`
 section at the bottom of `00_pathway.md`.
 
-## Going past the spec stage: what the GPU side actually needs
+## Going past the spec stage: point LPT at foundry
 
-**An NVIDIA GPU is necessary but nowhere near sufficient.** Dropping
-`--stop-after spec` does not "just work" — the design engines are a separate
-project that LPT neither ships nor installs, and getting them running is the
-single hardest part of this setup. Budget an afternoon, not ten minutes.
+The design engines (RFD3 → solubleMPNN → RF3) come from **foundry**, a separate
+project LPT does not ship. Drop `--stop-after spec` once it is set up.
 
-**foundry** (RFD3 → solubleMPNN → RF3) — <https://github.com/RosettaCommons/foundry>
+**If you don't have foundry:** install it from
+<https://github.com/RosettaCommons/foundry> following their instructions,
+including their model weights. Come back here afterwards.
 
-1. Clone it and follow **its own** setup instructions. It carries
-   **RosettaCommons' licence terms, not LPT's MIT** — read them before any
-   commercial use.
-2. **Download the model checkpoints.** Separate from the code, resolved
-   through foundry's own checkpoint registry (`~/pip_rcfoundry_ckpt/` by
-   default). Note the registry aliases work for `rfd3` and `rf3` but **not**
-   for `solublempnn` — MPNN's config takes a literal path, and it fails
-   *after* RFD3 has already run. LPT works around this, but you need the
-   checkpoints present.
-3. Point LPT at the checkout: `LPT_FOUNDRY_ROOT=/path/to/foundry` in `.env`.
-4. `python scripts/doctor.py --track binder` — it checks the root, the venv,
-   and the checkpoint directory.
+**If you already have it,** LPT needs two paths in `.env`:
 
-**Hardware:** a CUDA GPU with **≥32 GB VRAM**, and **~120 GB free disk** for a
-full production campaign (~2.5 MB per refold directory — disk, not GPU, is
-usually the binding constraint).
+```bash
+LPT_FOUNDRY_ROOT=/path/to/foundry          # the checkout directory
+LPT_FOUNDRY_CKPT_DIR=/path/to/weights      # only if not ~/pip_rcfoundry_ckpt
+```
 
-### Will it work on a GPU that isn't Blackwell?
+Then confirm:
 
-**Yes — and probably more easily than on the card this was built on.** Nothing
-in LPT or foundry is Blackwell-specific. What was special about this project's
-reference workstation is that its card is **sm_120**, which the torch build
-shipped in foundry's container did *not* support, so the venv had to be
-hand-built. On Ampere (A100), Ada (L40S, 4090) or Hopper (H100), foundry's
-stock install path is more likely to work unmodified.
+```bash
+python scripts/doctor.py --track binder
+```
 
-One thing to know: LPT's config defaults still name that hand-built venv
-(`design.foundry.rfd3_bin: ".venv-blackwell/bin/rfd3"` and siblings). If your
-foundry venv is called something else — it almost certainly is — LPT now
-**finds it automatically**, logging which one it used. If you have several
-venvs it refuses to guess and asks you to set `design.foundry.{rfd3,mpnn,rf3}_bin`,
-because picking one could silently run a build compiled for a different GPU.
-Either way you find out at spec time, not five minutes into a detached
-campaign.
+It reports the checkout, the engine binaries and the weights. LPT finds the
+foundry venv itself whatever it is called; if you have more than one it will
+ask you to name it, since the wrong one may be built for a different GPU.
 
-**BoltzGen** is only needed for `--design-engine boltzgen` or
-`--modality cyclic_peptide` (RFD3 has no cyclic-peptide path). Set
-`LPT_BOLTZGEN_EXECUTABLE`.
-
-**PyRosetta** is genuinely optional — scoring only, after designs exist, and
-the pipeline skips those metrics with a warning if it is absent. Free for
-academic use, licensed for commercial. See `docs/pyrosetta_setup.md`.
-
-`docs/environment_setup.md` has the full detail on all three.
+Any NVIDIA card works — you need **≥32 GB VRAM** and **~120 GB free disk** for
+a full production campaign.
 
 ## What a full GPU run costs
 

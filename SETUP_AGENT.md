@@ -74,7 +74,10 @@ Ask, and wait for answers:
 - **Do you already have foundry / PyRosetta / BoltzGen anywhere?** Before
   proposing an install, search: `find ~ -maxdepth 4 -name "foundry" -o -maxdepth 4 -name "*rcfoundry*" 2>/dev/null`,
   and check conda envs (`conda env list`) for pyrosetta. Many users are in labs
-  where a colleague already installed these.
+  where a colleague already installed these. If you find a foundry checkout or
+  a `pip_rcfoundry_ckpt` weights directory, offer the paths back for
+  confirmation rather than asking the user to look them up — Phase 7 needs
+  both.
 
 **Platform reality check, state it plainly:**
 - Linux + NVIDIA is the only fully supported configuration.
@@ -195,34 +198,58 @@ ingest afterwards; do not run those by hand.
 
 ### Phase 7 — GPU tools (ppi / binder tracks only)
 
-Each is a separate install with its own licence. LPT ships none of them.
+LPT ships none of these. **Most users here already have foundry** — ask before
+assuming anything.
 
-> **STOP AND ASK BEFORE STARTING ANY OF THIS.** Unlike every phase above, this
-> is not a scripted install: it needs licence acceptance the user must make
-> themselves, and a torch build matched to their specific GPU generation, which
-> can take hours and often needs judgement no doc can encode. Report what is
-> already present, say what each track would need, and let the user decide
-> whether to attempt it now. **Setup is not blocked on this** — say so:
-> `--stop-after spec` runs both design tracks' full reasoning path (target
-> resolution, epitope choice, trimming, spec generation) with an API key alone,
-> no GPU and no foundry. That is the right first run for a new user, and
-> `docs/beta-testing.md` has the exact command.
+#### foundry (RFD3 / solubleMPNN / RF3) — the binder track's hard dependency
 
-- **foundry** (RFD3 / solubleMPNN / RF3) — https://github.com/RosettaCommons/foundry.
-  **The hard dependency of the binder track.** RosettaCommons terms, not MIT —
-  tell the user to read them before any commercial use. Expect a
-  GPU-generation-specific torch build (this repo's reference machine needed a
-  hand-built `.venv-blackwell` for `sm_120`). Checkpoints are a separate
-  download through foundry's own registry. Then set `LPT_FOUNDRY_ROOT`.
-- **BoltzGen** — needed for `--workflow ppi` only when `design.backend` is
-  `boltzgen`. Check the configured value; `doctor.py` reports which engine the
-  PPI track will actually use.
-- **PyRosetta** — **optional and scoring-only**. Used for hotspot SASA and the
-  Rosetta composite terms, both *after* designs exist. With
+**Ask the user two questions and wait:**
+
+1. *"Do you have foundry installed? If so, what is the path to the checkout?"*
+2. *"Where are the model weights?"* — foundry's default is
+   `~/pip_rcfoundry_ckpt`; if that directory exists, offer it as the answer
+   rather than making them look it up.
+
+**If they have it**, write both into `.env` (never `config.yaml` — see ground
+rule 1) and verify:
+
+```bash
+LPT_FOUNDRY_ROOT=/their/path/to/foundry
+LPT_FOUNDRY_CKPT_DIR=/their/path/to/weights   # omit if ~/pip_rcfoundry_ckpt
+```
+
+```bash
+python scripts/doctor.py --track binder
+```
+
+The `foundry` rows must be `[ok]`. If the checkout row passes but the binaries
+row does not, the venv inside their checkout is named something LPT could not
+resolve unambiguously — ask which one is built for their GPU and set
+`design.foundry.rfd3_bin` / `mpnn_bin` / `rf3_bin` (paths relative to the
+checkout). Do **not** guess: the wrong venv may be a build for a different card.
+
+**If they do not have it**, do not attempt the install. Point them at
+<https://github.com/RosettaCommons/foundry> to follow its own instructions
+(including its weights), and say clearly that setup is **not blocked** on it:
+`--stop-after spec` runs both design tracks' full reasoning path — target
+resolution, epitope choice, trimming, spec generation — with an API key alone,
+no GPU. That is the right first run either way; `docs/beta-testing.md` has the
+command.
+
+> **STOP AND ASK before attempting a foundry install yourself.** It needs
+> licence acceptance only the user can give (RosettaCommons terms, not MIT),
+> and a torch build matched to their GPU generation. It is not a scripted step.
+
+#### The other two
+
+- **BoltzGen** (`LPT_BOLTZGEN_EXECUTABLE`) — only for `--workflow ppi` with
+  `design.backend: boltzgen`, or `--modality cyclic_peptide`. Ask for the path
+  the same way; `doctor.py` reports which engine the PPI track will use.
+- **PyRosetta** (`LPT_PYROSETTA_PYTHON`) — **optional, scoring only.** With
   `design.pyrosetta.enabled: auto` (the default) a machine without it runs both
-  tracks and skips those metrics. **Free for academic use only**; commercial
-  use needs a licence. See `docs/pyrosetta_setup.md` for the Python-ABI trap
-  that makes a separate conda env necessary.
+  tracks and skips those metrics. Free for academic use; commercial needs a
+  licence. `docs/pyrosetta_setup.md` covers the Python-ABI trap that makes a
+  separate conda env necessary.
 
 ### Phase 8 — MCP servers (optional)
 

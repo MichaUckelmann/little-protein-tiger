@@ -487,7 +487,8 @@ log "prefilter kept $(find "$FILTERED" -maxdepth 1 -name '*.cif.gz' | wc -l)"
 log "MPNN"
 $PY "$LPT/src/foundry_stages.py" mpnn "$FILTERED" "$MPNN_OUT" \\
     --checkpoint "{mpnn_ckpt}" --n-seq {n_seq} --chunk-size {mpnn_chunk} \\
-    --foundry "$FOUNDRY" --mpnn-bin "{mpnn_bin}" --skip-existing \\
+    --foundry "$FOUNDRY" --mpnn-bin "{mpnn_bin}" --ckpt-dir "{ckpt_dir}" \\
+    --skip-existing \\
     >> "$LOGS/mpnn.log" 2>&1
 EXPECTED_RF3=$(count_mpnn)
 log "MPNN produced $EXPECTED_RF3 sequences"
@@ -621,6 +622,12 @@ def write_campaign_driver(
         root_path, f.get("mpnn_bin", ".venv-blackwell/bin/mpnn"), "mpnn")
     rf3_bin = _resolve_foundry_bin(
         root_path, f.get("rf3_bin", ".venv-blackwell/bin/rf3"), "rf3")
+    # The driver runs detached with its own environment, so the checkpoint
+    # directory is resolved here and baked in rather than read from $HOME at
+    # run time.
+    ckpt_dir = resolve_env_path(
+        "LPT_FOUNDRY_CKPT_DIR", f.get("ckpt_dir")) or str(
+            Path.home() / "pip_rcfoundry_ckpt")
 
     text = _DRIVER_TEMPLATE.format(
         foundry=foundry_root,
@@ -644,6 +651,7 @@ def write_campaign_driver(
         max_backbone_clashes=int(prefilter.get("max_backbone_clashes", 0)),
         mpnn_ckpt=(f.get("ckpt") or {}).get("mpnn", "solublempnn"),
         mpnn_bin=mpnn_bin,
+        ckpt_dir=ckpt_dir,
         mpnn_chunk=int(mpnn.get("chunk_size", 250)),
         rf3_ckpt=(f.get("ckpt") or {}).get("rf3", "rf3"),
         rf3_bin=rf3_bin,

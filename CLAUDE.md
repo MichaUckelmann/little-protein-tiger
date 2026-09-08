@@ -593,6 +593,14 @@ several candidates — picking one could run a build compiled for a different
 GPU. It resolves at `write_campaign_driver` time, so a wrong path fails before
 the detached driver launches rather than after ten retries and five minutes.
 
+The weights are resolved the same way: `LPT_FOUNDRY_CKPT_DIR` (or
+`design.foundry.ckpt_dir`), falling back to foundry's own
+`~/pip_rcfoundry_ckpt`. That path used to be hardcoded in three places, so a
+user whose weights lived on a shared lab volume had no way to say so. The
+driver runs DETACHED with its own environment, so the value is resolved at
+write time and baked into the generated script — reading `$HOME` at run time
+would resolve against whatever user the driver ends up running as.
+
 ## Safety-classifier refusals are an operational fact of this pipeline
 
 The binder track's `interface` stage (`complex-structure-analysis`) is routinely

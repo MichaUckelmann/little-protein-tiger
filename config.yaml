@@ -239,6 +239,10 @@ design:
     # fallback only; leave it null so a fresh clone doesn't inherit someone
     # else's path.
     root: null
+    # Where foundry's checkpoint registry lives. Machine-specific like `root`
+    # — set LPT_FOUNDRY_CKPT_DIR instead. null falls back to foundry's own
+    # default, ~/pip_rcfoundry_ckpt.
+    ckpt_dir: null
     # cwd MUST be `root` for `uv run` to resolve the venv. The Blackwell card is
     # sm_120, which the shipped container's torch is not built for — hence the
     # separate .venv-blackwell.
