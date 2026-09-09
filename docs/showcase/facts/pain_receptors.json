@@ -1,0 +1,422 @@
+{
+  "bsa_A2": 2385,
+  "calibration": {
+    "backbone": {
+      "k": 99,
+      "n": 527,
+      "p_hat": 0.18785578747628084,
+      "p_high": 0.2234185859712323,
+      "p_low": 0.156810681104291,
+      "unit": "backbone",
+      "zero_hits": false
+    },
+    "bar_raised_to": 0.85,
+    "central": {
+      "basis": "point estimate",
+      "est_disk_gb": 2.7,
+      "est_gpu_hours": 2.8,
+      "is_lower_bound": false,
+      "required_backbones": 293.0,
+      "required_refolds": 1065.0
+    },
+    "pessimistic": {
+      "basis": "Wilson 95% lower bound",
+      "est_disk_gb": 3.2,
+      "est_gpu_hours": 3.4,
+      "is_lower_bound": false,
+      "required_backbones": 351.0,
+      "required_refolds": 1275.0
+    },
+    "refold": {
+      "k": 420,
+      "n": 2108,
+      "p_hat": 0.19924098671726756,
+      "p_high": 0.21683246261400485,
+      "p_low": 0.18274367758163118,
+      "unit": "refold",
+      "zero_hits": false
+    },
+    "requested_bar": 0.7,
+    "verdict": "SCALE_UP"
+  },
+  "citations": {
+    "literature": {
+      "checked": 5,
+      "unverified": [],
+      "verified": 5
+    },
+    "pathway": {
+      "checked": 8,
+      "unverified": [
+        "10.1016/isci.2025.112047"
+      ],
+      "verified": 7
+    },
+    "structure": {
+      "checked": 2,
+      "unverified": [],
+      "verified": 2
+    }
+  },
+  "designs": [
+    {
+      "dock": 1.281,
+      "engagement": 1.0,
+      "iface_pae": 2.94,
+      "ipsae_min": 0.7224,
+      "iptm": 0.9078751802444458,
+      "len": 83,
+      "name": "80_model_1_b0_d0"
+    },
+    {
+      "dock": 0.827,
+      "engagement": 1.0,
+      "iface_pae": 3.01,
+      "ipsae_min": 0.7972,
+      "iptm": 0.901893138885498,
+      "len": 83,
+      "name": "73_model_0_b0_d1"
+    },
+    {
+      "dock": 1.152,
+      "engagement": 1.0,
+      "iface_pae": 4.03,
+      "ipsae_min": 0.6031,
+      "iptm": 0.853148341178894,
+      "len": 73,
+      "name": "31_model_3_b0_d1"
+    },
+    {
+      "dock": 0.894,
+      "engagement": 1.0,
+      "iface_pae": 3.48,
+      "ipsae_min": 0.7477,
+      "iptm": 0.8856738209724426,
+      "len": 78,
+      "name": "76_model_2_b0_d1"
+    },
+    {
+      "dock": 0.879,
+      "engagement": 1.0,
+      "iface_pae": 2.91,
+      "ipsae_min": 0.7918,
+      "iptm": 0.9067502617835999,
+      "len": 73,
+      "name": "1_model_1_b0_d1"
+    },
+    {
+      "dock": 0.572,
+      "engagement": 1.0,
+      "iface_pae": 2.78,
+      "ipsae_min": 0.8214,
+      "iptm": 0.9178784489631653,
+      "len": 83,
+      "name": "73_model_3_b0_d1"
+    },
+    {
+      "dock": 0.87,
+      "engagement": 1.0,
+      "iface_pae": 3.09,
+      "ipsae_min": 0.7532,
+      "iptm": 0.8978539109230042,
+      "len": 81,
+      "name": "81_model_3_b0_d2"
+    },
+    {
+      "dock": 1.152,
+      "engagement": 1.0,
+      "iface_pae": 3.36,
+      "ipsae_min": 0.6753,
+      "iptm": 0.873750627040863,
+      "len": 83,
+      "name": "7_model_0_b0_d1"
+    },
+    {
+      "dock": 0.801,
+      "engagement": 1.0,
+      "iface_pae": 3.21,
+      "ipsae_min": 0.7073,
+      "iptm": 0.8809152841567993,
+      "len": 77,
+      "name": "3_model_2_b0_d3"
+    },
+    {
+      "dock": 0.795,
+      "engagement": 1.0,
+      "iface_pae": 3.92,
+      "ipsae_min": 0.6604,
+      "iptm": 0.8478670120239258,
+      "len": 82,
+      "name": "58_model_3_b0_d1"
+    },
+    {
+      "dock": 0.841,
+      "engagement": 1.0,
+      "iface_pae": 3.2,
+      "ipsae_min": 0.6902,
+      "iptm": 0.8810943961143494,
+      "len": 77,
+      "name": "3_model_0_b0_d1"
+    },
+    {
+      "dock": 0.912,
+      "engagement": 1.0,
+      "iface_pae": 3.13,
+      "ipsae_min": 0.81,
+      "iptm": 0.9063040614128113,
+      "len": 82,
+      "name": "0_model_1_b0_d3"
+    },
+    {
+      "dock": 0.937,
+      "engagement": 1.0,
+      "iface_pae": 3.05,
+      "ipsae_min": 0.6891,
+      "iptm": 0.8884112238883972,
+      "len": 73,
+      "name": "72_model_2_b0_d2"
+    },
+    {
+      "dock": 0.787,
+      "engagement": 1.0,
+      "iface_pae": 3.26,
+      "ipsae_min": 0.7611,
+      "iptm": 0.9045406579971313,
+      "len": 77,
+      "name": "45_model_1_b0_d0"
+    },
+    {
+      "dock": 1.024,
+      "engagement": 1.0,
+      "iface_pae": 3.46,
+      "ipsae_min": 0.7474,
+      "iptm": 0.8871158361434937,
+      "len": 79,
+      "name": "62_model_1_b0_d1"
+    },
+    {
+      "dock": 1.472,
+      "engagement": 1.0,
+      "iface_pae": 3.36,
+      "ipsae_min": 0.7683,
+      "iptm": 0.8870381116867065,
+      "len": 86,
+      "name": "75_model_3_b0_d3"
+    },
+    {
+      "dock": 2.003,
+      "engagement": 1.0,
+      "iface_pae": 4.04,
+      "ipsae_min": 0.6634,
+      "iptm": 0.8578881621360779,
+      "len": 77,
+      "name": "6_model_1_b0_d3"
+    },
+    {
+      "dock": 0.765,
+      "engagement": 1.0,
+      "iface_pae": 3.45,
+      "ipsae_min": 0.685,
+      "iptm": 0.8809122443199158,
+      "len": 72,
+      "name": "8_model_2_b0_d3"
+    },
+    {
+      "dock": 1.727,
+      "engagement": 1.0,
+      "iface_pae": 3.9,
+      "ipsae_min": 0.6801,
+      "iptm": 0.8602834939956665,
+      "len": 73,
+      "name": "60_model_3_b0_d0"
+    },
+    {
+      "dock": 0.684,
+      "engagement": 1.0,
+      "iface_pae": 3.22,
+      "ipsae_min": 0.7473,
+      "iptm": 0.8879595398902893,
+      "len": 75,
+      "name": "42_model_2_b0_d1"
+    }
+  ],
+  "dropped": [
+    [
+      "no clash",
+      334
+    ],
+    [
+      "binder_rmsd_dock <= 5",
+      251
+    ],
+    [
+      "iptm >= 0.5",
+      240
+    ],
+    [
+      "binder_rmsd_fold <= 2",
+      14
+    ]
+  ],
+  "gates": [
+    [
+      "binder_rmsd_dock <= 5",
+      953,
+      79.2
+    ],
+    [
+      "epitope_recall >= 0.5",
+      1180,
+      98.0
+    ],
+    [
+      "hotspot_engagement >= 0.75",
+      1195,
+      99.3
+    ],
+    [
+      "binder_rmsd_fold <= 2",
+      1146,
+      95.2
+    ],
+    [
+      "binder_plddt >= 0.75",
+      1198,
+      99.5
+    ],
+    [
+      "iptm >= 0.5",
+      716,
+      59.5
+    ],
+    [
+      "iface_pae <= 15",
+      880,
+      73.1
+    ],
+    [
+      "no clash",
+      601,
+      49.9
+    ]
+  ],
+  "go": "GO",
+  "go_rationale": "High-resolution human cryo-EM structure (PDB 6E3Y) and literature-validated extracellular hotspots (RAMP1 F83, W84, P85) provide a clinically validated target for competitive disruption.",
+  "gpu_hours": {
+    "calibration": 5.43,
+    "pilot": 0.83,
+    "production": 2.97,
+    "total": 9.23
+  },
+  "hotspots": [
+    [
+      "TRP",
+      74
+    ],
+    [
+      "PHE",
+      83
+    ],
+    [
+      "TRP",
+      84
+    ],
+    [
+      "PRO",
+      85
+    ],
+    [
+      "ASP",
+      90
+    ],
+    [
+      "PHE",
+      93
+    ],
+    [
+      "LEU",
+      94
+    ],
+    [
+      "HIS",
+      97
+    ],
+    [
+      "PHE",
+      101
+    ],
+    [
+      "ILE",
+      106
+    ]
+  ],
+  "llm_stages": [
+    "binder_summary",
+    "literature",
+    "pathway",
+    "structure"
+  ],
+  "n_backbones_surviving": 181,
+  "n_filtered": 301,
+  "n_mpnn": 1204,
+  "n_rfd3": 348,
+  "n_scored": 1204,
+  "n_survivors": 365,
+  "pdb_id": "3N7S",
+  "priority_residues": [
+    "F83",
+    "W84",
+    "P85"
+  ],
+  "query": "design novel inhibitors for pain receptors that are promising drug targets",
+  "site_hint_notes": "Extracellular domain CGRP-contacting epitope from cryo-EM structure doi:10.1038/s41586-018-0535-y and crystal structure doi:10.1016/j.molcel.2015.04.018; transmembrane residues (CALCRL W254/Y255/H295) explicitly excluded",
+  "spend_usd": 0.537424,
+  "switch": {
+    "from": "6E3Y",
+    "profiles": {
+      "3N7S": {
+        "chimeric": false,
+        "entities": 2,
+        "res": 2.1,
+        "scaffold": 0,
+        "target_len": 115
+      },
+      "6E3Y": {
+        "chimeric": false,
+        "entities": 7,
+        "res": 3.3,
+        "scaffold": 4,
+        "target_len": 490
+      }
+    },
+    "reason": "6E3Y carries 4 scaffolding chain(s) (nanobody / G protein / fusion partner) against 0 in 3N7S, at no worse resolution (2.1 A vs 3.3 A)",
+    "to": "3N7S"
+  },
+  "target_chain": "D",
+  "target_complex": "CALCRL / RAMP1",
+  "tiers": [
+    [
+      "VALIDATED",
+      "CALCRL / RAMP1",
+      "Fully extracellular, accessible Class B GPCR ECD / accessory protein interface with proven clinical druggability (validated by approved biologics and small molecules); avoids intracellular delivery hurdles.",
+      "Potential cross-reactivity with closely related family members (CALCRL/RAMP2 or CALCRL/RAMP3 adrenomedullin receptors).",
+      "6E3Y (Homo sapiens)"
+    ],
+    [
+      "VALIDATED",
+      "NTRK1 / NGF",
+      "High-affinity extracellular interaction directly addressable by designed protein/peptide competitive antagonists.",
+      "Complete systemic NGF neutralization carries safety risks (such as accelerated joint osteoarthropathy observed in clinical trials of systemic anti-NGF mAbs).",
+      "1WWA (Homo sapiens), 5JZ7 (Homo sapiens)"
+    ],
+    [
+      "PATHWAY INFERRED",
+      "CDKL5 / CaMKIIα",
+      "Novel intracellular target mechanism selective for peripheral hypersensitivity without systemic receptor blockade.",
+      "Intracellular delivery required; lack of high-resolution co-crystal structure of the complex in the corpus.",
+      "Not found in corpus"
+    ]
+  ],
+  "trim_residues": 84,
+  "trim_segments": 1
+}

@@ -378,7 +378,7 @@ them without re-reading this list is how they get silently reverted.
   real binder breaks stays at 1 either way; a hardcoded 1 against a multi-segment target
   rejects every design.
 - **A trim is often a no-op, and that is a result.** PD-L1 kept 117 of 117 residues and
-  YAP1/TEAD1 208 of 208 — deciding a target is already within budget is as much this
+  YAP1/TEAD1 207 of 207 — deciding a target is already within budget is as much this
   stage's job as cutting one down, so a multi-segment contig does not imply anything was
   trimmed away. 3KYS has exactly ONE real gap, the disordered 230–238; the campaign's
   third segment was an artifact of the trim deleting A344, below.

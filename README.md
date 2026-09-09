@@ -39,10 +39,12 @@ one-sentence prompt *"Design cancer therapeutics to target key nodes in
 mesothelioma."* → YAP1/TEAD1 on 3KYS → 317 gated survivors of 1,352 refolds,
 best ipTM 0.937 / dock-RMSD 0.63 Å, for **$0.79 of API spend** and ~22 GPU-h.
 
-Three illustrated walkthroughs built from runs in this repository —
-a PD-L1 binder campaign, a corpus-explorer session, and the PPI discovery
-track — are in **[docs/showcase/](docs/showcase/)**. Open the `.html` files
-directly.
+Four illustrated walkthroughs built from runs in this repository — two PPI
+discovery campaigns (CGRP receptor, YAP1/TEAD1), a PD-L1 binder campaign and a
+corpus-explorer session — are in **[docs/showcase/](docs/showcase/)**. Open the
+`.html` files directly. Every figure on them is extracted from a run directory
+at build time and committed beside the page, so the numbers can be audited
+rather than taken on trust.
 
 ## Start here
 

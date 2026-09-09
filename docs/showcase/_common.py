@@ -17,7 +17,14 @@ FONTS = (
 def head(title: str, description: str, page: str, og: str) -> str:
     """<title> plus the OpenGraph/Twitter block a pasted link needs to render a card."""
     url = f"{SITE}/{page}"
-    return f"""<title>{title}</title>
+    # charset FIRST, and within the first 1024 bytes, or the browser has already
+    # guessed by the time it reads this. These pages are full of UTF-8 — en
+    # dashes, ·, Å, Δ, ≥ — and without the declaration they render as mojibake
+    # anywhere the server does not volunteer `charset=utf-8` in Content-Type.
+    # GitHub Pages does, which is why this went unnoticed; opening the file
+    # locally, or serving it from anything else, does not.
+    return f"""<meta charset="utf-8">
+<title>{title}</title>
 <meta name="description" content="{description}">
 <meta name="color-scheme" content="light dark">
 <meta property="og:type" content="article">

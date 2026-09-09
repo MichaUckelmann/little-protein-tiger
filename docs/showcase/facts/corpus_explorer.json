@@ -1,0 +1,434 @@
+{
+  "clusters": 362,
+  "codep": [
+    [
+      "ARHGEF7",
+      0.2907
+    ],
+    [
+      "TEAD1",
+      0.2722
+    ],
+    [
+      "PKN2",
+      0.2709
+    ],
+    [
+      "NCKAP1",
+      0.2672
+    ],
+    [
+      "TEAD3",
+      0.2652
+    ],
+    [
+      "ILK",
+      0.2608
+    ],
+    [
+      "CRKL",
+      0.2596
+    ],
+    [
+      "TP53BP2",
+      0.2565
+    ],
+    [
+      "ITGB1",
+      0.2512
+    ],
+    [
+      "MARK2",
+      0.2458
+    ]
+  ],
+  "codep_pairs": [
+    [
+      "LATS1",
+      "LATS2",
+      0.0437
+    ],
+    [
+      "NF2",
+      "LATS2",
+      0.5456
+    ],
+    [
+      "YAP1",
+      "WWTR1",
+      0.0202
+    ],
+    [
+      "NF2",
+      "YAP1",
+      -0.2425
+    ]
+  ],
+  "curated": 14517,
+  "depmap_cell_lines": 1208,
+  "depmap_edges": 1466,
+  "depmap_genes": 1502,
+  "downloaded": 14693,
+  "fingerprint_doi": "10.1016/j.devcel.2016.09.005",
+  "fingerprint_fields": [
+    [
+      "claim",
+      "The non-acetylated VGLL4-TDU domain peptide binds to TEAD1 with a dissociation constant of 3.1 nM."
+    ],
+    [
+      "protein_pair",
+      [
+        "VGLL4",
+        "TEAD1"
+      ]
+    ],
+    [
+      "experimental_context",
+      "Photonic crystal nanobeam sensor assay"
+    ],
+    [
+      "affinities_kd_Molar",
+      3.1e-09
+    ],
+    [
+      "inhibitory_constant_Ki",
+      null
+    ],
+    [
+      "key_amino_acid_residues",
+      [
+        "K225"
+      ]
+    ],
+    [
+      "quantitative_or_qualitative",
+      "quantitative"
+    ],
+    [
+      "is_statistically_significant",
+      true
+    ],
+    [
+      "confidence_score",
+      0.95
+    ],
+    [
+      "source_span",
+      "Section: VGLL4 Activity Is Regulated by Its TDU Domain Acetylation, Para 2"
+    ]
+  ],
+  "fingerprint_model": "gemini-3.1-flash-lite-preview",
+  "fingerprint_month": "2026-05",
+  "fingerprints": 14514,
+  "hubs": [
+    [
+      "YAP-1",
+      40,
+      591
+    ],
+    [
+      "OCT4",
+      28,
+      335
+    ],
+    [
+      "SOX2",
+      27,
+      385
+    ],
+    [
+      "BRD4",
+      22,
+      258
+    ],
+    [
+      "DNMT3A",
+      22,
+      254
+    ],
+    [
+      "STING",
+      21,
+      426
+    ],
+    [
+      "EGFR",
+      20,
+      238
+    ],
+    [
+      "KRAS",
+      19,
+      243
+    ],
+    [
+      "YAP",
+      16,
+      316
+    ],
+    [
+      "TET1",
+      16,
+      199
+    ]
+  ],
+  "indexed": 57907,
+  "journal_merges": [
+    [
+      "Nature Communications",
+      "Nat Commun",
+      1678
+    ]
+  ],
+  "journals": [
+    [
+      "Nature",
+      1980
+    ],
+    [
+      "Nat Commun",
+      1678
+    ],
+    [
+      "Cell",
+      1011
+    ],
+    [
+      "Science",
+      741
+    ],
+    [
+      "Nucleic Acids Res",
+      689
+    ],
+    [
+      "Biochemistry",
+      428
+    ],
+    [
+      "Elife",
+      375
+    ],
+    [
+      "J Am Chem Soc",
+      321
+    ],
+    [
+      "J Biol Chem",
+      311
+    ],
+    [
+      "PLoS Genet",
+      266
+    ]
+  ],
+  "lit_edges": 26490,
+  "lit_nodes": 22424,
+  "net_edges": 40,
+  "net_full_edges": 295,
+  "net_full_nodes": 172,
+  "net_legend": [
+    [
+      "var(--mark-a, #2b8f5d)",
+      "seed the query started from"
+    ],
+    [
+      "var(--mark-a, #2b8f5d)",
+      "positive DepMap correlation"
+    ],
+    [
+      "var(--mark-b, #a07002)",
+      "negative correlation"
+    ],
+    [
+      "var(--rule-2, #c6c9be)",
+      "co-mentioned, no DepMap pair"
+    ]
+  ],
+  "net_nodes": 27,
+  "net_svg": "<svg viewBox=\"0 0 760 470\" class=\"lpt-net\" role=\"img\" aria-label=\"Interaction network around the mesothelioma seed genes\"><style>\n.lpt-net text{font-family:var(--mono,ui-monospace,monospace);font-size:10.5px}\n.lpt-net .nl{fill:var(--muted, #5d6357)}\n.lpt-net .nl.seed{fill:var(--ink, #171a14);font-weight:500}\n.lpt-net .mk{cursor:default}\n.lpt-net .mk:focus{outline:none}\n.lpt-net .mk:hover line,.lpt-net .mk:focus line{stroke-opacity:1}\n.lpt-net .mk:hover circle,.lpt-net .mk:focus circle{filter:brightness(1.1)}\n</style><g class=\"mk\" tabindex=\"0\"><title>VGLL4 — TEAD1: 6 mentions in the corpus, DepMap r = +0.002 · tightest Kd 3.1e-09 M</title><line x1=\"631.9\" y1=\"207.0\" x2=\"455.3\" y2=\"210.3\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"3.3\" stroke-opacity=\"0.32\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>VGLL4 — TEAD4: 3 mentions in the corpus, DepMap r = +0.098</title><line x1=\"631.9\" y1=\"207.0\" x2=\"539.6\" y2=\"233.2\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2.6\" stroke-opacity=\"0.47\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>VGLL4 — RUNX2: 2 mentions in the corpus, DepMap r = +0.008</title><line x1=\"631.9\" y1=\"207.0\" x2=\"714.0\" y2=\"232.6\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2.3\" stroke-opacity=\"0.33\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>RAP2 — YAP1: 1 mention in the corpus, DepMap r = -0.016</title><line x1=\"311.8\" y1=\"407.4\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.34\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>RAP2 — MST1: 1 mention in the corpus, DepMap r = -0.154</title><line x1=\"311.8\" y1=\"407.4\" x2=\"410.9\" y2=\"407.5\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.55\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>JUN — TEAD1: 1 mention in the corpus, DepMap r = +0.256</title><line x1=\"359.7\" y1=\"112.7\" x2=\"455.3\" y2=\"210.3\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"1.9\" stroke-opacity=\"0.70\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>JUN — YAP1: 1 mention in the corpus, DepMap r = +0.139</title><line x1=\"359.7\" y1=\"112.7\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"1.9\" stroke-opacity=\"0.53\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>JUN — AHR: 1 mention in the corpus, DepMap r = -0.150</title><line x1=\"359.7\" y1=\"112.7\" x2=\"282.3\" y2=\"89.0\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.55\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>TAZ — YAP1: 16 mentions in the corpus, DepMap r = +0.020</title><line x1=\"484.2\" y1=\"323.6\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"4.1\" stroke-opacity=\"0.35\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>TAZ — RHOA: 1 mention in the corpus, DepMap r = +0.083</title><line x1=\"484.2\" y1=\"323.6\" x2=\"583.5\" y2=\"444.0\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"1.9\" stroke-opacity=\"0.45\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>TAZ — TEAD1: 5 mentions in the corpus, DepMap r = +0.416</title><line x1=\"484.2\" y1=\"323.6\" x2=\"455.3\" y2=\"210.3\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"3.1\" stroke-opacity=\"0.94\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>TAZ — TEAD4: 5 mentions in the corpus, DepMap r = +0.163</title><line x1=\"484.2\" y1=\"323.6\" x2=\"539.6\" y2=\"233.2\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"3.1\" stroke-opacity=\"0.56\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>LATS2 — LATS1: 7 mentions in the corpus, DepMap r = +0.044</title><line x1=\"699.8\" y1=\"444.0\" x2=\"538.2\" y2=\"354.3\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"3.5\" stroke-opacity=\"0.39\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>MST1 — YAP1: 3 mentions in the corpus, DepMap r = +0.017</title><line x1=\"410.9\" y1=\"407.5\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2.6\" stroke-opacity=\"0.34\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>MST1 — FAT1: 1 mention in the corpus, DepMap r = -0.117</title><line x1=\"410.9\" y1=\"407.5\" x2=\"349.1\" y2=\"444.0\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.49\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>MST1 — LATS1: 1 mention in the corpus, DepMap r = -0.016</title><line x1=\"410.9\" y1=\"407.5\" x2=\"538.2\" y2=\"354.3\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.34\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>IGF1R — YAP1: 1 mention in the corpus, DepMap r = +0.037</title><line x1=\"146.5\" y1=\"232.6\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"1.9\" stroke-opacity=\"0.38\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>SOX2 — NF2: 2 mentions in the corpus, DepMap r = +0.060</title><line x1=\"714.0\" y1=\"72.4\" x2=\"563.3\" y2=\"166.7\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2.3\" stroke-opacity=\"0.41\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>EGFR — YAP1: 4 mentions in the corpus, DepMap r = +0.205</title><line x1=\"148.1\" y1=\"113.6\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2.9\" stroke-opacity=\"0.63\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>EGFR — PTK2: 1 mention in the corpus, DepMap r = -0.076</title><line x1=\"148.1\" y1=\"113.6\" x2=\"46.0\" y2=\"26.0\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.43\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>TEAD2 — TEAD1: 1 mention in the corpus, DepMap r = +0.052</title><line x1=\"355.8\" y1=\"180.7\" x2=\"455.3\" y2=\"210.3\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"1.9\" stroke-opacity=\"0.40\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>TEAD2 — YAP1: 3 mentions in the corpus, DepMap r = +0.031 · tightest Kd 3.1e-08 M</title><line x1=\"355.8\" y1=\"180.7\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2.6\" stroke-opacity=\"0.37\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>WWTR1 — YAP1: 10 mentions in the corpus, DepMap r = +0.020</title><line x1=\"234.7\" y1=\"444.0\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"4.1\" stroke-opacity=\"0.35\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>MED15 — YAP1: 1 mention in the corpus, DepMap r = -0.110 · tightest Kd 2.8e-08 M</title><line x1=\"205.9\" y1=\"175.0\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.49\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>TEAD1 — YAP1: 15 mentions in the corpus, DepMap r = +0.272</title><line x1=\"455.3\" y1=\"210.3\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"4.1\" stroke-opacity=\"0.73\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>FOSL1 — YAP1: 1 mention in the corpus, DepMap r = +0.162</title><line x1=\"124.5\" y1=\"305.8\" x2=\"330.5\" y2=\"268.4\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"1.9\" stroke-opacity=\"0.56\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>YAP1 — TEAD4: 10 mentions in the corpus, DepMap r = +0.124</title><line x1=\"330.5\" y1=\"268.4\" x2=\"539.6\" y2=\"233.2\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"4.1\" stroke-opacity=\"0.51\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>YAP1 — SAV1: 4 mentions in the corpus, DepMap r = -0.150</title><line x1=\"330.5\" y1=\"268.4\" x2=\"170.0\" y2=\"402.1\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"2.9\" stroke-opacity=\"0.55\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>YAP1 — LATS1: 5 mentions in the corpus, DepMap r = -0.108</title><line x1=\"330.5\" y1=\"268.4\" x2=\"538.2\" y2=\"354.3\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"3.1\" stroke-opacity=\"0.48\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>YAP1 — TCF4: 1 mention in the corpus, DepMap r = -0.109</title><line x1=\"330.5\" y1=\"268.4\" x2=\"450.0\" y2=\"146.1\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.48\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>YAP1 — AHR: 1 mention in the corpus, DepMap r = -0.081</title><line x1=\"330.5\" y1=\"268.4\" x2=\"282.3\" y2=\"89.0\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.44\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>YAP1 — FAT1: 2 mentions in the corpus, DepMap r = -0.125</title><line x1=\"330.5\" y1=\"268.4\" x2=\"349.1\" y2=\"444.0\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"2.3\" stroke-opacity=\"0.51\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>YAP1 — AMOTL2: 1 mention in the corpus, DepMap r = -0.243</title><line x1=\"330.5\" y1=\"268.4\" x2=\"190.4\" y2=\"331.7\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.68\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>YAP1 — NF2: 1 mention in the corpus, DepMap r = -0.242</title><line x1=\"330.5\" y1=\"268.4\" x2=\"563.3\" y2=\"166.7\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.68\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>RHOA — LATS1: 1 mention in the corpus, DepMap r = -0.078</title><line x1=\"583.5\" y1=\"444.0\" x2=\"538.2\" y2=\"354.3\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.44\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>MARK2 — NF2: 2 mentions in the corpus, DepMap r = -0.227</title><line x1=\"664.2\" y1=\"26.0\" x2=\"563.3\" y2=\"166.7\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"2.3\" stroke-opacity=\"0.66\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>RUNX2 — TEAD4: 1 mention in the corpus, DepMap r = -0.121</title><line x1=\"714.0\" y1=\"232.6\" x2=\"539.6\" y2=\"233.2\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"1.9\" stroke-opacity=\"0.50\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>LATS1 — NF2: 2 mentions in the corpus, DepMap r = +0.187</title><line x1=\"538.2\" y1=\"354.3\" x2=\"563.3\" y2=\"166.7\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2.3\" stroke-opacity=\"0.60\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>TCF4 — TEAD4: 2 mentions in the corpus, DepMap r = +0.014 · tightest Kd 2.9e-07 M</title><line x1=\"450.0\" y1=\"146.1\" x2=\"539.6\" y2=\"233.2\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2.3\" stroke-opacity=\"0.34\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>NF2 — TEAD4: 5 mentions in the corpus, DepMap r = -0.117</title><line x1=\"563.3\" y1=\"166.7\" x2=\"539.6\" y2=\"233.2\" stroke=\"var(--mark-b, #a07002)\" stroke-width=\"3.1\" stroke-opacity=\"0.50\" stroke-dasharray=\"\" stroke-linecap=\"round\"/></g><g class=\"mk\" tabindex=\"0\"><title>YAP1 — 19 edges in this view, 263 mentions in the corpus</title><circle cx=\"330.5\" cy=\"268.4\" r=\"15.0\" fill=\"var(--mark-a, #2b8f5d)\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2\"/><text x=\"330.5\" y=\"247.4\" text-anchor=\"middle\" class=\"nl seed\">YAP1</text></g><g class=\"mk\" tabindex=\"0\"><title>WWTR1 — 1 edges in this view, 11 mentions in the corpus</title><circle cx=\"234.7\" cy=\"444.0\" r=\"6.9\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"234.7\" y=\"431.1\" text-anchor=\"middle\" class=\"nl\">WWTR1</text></g><g class=\"mk\" tabindex=\"0\"><title>TAZ — 4 edges in this view, 73 mentions in the corpus</title><circle cx=\"484.2\" cy=\"323.6\" r=\"9.6\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"484.2\" y=\"308.0\" text-anchor=\"middle\" class=\"nl\">TAZ</text></g><g class=\"mk\" tabindex=\"0\"><title>TEAD1 — 5 edges in this view, 75 mentions in the corpus</title><circle cx=\"455.3\" cy=\"210.3\" r=\"10.5\" fill=\"var(--mark-a, #2b8f5d)\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2\"/><text x=\"455.3\" y=\"193.8\" text-anchor=\"middle\" class=\"nl seed\">TEAD1</text></g><g class=\"mk\" tabindex=\"0\"><title>TEAD4 — 6 edges in this view, 71 mentions in the corpus</title><circle cx=\"539.6\" cy=\"233.2\" r=\"11.4\" fill=\"var(--mark-a, #2b8f5d)\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2\"/><text x=\"539.6\" y=\"215.8\" text-anchor=\"middle\" class=\"nl seed\">TEAD4</text></g><g class=\"mk\" tabindex=\"0\"><title>LATS1 — 5 edges in this view, 30 mentions in the corpus</title><circle cx=\"538.2\" cy=\"354.3\" r=\"10.5\" fill=\"var(--mark-a, #2b8f5d)\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2\"/><text x=\"538.2\" y=\"337.8\" text-anchor=\"middle\" class=\"nl seed\">LATS1</text></g><g class=\"mk\" tabindex=\"0\"><title>LATS2 — 1 edges in this view, 15 mentions in the corpus</title><circle cx=\"699.8\" cy=\"444.0\" r=\"6.9\" fill=\"var(--mark-a, #2b8f5d)\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2\"/><text x=\"699.8\" y=\"431.1\" text-anchor=\"middle\" class=\"nl seed\">LATS2</text></g><g class=\"mk\" tabindex=\"0\"><title>NF2 — 5 edges in this view, 22 mentions in the corpus</title><circle cx=\"563.3\" cy=\"166.7\" r=\"10.5\" fill=\"var(--mark-a, #2b8f5d)\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2\"/><text x=\"563.3\" y=\"150.2\" text-anchor=\"middle\" class=\"nl seed\">NF2</text></g><g class=\"mk\" tabindex=\"0\"><title>SAV1 — 1 edges in this view, 8 mentions in the corpus</title><circle cx=\"170.0\" cy=\"402.1\" r=\"6.9\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"170.0\" y=\"389.2\" text-anchor=\"middle\" class=\"nl\">SAV1</text></g><g class=\"mk\" tabindex=\"0\"><title>MST1 — 4 edges in this view, 12 mentions in the corpus</title><circle cx=\"410.9\" cy=\"407.5\" r=\"9.6\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"410.9\" y=\"391.9\" text-anchor=\"middle\" class=\"nl\">MST1</text></g><g class=\"mk\" tabindex=\"0\"><title>AMOTL2 — 1 edges in this view, 3 mentions in the corpus</title><circle cx=\"190.4\" cy=\"331.7\" r=\"6.9\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"190.4\" y=\"318.8\" text-anchor=\"middle\" class=\"nl\">AMOTL2</text></g><g class=\"mk\" tabindex=\"0\"><title>VGLL4 — 3 edges in this view, 17 mentions in the corpus</title><circle cx=\"631.9\" cy=\"207.0\" r=\"8.7\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"631.9\" y=\"192.3\" text-anchor=\"middle\" class=\"nl\">VGLL4</text></g><g class=\"mk\" tabindex=\"0\"><title>FOSL1 — 1 edges in this view, 9 mentions in the corpus</title><circle cx=\"124.5\" cy=\"305.8\" r=\"6.9\" fill=\"var(--mark-a, #2b8f5d)\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2\"/><text x=\"124.5\" y=\"292.9\" text-anchor=\"middle\" class=\"nl seed\">FOSL1</text></g><g class=\"mk\" tabindex=\"0\"><title>JUN — 3 edges in this view, 18 mentions in the corpus</title><circle cx=\"359.7\" cy=\"112.7\" r=\"8.7\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"359.7\" y=\"98.0\" text-anchor=\"middle\" class=\"nl\">JUN</text></g><g class=\"mk\" tabindex=\"0\"><title>RHOA — 2 edges in this view, 26 mentions in the corpus</title><circle cx=\"583.5\" cy=\"444.0\" r=\"7.8\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"583.5\" y=\"430.2\" text-anchor=\"middle\" class=\"nl\">RHOA</text></g><g class=\"mk\" tabindex=\"0\"><title>FAT1 — 2 edges in this view, 12 mentions in the corpus</title><circle cx=\"349.1\" cy=\"444.0\" r=\"7.8\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"349.1\" y=\"430.2\" text-anchor=\"middle\" class=\"nl\">FAT1</text></g><g class=\"mk\" tabindex=\"0\"><title>PTK2 — 1 edges in this view, 3 mentions in the corpus</title><circle cx=\"46.0\" cy=\"26.0\" r=\"6.9\" fill=\"var(--mark-a, #2b8f5d)\" stroke=\"var(--mark-a, #2b8f5d)\" stroke-width=\"2\"/><text x=\"46.0\" y=\"13.1\" text-anchor=\"middle\" class=\"nl seed\">PTK2</text></g><g class=\"mk\" tabindex=\"0\"><title>EGFR — 2 edges in this view, 191 mentions in the corpus</title><circle cx=\"148.1\" cy=\"113.6\" r=\"7.8\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"148.1\" y=\"99.8\" text-anchor=\"middle\" class=\"nl\">EGFR</text></g><g class=\"mk\" tabindex=\"0\"><title>MARK2 — 1 edges in this view, 7 mentions in the corpus</title><circle cx=\"664.2\" cy=\"26.0\" r=\"6.9\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"664.2\" y=\"13.1\" text-anchor=\"middle\" class=\"nl\">MARK2</text></g><g class=\"mk\" tabindex=\"0\"><title>RAP2 — 2 edges in this view, 4 mentions in the corpus</title><circle cx=\"311.8\" cy=\"407.4\" r=\"7.8\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"311.8\" y=\"393.6\" text-anchor=\"middle\" class=\"nl\">RAP2</text></g><g class=\"mk\" tabindex=\"0\"><title>AHR — 2 edges in this view, 15 mentions in the corpus</title><circle cx=\"282.3\" cy=\"89.0\" r=\"7.8\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"282.3\" y=\"75.2\" text-anchor=\"middle\" class=\"nl\">AHR</text></g><g class=\"mk\" tabindex=\"0\"><title>SOX2 — 1 edges in this view, 96 mentions in the corpus</title><circle cx=\"714.0\" cy=\"72.4\" r=\"6.9\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"714.0\" y=\"59.5\" text-anchor=\"middle\" class=\"nl\">SOX2</text></g><g class=\"mk\" tabindex=\"0\"><title>RUNX2 — 2 edges in this view, 14 mentions in the corpus</title><circle cx=\"714.0\" cy=\"232.6\" r=\"7.8\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"714.0\" y=\"218.8\" text-anchor=\"middle\" class=\"nl\">RUNX2</text></g><g class=\"mk\" tabindex=\"0\"><title>IGF1R — 1 edges in this view, 22 mentions in the corpus</title><circle cx=\"146.5\" cy=\"232.6\" r=\"6.9\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"146.5\" y=\"219.7\" text-anchor=\"middle\" class=\"nl\">IGF1R</text></g><g class=\"mk\" tabindex=\"0\"><title>MED15 — 1 edges in this view, 2 mentions in the corpus</title><circle cx=\"205.9\" cy=\"175.0\" r=\"6.9\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"205.9\" y=\"162.1\" text-anchor=\"middle\" class=\"nl\">MED15</text></g><g class=\"mk\" tabindex=\"0\"><title>TCF4 — 2 edges in this view, 17 mentions in the corpus</title><circle cx=\"450.0\" cy=\"146.1\" r=\"7.8\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"450.0\" y=\"132.3\" text-anchor=\"middle\" class=\"nl\">TCF4</text></g><g class=\"mk\" tabindex=\"0\"><title>TEAD2 — 2 edges in this view, 14 mentions in the corpus</title><circle cx=\"355.8\" cy=\"180.7\" r=\"7.8\" fill=\"var(--surface, #ffffff)\" stroke=\"var(--rule-2, #c6c9be)\" stroke-width=\"2\"/><text x=\"355.8\" y=\"166.9\" text-anchor=\"middle\" class=\"nl\">TEAD2</text></g></svg>",
+  "not_say": [
+    "**BAP1 and CDKN2A** — both are frequently altered in MPM [uncited] and represent a major therapeutic gap in the corpus. No papers capturing PRMT5 synthetic lethality from MTAP co-deletion (common in CDKN2A-deleted mesothelioma) showed up.",
+    "**No clinical outcome data**: The corpus is biochemistry/preclinical-biased. VT3989 clinical activity is noted qualitatively; no survival curves or OS data are captured.",
+    "**VEGF/anti-angiogenic targets, PDL1/checkpoint data**: The corpus doesn't have MPM-specific checkpoint data (bevacizumab + chemotherapy, nivolumab/ipilimumab combos are the standard-of-care [uncited] but aren't captured here).",
+    "**Mesothelin** — a major clinical target in MPM (antibody-drug conjugates, CAR-T) [uncited] — doesn't appear in this corpus at all."
+  ],
+  "novelty": [
+    [
+      "YAP1",
+      0.0548,
+      482,
+      119,
+      19
+    ],
+    [
+      "NF2",
+      0.5069,
+      115,
+      1,
+      2
+    ]
+  ],
+  "quote": "**NF2 (Merlin)** is inactivated in 30–40% of malignant pleural mesothelioma (MPM) cases (10.1111/jcmm.18330). When NF2 is lost, it can no longer relay contact-inhibition signals through the Hippo kinase cascade (MST1/2 → LATS1/2), so **YAP1 and TAZ (WWTR1)** accumulate in the nucleus and drive a TEAD1-4-dependent pro-proliferative transcriptional program (CYR61, CTGF as canonical readouts).",
+  "resolver_dropped": 1266,
+  "resolver_nap1": "ambiguous_synonym",
+  "resolver_symbols": 52358,
+  "session": {
+    "calls": [
+      [
+        1,
+        "334 in / 163 out",
+        [
+          [
+            "search_corpus",
+            "query, study_category, top_k"
+          ],
+          [
+            "search_corpus",
+            "query, top_k"
+          ]
+        ]
+      ],
+      [
+        2,
+        "7,452 in / 184 out",
+        [
+          [
+            "get_interactions_for",
+            "protein"
+          ],
+          [
+            "search_corpus",
+            "query, top_k"
+          ],
+          [
+            "get_fingerprint",
+            "identifier"
+          ]
+        ]
+      ],
+      [
+        3,
+        "19,521 in / 169 out",
+        [
+          [
+            "search_corpus",
+            "query, top_k"
+          ],
+          [
+            "get_interactions_for",
+            "protein"
+          ],
+          [
+            "cluster_for_protein",
+            "protein"
+          ]
+        ]
+      ],
+      [
+        4,
+        "50,603 in / 2,360 out",
+        []
+      ]
+    ],
+    "n_llm_calls": 4,
+    "n_tool_calls": 8,
+    "seconds": 64.7,
+    "tokens_in": "50,603",
+    "tokens_out": "2,360"
+  },
+  "uncited": 4,
+  "uncited_example": "**Tumour-associated macrophages**: The macrophage review covers CD47–SIRPα, CSF1R, CD40, and VISTA as remodelling targets. Not MPM-specific in the corpus, but the heavily immunosuppressive TME of MPM [uncited] makes these generically relevant.",
+  "year_floor": 2005,
+  "years": [
+    [
+      2005,
+      39
+    ],
+    [
+      2006,
+      48
+    ],
+    [
+      2007,
+      66
+    ],
+    [
+      2008,
+      177
+    ],
+    [
+      2009,
+      302
+    ],
+    [
+      2010,
+      326
+    ],
+    [
+      2011,
+      400
+    ],
+    [
+      2012,
+      388
+    ],
+    [
+      2013,
+      484
+    ],
+    [
+      2014,
+      515
+    ],
+    [
+      2015,
+      529
+    ],
+    [
+      2016,
+      821
+    ],
+    [
+      2017,
+      948
+    ],
+    [
+      2018,
+      1015
+    ],
+    [
+      2019,
+      980
+    ],
+    [
+      2020,
+      1123
+    ],
+    [
+      2021,
+      1181
+    ],
+    [
+      2022,
+      1149
+    ],
+    [
+      2023,
+      1042
+    ],
+    [
+      2024,
+      1051
+    ],
+    [
+      2025,
+      1168
+    ],
+    [
+      2026,
+      384
+    ]
+  ],
+  "years_before": 381
+}

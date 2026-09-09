@@ -1,18 +1,19 @@
+<meta charset="utf-8">
 <title>Corpus Explorer</title>
-<meta name="description" content="One real corpus-explorer session: eight tool calls over 11,055 curated papers turned into a cited target map, with the interaction and DepMap graphs behind it.">
+<meta name="description" content="One real corpus-explorer session: 8 tool calls over 14,517 curated papers turned into a cited target map, with the interaction and DepMap graphs behind it.">
 <meta name="color-scheme" content="light dark">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Little Protein Tiger">
 <meta property="og:title" content="Corpus Explorer">
-<meta property="og:description" content="One real corpus-explorer session: eight tool calls over 11,055 curated papers turned into a cited target map, with the interaction and DepMap graphs behind it.">
+<meta property="og:description" content="One real corpus-explorer session: 8 tool calls over 14,517 curated papers turned into a cited target map, with the interaction and DepMap graphs behind it.">
 <meta property="og:url" content="https://michauckelmann.github.io/little-protein-tiger/showcase/corpus_explorer.html">
 <meta property="og:image" content="https://michauckelmann.github.io/little-protein-tiger/showcase/assets/og_corpus.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="One real corpus-explorer session: eight tool calls over 11,055 curated papers turned into a cited target map, with the interaction and DepMap graphs behind it.">
+<meta property="og:image:alt" content="One real corpus-explorer session: 8 tool calls over 14,517 curated papers turned into a cited target map, with the interaction and DepMap graphs behind it.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Corpus Explorer">
-<meta name="twitter:description" content="One real corpus-explorer session: eight tool calls over 11,055 curated papers turned into a cited target map, with the interaction and DepMap graphs behind it.">
+<meta name="twitter:description" content="One real corpus-explorer session: 8 tool calls over 14,517 curated papers turned into a cited target map, with the interaction and DepMap graphs behind it.">
 <meta name="twitter:image" content="https://michauckelmann.github.io/little-protein-tiger/showcase/assets/og_corpus.png">
 <link rel="canonical" href="https://michauckelmann.github.io/little-protein-tiger/showcase/corpus_explorer.html">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -78,6 +79,12 @@ figcaption{font-size:.86rem;color:var(--muted);margin:0;max-width:70ch}
   color:var(--good-ink);border-radius:2px;padding:7px 13px;font-size:.82rem;font-weight:600;
   letter-spacing:.03em;width:fit-content}
 .verdict::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+
+/* command block — also used by ppi_discovery.html, which sources this sheet */
+.term{font-family:var(--mono);font-size:12.5px;line-height:1.7;background:var(--sunk);
+  border:1px solid var(--rule-2);border-radius:3px;padding:14px 16px;margin:20px 0;
+  overflow-x:auto;color:var(--ink-2);white-space:nowrap}
+.term .p{color:var(--accent);font-weight:600;user-select:none;margin-right:6px}
 
 /* stages */
 .stage{border-top:1px solid var(--rule-2);padding:54px 0 8px;display:grid;gap:22px}
@@ -177,6 +184,8 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
 .tile span{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
   color:var(--muted)}
 .tile p{font-size:.88rem;color:var(--muted);margin:4px 0 0}
+ul.gaps{margin:0;padding-left:1.1em;display:grid;gap:10px;max-width:74ch}
+ul.gaps li{font-size:.95rem;line-height:1.6;color:var(--ink-2)}
 </style>
 
 <div class="wrap">
@@ -184,37 +193,39 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
 <header class="hero">
   <div>
     <p class="eyebrow">Little Protein Tiger · corpus-explorer</p>
-    <h1>Ask eleven thousand papers a question and get a target map back</h1>
+    <h1>Ask 14,517 papers a question and get a target map back</h1>
   </div>
   <p class="lede">The corpus is not a search box. It is a curated store of structured
   findings — every claim carrying its own page reference — wired to an interaction graph
-  and to DepMap co-essentiality. This is one real session: one question, four model calls,
-  sixty-five seconds.</p>
+  and to DepMap co-essentiality. It is also small and lopsided: 14,517 papers
+  weighted toward chromatin, histone chaperones and structural biology, and silent on
+  most of biology. This is one real session against it: one question,
+  4 model calls, 65 seconds.</p>
 
   <div class="term"><span class="p">&gt;</span> what's the target space around mesothelioma?</div>
 
   <div class="stats">
-    <div class="stat"><b>55,689</b><span>papers indexed</span></div>
-    <div class="stat"><b>11,055</b><span>curated fingerprints</span></div>
-    <div class="stat"><b>20,658</b><span>interaction edges</span></div>
-    <div class="stat"><b>344</b><span>co-functional clusters</span></div>
+    <div class="stat"><b>57,907</b><span>papers indexed</span></div>
+    <div class="stat"><b>14,514</b><span>curated fingerprints</span></div>
+    <div class="stat"><b>26,490</b><span>interaction edges</span></div>
+    <div class="stat"><b>362</b><span>co-functional clusters</span></div>
     <div class="stat"><b>65 s</b><span>to answer</span></div>
   </div>
 </header>
 
 <section class="stage">
   <div class="stage-h"><p class="step">What the tools did</p>
-    <h2>Eight tool calls, then one answer</h2></div>
+    <h2>8 tool calls, then one answer</h2></div>
   <p>The skill is not told which tools to use. It searches, follows the hits into the
   interaction graph, pulls a full fingerprint when it needs the evidence behind a claim,
-  and asks which co-functional cluster a protein belongs to — then writes. The whole
-  trace is logged, so what it looked at is inspectable after the fact.</p>
+  and asks which co-functional cluster a protein belongs to — then writes.</p>
   <div class="tw"><table>
     <thead><tr><th></th><th>tool</th><th>arguments</th><th class="num">tokens</th></tr></thead>
-    <tbody><tr><td class="c">call 1</td><td class="t">search_corpus</td><td class="a">query, study_category, top_k</td><td class="num">334 in / 163 out</td></tr><tr><td class="c"></td><td class="t">search_corpus</td><td class="a">query, top_k</td><td class="num"></td></tr><tr><td class="c">call 2</td><td class="t">get_interactions_for</td><td class="a">protein</td><td class="num">7,452 in / 184 out</td></tr><tr><td class="c"></td><td class="t">search_corpus</td><td class="a">query, top_k</td><td class="num"></td></tr><tr><td class="c"></td><td class="t">get_fingerprint</td><td class="a">identifier</td><td class="num"></td></tr><tr><td class="c">call 3</td><td class="t">search_corpus</td><td class="a">query, top_k</td><td class="num">19,521 in / 169 out</td></tr><tr><td class="c"></td><td class="t">get_interactions_for</td><td class="a">protein</td><td class="num"></td></tr><tr><td class="c"></td><td class="t">cluster_for_protein</td><td class="a">protein</td><td class="num"></td></tr><tr><td class="c">call 4</td><td class="t">— writes the answer —</td><td class="a"></td><td class="num">23,296 in / 1,844 out</td></tr></tbody></table></div>
-  <p style="margin-top:16px;font-size:.9rem;color:var(--muted)">50,603 input / 2,360 output
-  tokens across four calls. Retrieval is budgeted and iterative on purpose — the skill is
-  told to stop searching once the picture stops changing.</p>
+    <tbody><tr><td class="c">call 1</td><td class="t">search_corpus</td><td class="a">query, study_category, top_k</td><td class="num">334 in / 163 out</td></tr><tr><td class="c"></td><td class="t">search_corpus</td><td class="a">query, top_k</td><td class="num"></td></tr><tr><td class="c">call 2</td><td class="t">get_interactions_for</td><td class="a">protein</td><td class="num">7,452 in / 184 out</td></tr><tr><td class="c"></td><td class="t">search_corpus</td><td class="a">query, top_k</td><td class="num"></td></tr><tr><td class="c"></td><td class="t">get_fingerprint</td><td class="a">identifier</td><td class="num"></td></tr><tr><td class="c">call 3</td><td class="t">search_corpus</td><td class="a">query, top_k</td><td class="num">19,521 in / 169 out</td></tr><tr><td class="c"></td><td class="t">get_interactions_for</td><td class="a">protein</td><td class="num"></td></tr><tr><td class="c"></td><td class="t">cluster_for_protein</td><td class="a">protein</td><td class="num"></td></tr><tr><td class="c">call 4</td><td class="t">— writes the answer —</td><td class="a"></td><td class="num">50,603 in / 2,360 out</td></tr></tbody></table></div>
+  <p style="margin-top:16px;font-size:.9rem;color:var(--muted)">50,603 input /
+  2,360 output tokens across 4 calls. Retrieval is budgeted
+  and iterative on purpose — the skill is told to stop searching once the picture stops
+  changing.</p>
 </section>
 
 <section class="stage">
@@ -231,25 +242,25 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
       <code>source_span</code></strong>. A finding that cannot say which page and paragraph
       it came from is rejected by the consumers downstream. There is no way to produce a
       confident-sounding number here without a pointer to where it was read.</p>
-      <p>This particular record is why the map above has a VGLL4 node at all: a natural
+      <p>This particular record is why the map below has a VGLL4 node at all: a natural
       TEAD1 ligand with a measured 3.1 nM K<sub>d</sub>, curated out of
       <a href="https://doi.org/10.1016/j.devcel.2016.09.005">10.1016/j.devcel.2016.09.005</a>
-      by <code>gemini-3.1-flash-lite-preview</code> in May 2026 — provenance is stored per
-      file, so you can always ask which model read what.</p>
+      by <code>gemini-3.1-flash-lite-preview</code> in 2026-05 — provenance is
+      stored per file, so you can always ask which model read what.</p>
     </div>
     <pre class="json">{
-  "claim": "The non-acetylated VGLL4-TDU domain peptide binds to
-            TEAD1 with a dissociation constant of 3.1 nM.",
-  "protein_pair": ["VGLL4", "TEAD1"],
-  "experimental_context": "Photonic crystal nanobeam sensor assay",
-  "affinities_kd_Molar": 3.1e-09,
-  "inhibitory_constant_Ki": null,
-  "key_amino_acid_residues": ["K225"],
-  "quantitative_or_qualitative": "quantitative",
-  "is_statistically_significant": true,
-  "confidence_score": 0.95,
-  "source_span": "Section: VGLL4 Activity Is Regulated by Its TDU
-                  Domain Acetylation, Para 2"
+  &quot;claim&quot;: &quot;The non-acetylated VGLL4-TDU domain peptide binds to TEAD1
+            with a dissociation constant of 3.1 nM.&quot;,
+  &quot;protein_pair&quot;: [&quot;VGLL4&quot;, &quot;TEAD1&quot;],
+  &quot;experimental_context&quot;: &quot;Photonic crystal nanobeam sensor assay&quot;,
+  &quot;affinities_kd_Molar&quot;: 3.1e-09,
+  &quot;inhibitory_constant_Ki&quot;: null,
+  &quot;key_amino_acid_residues&quot;: [&quot;K225&quot;],
+  &quot;quantitative_or_qualitative&quot;: &quot;quantitative&quot;,
+  &quot;is_statistically_significant&quot;: true,
+  &quot;confidence_score&quot;: 0.95,
+  &quot;source_span&quot;: &quot;Section: VGLL4 Activity Is Regulated by Its TDU Domain
+                  Acetylation, Para 2&quot;
 }</pre>
   </div>
 </section>
@@ -268,37 +279,37 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
 .lpt-net .mk:hover circle,.lpt-net .mk:focus circle{filter:brightness(1.1)}
 </style><g class="mk" tabindex="0"><title>VGLL4 — TEAD1: 6 mentions in the corpus, DepMap r = +0.002 · tightest Kd 3.1e-09 M</title><line x1="631.9" y1="207.0" x2="455.3" y2="210.3" stroke="var(--mark-a, #2b8f5d)" stroke-width="3.3" stroke-opacity="0.32" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>VGLL4 — TEAD4: 3 mentions in the corpus, DepMap r = +0.098</title><line x1="631.9" y1="207.0" x2="539.6" y2="233.2" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.6" stroke-opacity="0.47" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>VGLL4 — RUNX2: 2 mentions in the corpus, DepMap r = +0.008</title><line x1="631.9" y1="207.0" x2="714.0" y2="232.6" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.3" stroke-opacity="0.33" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>RAP2 — YAP1: 1 mention in the corpus, DepMap r = -0.016</title><line x1="311.8" y1="407.4" x2="330.5" y2="268.4" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.34" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>RAP2 — MST1: 1 mention in the corpus, DepMap r = -0.154</title><line x1="311.8" y1="407.4" x2="410.9" y2="407.5" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.55" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>JUN — TEAD1: 1 mention in the corpus, DepMap r = +0.256</title><line x1="359.7" y1="112.7" x2="455.3" y2="210.3" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.70" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>JUN — YAP1: 1 mention in the corpus, DepMap r = +0.139</title><line x1="359.7" y1="112.7" x2="330.5" y2="268.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.53" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>JUN — AHR: 1 mention in the corpus, DepMap r = -0.150</title><line x1="359.7" y1="112.7" x2="282.3" y2="89.0" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.55" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TAZ — YAP1: 16 mentions in the corpus, DepMap r = +0.020</title><line x1="484.2" y1="323.6" x2="330.5" y2="268.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="4.1" stroke-opacity="0.35" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TAZ — RHOA: 1 mention in the corpus, DepMap r = +0.083</title><line x1="484.2" y1="323.6" x2="583.5" y2="444.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.45" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TAZ — TEAD1: 5 mentions in the corpus, DepMap r = +0.416</title><line x1="484.2" y1="323.6" x2="455.3" y2="210.3" stroke="var(--mark-a, #2b8f5d)" stroke-width="3.1" stroke-opacity="0.94" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TAZ — TEAD4: 5 mentions in the corpus, DepMap r = +0.163</title><line x1="484.2" y1="323.6" x2="539.6" y2="233.2" stroke="var(--mark-a, #2b8f5d)" stroke-width="3.1" stroke-opacity="0.56" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>LATS2 — LATS1: 7 mentions in the corpus, DepMap r = +0.044</title><line x1="699.8" y1="444.0" x2="538.2" y2="354.3" stroke="var(--mark-a, #2b8f5d)" stroke-width="3.5" stroke-opacity="0.39" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>MST1 — YAP1: 3 mentions in the corpus, DepMap r = +0.017</title><line x1="410.9" y1="407.5" x2="330.5" y2="268.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.6" stroke-opacity="0.34" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>MST1 — FAT1: 1 mention in the corpus, DepMap r = -0.117</title><line x1="410.9" y1="407.5" x2="349.1" y2="444.0" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.49" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>MST1 — LATS1: 1 mention in the corpus, DepMap r = -0.016</title><line x1="410.9" y1="407.5" x2="538.2" y2="354.3" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.34" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>IGF1R — YAP1: 1 mention in the corpus, DepMap r = +0.037</title><line x1="146.5" y1="232.6" x2="330.5" y2="268.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.38" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>SOX2 — NF2: 2 mentions in the corpus, DepMap r = +0.060</title><line x1="714.0" y1="72.4" x2="563.3" y2="166.7" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.3" stroke-opacity="0.41" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>EGFR — YAP1: 4 mentions in the corpus, DepMap r = +0.205</title><line x1="148.1" y1="113.6" x2="330.5" y2="268.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.9" stroke-opacity="0.63" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>EGFR — PTK2: 1 mention in the corpus, DepMap r = -0.076</title><line x1="148.1" y1="113.6" x2="46.0" y2="26.0" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.43" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TEAD2 — TEAD1: 1 mention in the corpus, DepMap r = +0.052</title><line x1="355.8" y1="180.7" x2="455.3" y2="210.3" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.40" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TEAD2 — YAP1: 3 mentions in the corpus, DepMap r = +0.031 · tightest Kd 3.1e-08 M</title><line x1="355.8" y1="180.7" x2="330.5" y2="268.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.6" stroke-opacity="0.37" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>WWTR1 — YAP1: 10 mentions in the corpus, DepMap r = +0.020</title><line x1="234.7" y1="444.0" x2="330.5" y2="268.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="4.1" stroke-opacity="0.35" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>MED15 — YAP1: 1 mention in the corpus, DepMap r = -0.110 · tightest Kd 2.8e-08 M</title><line x1="205.9" y1="175.0" x2="330.5" y2="268.4" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.49" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TEAD1 — YAP1: 15 mentions in the corpus, DepMap r = +0.272</title><line x1="455.3" y1="210.3" x2="330.5" y2="268.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="4.1" stroke-opacity="0.73" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>FOSL1 — YAP1: 1 mention in the corpus, DepMap r = +0.162</title><line x1="124.5" y1="305.8" x2="330.5" y2="268.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.56" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>YAP1 — TEAD4: 10 mentions in the corpus, DepMap r = +0.124</title><line x1="330.5" y1="268.4" x2="539.6" y2="233.2" stroke="var(--mark-a, #2b8f5d)" stroke-width="4.1" stroke-opacity="0.51" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>YAP1 — SAV1: 4 mentions in the corpus, DepMap r = -0.150</title><line x1="330.5" y1="268.4" x2="170.0" y2="402.1" stroke="var(--mark-b, #a07002)" stroke-width="2.9" stroke-opacity="0.55" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>YAP1 — LATS1: 5 mentions in the corpus, DepMap r = -0.108</title><line x1="330.5" y1="268.4" x2="538.2" y2="354.3" stroke="var(--mark-b, #a07002)" stroke-width="3.1" stroke-opacity="0.48" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>YAP1 — TCF4: 1 mention in the corpus, DepMap r = -0.109</title><line x1="330.5" y1="268.4" x2="450.0" y2="146.1" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.48" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>YAP1 — AHR: 1 mention in the corpus, DepMap r = -0.081</title><line x1="330.5" y1="268.4" x2="282.3" y2="89.0" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.44" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>YAP1 — FAT1: 2 mentions in the corpus, DepMap r = -0.125</title><line x1="330.5" y1="268.4" x2="349.1" y2="444.0" stroke="var(--mark-b, #a07002)" stroke-width="2.3" stroke-opacity="0.51" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>YAP1 — AMOTL2: 1 mention in the corpus, DepMap r = -0.243</title><line x1="330.5" y1="268.4" x2="190.4" y2="331.7" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.68" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>YAP1 — NF2: 1 mention in the corpus, DepMap r = -0.242</title><line x1="330.5" y1="268.4" x2="563.3" y2="166.7" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.68" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>RHOA — LATS1: 1 mention in the corpus, DepMap r = -0.078</title><line x1="583.5" y1="444.0" x2="538.2" y2="354.3" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.44" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>MARK2 — NF2: 2 mentions in the corpus, DepMap r = -0.227</title><line x1="664.2" y1="26.0" x2="563.3" y2="166.7" stroke="var(--mark-b, #a07002)" stroke-width="2.3" stroke-opacity="0.66" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>RUNX2 — TEAD4: 1 mention in the corpus, DepMap r = -0.121</title><line x1="714.0" y1="232.6" x2="539.6" y2="233.2" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.50" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>LATS1 — NF2: 2 mentions in the corpus, DepMap r = +0.187</title><line x1="538.2" y1="354.3" x2="563.3" y2="166.7" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.3" stroke-opacity="0.60" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TCF4 — TEAD4: 2 mentions in the corpus, DepMap r = +0.014 · tightest Kd 2.9e-07 M</title><line x1="450.0" y1="146.1" x2="539.6" y2="233.2" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.3" stroke-opacity="0.34" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>NF2 — TEAD4: 5 mentions in the corpus, DepMap r = -0.117</title><line x1="563.3" y1="166.7" x2="539.6" y2="233.2" stroke="var(--mark-b, #a07002)" stroke-width="3.1" stroke-opacity="0.50" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>YAP1 — 19 edges in this view, 263 mentions in the corpus</title><circle cx="330.5" cy="268.4" r="15.0" fill="var(--mark-a, #2b8f5d)" stroke="var(--mark-a, #2b8f5d)" stroke-width="2"/><text x="330.5" y="247.4" text-anchor="middle" class="nl seed">YAP1</text></g><g class="mk" tabindex="0"><title>WWTR1 — 1 edges in this view, 11 mentions in the corpus</title><circle cx="234.7" cy="444.0" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="234.7" y="431.1" text-anchor="middle" class="nl">WWTR1</text></g><g class="mk" tabindex="0"><title>TAZ — 4 edges in this view, 73 mentions in the corpus</title><circle cx="484.2" cy="323.6" r="9.6" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="484.2" y="308.0" text-anchor="middle" class="nl">TAZ</text></g><g class="mk" tabindex="0"><title>TEAD1 — 5 edges in this view, 75 mentions in the corpus</title><circle cx="455.3" cy="210.3" r="10.5" fill="var(--mark-a, #2b8f5d)" stroke="var(--mark-a, #2b8f5d)" stroke-width="2"/><text x="455.3" y="193.8" text-anchor="middle" class="nl seed">TEAD1</text></g><g class="mk" tabindex="0"><title>TEAD4 — 6 edges in this view, 71 mentions in the corpus</title><circle cx="539.6" cy="233.2" r="11.4" fill="var(--mark-a, #2b8f5d)" stroke="var(--mark-a, #2b8f5d)" stroke-width="2"/><text x="539.6" y="215.8" text-anchor="middle" class="nl seed">TEAD4</text></g><g class="mk" tabindex="0"><title>LATS1 — 5 edges in this view, 30 mentions in the corpus</title><circle cx="538.2" cy="354.3" r="10.5" fill="var(--mark-a, #2b8f5d)" stroke="var(--mark-a, #2b8f5d)" stroke-width="2"/><text x="538.2" y="337.8" text-anchor="middle" class="nl seed">LATS1</text></g><g class="mk" tabindex="0"><title>LATS2 — 1 edges in this view, 15 mentions in the corpus</title><circle cx="699.8" cy="444.0" r="6.9" fill="var(--mark-a, #2b8f5d)" stroke="var(--mark-a, #2b8f5d)" stroke-width="2"/><text x="699.8" y="431.1" text-anchor="middle" class="nl seed">LATS2</text></g><g class="mk" tabindex="0"><title>NF2 — 5 edges in this view, 22 mentions in the corpus</title><circle cx="563.3" cy="166.7" r="10.5" fill="var(--mark-a, #2b8f5d)" stroke="var(--mark-a, #2b8f5d)" stroke-width="2"/><text x="563.3" y="150.2" text-anchor="middle" class="nl seed">NF2</text></g><g class="mk" tabindex="0"><title>SAV1 — 1 edges in this view, 8 mentions in the corpus</title><circle cx="170.0" cy="402.1" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="170.0" y="389.2" text-anchor="middle" class="nl">SAV1</text></g><g class="mk" tabindex="0"><title>MST1 — 4 edges in this view, 12 mentions in the corpus</title><circle cx="410.9" cy="407.5" r="9.6" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="410.9" y="391.9" text-anchor="middle" class="nl">MST1</text></g><g class="mk" tabindex="0"><title>AMOTL2 — 1 edges in this view, 3 mentions in the corpus</title><circle cx="190.4" cy="331.7" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="190.4" y="318.8" text-anchor="middle" class="nl">AMOTL2</text></g><g class="mk" tabindex="0"><title>VGLL4 — 3 edges in this view, 17 mentions in the corpus</title><circle cx="631.9" cy="207.0" r="8.7" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="631.9" y="192.3" text-anchor="middle" class="nl">VGLL4</text></g><g class="mk" tabindex="0"><title>FOSL1 — 1 edges in this view, 9 mentions in the corpus</title><circle cx="124.5" cy="305.8" r="6.9" fill="var(--mark-a, #2b8f5d)" stroke="var(--mark-a, #2b8f5d)" stroke-width="2"/><text x="124.5" y="292.9" text-anchor="middle" class="nl seed">FOSL1</text></g><g class="mk" tabindex="0"><title>JUN — 3 edges in this view, 18 mentions in the corpus</title><circle cx="359.7" cy="112.7" r="8.7" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="359.7" y="98.0" text-anchor="middle" class="nl">JUN</text></g><g class="mk" tabindex="0"><title>RHOA — 2 edges in this view, 26 mentions in the corpus</title><circle cx="583.5" cy="444.0" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="583.5" y="430.2" text-anchor="middle" class="nl">RHOA</text></g><g class="mk" tabindex="0"><title>FAT1 — 2 edges in this view, 12 mentions in the corpus</title><circle cx="349.1" cy="444.0" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="349.1" y="430.2" text-anchor="middle" class="nl">FAT1</text></g><g class="mk" tabindex="0"><title>PTK2 — 1 edges in this view, 3 mentions in the corpus</title><circle cx="46.0" cy="26.0" r="6.9" fill="var(--mark-a, #2b8f5d)" stroke="var(--mark-a, #2b8f5d)" stroke-width="2"/><text x="46.0" y="13.1" text-anchor="middle" class="nl seed">PTK2</text></g><g class="mk" tabindex="0"><title>EGFR — 2 edges in this view, 191 mentions in the corpus</title><circle cx="148.1" cy="113.6" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="148.1" y="99.8" text-anchor="middle" class="nl">EGFR</text></g><g class="mk" tabindex="0"><title>MARK2 — 1 edges in this view, 7 mentions in the corpus</title><circle cx="664.2" cy="26.0" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="664.2" y="13.1" text-anchor="middle" class="nl">MARK2</text></g><g class="mk" tabindex="0"><title>RAP2 — 2 edges in this view, 4 mentions in the corpus</title><circle cx="311.8" cy="407.4" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="311.8" y="393.6" text-anchor="middle" class="nl">RAP2</text></g><g class="mk" tabindex="0"><title>AHR — 2 edges in this view, 15 mentions in the corpus</title><circle cx="282.3" cy="89.0" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="282.3" y="75.2" text-anchor="middle" class="nl">AHR</text></g><g class="mk" tabindex="0"><title>SOX2 — 1 edges in this view, 96 mentions in the corpus</title><circle cx="714.0" cy="72.4" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="714.0" y="59.5" text-anchor="middle" class="nl">SOX2</text></g><g class="mk" tabindex="0"><title>RUNX2 — 2 edges in this view, 14 mentions in the corpus</title><circle cx="714.0" cy="232.6" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="714.0" y="218.8" text-anchor="middle" class="nl">RUNX2</text></g><g class="mk" tabindex="0"><title>IGF1R — 1 edges in this view, 22 mentions in the corpus</title><circle cx="146.5" cy="232.6" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="146.5" y="219.7" text-anchor="middle" class="nl">IGF1R</text></g><g class="mk" tabindex="0"><title>MED15 — 1 edges in this view, 2 mentions in the corpus</title><circle cx="205.9" cy="175.0" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="205.9" y="162.1" text-anchor="middle" class="nl">MED15</text></g><g class="mk" tabindex="0"><title>TCF4 — 2 edges in this view, 17 mentions in the corpus</title><circle cx="450.0" cy="146.1" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="450.0" y="132.3" text-anchor="middle" class="nl">TCF4</text></g><g class="mk" tabindex="0"><title>TEAD2 — 2 edges in this view, 14 mentions in the corpus</title><circle cx="355.8" cy="180.7" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="355.8" y="166.9" text-anchor="middle" class="nl">TEAD2</text></g></svg>
     <p class="legend"><span><b style="background:var(--mark-a, #2b8f5d)"></b>seed the query started from</span><span><b style="background:var(--mark-a, #2b8f5d)"></b>positive DepMap correlation</span><span><b style="background:var(--mark-b, #a07002)"></b>negative correlation</span><span><b style="background:var(--rule-2, #c6c9be)"></b>co-mentioned, no DepMap pair</span></p>
-    <figcaption>27 genes and 40 edges, drawn from the Cytoscape export this
-    session produced (<code>mesothelioma_target_network.cyjs</code>, 172 nodes / 295 edges
-    in full). Edge width is how often the pair is co-mentioned in the corpus; colour and
-    opacity are the DepMap co-essentiality correlation. Hover any edge for its real values.
+    <figcaption>27 genes and 40 edges, drawn from the Cytoscape
+    export this session produced (<code>mesothelioma_target_network.cyjs</code>,
+    172 nodes / 295 edges in full). Edge width is how
+    often the pair is co-mentioned in the corpus; colour and opacity are the DepMap
+    co-essentiality correlation. Hover any edge for its real values.
     <br><br><strong>The map is a literature map.</strong> Its nodes and edges come from
     co-mention in the corpus; DepMap only <em>colours</em> edges that are already there. So
     a gene can be strongly co-essential with YAP1 and still be absent here — ARHGEF7
-    (r&nbsp;=&nbsp;+0.29) is in the table further down and not on this map, because no paper
-    in this corpus mentions it alongside YAP1. That is the blind spot, not a
-    rendering choice.</figcaption>
+    (r&nbsp;=&nbsp;+0.29) is in the table further down and not on this
+    map, because no paper in this corpus mentions it alongside YAP1. That is the blind
+    spot, not a rendering choice.</figcaption>
   </div>
   <div class="two" style="margin-top:26px">
     <div>
-      <blockquote class="quote">NF2 (Merlin) is inactivated in 30–40% of malignant pleural
-      mesothelioma cases. When NF2 is lost, it can no longer relay contact-inhibition
-      signals through the Hippo kinase cascade, so YAP1 and TAZ accumulate in the nucleus
-      and drive a TEAD1-4-dependent pro-proliferative transcriptional program
-      <cite>— corpus-explorer, citing 10.1111/jcmm.18330</cite></blockquote>
-      <p>Every claim in the written answer carries its DOI inline. That is a hard
-      requirement of the skill, not a stylistic preference: an answer with an uncited
-      number is a failed answer.</p>
+      <blockquote class="quote"><strong>NF2 (Merlin)</strong> is inactivated in 30–40% of malignant pleural mesothelioma (MPM) cases (<a href="https://doi.org/10.1111/jcmm.18330">10.1111/jcmm.18330</a>). When NF2 is lost, it can no longer relay contact-inhibition signals through the Hippo kinase cascade (MST1/2 → LATS1/2), so <strong>YAP1 and TAZ (WWTR1)</strong> accumulate in the nucleus and drive a TEAD1-4-dependent pro-proliferative transcriptional program (CYR61, CTGF as canonical readouts).
+      <cite>— corpus-explorer, verbatim from the session transcript</cite></blockquote>
+      <p>Every claim in the written answer is either cited or explicitly marked
+      <code>[uncited]</code>. The skill labels its own unsupported statements rather than
+      letting them blend in with the sourced ones — this answer carries
+      4 such marks, every one of them a claim the model knew from
+      training and could not find in the corpus.</p>
     </div>
     <div>
-      <div class="note-box"><h3>The finding that needed both sources</h3>
-      <p>LATS1 and LATS2 are essentially <em>not</em> co-essential with each other
-      (r = +0.04) — the textbook signature of paralog buffering. The co-essentiality only
-      appears against the upstream node: NF2–LATS2 reaches r = +0.55. Literature alone
-      would have called them one module; DepMap alone would have called them unrelated.</p></div>
+      <div class="note-box"><h3>What an uncited claim looks like</h3>
+      <p><strong>Tumour-associated macrophages</strong>: The macrophage review covers CD47–SIRPα, CSF1R, CD40, and VISTA as remodelling targets. Not MPM-specific in the corpus, but the heavily immunosuppressive TME of MPM <code>[uncited]</code> makes these generically relevant.</p>
+      <p style="margin-bottom:0">The DOI-bearing half of that sentence came from a paper.
+      The <code>[uncited]</code> half is background the reader now knows to check.</p></div>
       <p style="margin-top:16px;font-size:.92rem">The session closed by exporting the whole
-      neighbourhood — 172 nodes, 295 edges, DepMap r on every edge that has one — as a
-      Cytoscape file, so the map outlives the conversation.</p>
+      neighbourhood — 172 nodes, 295 edges, DepMap r on
+      every edge that has one — as a Cytoscape file, so the map outlives the
+      conversation.</p>
     </div>
   </div>
 </section>
@@ -307,19 +318,20 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
   <div class="stage-h"><p class="step">Two signals, deliberately not merged</p>
     <h2>What the literature says, and what the cells say</h2></div>
   <p>Both tables below are about this page's own subject. The left one is
-  corpus-wide — the most connected proteins in the <em>whole</em> 11,055-paper store,
-  which is where you see what this corpus is actually made of. The right one is
+  corpus-wide — the most connected proteins in the <em>whole</em> 14,517-paper
+  store, which is where you see what this corpus is actually made of. The right one is
   co-essentiality for YAP1 specifically, computed from CRISPR screens and not from any
   paper at all.</p>
   <div class="grid2">
     <div class="chart-wrap"><h3>Corpus hubs — the whole corpus, not this query</h3>
       <div class="tw"><table><thead><tr><th>protein</th><th class="num">partners</th>
-        <th class="num">mentions</th></tr></thead><tbody><tr><td class=m>YAP-1</td><td class=num>23</td><td class=num>367</td></tr><tr><td class=m>BRD4</td><td class=num>21</td><td class=num>244</td></tr><tr><td class=m>OCT4</td><td class=num>21</td><td class=num>173</td></tr><tr><td class=m>STING</td><td class=num>20</td><td class=num>394</td></tr><tr><td class=m>EGFR</td><td class=num>20</td><td class=num>211</td></tr><tr><td class=m>KRAS</td><td class=num>17</td><td class=num>233</td></tr><tr><td class=m>Dnmt3a</td><td class=num>16</td><td class=num>175</td></tr><tr><td class=m>CTCF</td><td class=num>11</td><td class=num>150</td></tr><tr><td class=m>TET1</td><td class=num>11</td><td class=num>142</td></tr><tr><td class=m>STAT3</td><td class=num>11</td><td class=num>119</td></tr></tbody></table></div>
-      <figcaption>Built live from the fingerprints. YAP-1 tops the list because of what
-      this lab reads, not because it is the most connected protein in biology — which is
-      the honest reason the mesothelioma question landed in such well-covered territory.
-      Note YAP-1 and YAP appearing separately: real alias behaviour the tool reports on
-      itself rather than papering over.</figcaption>
+        <th class="num">mentions</th></tr></thead><tbody><tr><td class=m>YAP-1</td><td class=num>40</td><td class=num>591</td></tr><tr><td class=m>OCT4</td><td class=num>28</td><td class=num>335</td></tr><tr><td class=m>SOX2</td><td class=num>27</td><td class=num>385</td></tr><tr><td class=m>BRD4</td><td class=num>22</td><td class=num>258</td></tr><tr><td class=m>DNMT3A</td><td class=num>22</td><td class=num>254</td></tr><tr><td class=m>STING</td><td class=num>21</td><td class=num>426</td></tr><tr><td class=m>EGFR</td><td class=num>20</td><td class=num>238</td></tr><tr><td class=m>KRAS</td><td class=num>19</td><td class=num>243</td></tr><tr><td class=m>YAP</td><td class=num>16</td><td class=num>316</td></tr><tr><td class=m>TET1</td><td class=num>16</td><td class=num>199</td></tr></tbody></table></div>
+      <figcaption>Built live from the fingerprints. YAP-1 tops the list because
+      of what this lab reads, not because it is the most connected protein in biology —
+      which is the honest reason the mesothelioma question landed in such well-covered
+      territory. YAP-1 and YAP appear as separate rows: the resolver merges
+      only names it can resolve without guessing, and that restraint is the point — see
+      below.</figcaption>
     </div>
     <div class="chart-wrap"><h3>YAP1 co-essentiality — DepMap, 1,208 cell lines</h3>
       <div class="tw"><table><thead><tr><th>gene</th><th class="num">r</th></tr></thead>
@@ -334,31 +346,34 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
     <div>
       <div class="note-box"><h3>The finding that needed both sources</h3>
       <p>LATS1 and LATS2 are essentially <em>not</em> co-essential with each other
-      (r&nbsp;=&nbsp;+0.04) — the signature of paralog buffering. The signal only appears
-      against the upstream node: NF2–LATS2 reaches <strong>r&nbsp;=&nbsp;+0.55</strong>.
-      The same pattern holds for the pair the pathway stage flagged as the escape risk:
-      <strong>YAP1–WWTR1 (TAZ) is r&nbsp;=&nbsp;+0.02</strong> — knocking out one does not
-      substitute for the other, which is exactly why a TAZ-blind binder can be bypassed.
-      And NF2–YAP1 is <strong>negative</strong>, r&nbsp;=&nbsp;−0.24: lose the brake, gain
-      the dependency.</p>
+      (r&nbsp;=&nbsp;+0.04) — the signature of paralog
+      buffering. The signal only appears against the upstream node: NF2–LATS2 reaches
+      <strong>r&nbsp;=&nbsp;+0.55</strong>. The same pattern holds
+      for YAP1 and its paralog:
+      <strong>YAP1–WWTR1 (TAZ) is r&nbsp;=&nbsp;+0.02</strong> —
+      knocking out one does not substitute for the other, which is exactly why a TAZ-blind
+      binder can be bypassed. And NF2–YAP1 is <strong>negative</strong>,
+      r&nbsp;=&nbsp;-0.24: lose the brake, gain the dependency.</p>
       <p>Literature alone would have called LATS1/2 one module. DepMap alone would have
       called them unrelated. Neither source answers this on its own.</p></div>
     </div>
     <div>
-      <div class="tile"><span>novelty_signal</span><b>0.10</b>
-        <p>YAP1: 370 mentions, 99 prior targeting efforts, 16 quantitative findings. The
-        score is a <em>saturation</em> measure — near zero means everyone is already here.
-        NF2 scores 0.51 on the same scale, off 100 mentions and a single targeting
-        effort.</p></div>
+      <div class="tile"><span>novelty_signal</span><b>0.05</b>
+        <p>YAP1: 482 mentions, 119 prior targeting
+        efforts, 19 quantitative findings. The score is a
+        <em>saturation</em> measure — near zero means everyone is already here.
+        NF2 scores 0.51 on the same scale, off 115
+        mentions and 1 targeting effort.</p></div>
       <p style="margin-top:16px;font-size:.92rem">That contrast is a prompt, not a
       recommendation. NF2 looks unexplored because it is a tumour suppressor that is
       <em>lost</em> in these tumours — there is nothing there to bind. A high novelty score
       says the literature is thin, and nothing about whether a target is tractable.</p>
-      <p style="font-size:.92rem">The two graphs stay separate on purpose. The literature
-      graph is what has been <em>written down</em>: 18,432 proteins, 20,658 co-mention
-      edges, rebuilt from the fingerprints on every query. The DepMap index is what CRISPR
-      screens <em>measured</em>: 1,342 genes, 1,248 edges, each with a real correlation and
-      sample size. An edge in both is a much stronger claim than an edge in either.</p>
+      <p style="font-size:.92rem">The literature graph is what has been <em>written
+      down</em>: 22,424 proteins, 26,490 co-mention edges, rebuilt
+      from the fingerprints on every query. The DepMap index is what CRISPR screens
+      <em>measured</em>: 1,502 genes, 1,466 edges, each
+      with a real correlation and sample size. An edge in both is a much stronger claim
+      than an edge in either.</p>
     </div>
   </div>
 </section>
@@ -366,21 +381,25 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
 <section class="stage">
   <div class="stage-h"><p class="step">What is in it</p>
     <h2>One lab's reading list, and it says so</h2></div>
-  <div class="chart-wrap"><h3>Curated papers by publication year</h3><svg viewBox="0 0 700 220" role="img" class="chart" aria-label="Curated papers by publication year"><line class="grid" x1="40" y1="190.0" x2="680" y2="190.0"/><text class="ax" x="32" y="194.0" text-anchor="end">0</text><line class="grid" x1="40" y1="147.2" x2="680" y2="147.2"/><text class="ax" x="32" y="151.2" text-anchor="end">250</text><line class="grid" x1="40" y1="104.5" x2="680" y2="104.5"/><text class="ax" x="32" y="108.5" text-anchor="end">500</text><line class="grid" x1="40" y1="61.7" x2="680" y2="61.7"/><text class="ax" x="32" y="65.7" text-anchor="end">750</text><line class="grid" x1="40" y1="18.9" x2="680" y2="18.9"/><text class="ax" x="32" y="22.9" text-anchor="end">1000</text><polygon points="40.0,190 40.0,174.3 75.6,158.5 111.1,156.3 146.7,150.7 182.2,146.9 217.8,136.6 253.3,132.2 288.9,125.7 324.4,80.3 360.0,54.2 395.6,45.6 431.1,50.7 466.7,26.8 502.2,26.3 537.8,22.0 573.3,38.3 608.9,36.5 644.4,33.6 680.0,144.3 680.0,190" fill="var(--mark-a)" opacity="0.14"/><polyline points="40.0,174.3 75.6,158.5 111.1,156.3 146.7,150.7 182.2,146.9 217.8,136.6 253.3,132.2 288.9,125.7 324.4,80.3 360.0,54.2 395.6,45.6 431.1,50.7 466.7,26.8 502.2,26.3 537.8,22.0 573.3,38.3 608.9,36.5 644.4,33.6 680.0,144.3" fill="none" stroke="var(--mark-a)" stroke-width="2" stroke-linejoin="round"/><g class="mk" tabindex="0"><title>2008: 92 curated papers</title><circle cx="40.0" cy="174.3" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2009: 184 curated papers</title><circle cx="75.6" cy="158.5" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2010: 197 curated papers</title><circle cx="111.1" cy="156.3" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2011: 230 curated papers</title><circle cx="146.7" cy="150.7" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2012: 252 curated papers</title><circle cx="182.2" cy="146.9" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2013: 312 curated papers</title><circle cx="217.8" cy="136.6" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2014: 338 curated papers</title><circle cx="253.3" cy="132.2" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2015: 376 curated papers</title><circle cx="288.9" cy="125.7" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2016: 641 curated papers</title><circle cx="324.4" cy="80.3" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2017: 794 curated papers</title><circle cx="360.0" cy="54.2" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2018: 844 curated papers</title><circle cx="395.6" cy="45.6" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2019: 814 curated papers</title><circle cx="431.1" cy="50.7" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2020: 954 curated papers</title><circle cx="466.7" cy="26.8" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2021: 957 curated papers</title><circle cx="502.2" cy="26.3" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2022: 982 curated papers</title><circle cx="537.8" cy="22.0" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2023: 887 curated papers</title><circle cx="573.3" cy="38.3" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2024: 897 curated papers</title><circle cx="608.9" cy="36.5" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2025: 914 curated papers</title><circle cx="644.4" cy="33.6" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2026: 267 curated papers</title><circle cx="680.0" cy="144.3" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><text class="ax" x="40.0" y="208" text-anchor="middle">2008</text><text class="ax" x="182.2" y="208" text-anchor="middle">2012</text><text class="ax" x="324.4" y="208" text-anchor="middle">2016</text><text class="ax" x="466.7" y="208" text-anchor="middle">2020</text><text class="ax" x="608.9" y="208" text-anchor="middle">2024</text><text class="ax" x="680.0" y="208" text-anchor="middle">2026</text></svg>
-    <figcaption>11,055 curated fingerprints. The plateau from 2020 is the corpus being
-    actively maintained rather than harvested once; 2026 is a partial year.</figcaption></div>
+  <div class="chart-wrap"><h3>Curated papers by publication year</h3><svg viewBox="0 0 700 220" role="img" class="chart" aria-label="Curated papers by publication year"><line class="grid" x1="44" y1="190.0" x2="680" y2="190.0"/><text class="ax" x="36" y="194.0" text-anchor="end">0</text><line class="grid" x1="44" y1="156.4" x2="680" y2="156.4"/><text class="ax" x="36" y="160.4" text-anchor="end">250</text><line class="grid" x1="44" y1="122.8" x2="680" y2="122.8"/><text class="ax" x="36" y="126.8" text-anchor="end">500</text><line class="grid" x1="44" y1="89.2" x2="680" y2="89.2"/><text class="ax" x="36" y="93.2" text-anchor="end">750</text><line class="grid" x1="44" y1="55.6" x2="680" y2="55.6"/><text class="ax" x="36" y="59.6" text-anchor="end">1,000</text><line class="grid" x1="44" y1="22.0" x2="680" y2="22.0"/><text class="ax" x="36" y="26.0" text-anchor="end">1,250</text><polygon points="44.0,190 44.0,184.8 74.3,183.5 104.6,181.1 134.9,166.2 165.1,149.4 195.4,146.2 225.7,136.2 256.0,137.9 286.3,125.0 316.6,120.8 346.9,118.9 377.1,79.7 407.4,62.6 437.7,53.6 468.0,58.3 498.3,39.1 528.6,31.3 558.9,35.6 589.1,50.0 619.4,48.7 649.7,33.0 680.0,138.4 680.0,190" fill="var(--mark-a)" opacity="0.14"/><polyline points="44.0,184.8 74.3,183.5 104.6,181.1 134.9,166.2 165.1,149.4 195.4,146.2 225.7,136.2 256.0,137.9 286.3,125.0 316.6,120.8 346.9,118.9 377.1,79.7 407.4,62.6 437.7,53.6 468.0,58.3 498.3,39.1 528.6,31.3 558.9,35.6 589.1,50.0 619.4,48.7 649.7,33.0 680.0,138.4" fill="none" stroke="var(--mark-a)" stroke-width="2" stroke-linejoin="round"/><g class="mk" tabindex="0"><title>2005: 39 curated papers</title><circle cx="44.0" cy="184.8" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2006: 48 curated papers</title><circle cx="74.3" cy="183.5" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2007: 66 curated papers</title><circle cx="104.6" cy="181.1" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2008: 177 curated papers</title><circle cx="134.9" cy="166.2" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2009: 302 curated papers</title><circle cx="165.1" cy="149.4" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2010: 326 curated papers</title><circle cx="195.4" cy="146.2" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2011: 400 curated papers</title><circle cx="225.7" cy="136.2" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2012: 388 curated papers</title><circle cx="256.0" cy="137.9" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2013: 484 curated papers</title><circle cx="286.3" cy="125.0" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2014: 515 curated papers</title><circle cx="316.6" cy="120.8" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2015: 529 curated papers</title><circle cx="346.9" cy="118.9" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2016: 821 curated papers</title><circle cx="377.1" cy="79.7" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2017: 948 curated papers</title><circle cx="407.4" cy="62.6" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2018: 1,015 curated papers</title><circle cx="437.7" cy="53.6" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2019: 980 curated papers</title><circle cx="468.0" cy="58.3" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2020: 1,123 curated papers</title><circle cx="498.3" cy="39.1" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2021: 1,181 curated papers</title><circle cx="528.6" cy="31.3" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2022: 1,149 curated papers</title><circle cx="558.9" cy="35.6" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2023: 1,042 curated papers</title><circle cx="589.1" cy="50.0" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2024: 1,051 curated papers</title><circle cx="619.4" cy="48.7" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2025: 1,168 curated papers</title><circle cx="649.7" cy="33.0" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><g class="mk" tabindex="0"><title>2026: 384 curated papers</title><circle cx="680.0" cy="138.4" r="4" fill="var(--mark-a)" stroke="var(--surface)" stroke-width="1.5"/></g><text class="ax" x="44.0" y="208" text-anchor="middle">2005</text><text class="ax" x="195.4" y="208" text-anchor="middle">2010</text><text class="ax" x="346.9" y="208" text-anchor="middle">2015</text><text class="ax" x="498.3" y="208" text-anchor="middle">2020</text><text class="ax" x="680.0" y="208" text-anchor="middle">2026</text></svg>
+    <figcaption>14,517 curated papers, 2005 onward
+    (381 older ones are off the left edge). The plateau from 2020 is the
+    corpus being actively maintained rather than harvested once; 2026 is a
+    partial year.</figcaption></div>
   <div class="two" style="margin-top:24px">
-    <div class="chart-wrap"><h3>Top journals by curated paper count</h3><svg viewBox="0 -4 620 310" role="img" class="chart" aria-label="Top journals by curated paper count"><g class="mk" tabindex="0"><title>Nature: 1,943 curated papers</title><text class="k r" x="150" y="17.0">Nature</text><rect x="162" y="4" width="330.0" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="501.0" y="17.0">1,943</text></g><g class="mk" tabindex="0"><title>Nat Commun: 1,592 curated papers</title><text class="k r" x="150" y="48.0">Nat Commun</text><rect x="162" y="35" width="270.4" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="441.4" y="48.0">1,592</text></g><g class="mk" tabindex="0"><title>Cell: 1,008 curated papers</title><text class="k r" x="150" y="79.0">Cell</text><rect x="162" y="66" width="171.2" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="342.2" y="79.0">1,008</text></g><g class="mk" tabindex="0"><title>Nucleic Acids Res: 854 curated papers</title><text class="k r" x="150" y="110.0">Nucleic Acids Res</text><rect x="162" y="97" width="145.0" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="316.0" y="110.0">854</text></g><g class="mk" tabindex="0"><title>Science: 738 curated papers</title><text class="k r" x="150" y="141.0">Science</text><rect x="162" y="128" width="125.3" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="296.3" y="141.0">738</text></g><g class="mk" tabindex="0"><title>eLife: 351 curated papers</title><text class="k r" x="150" y="172.0">eLife</text><rect x="162" y="159" width="59.6" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="230.6" y="172.0">351</text></g><g class="mk" tabindex="0"><title>J Am Chem Soc: 316 curated papers</title><text class="k r" x="150" y="203.0">J Am Chem Soc</text><rect x="162" y="190" width="53.7" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="224.7" y="203.0">316</text></g><g class="mk" tabindex="0"><title>Cell Rep: 251 curated papers</title><text class="k r" x="150" y="234.0">Cell Rep</text><rect x="162" y="221" width="42.6" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="213.6" y="234.0">251</text></g><g class="mk" tabindex="0"><title>Sci Adv: 232 curated papers</title><text class="k r" x="150" y="265.0">Sci Adv</text><rect x="162" y="252" width="39.4" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="210.4" y="265.0">232</text></g><g class="mk" tabindex="0"><title>Mol Cell: 211 curated papers</title><text class="k r" x="150" y="296.0">Mol Cell</text><rect x="162" y="283" width="35.8" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="206.8" y="296.0">211</text></g></svg></div>
+    <div class="chart-wrap"><h3>Top journals by curated paper count</h3><svg viewBox="0 -4 620 310" role="img" class="chart" aria-label="Top journals by curated paper count"><g class="mk" tabindex="0"><title>Nature: 1,980 curated papers</title><text class="k r" x="150" y="17.0">Nature</text><rect x="162" y="4" width="330.0" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="501.0" y="17.0">1,980</text></g><g class="mk" tabindex="0"><title>Nat Commun: 1,678 curated papers</title><text class="k r" x="150" y="48.0">Nat Commun</text><rect x="162" y="35" width="279.7" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="450.7" y="48.0">1,678</text></g><g class="mk" tabindex="0"><title>Cell: 1,011 curated papers</title><text class="k r" x="150" y="79.0">Cell</text><rect x="162" y="66" width="168.5" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="339.5" y="79.0">1,011</text></g><g class="mk" tabindex="0"><title>Science: 741 curated papers</title><text class="k r" x="150" y="110.0">Science</text><rect x="162" y="97" width="123.5" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="294.5" y="110.0">741</text></g><g class="mk" tabindex="0"><title>Nucleic Acids Res: 689 curated papers</title><text class="k r" x="150" y="141.0">Nucleic Acids Res</text><rect x="162" y="128" width="114.8" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="285.8" y="141.0">689</text></g><g class="mk" tabindex="0"><title>Biochemistry: 428 curated papers</title><text class="k r" x="150" y="172.0">Biochemistry</text><rect x="162" y="159" width="71.3" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="242.3" y="172.0">428</text></g><g class="mk" tabindex="0"><title>Elife: 375 curated papers</title><text class="k r" x="150" y="203.0">Elife</text><rect x="162" y="190" width="62.5" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="233.5" y="203.0">375</text></g><g class="mk" tabindex="0"><title>J Am Chem Soc: 321 curated papers</title><text class="k r" x="150" y="234.0">J Am Chem Soc</text><rect x="162" y="221" width="53.5" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="224.5" y="234.0">321</text></g><g class="mk" tabindex="0"><title>J Biol Chem: 311 curated papers</title><text class="k r" x="150" y="265.0">J Biol Chem</text><rect x="162" y="252" width="51.8" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="222.8" y="265.0">311</text></g><g class="mk" tabindex="0"><title>PLoS Genet: 266 curated papers</title><text class="k r" x="150" y="296.0">PLoS Genet</text><rect x="162" y="283" width="44.3" height="18" rx="3" fill="var(--mark-a)"/><text class="v" x="215.3" y="296.0">266</text></g></svg></div>
     <div>
       <p>Search indexes every hit, but only tier 1 and 2 journals are downloaded and
-      curated — 32% of what the searches find. That gate is the single most consequential
+      curated — 25% of what the searches find
+      (14,693 of 57,907). That gate is the single most consequential
       knob in the whole literature track, and it fails silently in one specific way: journal
       matching is <em>exact</em> against a normalised name, so a journal spelled a way the
       list does not contain is a 100% exclusion with no warning.</p>
-      <div class="note-box"><p>You can see that failure mode in the table beside this
+      <div class="note-box"><p>You can see that failure mode in the chart beside this
       paragraph. <code>Nat Commun</code> and <code>Nature Communications</code> are the same
-      journal, counted separately, and have been merged by hand here. The pipeline does not
-      merge them for you — which is exactly why the behaviour is documented rather than
+      journal, counted separately in the database, and merged into one
+      1,678-paper bar by this page's own extractor. The pipeline does not merge
+      them for you — which is exactly why the behaviour is documented rather than
       hidden.</p></div>
       <p>This corpus is weighted toward chromatin biology, histone chaperones and
       structural/chemical biology. It is one lab's reading list. Ask it a question outside
@@ -389,14 +408,50 @@ td.a{font-family:var(--mono);font-size:11px;color:var(--muted)}
       MCP servers are configured never to reach for these tools on their own.</p>
     </div>
   </div>
+  <div class="grid2" style="margin-top:24px">
+    <div class="note-box"><h3>You do not have to build it</h3>
+    <p>The curated corpus ships as a release asset: <code>python
+    scripts/fetch_corpus.py</code> installs the 14,514 fingerprints, the
+    LanceDB vector index and the paper database, and <code>search_corpus</code> works
+    immediately. No API key, no LLM spend, no days of downloading. Source PDFs are not
+    included — they are ~95% of the corpus on disk and nothing downstream reads them — and
+    publisher-supplied abstracts are stripped from the shipped database. Everything on this
+    page is reproducible from that download.</p></div>
+    <div class="note-box"><h3>An ambiguous name resolves to nothing</h3>
+    <p>Names are resolved against 52,358 approved gene symbols through
+    ordered tiers, and the resolver is allowed to refuse. A synonym that is also another
+    gene's approved symbol is dropped at load (1,266 such links), and a
+    synonym still claimed by several approved genes resolves to <em>nothing</em> rather
+    than to the alphabetically-first claimant. <code>NAP1</code> — a yeast name — comes
+    back <code>ambiguous_synonym</code>, not <code>ACOT8</code>. The visible cost is the
+    split hub row above; the invisible cost of the alternative is a confident answer about
+    the wrong gene.</p></div>
+  </div>
+</section>
+
+<section class="stage">
+  <div class="stage-h"><p class="step">Where it stops</p>
+    <h2>What the corpus does NOT say</h2></div>
+  <p>The skill is required to close every answer with its own gaps, and this is that
+  closing section verbatim — not a summary of it. For a mesothelioma question these are
+  the first things an expert would ask about, and the corpus does not have them:</p>
+  <ul class="gaps"><li><strong>BAP1 and CDKN2A</strong> — both are frequently altered in MPM <code>[uncited]</code> and represent a major therapeutic gap in the corpus. No papers capturing PRMT5 synthetic lethality from MTAP co-deletion (common in CDKN2A-deleted mesothelioma) showed up.</li><li><strong>No clinical outcome data</strong>: The corpus is biochemistry/preclinical-biased. VT3989 clinical activity is noted qualitatively; no survival curves or OS data are captured.</li><li><strong>VEGF/anti-angiogenic targets, PDL1/checkpoint data</strong>: The corpus doesn&#x27;t have MPM-specific checkpoint data (bevacizumab + chemotherapy, nivolumab/ipilimumab combos are the standard-of-care <code>[uncited]</code> but aren&#x27;t captured here).</li><li><strong>Mesothelin</strong> — a major clinical target in MPM (antibody-drug conjugates, CAR-T) <code>[uncited]</code> — doesn&#x27;t appear in this corpus at all.</li></ul>
+  <p style="margin-top:18px">A retrieval system that cannot say this ends up answering
+  from the shape of what it happens to hold. Naming BAP1, CDKN2A/MTAP–PRMT5 and mesothelin
+  as absent is more useful here than anything the corpus did return, because it is what
+  tells you which question to take somewhere else.</p>
 </section>
 
 <footer>
-  <p>Session transcript: <code>outputs/mesothelioma_showcase.txt</code>. Corpus counts read
-  from <code>data/literature.db</code> and <code>data/fingerprints/</code>; graph figures
-  from <code>data/clusters.json</code>, <code>data/depmap_edges.parquet</code> and the
-  session's own <code>mesothelioma_target_network.cyjs</code>. Rebuild this page with
-  <code>python docs/showcase/build_corpus.py</code>.</p>
+  <p>Session transcript: <code>outputs/mesothelioma_showcase.txt</code>. Every figure on
+  this page is extracted at build time — paper counts from <code>data/literature.db</code>,
+  fingerprints from <code>data/fingerprints/</code>, clusters from
+  <code>data/clusters.json</code>, the interaction graph through
+  <code>src._corpus_graph</code>, the co-essentiality index from
+  <code>data/depmap_edges.parquet</code>, and the map from the session's own
+  <code>mesothelioma_target_network.cyjs</code> — and committed to
+  <code>docs/showcase/facts/corpus_explorer.json</code>, so a number that moves shows up as
+  a diff. Rebuild with <code>python docs/showcase/build_corpus.py</code>.</p>
 </footer>
 
 </div>

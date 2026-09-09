@@ -1,0 +1,434 @@
+<meta charset="utf-8">
+<title>Pain Receptors · CALCRL/RAMP1</title>
+<meta name="description" content="One general sentence about pain receptors, and 365 gated binder designs against the CGRP receptor — the target erenumab already validates in the clinic. How it chose the target, the structure, the epitope, and the size of its own campaign.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Little Protein Tiger">
+<meta property="og:title" content="Pain Receptors · CALCRL/RAMP1">
+<meta property="og:description" content="One general sentence about pain receptors, and 365 gated binder designs against the CGRP receptor — the target erenumab already validates in the clinic. How it chose the target, the structure, the epitope, and the size of its own campaign.">
+<meta property="og:url" content="https://michauckelmann.github.io/little-protein-tiger/showcase/pain_receptors.html">
+<meta property="og:image" content="https://michauckelmann.github.io/little-protein-tiger/showcase/assets/og_ppi.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="One general sentence about pain receptors, and 365 gated binder designs against the CGRP receptor — the target erenumab already validates in the clinic. How it chose the target, the structure, the epitope, and the size of its own campaign.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Pain Receptors · CALCRL/RAMP1">
+<meta name="twitter:description" content="One general sentence about pain receptors, and 365 gated binder designs against the CGRP receptor — the target erenumab already validates in the clinic. How it chose the target, the structure, the epitope, and the size of its own campaign.">
+<meta name="twitter:image" content="https://michauckelmann.github.io/little-protein-tiger/showcase/assets/og_ppi.png">
+<link rel="canonical" href="https://michauckelmann.github.io/little-protein-tiger/showcase/pain_receptors.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#F4F4F1; --surface:#FFFFFF; --sunk:#ECEDE7;
+  --ink:#171A14; --ink-2:#3C4237; --muted:#5D6357; --rule:#DEE0D8; --rule-2:#C6C9BE;
+  --accent:#2b8f5d; --mark-a:#2b8f5d; --mark-b:#a07002;
+  --good-bg:#E4F0E7; --good-ink:#1F6B41;
+  --display:"Newsreader",Georgia,serif;
+  --body:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ground:#14170F; --surface:#1C2019; --sunk:#171B14;
+  --ink:#E9ECE4; --ink-2:#C3C9BB; --muted:#959C8B; --rule:#2A2F25; --rule-2:#3B4234;
+  --accent:#63b98c; --mark-a:#137246; --mark-b:#b98415;
+  --good-bg:#182A1E; --good-ink:#7FCB9F;
+}}
+:root[data-theme="dark"]{
+  --ground:#14170F; --surface:#1C2019; --sunk:#171B14;
+  --ink:#E9ECE4; --ink-2:#C3C9BB; --muted:#959C8B; --rule:#2A2F25; --rule-2:#3B4234;
+  --accent:#63b98c; --mark-a:#137246; --mark-b:#b98415;
+  --good-bg:#182A1E; --good-ink:#7FCB9F;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--body);
+  font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:0 26px 110px}
+.eyebrow{font-size:11.5px;font-weight:600;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--accent);margin:0}
+h1{font-family:var(--display);font-weight:500;font-size:clamp(2.3rem,5.6vw,3.9rem);
+  line-height:1.03;letter-spacing:-.02em;margin:.35em 0 0;text-wrap:balance}
+h2{font-family:var(--display);font-weight:500;font-size:clamp(1.5rem,3vw,2.05rem);
+  line-height:1.14;letter-spacing:-.015em;margin:0;text-wrap:balance}
+h3{font-size:.98rem;font-weight:600;margin:0 0 6px;letter-spacing:-.005em}
+p{margin:0 0 1em;max-width:66ch}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:.85em;background:var(--sunk);
+  border:1px solid var(--rule);border-radius:3px;padding:1px 5px}
+
+/* hero */
+.hero{padding:76px 0 40px;display:grid;gap:34px}
+.lede{font-size:1.2rem;color:var(--ink-2);max-width:60ch;margin:0}
+.hero-fig{margin:0;background:var(--surface);border:1px solid var(--rule);
+  border-radius:2px;padding:22px;display:grid;gap:16px}
+.hero-fig img{width:100%;height:auto;display:block}
+figcaption{font-size:.86rem;color:var(--muted);margin:0;max-width:70ch}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:.8rem;color:var(--muted);
+  align-items:center;margin:0}
+.legend b{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;
+  vertical-align:-1px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(146px,1fr));gap:1px;
+  background:var(--rule);border:1px solid var(--rule)}
+.stat{background:var(--surface);padding:15px 17px;display:grid;gap:2px}
+.stat b{font-family:var(--display);font-weight:500;font-size:1.75rem;line-height:1;
+  letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stat span{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted)}
+.verdict{display:inline-flex;align-items:center;gap:9px;background:var(--good-bg);
+  color:var(--good-ink);border-radius:2px;padding:7px 13px;font-size:.82rem;font-weight:600;
+  letter-spacing:.03em;width:fit-content}
+.verdict::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+
+/* command block — also used by ppi_discovery.html, which sources this sheet */
+.term{font-family:var(--mono);font-size:12.5px;line-height:1.7;background:var(--sunk);
+  border:1px solid var(--rule-2);border-radius:3px;padding:14px 16px;margin:20px 0;
+  overflow-x:auto;color:var(--ink-2);white-space:nowrap}
+.term .p{color:var(--accent);font-weight:600;user-select:none;margin-right:6px}
+
+/* stages */
+.stage{border-top:1px solid var(--rule-2);padding:54px 0 8px;display:grid;gap:22px}
+.stage-h{display:grid;gap:9px}
+.step{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;color:var(--muted);
+  text-transform:uppercase}
+.two{display:grid;gap:30px}
+@media(min-width:860px){.two{grid-template-columns:1fr 1fr;align-items:start}
+  .two.wide-l{grid-template-columns:1.25fr 1fr}}
+.fig{margin:0;background:var(--surface);border:1px solid var(--rule);padding:16px;
+  display:grid;gap:12px;border-radius:2px}
+.fig img{width:100%;height:auto;display:block}
+.quote{border-left:3px solid var(--accent);padding:4px 0 4px 17px;margin:0 0 1em;
+  font-family:var(--display);font-size:1.06rem;line-height:1.5;color:var(--ink-2);max-width:60ch}
+.quote cite{display:block;font-family:var(--body);font-size:.76rem;font-style:normal;
+  color:var(--muted);margin-top:8px;letter-spacing:.02em}
+.note-box{background:var(--sunk);border:1px solid var(--rule);padding:15px 18px;
+  font-size:.92rem;border-radius:2px}
+.note-box p:last-child{margin:0}
+
+/* tables */
+.tw{overflow-x:auto;border:1px solid var(--rule);background:var(--surface);border-radius:2px}
+table{border-collapse:collapse;width:100%;font-size:.88rem}
+th{text-align:left;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--muted);font-weight:600;padding:11px 13px;border-bottom:1px solid var(--rule-2);
+  white-space:nowrap}
+td{padding:9px 13px;border-bottom:1px solid var(--rule);vertical-align:top}
+tr:last-child td{border-bottom:0}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+td.m{font-weight:600;white-space:nowrap}
+td.note{color:var(--muted);font-size:.84rem}
+
+/* charts */
+.chart{width:100%;height:auto;overflow:visible}
+.chart .k{font-family:var(--body);font-size:12.5px;fill:var(--ink-2);font-weight:500}
+.chart .k.r{text-anchor:end;font-family:var(--mono);font-size:11.5px;fill:var(--muted)}
+.chart .v{font-family:var(--mono);font-size:12.5px;fill:var(--ink);
+  font-variant-numeric:tabular-nums;dominant-baseline:middle}
+.chart .ax{font-family:var(--mono);font-size:10.5px;fill:var(--muted)}
+.chart .ax-t{font-family:var(--body);font-size:11px;fill:var(--muted)}
+.chart .grid{stroke:var(--rule-2);stroke-width:1}
+.chart .sel{stroke:var(--mark-b);stroke-width:1.5;stroke-dasharray:3 3}
+.chart .sel-l{font-family:var(--body);font-size:10.5px;fill:var(--mark-b);font-weight:600}
+.chart .mk{cursor:default}
+.chart .mk:focus{outline:none}
+.chart .mk:hover rect,.chart .mk:focus rect,
+.chart .mk:hover circle,.chart .mk:focus circle{filter:brightness(1.12)}
+.chart-wrap{background:var(--surface);border:1px solid var(--rule);padding:20px 22px;
+  border-radius:2px;display:grid;gap:14px}
+
+/* design cards */
+.cards{display:grid;gap:18px}
+@media(min-width:820px){.cards{grid-template-columns:repeat(3,1fr)}}
+.card{background:var(--surface);border:1px solid var(--rule);border-radius:2px;overflow:hidden;
+  display:grid;grid-template-rows:auto 1fr}
+.card img{width:100%;height:190px;object-fit:contain;background:var(--sunk);display:block;
+  padding:10px}
+.card-b{padding:15px 16px;display:grid;gap:11px;align-content:start}
+.card-h{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.rk{font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--accent)}
+.card-h code{font-size:.68rem;background:none;border:0;padding:0;color:var(--muted);
+  word-break:break-all}
+.mini{display:grid;grid-template-columns:1fr 1fr;gap:7px 14px;margin:0}
+.mini div{display:flex;justify-content:space-between;gap:8px;border-bottom:1px dotted var(--rule);
+  padding-bottom:4px}
+.mini dt{font-size:11px;color:var(--muted);margin:0}
+.mini dd{margin:0;font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums}
+.seq{font-family:var(--mono);font-size:9.5px;line-height:1.45;color:var(--muted);
+  word-break:break-all;margin:0;max-width:none}
+
+footer{border-top:1px solid var(--rule-2);margin-top:56px;padding-top:26px;
+  font-size:.87rem;color:var(--muted)}
+footer p{max-width:74ch}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* .term is used by ppi_discovery.html too but defined neither there nor in the
+   shared sheet, so that page's command block renders unstyled. */
+.term{font-family:var(--mono);font-size:12.5px;line-height:1.7;background:var(--sunk);
+  border:1px solid var(--rule-2);border-radius:3px;padding:14px 16px;margin:20px 0;
+  overflow-x:auto;color:var(--ink-2);white-space:nowrap}
+.term .p{color:var(--accent);font-weight:600;user-select:none;margin-right:6px}
+.bar{height:8px;background:var(--sunk);border:1px solid var(--rule-2);border-radius:2px;
+  overflow:hidden;min-width:70px}
+.bar i{display:block;height:100%;background:var(--accent)}
+td.why{font-size:.84rem;color:var(--ink-2)}
+td.unc{font-size:.82rem;color:var(--muted);font-style:italic}
+.tier{font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.06em;
+  padding:2px 7px;border-radius:2px;background:var(--sunk);border:1px solid var(--rule-2);
+  color:var(--muted);white-space:nowrap}
+.tier.v{background:var(--good-bg);color:var(--good-ink);border-color:transparent}
+.vs{display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);margin:20px 0}
+@media(min-width:760px){.vs{grid-template-columns:1fr 1fr}}
+.vs>div{background:var(--surface);padding:18px 20px;display:grid;gap:6px;align-content:start}
+.vs h3{margin:0 0 4px}
+.vs .n{font-family:var(--display);font-weight:500;font-size:1.5rem;line-height:1.1}
+.vs .m{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.vs p{font-size:.86rem;color:var(--muted);margin:6px 0 0}
+</style>
+
+<div class="wrap">
+
+<header class="hero">
+  <div>
+    <p class="eyebrow">Little Protein Tiger · ppi track · 7–8 Sep 2026</p>
+    <h1>A sentence about pain, and 365 binders against the CGRP receptor</h1>
+  </div>
+  <p class="lede">No target was named. From one general prompt the pipeline surveyed the pain
+  literature, ranked three candidate interactions by the evidence under them, picked the CGRP
+  receptor — the target the migraine antibody erenumab already validates in the clinic — chose
+  a structure, selected an epitope a binder can physically reach, measured its own hit rate
+  on a trial before committing GPU time, and returned 365 designs through every
+  geometric gate. Total model spend: 54 cents.</p>
+  <div class="term"><span class="p">$</span> python scripts/run_pipeline.py --workflow ppi \
+  <br>&nbsp;&nbsp;&nbsp;&nbsp;--query "design novel inhibitors for pain receptors that are promising drug targets" \
+  <br>&nbsp;&nbsp;&nbsp;&nbsp;--project pain_receptors_v3 --budget 5.00</div>
+  <div class="stats">
+    <div class="stat"><b>$0.54</b><span>total model spend</span></div>
+    <div class="stat"><b>9.2</b><span>GPU-hours</span></div>
+    <div class="stat"><b>365</b><span>designs through every gate</span></div>
+    <div class="stat"><b>0.918</b><span>best ipTM</span></div>
+    <div class="stat"><b>0.57 Å</b><span>tightest dock RMSD</span></div>
+    <div class="stat"><b>4</b><span>LLM stages in the whole run</span></div>
+  </div>
+  <p class="verdict">GO — 20 ranked designs, every one engaging all
+  10 declared hotspots</p>
+</header>
+
+<section class="stage">
+  <div class="stage-h"><p class="step">Stage 0 · pathway-expert</p>
+    <h2>Three candidate targets, ranked by the evidence under them</h2></div>
+  <p>The prompt named a therapeutic area, not a protein. The pathway stage does not answer with
+  one target: it returns tiered candidates, each with the evidence it rests on <em>and</em> the
+  reason it might fail. The tiers are a closed set, so "this is a guess" cannot be quietly
+  promoted to "this is validated" by confident prose.</p>
+  <div class="tw"><table>
+    <thead><tr><th>tier</th><th>complex</th><th>why it is attractive</th>
+      <th>stated uncertainty</th></tr></thead>
+    <tbody><tr><td><span class="tier v">VALIDATED</span></td><td><strong>CALCRL / RAMP1</strong></td><td class="why">Fully extracellular, accessible Class B GPCR ECD / accessory protein interface with proven clinical druggability (validated by approved biologics and small molecules); avoids intracellular delivery hurdles.</td><td class="unc">Potential cross-reactivity with closely related family members (CALCRL/RAMP2 or CALCRL/RAMP3 adrenomedullin receptors).</td></tr><tr><td><span class="tier v">VALIDATED</span></td><td><strong>NTRK1 / NGF</strong></td><td class="why">High-affinity extracellular interaction directly addressable by designed protein/peptide competitive antagonists.</td><td class="unc">Complete systemic NGF neutralization carries safety risks (such as accelerated joint osteoarthropathy observed in clinical trials of systemic anti-NGF mAbs).</td></tr><tr><td><span class="tier">PATHWAY INFERRED</span></td><td><strong>CDKL5 / CaMKIIα</strong></td><td class="why">Novel intracellular target mechanism selective for peripheral hypersensitivity without systemic receptor blockade.</td><td class="unc">Intracellular delivery required; lack of high-resolution co-crystal structure of the complex in the corpus.</td></tr></tbody></table></div>
+  <div class="note-box" style="margin-top:18px"><p><strong>It also checks its own
+  references.</strong> Of 8 DOIs this stage cited,
+  7 resolved to papers in the corpus and one did not —
+  <code>10.1016/isci.2025.112047</code> —
+  and the report says so rather than dropping it. Every later stage is checked the same way
+  (5/5 at the literature stage,
+  2/2 at the structure stage). A
+  citation a reader cannot follow is worse than no citation.</p></div>
+</section>
+
+<section class="stage">
+  <div class="stage-h"><p class="step">Stage 1 · molecular-biology-expert</p>
+    <h2>Is there evidence behind the interface, or only a picture of it?</h2></div>
+  <div class="two">
+    <div>
+      <p>The winning candidate is a Class B GPCR heterodimer: CALCRL only becomes a
+      high-affinity CGRP receptor when it partners RAMP1, and that obligate pairing is what
+      makes the interface worth disrupting. The stage came back <strong>GO</strong> on
+      grounds it stated: <em>High-resolution human cryo-EM structure (PDB 6E3Y) and literature-validated extracellular hotspots (RAMP1 F83, W84, P85) provide a clinically validated target for competitive disruption.</em></p>
+      <p>It also fixed the affinity to beat and named prior hotspots to aim at —
+      <strong>F83, W84, P85</strong> on RAMP1 — before any structure
+      was analysed, so the structural stage had a published expectation to be checked
+      against rather than a blank sheet.</p>
+    </div>
+    <div>
+      <div class="note-box"><p><strong>Which part of a membrane protein a binder can
+      actually reach</strong> is decided here, not left to chance. The site hint carried
+      forward reads: <em>Extracellular domain CGRP-contacting epitope from cryo-EM structure doi:10.1038/s41586-018-0535-y and crystal structure doi:10.1016/j.molcel.2015.04.018; transmembrane residues (CALCRL W254/Y255/H295) explicitly excluded</em></p></div>
+      <p style="margin-top:14px">That exclusion matters more than it sounds. In an isolated
+      structure a transmembrane helix is an exposed hydrophobic slab, and it preferentially
+      attracts binders — ones that cannot work in a cell, where that surface is buried in
+      lipid. Reachable and clinically proven is the extracellular domain: erenumab blocks
+      this receptor for migraine that way.</p>
+    </div>
+  </div>
+</section>
+
+<section class="stage">
+  <div class="stage-h"><p class="step">Between stages · deterministic</p>
+    <h2>Choosing a structure is a measurement, not a preference</h2></div>
+  <p>Best-evidenced and best-designable are different questions, and the literature answers
+  the first one. It cites the landmark paper — for a receptor, the full-length agonist-bound
+  cryo-EM complex. That is the right structure to understand the biology and the wrong one to
+  hand a binder designer. The choice is made before the LLM sees anything, by comparing the
+  entries themselves:</p>
+  <div class="vs"><div><h3>PDB 6E3Y</h3><p class="n">490 aa</p><p class="m">target chain · 3.3 Å · 7 entities · 4 scaffolding chains</p><p>What the corpus cites: the full-length agonist-bound cryo-EM complex, with a nanobody, a G protein and the CGRP peptide in the way.</p></div><div><h3>PDB 3N7S</h3><p class="n">115 aa</p><p class="m">target chain · 2.1 Å · 2 entities · 0 scaffolding chains</p><p>What the pipeline designed against: the ectodomain complex alone, at higher resolution and a quarter the size.</p></div></div>
+  <p>Recorded verbatim as the run's own checkpoint: <em>6E3Y carries 4 scaffolding chain(s) (nanobody / G protein / fusion partner) against 0 in 3N7S, at no worse resolution (2.1 A vs 3.3 A).</em>
+  It fires only on a measurable defect — partner absent, target chain a fusion construct, or
+  extra scaffolding chains at no better resolution — and <code>--pdb</code> always overrides
+  it. Designing against 6E3Y would have meant a 490-residue target dominated by a
+  nanobody, a G protein and the agonist peptide; 3N7S is the same interface with
+  nothing else in the way.</p>
+</section>
+
+<section class="stage">
+  <div class="stage-h"><p class="step">Stage 2 · complex-structure-analysis</p>
+    <h2>A membrane target, reduced to the face a binder can reach</h2></div>
+  <div class="two">
+    <div>
+      <p>The CGRP receptor is a class B GPCR heterodimer, and most of it is unreachable.
+      The transmembrane bundle sits in lipid; in an isolated structure that surface is an
+      exposed hydrophobic slab which preferentially attracts binders that cannot work in a
+      cell. The extracellular domains are what antibodies actually hit — erenumab blocks
+      this receptor for migraine.</p>
+      <p>Chain <strong>D</strong> was confirmed as the target by
+      aligning its modelled residues against the UniProt sequence, not by trusting an
+      upstream stage's chain letter — a swap yields real, correctly-numbered residues on
+      the wrong protein, which hotspot checking alone cannot catch. The interface buries
+      <strong>2,385 Å²</strong>.</p>
+    </div>
+    <div>
+      <p>10 hotspots were selected, against a cap of 12. More is not stricter: RFD3's
+      hit rate falls as the set grows, which weakens the engagement gate rather than
+      tightening it.</p>
+      <p class="seq">Trp74, Phe83, Trp84, Pro85, Asp90, Phe93, Leu94, His97, Phe101, Ile106</p>
+      <p>The trim kept <strong>84 residues</strong> in
+      1 contiguous segment. A cut is refused outright if it would open
+      hydrophobic core near the epitope — a fresh hydrophobic face is precisely what a
+      diffusion model binds by preference, so an over-eager trim manufactures its own
+      false positives.</p>
+    </div>
+  </div>
+</section>
+
+<section class="stage">
+  <div class="stage-h"><p class="step">Stage 5 · calibration</p>
+    <h2>Measure the hit rate before buying the GPU time</h2></div>
+  <p>The pipeline never scales straight to production. It folds a trial —
+  <strong>527 backbones, 2,108 refolds</strong> — counts how many clear the
+  success bar, and extrapolates with a Wilson interval rather than a point estimate. Here
+  <strong>99/527</strong> backbones produced an excellent design:
+  <strong>18.79%</strong>, 95% CI 15.68–22.34%.</p>
+  <div class="tw"><table>
+    <thead><tr><th>sized on</th><th class="num">backbones</th><th class="num">refolds</th>
+      <th class="num">GPU-h</th><th class="num">disk</th></tr></thead>
+    <tbody>
+      <tr><td>point estimate</td><td class="num">293</td>
+        <td class="num">1,065</td>
+        <td class="num">2.8</td>
+        <td class="num">2.7 GB</td></tr>
+      <tr><td>Wilson 95% lower bound</td><td class="num">351</td>
+        <td class="num">1,275</td>
+        <td class="num">3.4</td>
+        <td class="num">3.2 GB</td></tr>
+    </tbody></table></div>
+  <div class="note-box"><p><strong>The bar went up, not down.</strong> A trial this good
+  changes what is worth asking for: the run was requested at
+  <code>iptm &gt; 0.7</code> and sized at
+  <code>iptm &gt; 0.85</code> — the strictest rung that still clears five
+  hits and still fits the budget. It only ever raises. The verdict —
+  <strong>SCALE_UP</strong> — is a manifest checkpoint either way, so a campaign
+  that should not run stops here, and the plan is persisted: resuming with
+  <code>--start-from production</code> in a fresh process re-derives this sizing instead of
+  falling back to the config default.</p></div>
+</section>
+
+<section class="stage">
+  <div class="stage-h"><p class="step">Stages 6–7 · production and scoring</p>
+    <h2>348 backbones in, 365 designs out</h2></div>
+  <div class="tw"><table>
+    <thead><tr><th>stage</th><th class="num">n</th><th></th><th>note</th></tr></thead>
+    <tbody><tr><td>RFD3 backbones</td><td class="num">348</td><td><div class="bar"><i style="width:100.0%"></i></div></td><td class="why">diffused against the 10-residue epitope</td></tr><tr><td>Cleared the prefilter</td><td class="num">301</td><td><div class="bar"><i style="width:86.5%"></i></div></td><td class="why">86.5% — clash and chain-break screen, before any folding</td></tr><tr><td>solubleMPNN sequences</td><td class="num">1,204</td><td><div class="bar"><i style="width:346.0%"></i></div></td><td class="why">4 per surviving backbone</td></tr><tr><td>RF3 refolds</td><td class="num">1,204</td><td><div class="bar"><i style="width:346.0%"></i></div></td><td class="why">each refolded from sequence alone</td></tr><tr><td>Cleared every hard gate</td><td class="num">365</td><td><div class="bar"><i style="width:104.9%"></i></div></td><td class="why">30.3%, across 181 distinct backbones</td></tr><tr><td>Ranked and reported</td><td class="num">20</td><td><div class="bar"><i style="width:5.7%"></i></div></td><td class="why">MMR-diversified top-K</td></tr></tbody></table></div>
+  <p>The gates are not optional, and the two doing the most work are the two a confidence
+  score cannot replace. RF3 cannot be given a docked pose at inference, so ipTM reports
+  confidence in whatever interface the model chose for <em>itself</em> — ranking on it
+  alone selects confidently mis-docked binders. <code>binder_rmsd_dock</code> is the gate
+  that catches them.</p>
+  <div class="two">
+    <div>
+      <p class="mk">Passing each criterion alone</p>
+      <div class="tw"><table>
+        <thead><tr><th>gate</th><th class="num">n</th>
+          <th class="num">of 1,204</th></tr></thead>
+        <tbody><tr><td><code>binder_rmsd_dock <= 5</code></td><td class="num">953</td><td class="num">79.2%</td></tr><tr><td><code>epitope_recall >= 0.5</code></td><td class="num">1,180</td><td class="num">98.0%</td></tr><tr><td><code>hotspot_engagement >= 0.75</code></td><td class="num">1,195</td><td class="num">99.3%</td></tr><tr><td><code>binder_rmsd_fold <= 2</code></td><td class="num">1,146</td><td class="num">95.2%</td></tr><tr><td><code>binder_plddt >= 0.75</code></td><td class="num">1,198</td><td class="num">99.5%</td></tr><tr><td><code>iptm >= 0.5</code></td><td class="num">716</td><td class="num">59.5%</td></tr><tr><td><code>iface_pae <= 15</code></td><td class="num">880</td><td class="num">73.1%</td></tr><tr><td><code>no clash</code></td><td class="num">601</td><td class="num">49.9%</td></tr></tbody></table></div>
+    </div>
+    <div>
+      <p class="mk">First criterion each rejected design failed</p>
+      <div class="tw"><table>
+        <thead><tr><th>gate</th><th class="num">dropped</th></tr></thead>
+        <tbody><tr><td><code>no clash</code></td><td class="num">334</td></tr><tr><td><code>binder_rmsd_dock <= 5</code></td><td class="num">251</td></tr><tr><td><code>iptm >= 0.5</code></td><td class="num">240</td></tr><tr><td><code>binder_rmsd_fold <= 2</code></td><td class="num">14</td></tr></tbody></table></div>
+      <p class="why">Rosetta runs only on gate survivors, never before them: relax and
+      InterfaceAnalyzer return well-defined, meaningless numbers for a mis-docked pose.</p>
+    </div>
+  </div>
+</section>
+
+<section class="stage">
+  <div class="stage-h"><p class="step">Stage 8 · design-analyst</p>
+    <h2>What came out</h2></div>
+  <div class="cards"><article class="card"><div class="card-b">
+      <div class="card-h"><span class="rk">rank 1</span><code>80_model_1_b0_d0</code></div>
+      <dl class="mini">
+        <div><dt>ipTM</dt><dd>0.908</dd></div>
+        <div><dt>ipSAE</dt><dd>0.722</dd></div>
+        <div><dt>dock RMSD</dt><dd>1.28 Å</dd></div>
+        <div><dt>iface PAE</dt><dd>2.94 Å</dd></div>
+        <div><dt>hotspots</dt><dd>100%</dd></div>
+        <div><dt>length</dt><dd>83 aa</dd></div>
+      </dl></div></article><article class="card"><div class="card-b">
+      <div class="card-h"><span class="rk">rank 2</span><code>73_model_0_b0_d1</code></div>
+      <dl class="mini">
+        <div><dt>ipTM</dt><dd>0.902</dd></div>
+        <div><dt>ipSAE</dt><dd>0.797</dd></div>
+        <div><dt>dock RMSD</dt><dd>0.83 Å</dd></div>
+        <div><dt>iface PAE</dt><dd>3.01 Å</dd></div>
+        <div><dt>hotspots</dt><dd>100%</dd></div>
+        <div><dt>length</dt><dd>83 aa</dd></div>
+      </dl></div></article><article class="card"><div class="card-b">
+      <div class="card-h"><span class="rk">rank 3</span><code>31_model_3_b0_d1</code></div>
+      <dl class="mini">
+        <div><dt>ipTM</dt><dd>0.853</dd></div>
+        <div><dt>ipSAE</dt><dd>0.603</dd></div>
+        <div><dt>dock RMSD</dt><dd>1.15 Å</dd></div>
+        <div><dt>iface PAE</dt><dd>4.03 Å</dd></div>
+        <div><dt>hotspots</dt><dd>100%</dd></div>
+        <div><dt>length</dt><dd>73 aa</dd></div>
+      </dl></div></article><article class="card"><div class="card-b">
+      <div class="card-h"><span class="rk">rank 4</span><code>76_model_2_b0_d1</code></div>
+      <dl class="mini">
+        <div><dt>ipTM</dt><dd>0.886</dd></div>
+        <div><dt>ipSAE</dt><dd>0.748</dd></div>
+        <div><dt>dock RMSD</dt><dd>0.89 Å</dd></div>
+        <div><dt>iface PAE</dt><dd>3.48 Å</dd></div>
+        <div><dt>hotspots</dt><dd>100%</dd></div>
+        <div><dt>length</dt><dd>78 aa</dd></div>
+      </dl></div></article></div>
+  <p>Across the top 20, ipTM runs 0.848–0.918
+  and dock RMSD 0.57–2.00 Å, every
+  design engaging all 10 declared hotspots — refolded from sequence alone, with no
+  template of the complex. Sequence identity across the set stays below 0.46, so these are
+  distinct backbone families rather than one solution found 20 times.</p>
+  <p class="why">Every design here is an unvalidated computational hypothesis. Nothing on
+  this page has been expressed or assayed.</p>
+</section>
+
+<footer class="stage">
+  <p>Every figure above is extracted at build time from
+  <code>projects/pain_receptors_v3</code> — <code>manifest.json</code>,
+  <code>calibration/calibration.json</code>, <code>scoring/filter_stats.txt</code>,
+  <code>scoring/top_k.csv</code>, and the stage reports, whose handoff blocks are read with
+  the pipeline's own <code>src.handoff</code> parser. The extracted values are committed to
+  <code>docs/showcase/facts/pain_receptors.json</code>, so any number that moves shows up as
+  a reviewable diff. Rebuild with <code>python docs/showcase/build_pain.py</code>.</p>
+  <p><a href="index.html">← all showcase pages</a></p>
+</footer>
+
+</div>

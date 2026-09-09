@@ -1,32 +1,66 @@
 # Showcase pages
 
-Three self-contained HTML pages that walk through what LPT actually does, built
-from real runs in this repository. No illustrative numbers: every figure is read
-out of a run directory, the corpus database, or a recorded session transcript.
+Four self-contained HTML pages that walk through what LPT actually does, built
+from real runs in this repository.
 
-`index.html` is the landing page that links the three. `_common.py` holds the
-public base URL and the OpenGraph/Twitter block every page shares —
-**change `SITE` there if the Pages URL ever changes**, then rebuild all four,
-or the link previews will point at the old host.
+`index.html` is the landing page that links them. `_common.py` holds the public
+base URL and the OpenGraph/Twitter block every page shares — **change `SITE`
+there if the Pages URL ever changes**, then rebuild everything, or the link
+previews will point at the old host.
 
 | Page | Built from | What it shows |
 |---|---|---|
+| `pain_receptors.html` | `projects/pain_receptors_v3` | The most recent end-to-end run, and the fullest arc: one general prompt about pain, three candidate targets ranked by evidence, the CGRP receptor chosen, a designable structure measured out, a reachable epitope on a membrane protein, a trial that sized the campaign, and 365 gated designs |
+| `ppi_discovery.html` | `projects/mesothelioma_showcase` | The PPI track end to end — an unnamed target chosen, argued, sized from a measured hit rate, and designed against on GPU; with the archived BoltzGen run as the before |
 | `campaign_pdl1.html` | `projects/pdl1_e2e` | A complete binder campaign against PD-L1 — target choice, epitope, calibration gate, production funnel, ranked designs |
 | `corpus_explorer.html` | `outputs/mesothelioma_showcase.txt`, `data/` | One corpus-explorer session: tool trace, fingerprint schema, interaction + DepMap graphs |
-| `ppi_discovery.html` | `projects/mesothelioma_showcase` | The PPI track end to end — an unnamed target chosen, argued, sized from a measured hit rate, and designed against on GPU; with the archived BoltzGen run as the before |
+
+## Where the numbers come from
+
+**Every figure is extracted at build time. None is typed in.** This was not
+always true, and the drift it caused is why the arrangement below exists: the
+builders used to carry their numbers as literals while the pages claimed the
+figures "were read from" the run. Nothing compared the two. What shipped
+included four of twelve hotspot residue names wrong on `ppi_discovery.html`
+(in a paragraph about grounding hotspot names in the real structure), an
+argument on `campaign_pdl1.html` that its own scoring CSV contradicts, and
+every corpus statistic on `corpus_explorer.html` stale by about 25%.
+
+Each builder now has an `extract()` that reads the run, and goes through
+`_facts.load()` (see `_facts.py`):
+
+- On a machine that **has** the run, `extract()` runs and its result is written
+  to `facts/<page>.json`, which **is** tracked — `projects/`, `outputs/` and
+  `data/` are all gitignored, so the snapshot is the only version-controlled
+  record of what the page asserts.
+- **Anywhere else**, the snapshot is loaded and the page builds byte-identically.
+
+So a number that moves shows up as a reviewable diff in `facts/` instead of
+silently, and the builder prints a `CHANGED` warning when it happens.
+`tests/test_showcase_provenance.py` pins it: the counts a reader would look up
+must appear in the page, and a builder that stops going through `_facts.load`
+fails the suite.
+
+`build_previews.py` and `build_index.py` read the same snapshots, so the og:image
+cards and the landing-page copy cannot drift away from the pages they advertise.
 
 ## Rebuilding
 
+Use the project venv — `build_index.py` and `build_previews.py` need Pillow,
+which is not a declared project dependency:
+
 ```bash
-python docs/showcase/build_previews.py     # -> assets/og_*.png  (social cards)
-python docs/showcase/build_campaign.py     # -> campaign_pdl1.html
-python docs/showcase/build_corpus.py       # -> corpus_explorer.html
-python docs/showcase/build_ppi.py          # -> ppi_discovery.html
-python docs/showcase/build_index.py        # -> index.html
+.venv/bin/python docs/showcase/build_campaign.py    # -> campaign_pdl1.html  (build first: owns the shared CSS)
+.venv/bin/python docs/showcase/build_ppi.py         # -> ppi_discovery.html
+.venv/bin/python docs/showcase/build_corpus.py      # -> corpus_explorer.html
+.venv/bin/python docs/showcase/build_pain.py        # -> pain_receptors.html
+.venv/bin/python docs/showcase/build_previews.py    # -> assets/og_*.png  (social cards)
+.venv/bin/python docs/showcase/build_index.py       # -> index.html
 ```
 
-Run them in that order: the preview cards are inputs to the landing page, and
-the other three read their CSS out of `campaign_pdl1.html`.
+`campaign_pdl1.html` first: every other page reads its CSS out of that file's
+`<style>` block. The preview cards are inputs to the landing page, so
+`build_index.py` last.
 
 ## Publishing
 
@@ -35,10 +69,19 @@ the other three read their CSS out of `campaign_pdl1.html`.
 workflow only uploads — the HTML is committed, not built in CI — so regenerate
 locally and commit when a run changes.
 
-**Pages has to be turned on once by hand:** Settings → Pages → Source:
-*GitHub Actions*. On a private repo that needs a paid plan; on a public repo it
-is free. Until then the workflow will fail at the deploy step, which is
-expected rather than broken.
+**Pages cannot be enabled on a private repo without a paid plan**, so the
+workflow *skips* while the repo is private rather than failing — a red Actions
+tab on every docs push is how a real test failure gets scrolled past. On the
+first push after the repo goes public, `configure-pages` runs with
+`enablement: true` and creates the Pages site itself, so the
+Settings → Pages → Source: *GitHub Actions* toggle should not need to be
+remembered.
+
+Note that the workflow uploads the WHOLE of `docs/`, not just this directory:
+the `.md` files ship too and are served as unrendered plain text (there is no
+Jekyll step). Nothing links to those URLs — the README's links are
+GitHub-relative — so it is cosmetic, but it is worth knowing before assuming a
+file here is private.
 
 The `og:image` cards (1200×630, PNG) are what a pasted link unfurls into on
 Slack, X, LinkedIn and iMessage. They must be reachable by absolute URL — a
@@ -46,8 +89,7 @@ crawler will not follow a data URI — which is why they are the one set of
 images not inlined.
 
 Each builder inlines its images as base64 WebP, so the output is one file with no
-external assets and no network dependency. `build_corpus.py` and `build_ppi.py`
-read their CSS out of `campaign_pdl1.html`, so build that one first.
+external assets and no network dependency.
 
 ## Regenerating the structure images
 

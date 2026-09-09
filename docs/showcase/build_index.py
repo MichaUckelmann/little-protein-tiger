@@ -10,7 +10,8 @@ OUT = HERE / "index.html"
 CSS = (HERE / "campaign_pdl1.html").read_text().split("<style>")[1].split("</style>")[0]
 CSS += """
 .cards3{display:grid;gap:20px;margin-top:8px}
-@media(min-width:900px){.cards3{grid-template-columns:repeat(3,1fr)}}
+/* Two-up, not three: with four pages a 3-column grid strands the last card alone on its own row. */
+@media(min-width:760px){.cards3{grid-template-columns:repeat(2,1fr)}}
 .pc{background:var(--surface);border:1px solid var(--rule);border-radius:2px;overflow:hidden;
   display:grid;grid-template-rows:auto 1fr;text-decoration:none;color:inherit;
   transition:border-color .15s}
@@ -38,20 +39,36 @@ def b64(p):
     buf = io.BytesIO(); im.save(buf, "WEBP", quality=82, method=6)
     return "data:image/webp;base64," + base64.b64encode(buf.getvalue()).decode()
 
+def facts(name):
+    """Card copy quotes the same snapshots the pages were built from, so the
+    landing page cannot drift away from what it links to — which it had."""
+    import json
+    return json.loads((HERE / "facts" / f"{name}.json").read_text(encoding="utf-8"))
+
+
+_C, _X = facts("campaign_pdl1"), facts("corpus_explorer")
+_P, _N = facts("ppi_discovery"), facts("pain_receptors")
+
 PAGES = [
+    ("pain_receptors.html", "og_pain.png", "A therapeutic area in, binders out",
+     f"No target named: from one sentence about pain the pipeline ranked three candidates, "
+     f"picked the CGRP receptor that erenumab already validates, sized its own campaign from "
+     f"a measured hit rate, and returned {_N['n_survivors']} gated designs for "
+     f"{_N['spend_usd']*100:.0f} cents.",
+     "projects/pain_receptors_v3"),
+    ("ppi_discovery.html", "og_ppi.png", "Disease name to designed binders",
+     f"No target named: the pipeline picked YAP1/TEAD1, argued for it, sized its own "
+     f"campaign from a measured hit rate, and ran it — {_P['n_survivors']} designs through "
+     f"every gate for {_P['spend_usd']*100:.0f} cents of model spend.",
+     "projects/mesothelioma_showcase"),
     ("campaign_pdl1.html", "og_campaign.png", "A binder campaign, end to end",
-     "PD-L1. Why that structure and that face of it, the nine hotspots and the ΔΔG behind "
-     "them, a calibration gate that raised its own bar, and twenty ranked designs.",
+     f"PD-L1. Why that structure and that face of it, the nine hotspots and the \u0394\u0394G behind "
+     f"them, a calibration gate that raised its own bar, and {_C['top_k_count']} ranked designs.",
      "projects/pdl1_e2e"),
     ("corpus_explorer.html", "og_corpus.png", "One question, one target map",
-     "A real corpus-explorer session over 11,055 curated papers: the tool calls it made, "
-     "what a curated finding looks like, and the interaction and DepMap graphs it built.",
+     f"A real corpus-explorer session over {_X['curated']:,} curated papers: the tool calls it "
+     f"made, what a curated finding looks like, and the interaction and DepMap graphs it built.",
      "outputs/mesothelioma_showcase.txt"),
-    ("ppi_discovery.html", "og_ppi.png", "Disease name to designed binders",
-     "No target named: the pipeline picked YAP1/TEAD1, argued for it, sized its own "
-     "campaign from a measured hit rate, and ran it — 317 designs through every gate for "
-     "79 cents of model spend.",
-     "projects/mesothelioma_showcase"),
 ]
 
 cards = "".join(f'''<a class="pc" href="{href}">
@@ -62,8 +79,8 @@ cards = "".join(f'''<a class="pc" href="{href}">
 
 HEAD = _mkhead(
     "Little Protein Tiger Showcase",
-    "Three illustrated walkthroughs of a protein-binder design pipeline, built from real "
-    "runs: a complete PD-L1 campaign, a corpus-explorer session, and the PPI discovery track.",
+    "Four illustrated walkthroughs of a protein-binder design pipeline, built from real "
+    "runs: two PPI-discovery campaigns, a complete PD-L1 campaign, and a corpus-explorer session.",
     "index.html", "campaign")
 
 HTML = f"""{HEAD}
@@ -74,8 +91,9 @@ HTML = f"""{HEAD}
   <h1>What it actually does, shown on real runs</h1></div>
   <p class="lede">LPT is a command-line pipeline that goes from a disease or a target name
   to designed protein binders, with a curated literature corpus and a structural-biology
-  toolkit underneath. These three pages are walkthroughs of runs that really happened in
-  this repository — every number is read out of a run directory, not illustrative.</p>
+  toolkit underneath. These four pages are walkthroughs of runs that really happened in
+  this repository — every number is extracted from a run directory at build time and
+  committed alongside the page, not typed in by hand.</p>
   <div class="cards3">{cards}</div>
 </header>
 

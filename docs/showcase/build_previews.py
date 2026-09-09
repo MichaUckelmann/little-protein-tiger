@@ -115,19 +115,52 @@ def network_art():
     return im
 
 
+def facts(name):
+    """The card's numbers come from the same snapshot the page was built from.
+
+    These four strings are what unfurls in Slack, X and iMessage — the most-read
+    numbers the project has — and they used to be typed here by hand. The corpus
+    card drifted ~25% that way before anyone noticed.
+    """
+    import json
+    return json.loads((HERE / "facts" / f"{name}.json").read_text(encoding="utf-8"))
+
+
 def main():
+    c = facts("campaign_pdl1")
     card("campaign", "binder campaign · PD-L1",
          "One target name in, twenty ranked designs out",
-         ["5,824 refolds", "715 through the gates", "21 GPU-hours", "$2.12"],
+         [f"{c['n_scored']:,} refolds",
+          f"{c['gate_current']['survivors']} through the gates",
+          f"{c['gpu_hours']['total']:.0f} GPU-hours", f"${c['spend_usd']:.2f}"],
          Image.open(ASSETS / "design_face.webp").convert("RGBA"))
+
+    x = facts("corpus_explorer")
     card("corpus", "corpus-explorer",
-         "Ask eleven thousand papers a question, get a target map",
-         ["55,689 indexed", "11,055 curated", "20,658 edges", "65 s"],
+         "Ask fourteen thousand papers a question, get a target map",
+         [f"{x['indexed']:,} indexed", f"{x['curated']:,} curated",
+          f"{x['lit_edges']:,} edges", f"{x['session']['seconds']:.0f} s"],
          network_art())
+
+    p_ = facts("ppi_discovery")
     card("ppi", "ppi track · mesothelioma",
          "One sentence about a disease, twenty designed binders out",
-         ["18.5% hit rate", "317 gated designs", "22 GPU-h", "$0.79"],
+         [f"{100 * p_['calibration']['backbone']['p_hat']:.1f}% hit rate",
+          f"{p_['n_survivors']} gated designs",
+          f"{sum(p_['gpu_hours'].values()):.0f} GPU-h", f"${p_['spend_usd']:.2f}"],
          Image.open(ASSETS / "meso_design.webp").convert("RGBA"))
+
+    n = facts("pain_receptors")
+    card("pain", "ppi track · pain receptors",
+         "A sentence about pain, 365 designed binders",
+         [f"{100 * n['calibration']['backbone']['p_hat']:.1f}% hit rate",
+          f"{n['n_survivors']} gated designs",
+          f"{n['gpu_hours']['total']:.1f} GPU-h", f"${n['spend_usd']:.2f}"],
+         # No artwork: the only images available are the corpus network (which
+         # this page does not contain) and other campaigns' structures (which are
+         # other proteins). A ChimeraX render of the CALCRL/RAMP1 lead would fill
+         # this properly; a borrowed picture would assert something untrue.
+         None)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,534 @@
+{
+  "boltzgen": {
+    "best_iptm": 0.59069,
+    "best_len": 15,
+    "designs": 100,
+    "drop_reasons": "(none)",
+    "modality": "cyclic_peptide",
+    "survivors": 100,
+    "top_k": 20
+  },
+  "bsa_A2": 3402,
+  "budget_cap_usd": 5.0,
+  "calibration": {
+    "backbone": {
+      "k": 89,
+      "n": 481,
+      "p_hat": 0.18503118503118504,
+      "p_high": 0.22218205805480787,
+      "p_low": 0.15287138573070683,
+      "unit": "backbone",
+      "zero_hits": false
+    },
+    "bar_raised_to": 0.85,
+    "central": {
+      "basis": "point estimate",
+      "est_disk_gb": 2.7,
+      "est_gpu_hours": 3.1,
+      "is_lower_bound": false,
+      "required_backbones": 326.0,
+      "required_refolds": 1081.0
+    },
+    "compute": {
+      "cluster_hours": 0.5,
+      "compute": "local",
+      "local_hours": 3.8,
+      "max_local_hours": 48.0,
+      "n_gpus_cluster": 8
+    },
+    "engagement_gate": "hotspot_engagement >= 1",
+    "n_backbones": 481,
+    "n_refolds": 1924,
+    "pessimistic": {
+      "basis": "Wilson 95% lower bound",
+      "est_disk_gb": 3.3,
+      "est_gpu_hours": 3.8,
+      "is_lower_bound": false,
+      "required_backbones": 394.0,
+      "required_refolds": 1308.0
+    },
+    "prefilter_rate": 0.8293103448275863,
+    "refold": {
+      "k": 241,
+      "n": 1924,
+      "p_hat": 0.12525987525987525,
+      "p_high": 0.14080148253549676,
+      "p_low": 0.11121169863028993,
+      "unit": "refold",
+      "zero_hits": false
+    },
+    "requested_bar": 0.7,
+    "verdict": "SCALE_UP",
+    "verdict_reason": "89/481 backbones produced an excellent design (18.50%, 95% CI 15.29%-22.22%). Even at the pessimistic bound the run costs ~4 GPU-h / 3 GB, inside the 120 h / 120 GB budget. This target is unusually good — the trial supports sizing at iptm > 0.85 (requested was 0.7) within budget, so the bar was raised rather than sizing to the loosest workable target."
+  },
+  "chain_a_note": "Transcriptional enhancer factor TEF-1 / TEAD1, 207 residues; synonym match with expected target TEAD1",
+  "citations": {
+    "literature": [
+      8,
+      8
+    ],
+    "structure": [
+      2,
+      2
+    ]
+  },
+  "designs": [
+    {
+      "ddg": -87.323,
+      "dock": 0.632,
+      "engagement": 1.0,
+      "ipsae_min": 0.7513,
+      "iptm": 0.913860559463501,
+      "len": 86,
+      "name": "13_model_1_b0_d1",
+      "plddt": 0.8065,
+      "rank": 1,
+      "target_rmsd": 0.122
+    },
+    {
+      "ddg": -59.733,
+      "dock": 0.797,
+      "engagement": 1.0,
+      "ipsae_min": 0.6554,
+      "iptm": 0.9020572304725647,
+      "len": 78,
+      "name": "67_model_0_b0_d1",
+      "plddt": 0.819,
+      "rank": 2,
+      "target_rmsd": 0.137
+    },
+    {
+      "ddg": -68.774,
+      "dock": 0.714,
+      "engagement": 1.0,
+      "ipsae_min": 0.7654,
+      "iptm": 0.913602352142334,
+      "len": 86,
+      "name": "49_model_2_b0_d2",
+      "plddt": 0.8087,
+      "rank": 3,
+      "target_rmsd": 0.11
+    },
+    {
+      "ddg": -58.774,
+      "dock": 1.035,
+      "engagement": 1.0,
+      "ipsae_min": 0.8125,
+      "iptm": 0.9302531480789185,
+      "len": 84,
+      "name": "2_model_0_b0_d3",
+      "plddt": 0.8106,
+      "rank": 4,
+      "target_rmsd": 0.113
+    },
+    {
+      "ddg": -60.006,
+      "dock": 1.219,
+      "engagement": 1.0,
+      "ipsae_min": 0.7903,
+      "iptm": 0.9232946038246155,
+      "len": 84,
+      "name": "25_model_0_b0_d0",
+      "plddt": 0.8218,
+      "rank": 5,
+      "target_rmsd": 0.113
+    },
+    {
+      "ddg": -63.68,
+      "dock": 0.754,
+      "engagement": 1.0,
+      "ipsae_min": 0.6674,
+      "iptm": 0.9011552333831787,
+      "len": 74,
+      "name": "15_model_3_b0_d1",
+      "plddt": 0.8013,
+      "rank": 6,
+      "target_rmsd": 0.111
+    },
+    {
+      "ddg": -68.262,
+      "dock": 1.294,
+      "engagement": 1.0,
+      "ipsae_min": 0.7667,
+      "iptm": 0.921073317527771,
+      "len": 79,
+      "name": "97_model_2_b0_d3",
+      "plddt": 0.8206,
+      "rank": 7,
+      "target_rmsd": 0.113
+    },
+    {
+      "ddg": -75.606,
+      "dock": 1.387,
+      "engagement": 1.0,
+      "ipsae_min": 0.7058,
+      "iptm": 0.899907648563385,
+      "len": 75,
+      "name": "31_model_0_b0_d2",
+      "plddt": 0.8226,
+      "rank": 8,
+      "target_rmsd": 0.109
+    },
+    {
+      "ddg": -63.941,
+      "dock": 1.085,
+      "engagement": 1.0,
+      "ipsae_min": 0.7941,
+      "iptm": 0.9373713731765747,
+      "len": 70,
+      "name": "55_model_0_b0_d3",
+      "plddt": 0.8098,
+      "rank": 9,
+      "target_rmsd": 0.128
+    },
+    {
+      "ddg": -66.24,
+      "dock": 1.475,
+      "engagement": 1.0,
+      "ipsae_min": 0.7681,
+      "iptm": 0.9342049956321716,
+      "len": 79,
+      "name": "32_model_2_b0_d2",
+      "plddt": 0.7979,
+      "rank": 10,
+      "target_rmsd": 0.11
+    },
+    {
+      "ddg": -66.824,
+      "dock": 1.207,
+      "engagement": 1.0,
+      "ipsae_min": 0.7209,
+      "iptm": 0.9026622772216797,
+      "len": 79,
+      "name": "22_model_3_b0_d2",
+      "plddt": 0.8068,
+      "rank": 11,
+      "target_rmsd": 0.105
+    },
+    {
+      "ddg": -62.71,
+      "dock": 0.647,
+      "engagement": 1.0,
+      "ipsae_min": 0.7262,
+      "iptm": 0.908556342124939,
+      "len": 78,
+      "name": "58_model_1_b0_d2",
+      "plddt": 0.8067,
+      "rank": 12,
+      "target_rmsd": 0.113
+    },
+    {
+      "ddg": -67.974,
+      "dock": 0.971,
+      "engagement": 1.0,
+      "ipsae_min": 0.7296,
+      "iptm": 0.9094988107681274,
+      "len": 76,
+      "name": "54_model_3_b0_d2",
+      "plddt": 0.7955,
+      "rank": 13,
+      "target_rmsd": 0.116
+    },
+    {
+      "ddg": -70.577,
+      "dock": 1.503,
+      "engagement": 1.0,
+      "ipsae_min": 0.7283,
+      "iptm": 0.909942626953125,
+      "len": 74,
+      "name": "70_model_0_b0_d0",
+      "plddt": 0.8166,
+      "rank": 14,
+      "target_rmsd": 0.109
+    },
+    {
+      "ddg": -61.833,
+      "dock": 0.837,
+      "engagement": 1.0,
+      "ipsae_min": 0.7007,
+      "iptm": 0.9079886674880981,
+      "len": 71,
+      "name": "6_model_1_b0_d0",
+      "plddt": 0.8152,
+      "rank": 15,
+      "target_rmsd": 0.112
+    },
+    {
+      "ddg": -66.155,
+      "dock": 1.4,
+      "engagement": 1.0,
+      "ipsae_min": 0.7612,
+      "iptm": 0.9245863556861877,
+      "len": 71,
+      "name": "95_model_0_b0_d2",
+      "plddt": 0.7968,
+      "rank": 16,
+      "target_rmsd": 0.106
+    },
+    {
+      "ddg": -67.755,
+      "dock": 1.222,
+      "engagement": 1.0,
+      "ipsae_min": 0.6034,
+      "iptm": 0.8770501613616943,
+      "len": 78,
+      "name": "84_model_3_b0_d1",
+      "plddt": 0.8051,
+      "rank": 17,
+      "target_rmsd": 0.113
+    },
+    {
+      "ddg": -58.892,
+      "dock": 0.931,
+      "engagement": 1.0,
+      "ipsae_min": 0.7497,
+      "iptm": 0.9108843207359314,
+      "len": 84,
+      "name": "9_model_0_b0_d2",
+      "plddt": 0.7909,
+      "rank": 18,
+      "target_rmsd": 0.121
+    },
+    {
+      "ddg": -63.876,
+      "dock": 0.969,
+      "engagement": 1.0,
+      "ipsae_min": 0.6212,
+      "iptm": 0.8773372769355774,
+      "len": 80,
+      "name": "57_model_3_b0_d0",
+      "plddt": 0.8122,
+      "rank": 19,
+      "target_rmsd": 0.12
+    },
+    {
+      "ddg": -60.672,
+      "dock": 1.314,
+      "engagement": 1.0,
+      "ipsae_min": 0.7544,
+      "iptm": 0.9151788949966431,
+      "len": 77,
+      "name": "4_model_3_b0_d3",
+      "plddt": 0.8139,
+      "rank": 20,
+      "target_rmsd": 0.121
+    }
+  ],
+  "dropped": [
+    [
+      "no clash",
+      391
+    ],
+    [
+      "hotspot_engagement >= 0.75",
+      342
+    ],
+    [
+      "binder_rmsd_dock <= 5",
+      206
+    ],
+    [
+      "iptm >= 0.5",
+      75
+    ],
+    [
+      "binder_rmsd_fold <= 2",
+      20
+    ],
+    [
+      "binder_plddt >= 0.75",
+      1
+    ]
+  ],
+  "engagement_gate": "hotspot_engagement >= 0.75",
+  "gates": [
+    [
+      "binder_rmsd_dock <= 5",
+      1146,
+      84.8
+    ],
+    [
+      "epitope_recall >= 0.5",
+      1239,
+      91.6
+    ],
+    [
+      "hotspot_engagement >= 0.75",
+      828,
+      61.2
+    ],
+    [
+      "binder_rmsd_fold <= 2",
+      1227,
+      90.8
+    ],
+    [
+      "binder_plddt >= 0.75",
+      1330,
+      98.4
+    ],
+    [
+      "iptm >= 0.5",
+      1052,
+      77.8
+    ],
+    [
+      "iface_pae <= 15",
+      1079,
+      79.8
+    ],
+    [
+      "no clash",
+      647,
+      47.9
+    ]
+  ],
+  "go": "GO",
+  "gpu_hours": {
+    "calibration": 11.53,
+    "pilot": 1.93,
+    "production": 8.6
+  },
+  "hotspots": [
+    [
+      "GLN",
+      246
+    ],
+    [
+      "ASP",
+      249
+    ],
+    [
+      "LYS",
+      274
+    ],
+    [
+      "TRP",
+      276
+    ],
+    [
+      "PHE",
+      314
+    ],
+    [
+      "VAL",
+      318
+    ],
+    [
+      "TYR",
+      346
+    ],
+    [
+      "PHE",
+      350
+    ],
+    [
+      "LYS",
+      353
+    ],
+    [
+      "VAL",
+      366
+    ],
+    [
+      "HIS",
+      404
+    ],
+    [
+      "TYR",
+      406
+    ]
+  ],
+  "kd_rationale": "Well-characterised structural interface with high-affinity native interaction (Kd ~ 18 nM), multiple validated alanine-scanning hotspots (F69, R89, L91, F95), and proven mini-protein / peptidomimetic druggability.",
+  "lit_hotspots": [
+    "F69",
+    "R89",
+    "L91",
+    "F95",
+    "M86"
+  ],
+  "llm_stages": [
+    "binder_summary",
+    "literature",
+    "pathway",
+    "structure"
+  ],
+  "median_target_rmsd": 0.113,
+  "model": "gemini-3.7-flash",
+  "n_backbones_surviving": 169,
+  "n_filtered": 338,
+  "n_mpnn": 1352,
+  "n_rfd3": 392,
+  "n_scored": 1352,
+  "n_survivors": 317,
+  "partner_chain": "B",
+  "pathway_uncached_input": 483435,
+  "pdb_id": "3KYS",
+  "pdl1": {
+    "backbone_p_hat": 0.05307262569832402,
+    "n_scored": 5824,
+    "n_survivors": 715
+  },
+  "pilot": {
+    "n_rf3": 344,
+    "n_rfd3": 100
+  },
+  "prod_prefilter_rate": 0.8622,
+  "query": "Design cancer therapeutics to target key nodes in mesothelioma.",
+  "spend_usd": 0.786721,
+  "target_chain": "A",
+  "target_complex": "YAP1 / TEAD1",
+  "tiers": [
+    {
+      "complex": "YAP1 / TEAD1",
+      "design_intent": "disrupt",
+      "evidence_basis": "Mesothelioma xenograft regression and objective clinical activity confirmed upon disrupting the YAP-TEAD transcriptional axis.",
+      "key_uncertainty": "TAZ co-activator redundancy and MAPK/FOSL1-mediated acquired resistance.",
+      "pdb_ids": [
+        "3KYS",
+        "5GN0"
+      ],
+      "tier": "VALIDATED"
+    },
+    {
+      "complex": "VGLL4 / TEAD4",
+      "design_intent": "disrupt",
+      "evidence_basis": "VGLL4-mimetic peptides competitively displace YAP from TEAD and suppress tumor growth in vivo.",
+      "key_uncertainty": "Need for broad pan-TEAD cross-reactivity and delivery optimization.",
+      "pdb_ids": [
+        "5NO6",
+        "5GN0"
+      ],
+      "tier": "BIOLOGICALLY_JUSTIFIED"
+    },
+    {
+      "complex": "FOSL1 / TEAD",
+      "design_intent": "disrupt",
+      "evidence_basis": "FOSL1 upregulation mediates adaptive resistance by restoring TEAD chromatin recruitment under selective pressure.",
+      "key_uncertainty": "Lack of high-resolution co-crystal structural coordinates in the corpus.",
+      "pdb_ids": [],
+      "tier": "PATHWAY_INFERRED"
+    }
+  ],
+  "top_k_count": 20,
+  "trim": {
+    "after": 207,
+    "before": 207,
+    "contig": "70-86,/0,A195-229,A239-343,A345-411",
+    "kept_segments": [
+      [
+        195,
+        229
+      ],
+      [
+        239,
+        343
+      ],
+      [
+        345,
+        411
+      ]
+    ],
+    "segments": 3
+  }
+}
