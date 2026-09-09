@@ -6,9 +6,15 @@
 # Regenerate them locally with `python docs/showcase/build_*.py` and commit the
 # result when a run changes.
 #
-# NOTE: Pages must be enabled once by hand — Settings -> Pages -> Source:
-# "GitHub Actions". On a private repo that needs a paid plan; on a public repo
-# it is free.
+# Pages cannot be enabled on a private repo without a paid plan, so this job is
+# SKIPPED while the repo is private rather than failing. Without that guard it
+# went red on every push touching docs/ — `configure-pages` returns "Get Pages
+# site failed ... Not Found" — and a permanently-red Actions tab is how a real
+# Tests failure gets scrolled past.
+#
+# `enablement: true` then creates the Pages site on the first public push, so
+# the Settings -> Pages -> Source: "GitHub Actions" toggle does not have to be
+# remembered by hand.
 name: Pages
 
 on:
@@ -32,12 +38,15 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    if: github.event.repository.private == false
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs
