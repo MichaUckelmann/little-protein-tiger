@@ -49,3 +49,10 @@ PMC_database/
 # and in git history; branch archive/web-platform marks the last commit that
 # tracked them.
 web/
+
+# Launch-material build intermediates. The finished lpt_hook.mp4 / lpt_carousel.pdf
+# ARE tracked; these are what they were assembled from and are regenerable:
+#   turntable/     90 ChimeraX frames, 23 MB  (render_hero.py --turntable)
+#   .fontcache.css inlined woff2 payloads, 1.6 MB (build_video.py, re-fetched)
+docs/showcase/assets/turntable/
+docs/showcase/assets/.fontcache.css

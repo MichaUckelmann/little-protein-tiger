@@ -158,6 +158,64 @@ absolute paths (a relative path fails, and without `--exit` the process then
 waits at an interactive prompt forever), and are cropped to the alpha bounding
 box afterwards rather than framed by hand.
 
+## Launch material
+
+Two assets for announcing the project, built from the same `facts/` snapshots as
+the pages so a launch post cannot quote a number the showcases have moved on
+from — the one artefact you cannot quietly correct after publishing.
+
+```bash
+.venv/bin/python docs/showcase/render_hero.py --turntable   # -> hero_*.webp + turntable/
+.venv/bin/python docs/showcase/build_carousel.py            # -> assets/lpt_carousel.pdf
+.venv/bin/python docs/showcase/build_video.py               # -> assets/lpt_hook.mp4
+```
+
+| Asset | Shape | For |
+|---|---|---|
+| `assets/lpt_carousel.pdf` | 9 slides, 1080x1350 | LinkedIn renders an uploaded PDF as a swipeable deck |
+| `assets/lpt_hook.mp4` | 31 s, 1080x1350, silent | feed video; autoplay is muted, so every claim is on screen |
+| `assets/lpt_hook_poster.png` | 1080x1350 | upload as the video thumbnail — the first frame is a half-typed prompt |
+
+`render_hero.py` is the one that needed thought. It superposes the lead design's
+own refold onto **6E3Y**, the full-length CGRP receptor with its agonist and G
+protein, by the target chain. The campaign designed against 3N7S — an ectodomain
+crystal form with no peptide in it — so the overlap with CGRP that this reveals
+(122 binder atoms within 4.5 A, closest approach 0.77 A, written to
+`facts/hero_check.json`) is a check the run could not have optimised toward, the
+same role 4ZQK plays for PD-L1. **Say what it is:** a superposition, not a
+docking run, and the *site* was chosen deliberately by the interface stage — what
+is independent is the *occupancy*.
+
+The bilayer is not drawn where it looks right. `membrane()` asks
+`src.membrane_topology` — the same UniProt annotation that dropped the
+transmembrane residues from the trim — for CALCRL's TM spans, maps them into
+6E3Y author numbering, and centres a 30 A slab on those residues. It refuses if
+the observed span and the bilayer constant disagree by more than 6 A; they agree
+to 2 A, and both numbers are printed. Cached to `facts/hero_membrane.json` so
+the figure survives a dead network.
+
+Three traps these two scripts encode:
+
+- **`shape cylinder` accepts `center` and `axis` and silently ignores both** in
+  ChimeraX 1.12. The slab is built at the origin along z — 160 A away, face-on to
+  a camera expecting it edge-on — with no error and a frame that still renders.
+  Use `fromPoint`/`toPoint`.
+- **`show cartoon` is global and undoes every hide issued above it.** The first
+  hero render came back with the whole Gs heterotrimer in default rainbow.
+- **Inline the webfonts.** Left as a stylesheet link, each of the video's ~49
+  stills re-fetches from Google, and one slow response ships a run of frames in
+  Georgia while its neighbours are in Newsreader — visible only in the finished
+  video, after everything has been rendered.
+
+`build_video.py` splits the work three ways: Chrome renders the typography (so
+the video shares its type scale and layout primitives with the pages instead of
+being a second design system hand-maintained in PIL), ChimeraX supplies the
+structure's motion, and PIL composites those 90 frames into one Chrome-rendered
+*plate* — 90 browser launches would not be worth it. The plate's `.hole` is
+absolutely positioned from `PLATE_BOX`, the same constant PIL pastes at: left in
+normal flow it lands wherever the headline above it wraps, and the receptor
+composites over its own caption.
+
 ## Network maps
 
 Every interaction/DepMap map LPT draws goes through `src/network_svg.py`, so

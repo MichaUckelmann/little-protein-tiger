@@ -1,0 +1,23 @@
+{
+  "pdb_id": "6E3Y",
+  "superposed_on": "E",
+  "ca_pairs": 82,
+  "superposition_rmsd_A": 1.47,
+  "cutoff_A": 4.5,
+  "cgrp": {
+    "min_distance_A": 0.77,
+    "binder_atoms_in_contact": 122
+  },
+  "calcrl": {
+    "min_distance_A": 0.33,
+    "binder_atoms_in_contact": 496
+  },
+  "ramp1": {
+    "min_distance_A": 0.51,
+    "binder_atoms_in_contact": 133
+  },
+  "g_alpha": {
+    "min_distance_A": 48.38,
+    "binder_atoms_in_contact": 0
+  }
+}
