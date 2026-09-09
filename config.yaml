@@ -149,11 +149,11 @@ models:
     claude-sonnet-5:    {input: 3.00,  output: 15.00}   # $2/$10 intro rate through 2026-08-31
     claude-haiku-4-5:   {input: 1.00,  output: 5.00}
     claude-fable-5:     {input: 10.00, output: 50.00}
-    gemini-3.7-flash:              {input: 0.75, output: 3.75}   # intro rate through 2026-12-31; 1.50/7.50 after
-    gemini-3.1-flash-lite:         {input: 0.10, output: 0.40}
+    gemini-3.7-flash:              {input: 0.75, output: 3.75}   # intro rate; DOUBLES to 1.50/7.50 in January 2027
+    gemini-3.1-flash-lite:         {input: 0.25, output: 1.50}
     # Retired name, kept so ledger lines written before the GA rename
     # still price rather than logging as unpriced.
-    gemini-3.1-flash-lite-preview: {input: 0.10, output: 0.40}
+    gemini-3.1-flash-lite-preview: {input: 0.25, output: 1.50}
 
 curation:
   # gemini, like every other LLM stage in this repo. It was "claude" long

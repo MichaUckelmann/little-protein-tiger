@@ -187,11 +187,14 @@ If they do want to extend it, then and only then:
 3. `python scripts/fetch_papers.py --prefer-xml --dry-run` — show them what
    would be fetched before fetching it. XML is ~47x smaller than publisher PDFs
    for the same paper.
-4. `python scripts/curate_papers.py --limit N --provider gemini` — **state the
-   estimate and wait for a yes.** Roughly **$0.03 per paper** on the default
-   `gemini-3.7-flash` (~28k tokens each, measured), so ~$15 for 500. Setting
-   `curation.gemini_model: gemini-3.1-flash-lite` is ~8x cheaper. Add
-   `--discard-documents` if they will not re-curate.
+4. `python scripts/curate_papers.py --limit N` — **state the estimate and wait
+   for a yes.** Both figures below are measured, not estimated: a 3,078-paper
+   run averaged 23.5k tokens per paper at a 92/8 input/output split.
+   - `gemini-3.1-flash-lite` (the default): **~$0.008 per paper** — ~$4 for
+     500, ~$25 for 3,000.
+   - `gemini-3.7-flash`: **~$0.024 per paper**, about 3x that, and its price
+     doubles in January 2027.
+   Add `--discard-documents` if they will not re-curate.
 
 Curation self-runs identifier normalisation, the graph rebuild and vector
 ingest afterwards; do not run those by hand.
