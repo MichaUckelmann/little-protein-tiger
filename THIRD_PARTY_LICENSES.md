@@ -1,6 +1,7 @@
 # Third-party licences
 
-LPT itself is MIT-licensed (see `LICENSE`). **That licence does not cover the
+LPT itself is licensed under PolyForm Noncommercial 1.0.0 (see `LICENSE`, and
+`docs/licensing.md` for the full picture). **That licence does not cover the
 files listed here.** Each was written by someone else and is redistributed in
 this repository under its own terms, reproduced in full below.
 

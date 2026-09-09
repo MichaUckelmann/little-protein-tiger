@@ -11,6 +11,11 @@ the corpus on disk (50 GB of 51 GB) and nothing downstream reads them: every
 tool reads fingerprints, vectors and the database. A user who wants to
 re-curate or extend can re-fetch the documents themselves.
 
+**Abstracts are stripped from the shipped database.** They are the only
+publisher-supplied TEXT the archive would otherwise carry, and nothing reads
+them (see `_STRIPPED_COLUMNS`). What ships is derived fingerprints plus
+bibliographic facts — see `docs/licensing.md`.
+
     python scripts/package_corpus.py                   # build the archive
     python scripts/package_corpus.py --check           # report what would go in
 
@@ -22,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -144,6 +150,47 @@ def _verify_no_secrets() -> list[str]:
     return problems
 
 
+# Columns blanked in the SHIPPED copy of the database. `abstract` holds
+# publisher-supplied text (11,818 rows on the reference corpus, ~1,750 chars
+# each), and a PMCID is NOT a redistribution grant — PMC is free-to-READ, and
+# only its Open Access Subset is redistributable. We record no per-paper
+# licence, so we cannot tell the two apart.
+#
+# Nothing reads this column. It is written by `src/search.py` at fetch time and
+# round-tripped by `src/database.py`; the curator parses the downloaded PDF/XML
+# and `search_corpus` embeds fingerprints. So dropping it costs nothing and
+# removes the only third-party TEXT the archive would otherwise carry.
+# Verified by grep across src/ and scripts/ — if that stops being true, this
+# strip has to become a decision rather than a default.
+_STRIPPED_COLUMNS = (("papers", "abstract"),)
+
+
+def _sanitized_db(workdir: Path) -> tuple[Path, int]:
+    """A copy of literature.db with third-party text blanked. Returns (path, rows)."""
+    src = _ROOT / "data" / "literature.db"
+    dest = workdir / "literature.db"
+    shutil.copy2(src, dest)
+    cleared = 0
+    conn = sqlite3.connect(dest)
+    try:
+        for table, col in _STRIPPED_COLUMNS:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+            if col not in cols:
+                continue
+            cleared += conn.execute(
+                f'SELECT COUNT(*) FROM "{table}" '
+                f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") <> \'\''
+            ).fetchone()[0]
+            conn.execute(f'UPDATE "{table}" SET "{col}" = NULL')
+        conn.commit()
+        # Without VACUUM the freed pages keep the text on disk — the file would
+        # still be readable with a hex editor, which is not "removed".
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+    return dest, cleared
+
+
 def _verify_no_personal_data() -> list[str]:
     """The DB stores paths. Refuse to ship absolute or personal ones."""
     problems: list[str] = []
@@ -205,6 +252,19 @@ def check() -> int:
         return 1
     print("  [ok  ] no credential-shaped strings in the database")
 
+    db = _ROOT / "data" / "literature.db"
+    if db.is_file():
+        conn = sqlite3.connect(db)
+        try:
+            for table, col in _STRIPPED_COLUMNS:
+                n = conn.execute(
+                    f'SELECT COUNT(*) FROM "{table}" WHERE "{col}" IS NOT NULL '
+                    f"AND TRIM(\"{col}\") <> ''").fetchone()[0]
+                print(f"  [strip] {table}.{col}: {n:,} rows blanked in the "
+                      f"shipped copy (third-party text, unread)")
+        finally:
+            conn.close()
+
     if missing:
         print(f"\n  Cannot package — missing: {', '.join(missing)}")
         return 1
@@ -222,7 +282,9 @@ def package(out: Path, level: int = 10) -> int:
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "contents": [rel for rel, _ in MEMBERS],
         "excludes": ["data/pdfs (source documents — ~95% of the corpus on "
-                     "disk, and nothing downstream reads them)"],
+                     "disk, and nothing downstream reads them)",
+                     "papers.abstract (publisher-supplied text; nothing reads "
+                     "it — see docs/licensing.md)"],
         **stats,
     }
 
@@ -233,7 +295,12 @@ def package(out: Path, level: int = 10) -> int:
             mf = Path(td) / "MANIFEST.json"
             mf.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
             tf.add(mf, arcname="MANIFEST.json")
+            clean_db, cleared = _sanitized_db(Path(td))
             for rel, _ in MEMBERS:
+                if rel == "data/literature.db":
+                    print(f"  + {rel}  ({cleared:,} abstracts stripped)")
+                    tf.add(clean_db, arcname=rel)
+                    continue
                 print(f"  + {rel}")
                 tf.add(_ROOT / rel, arcname=rel)
 

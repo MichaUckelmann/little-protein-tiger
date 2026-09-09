@@ -62,7 +62,7 @@ directly.
 - [Usage](#usage) — [fetch](#1-fetch-papers) · [curate](#2-curate-papers) · [ingest](#3-ingest-vectors) · [ask the corpus](#4-ask-the-corpus-a-question) · [run a skill](#5-run-expert-skills-from-the-cli) · [corpus explorer](#6-corpus-explorer-conversational) · [PPI pipeline](#7-run-the-binder-design-pipeline-end-to-end) · [from a target name](#7b-run-the-binder-pipeline-from-a-target-name) · [on a cluster](#7c-scale-a-campaign-onto-a-slurm-cluster) · [PyMOL](#8-visualise-top-k-designs-in-pymol)
 - [Inspecting the database](#inspecting-the-database) · [MCP](#use-it-from-claude-desktop--claude-code) · [Project structure](#project-structure)
 - [Migrating to a new machine](#migrating-to-a-new-machine) · [Journal filtering](#journal-filtering--read-this-before-building-a-corpus)
-- [Responsible use](#responsible-use) · [Licence](#licence-and-third-party-tools) · [Further reading](#further-reading)
+- [Responsible use](#responsible-use) · [Licence](#licence-and-third-party-tools) — noncommercial; see [docs/licensing.md](docs/licensing.md) · [Further reading](#further-reading)
 
 ---
 
@@ -126,8 +126,9 @@ quality:
   min_score_to_download: 0.0
 
 curation:
-  provider: "gemini"           # "claude" | "gemini" | "local"
-  model: "claude-haiku-4-5"
+  provider: "gemini"                      # "claude" | "gemini" | "local"
+  gemini_model: "gemini-3.1-flash-lite"   # used when provider is gemini
+  model: "claude-haiku-4-5"               # used when provider is claude
 
 rate_limits:
   europepmc_delay_s: 0.5
@@ -959,9 +960,18 @@ safety check is not).
 
 ## Licence and third-party tools
 
-LPT itself is MIT-licensed (see `LICENSE`) and comes with no warranty.
+LPT is licensed under [PolyForm Noncommercial
+1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) (see
+[`LICENSE`](LICENSE)) and comes with no warranty. **Free for academic,
+nonprofit and personal research — including on industry-funded grants, which
+the licence covers explicitly. Commercial use needs a commercial licence**;
+contact the copyright holder. This is the same arrangement PyRosetta uses.
 
-**The MIT licence covers this repository only.** LPT orchestrates external
+Three separate sets of terms apply to three separate things — the code, the
+corpus, and the tools LPT drives. [`docs/licensing.md`](docs/licensing.md) is
+the full picture, including what the corpus archive does and does not contain.
+
+**LPT's own licence covers this repository only.** LPT orchestrates external
 models and tools that it does not ship and grants no rights to. Some are free
 for academic use but **restricted for commercial use** — check each one against
 your own use case before relying on it. The few third-party files LPT *does*
@@ -1023,6 +1033,7 @@ redistribute a derivative that bundles it, read its terms.
 | [docs/database.md](docs/database.md) | SQL for inspecting corpus state |
 | [docs/journal-filtering.md](docs/journal-filtering.md) | The tier gate — read before building your own corpus |
 | [docs/pyrosetta_setup.md](docs/pyrosetta_setup.md) | PyRosetta's Python-ABI trap, and its licence |
+| [docs/licensing.md](docs/licensing.md) | Code, corpus and third-party terms — and what the corpus archive actually contains |
 | [docs/responsible-use.md](docs/responsible-use.md) | Scope and limits |
 | [docs/showcase/](docs/showcase/) | Illustrated walkthroughs of real runs |
 | [CLAUDE.md](CLAUDE.md) | Architecture, and every non-obvious fact with the measurement behind it. Read before changing a threshold. |

@@ -240,7 +240,7 @@ no GPU. That is the right first run either way; `docs/beta-testing.md` has the
 command.
 
 > **STOP AND ASK before attempting a foundry install yourself.** It needs
-> licence acceptance only the user can give (RosettaCommons terms, not MIT),
+> licence acceptance only the user can give (RosettaCommons terms, not LPT's),
 > and a torch build matched to their GPU generation. It is not a scripted step.
 
 #### The other two

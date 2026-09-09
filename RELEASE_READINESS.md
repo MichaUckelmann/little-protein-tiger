@@ -116,8 +116,10 @@ of the raw outside path).
    separately.
 
 4. [x] **No LICENSE file.** Blocks any legal redistribution regardless of
-   code quality. → Maintainer chose **MIT**. `LICENSE` added at repo root;
-   `pyproject.toml` now has `license = "MIT"` and `readme = "README.md"`.
+   code quality. → Maintainer chose **PolyForm Noncommercial 1.0.0** (MIT
+   initially; changed before the repo went public, while that was still a
+   free choice — see `docs/licensing.md`). `LICENSE` at repo root;
+   `pyproject.toml` carries the SPDX id and `readme = "README.md"`.
 
 ---
 

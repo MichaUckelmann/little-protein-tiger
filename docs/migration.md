@@ -41,7 +41,7 @@ Copy `.env.example` to `.env` and fill in your API keys. If you use the
 binder/design track, also fill in the `LPT_BOLTZGEN_EXECUTABLE` /
 `LPT_PYROSETTA_PYTHON` / `LPT_FOUNDRY_ROOT` / `LPT_CLUSTER_*` vars for
 wherever those tools live on the new machine — see
-[Environment setup](docs/environment_setup.md). `config.yaml` itself needs
+[Environment setup](environment_setup.md). `config.yaml` itself needs
 no path edits; it never carries machine-specific values.
 
 **4. Regenerate the MCP configs**

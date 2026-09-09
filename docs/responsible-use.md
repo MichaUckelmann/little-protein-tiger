@@ -68,9 +68,9 @@ raising as an issue rather than routing around.
 
 ## No warranty
 
-LPT is released under the MIT licence and comes with no warranty of any kind,
-including no warranty that its designs are safe, effective, novel, or free of
-third-party rights. See `LICENSE`.
+LPT is released under PolyForm Noncommercial 1.0.0 and comes with no warranty
+of any kind, including no warranty that its designs are safe, effective,
+novel, or free of third-party rights. See `LICENSE` and `docs/licensing.md`.
 
 The external models and tools LPT orchestrates (RFdiffusion3, solubleMPNN,
 RF3, BoltzGen, PyRosetta, Protenix) carry **their own licences**, several of

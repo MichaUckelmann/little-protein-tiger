@@ -5,39 +5,42 @@ open decision below it.
 
 ---
 
-## 🔴 BLOCKER — the corpus is not published yet
+## ✅ RESOLVED — the corpus is published
 
-`scripts/fetch_corpus.py` is the documented way a new user gets the literature
-corpus. **It currently finds nothing**, because no release asset exists. Until
-this is done:
-
-- `docs/journal-filtering.md`, `SETUP_AGENT.md`, `README.md` and
-  `scripts/doctor.py` all tell users to run `fetch_corpus.py`.
-- They will get "no `lpt-corpus*` asset found", and the literature track will be
-  unusable for everyone who is not the maintainer.
-
-### Do this
+`v0.1.0` carries `lpt-corpus.tar.zst` (111,434,853 bytes), and
+`scripts/fetch_corpus.py` finds it. Rebuild and replace with:
 
 ```bash
-# 1. Build the archive (~106 MB from a 451 MB corpus). Refuses to run if the
-#    database contains absolute or home-directory paths.
-python scripts/package_corpus.py
+python scripts/package_corpus.py            # -> dist/lpt-corpus.tar.zst
+gh release upload v0.1.0 dist/lpt-corpus.tar.zst --clobber
+```
 
-# 2. Publish it as a release asset. The asset name must start with
-#    "lpt-corpus" — that is the prefix fetch_corpus.py looks for.
-gh release create v0.1.0 dist/lpt-corpus.tar.zst \
-    --title "v0.1.0" \
-    --notes "Initial release. Includes the curated literature corpus
-(14,517 papers) as lpt-corpus.tar.zst — source documents excluded."
+The asset name must start with `lpt-corpus` — that is the prefix
+`fetch_corpus.py` looks for. When you replace it, update the sha256 in the
+release notes; it is quoted there for verification.
 
-# 3. Verify from a clean checkout, NOT from this one.
+## 🟡 The published asset predates the abstract strip
+
+The live asset was built before `package_corpus.py` learned to blank
+`papers.abstract`, so it carries **11,818 publisher-supplied abstracts** in
+`data/literature.db`. Nothing reads them (see `_STRIPPED_COLUMNS` and
+`docs/licensing.md`), and no third party has downloaded it — the repo is still
+private — so replacing it costs nothing now and is awkward later.
+
+**Rebuild and re-upload before flipping visibility.** This is the same class of
+problem as the API key found in `curation_error`, caught at the same stage, and
+it is only free while the repo is private.
+
+## 🔴 Verify the asset resolves anonymously — only possible after going public
+
+```bash
 git clone https://github.com/MichaUckelmann/little-protein-tiger /tmp/verify
 cd /tmp/verify && python scripts/fetch_corpus.py --check
 ```
 
 A GitHub release asset on a **private** repo is not anonymously downloadable,
-so step 3 is only meaningful once the repo is public — or verify with an
-authenticated client and re-check immediately after flipping visibility.
+and that 404 is indistinguishable from "no asset published yet" — which is
+exactly what a beta tester would report. Run this immediately after the flip.
 
 ---
 
