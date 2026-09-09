@@ -64,6 +64,58 @@
       -0.2425
     ]
   ],
+  "coverage": [
+    [
+      "chromatin and epigenetics",
+      2296,
+      15.8
+    ],
+    [
+      "signalling",
+      1597,
+      11.0
+    ],
+    [
+      "cancer biology",
+      1324,
+      9.1
+    ],
+    [
+      "development and stem cells",
+      1285,
+      8.9
+    ],
+    [
+      "immunology",
+      1001,
+      6.9
+    ],
+    [
+      "metabolism",
+      696,
+      4.8
+    ],
+    [
+      "neuroscience and pain",
+      562,
+      3.9
+    ],
+    [
+      "structural biology",
+      540,
+      3.7
+    ],
+    [
+      "protein design and folding",
+      288,
+      2.0
+    ],
+    [
+      "cell cycle and DNA repair",
+      222,
+      1.5
+    ]
+  ],
   "curated": 14517,
   "depmap_cell_lines": 1208,
   "depmap_edges": 1466,

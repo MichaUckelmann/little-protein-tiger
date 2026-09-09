@@ -394,39 +394,62 @@ quietly dropped.</p></div>
 def s9() -> str:
     """The honest coda, immediately before the ask.
 
-    Deliberately NOT phrased as "the pipeline is only as strong as its
-    literature database". That is true of target discovery and prior art and
-    false of everything else — structure selection, the trim, calibration,
-    the gates and the ranking read no papers at all — so the sweeping version
-    both overstates one dependency and quietly omits the real one, which is
-    that nothing here has been tested at a bench.
+    Deliberately NOT "the pipeline is only as strong as its literature
+    database". That is true of target discovery and prior art and false of
+    everything else — structure selection, the trim, calibration, the gates and
+    the ranking read no papers at all — so the sweeping version overstates one
+    dependency and omits the real one, which is that nothing here has been
+    tested at a bench.
+
+    Nor is it "one lab's reading list", which was the first draft and undersold
+    it: chromatin is the largest single slice of the curated set and still only
+    about a sixth of it. The shape is stated with measured shares instead
+    (`facts/corpus_explorer.json`'s `coverage`), which makes the caveat land
+    harder, not softer — a reader can see that pain really is thin here.
     """
-    # The candidate the run itself could not find support for, quoted from the
-    # run rather than described.
-    unfound = next((gene for _t, gene, _w, _r, entry in F["tiers"]
-                    if "not found in corpus" in entry.lower()), None)
+    c = F["citations"]
+    checked = sum(v["checked"] for v in c.values())
+    verified = sum(v["verified"] for v in c.values())
+    unfound = [d for v in c.values() for d in v["unverified"]]
+    cov = {lab: pct for lab, _n, pct in CORPUS["coverage"]}
+    top = CORPUS["coverage"][:4]
+    rows = "".join(
+        f'<tr><td>{lab}</td><td class="n">{pct:.0f}%</td></tr>'
+        for lab, _n, pct in top)
+    pain = next((r for r in CORPUS["coverage"] if "pain" in r[0]), None)
     return slide(f"""
 <div class="eyebrow">What it does not do</div>
 <h2>Nothing in this deck has been near a bench.</h2>
 <p class="wide">Every figure here is computational: folding confidence,
 interface geometry, buried surface area. Designs like these need expression,
-purification and a binding assay before any of it is a result. The point of the
-gates, the trial and the ranking is to make that shortlist small and defensible
-&mdash; not to skip it.</p>
+purification and a binding assay before any of it is a result. The gates, the
+trial and the ranking exist to make that shortlist small and defensible &mdash;
+not to skip it.</p>
 <div class="rule"></div>
-<h2 style="font-size:44px;margin-top:0">And the corpus is one lab&rsquo;s reading list.</h2>
-<p class="wide">{n(CORPUS['indexed'])} papers indexed,
-{n(CORPUS['curated'])} curated &mdash; weighted heavily toward chromatin and
-chaperone biology, not pain. The run was candid about it: one of its three
-candidate targets{f' ({unfound})' if unfound else ''} is marked
-<em>&ldquo;not found in corpus&rdquo;</em> rather than handed invented support.
-Target discovery and prior art are only as good as what has been indexed.
-Structure selection, the trim, calibration and the gates read no papers at
-all.</p>
-<div class="box"><div class="h">Which is fixable</div>
-<p class="wide" style="font-size:26px">The corpus is built by a config-driven
+<h2 style="font-size:44px;margin-top:0">And the corpus has a shape.</h2>
+<p class="wide" style="font-size:25px">{n(CORPUS['indexed'])} papers indexed
+from tier-1 and tier-2 journals, {n(CORPUS['curated'])} of them curated into
+structured fingerprints &mdash; quantitative findings, interactions, and a
+source span for every claim &mdash; then embedded for retrieval. It spans
+molecular and cell biology, and it leans:</p>
+<div style="display:flex;gap:34px;align-items:flex-start;margin-top:10px">
+  <table style="margin-top:14px;flex:1">{rows}
+    <tr><td><em>{pain[0]}</em></td><td class="n"><em>{pain[2]:.0f}%</em></td></tr>
+  </table>
+  <p class="wide" style="flex:1.25;font-size:24px;margin-top:22px">
+  Approximate shares of the curated set, by title. So the coverage here was real
+  but thin &mdash; and the run leaned on it anyway:
+  <strong>{verified} of the {checked} papers</strong> its three reasoning stages
+  cited are in the corpus, with fingerprints. The {checked - verified} that was
+  not is named in the run record
+  (<span style="font-family:var(--mono);font-size:20px">{unfound[0]}</span>) and
+  is malformed &mdash; the citation check caught it.</p>
+</div>
+<div class="box" style="margin-top:22px"><div class="h">Which is the fixable part</div>
+<p class="wide" style="font-size:25px">The corpus is built by a config-driven
 fetcher: swap the keyword sets, point it at your own field, rebuild the index.
-Every downstream stage carries on unchanged.</p></div>
+Every stage downstream carries on unchanged &mdash; structure selection, the
+trim, calibration and the gates read no papers at all.</p></div>
 <div class="grow"></div>
 """, page="9 / 10")
 

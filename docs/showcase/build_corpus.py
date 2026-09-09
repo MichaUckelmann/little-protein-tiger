@@ -133,6 +133,23 @@ def _answer_block(text: str, heading: str) -> list[str]:
     return [b.strip() for b in re.findall(r"^- (.+)$", body, re.M)]
 
 
+# Coarse topic proxies over curated titles. Not a taxonomy and not disjoint —
+# a structural paper about a chromatin complex counts in both — so these are
+# reported as approximate shares, never summed.
+FIELD_TERMS = [
+    ("chromatin and epigenetics", ("chromatin", "histone", "nucleosome", "epigen", "methylat")),
+    ("signalling", ("kinase", "signaling", "signalling", "receptor", "phosphoryl")),
+    ("cancer biology", ("cancer", "tumor", "tumour", "oncogen", "carcinom", "metasta")),
+    ("development and stem cells", ("embryo", "stem cell", "differentiat", "developmental", "organoid")),
+    ("immunology", ("immun", "T cell", "macrophage", "inflammat", "antibod")),
+    ("metabolism", ("metabol", "mitochondri", "glycoly", "lipid", "autophag")),
+    ("neuroscience and pain", ("neuron", "neural", "synap", "brain", "pain", "nocicept", "migraine")),
+    ("structural biology", ("cryo-EM", "crystal structure", "structural basis", "X-ray", "NMR")),
+    ("protein design and folding", ("protein design", "de novo", "folding", "AlphaFold", "binder")),
+    ("cell cycle and DNA repair", ("cell cycle", "mitosis", "DNA repair", "replication fork", "checkpoint")),
+]
+
+
 def extract() -> dict:
     """Every figure on the page, read from the live corpus. Raises SourceMissing."""
     pq = _needs("pyarrow.parquet")
@@ -151,6 +168,22 @@ def extract() -> dict:
         "AND year IS NOT NULL GROUP BY year ORDER BY year").fetchall()
     years = [[int(y), n] for y, n in year_rows if int(y) >= YEAR_FLOOR]
     years_before = sum(n for y, n in year_rows if int(y) < YEAR_FLOOR)
+
+    # What the corpus is ABOUT, measured rather than asserted. "Weighted to
+    # chromatin" is the honest headline, but the size of that weighting matters:
+    # chromatin is the largest single slice and still only about a sixth, so
+    # calling the whole thing a chromatin corpus (or "one lab's reading list")
+    # understates it. Title matching is a coarse proxy and deliberately so — it
+    # is reported as approximate everywhere it is used.
+    coverage = []
+    for label, terms in FIELD_TERMS:
+        cond = " OR ".join(["lower(title) LIKE ?"] * len(terms))
+        args = [f"%{t.lower()}%" for t in terms]
+        n = con.execute(
+            f"SELECT COUNT(*) FROM papers WHERE curation_status='completed' "
+            f"AND ({cond})", args).fetchone()[0]
+        coverage.append([label, n, round(n / curated * 100, 1)])
+    coverage.sort(key=lambda r: -r[1])
 
     tally: dict[str, int] = {}
     for name, n in con.execute(
@@ -212,6 +245,7 @@ def extract() -> dict:
         "depmap_cell_lines": codep["results"][0]["n"],
         "years": years, "years_before": years_before, "year_floor": YEAR_FLOOR,
         "journals": [[k, v] for k, v in journals], "journal_merges": merged,
+        "coverage": coverage,
         "hubs": hubs,
         "codep": [[r["gene"], r["r"]] for r in codep["results"][:TOP_CODEP]],
         "codep_pairs": pairs,
