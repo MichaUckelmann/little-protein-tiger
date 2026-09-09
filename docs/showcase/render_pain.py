@@ -41,6 +41,7 @@ BINDER = ROOT / "projects/pain_receptors_v3/runs/round-1/binder"
 
 CHIMERAX = "/usr/bin/chimerax"
 W, H = 1500, 1200
+CARD_W, CARD_H = 1000, 800
 
 # Same palette as the pages' legends, so a figure and its key agree.
 BINDER_COL = "#2f8f74"
@@ -48,12 +49,19 @@ TARGET_COL = "#9aa79d"
 HOTSPOT_COL = "#c0872b"
 
 
-def lead_design() -> dict:
+N_CARDS = 4          # matches the design cards build_pain.py renders
+
+
+def top_designs(n: int = N_CARDS) -> list[dict]:
     with (BINDER / "scoring/top_k.csv").open(encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     if not rows:
         raise SystemExit("top_k.csv is empty")
-    return rows[0]
+    return rows[:n]
+
+
+def lead_design() -> dict:
+    return top_designs(1)[0]
 
 
 def hotspot_offset(hotspots: list[list], structure_path: str) -> int:
@@ -148,6 +156,43 @@ def camera_matrix(structure_path: str, hotspot_nums: list[int],
     return ",".join(f"{v:.5f}" for row in rows for v in row)
 
 
+def card_script(designs: list[dict], spec: str, matrix: str,
+                tmp_dir: pathlib.Path) -> str:
+    """One .cxc that renders the top-N designs on a SHARED camera.
+
+    Each design is a separate RF3 refold, so its target sits in its own frame.
+    Rendered independently the four cards would each be aimed differently and
+    could not be compared — which is the only reason to put them side by side.
+    So every target chain is superposed onto rank 1's with `matchmaker`, one
+    camera is computed and framed over the union, and the models are then shown
+    one at a time WITHOUT re-running `view`: re-fitting per image is exactly
+    what would silently break the shared framing.
+    """
+    lines = [f"open {d['refold_cif']}" for d in designs]
+    for i in range(2, len(designs) + 1):
+        # /B is the target in every refold; align on it, not on the binders,
+        # which are different molecules with different folds.
+        lines.append(f"matchmaker #{i}/B to #1/B")
+    lines += [
+        "hide atoms", "show cartoon", "hide pseudobonds",
+        "set bgColor white", "lighting soft", "lighting shadows false",
+        "graphics silhouettes true width 1.4",
+    ]
+    for i in range(1, len(designs) + 1):
+        lines += [f"color #{i}/A {BINDER_COL}", f"color #{i}/B {TARGET_COL}",
+                  f"color #{i}/B:{spec} {HOTSPOT_COL}"]
+    # Frame once, over everything, then never touch the camera again.
+    lines += [f"view matrix camera {matrix}", "view", "zoom 1.05"]
+    for i in range(1, len(designs) + 1):
+        others = [str(j) for j in range(1, len(designs) + 1) if j != i]
+        if others:
+            lines.append(f"hide #{','.join(others)} models")
+        lines.append(f"show #{i} models")
+        lines.append(f"save {tmp_dir / f'pain_rank{i}.png'} width {CARD_W} "
+                     f"height {CARD_H} supersample 3 transparentBackground true")
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     if not pathlib.Path(CHIMERAX).exists():
         raise SystemExit(f"{CHIMERAX} not found — install ChimeraX or edit CHIMERAX")
@@ -192,39 +237,77 @@ zoom 1.08
 save {tmp_dir / 'pain_epitope.png'} width {W} height {H} supersample 3 transparentBackground true
 """
 
-    with tempfile.NamedTemporaryFile("w", suffix=".cxc", delete=False) as fh:
-        fh.write(script)
-        path = fh.name
-    print(f"  rendering {design['name']}")
-    print(f"  hotspots  author {[a for _n, a in facts['hotspots']]}")
-    print(f"            refold {nums}  (offset {offset}, verified)")
-    r = subprocess.run([CHIMERAX, "--offscreen", "--nogui", "--exit", "--silent", path],
-                       capture_output=True, text=True)
-    if "ERROR" in (r.stdout + r.stderr):
-        sys.stderr.write((r.stdout + r.stderr)[-3000:] + "\n")
-        return 1
-    if r.returncode != 0:
-        sys.stderr.write(r.stdout[-3000:] + r.stderr[-3000:])
-        return r.returncode
+    def run_cxc(body: str) -> bool:
+        with tempfile.NamedTemporaryFile("w", suffix=".cxc", delete=False) as fh:
+            fh.write(body)
+            path = fh.name
+        r = subprocess.run([CHIMERAX, "--offscreen", "--nogui", "--exit",
+                            "--silent", path], capture_output=True, text=True)
+        out = r.stdout + r.stderr
+        # ChimeraX exits 0 after a failed `save`, so the return code alone is
+        # not enough — it once reported success having written nothing.
+        if "ERROR" in out or r.returncode != 0:
+            sys.stderr.write(out[-3000:] + "\n")
+            return False
+        return True
 
-    # Crop each to its alpha bounding box, so the framing is set by the model
-    # rather than by whatever margin ChimeraX left, then write webp.
-    from PIL import Image
-    wrote = 0
-    for stem in ("pain_design", "pain_epitope"):
-        src = tmp_dir / f"{stem}.png"
+    def to_webp(src: pathlib.Path, name: str) -> bool:
+        """Crop to the alpha bounding box, so the model sets the framing."""
         if not src.is_file():
-            print(f"  MISSING {stem}.png — ChimeraX wrote nothing")
-            continue
+            print(f"  MISSING {src.name} — ChimeraX wrote nothing")
+            return False
+        from PIL import Image
         im = Image.open(src).convert("RGBA")
         box = im.getbbox()
         if box:
             im = im.crop(box)
-        out = ASSETS / f"{stem}.webp"
+        out = ASSETS / name
         im.save(out, "WEBP", quality=88, method=6)
-        wrote += 1
-        print(f"  wrote assets/{stem}.webp  {im.size[0]}x{im.size[1]}  "
+        print(f"  wrote assets/{name}  {im.size[0]}x{im.size[1]}  "
               f"{out.stat().st_size / 1024:.0f} KB")
+        return True
+
+    print(f"  hotspots  author {[a for _n, a in facts['hotspots']]}")
+    print(f"            refold {nums}  (offset {offset}, verified)")
+
+    # ---- hero pair: the lead design, and the bare epitope on one camera -----
+    print(f"  rendering hero pair from {design['name']}")
+    if not run_cxc(script):
+        return 1
+    wrote = sum(to_webp(tmp_dir / f"{s}.png", f"{s}.webp")
+                for s in ("pain_design", "pain_epitope"))
+
+    # ---- design cards: top N, superposed, one shared camera ----------------
+    designs = top_designs()
+    missing = [d["name"] for d in designs if not pathlib.Path(d["refold_cif"]).is_file()]
+    if missing:
+        print(f"  skipping cards — refolds absent: {missing}")
+        return 0 if wrote == 2 else 1
+    card_dir = pathlib.Path(tempfile.mkdtemp())
+    print(f"  rendering {len(designs)} design cards (superposed on rank 1)")
+    if not run_cxc(card_script(designs, spec, matrix, card_dir)):
+        return 1
+    # Crop the cards to ONE box — the union of their bounding boxes — not each
+    # to its own. Per-image cropping would shift and rescale every card
+    # independently and quietly undo the shared camera the superposition exists
+    # to provide; the target has to land in the same place in all four for the
+    # differences between the binders to be the thing a reader sees.
+    from PIL import Image
+    srcs = [card_dir / f"pain_rank{i}.png" for i in range(1, len(designs) + 1)]
+    if any(not s.is_file() for s in srcs):
+        print(f"  MISSING one or more card renders: "
+              f"{[s.name for s in srcs if not s.is_file()]}")
+        return 1
+    ims = [Image.open(s).convert("RGBA") for s in srcs]
+    boxes = [im.getbbox() for im in ims]
+    union = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+             max(b[2] for b in boxes), max(b[3] for b in boxes))
+    for i, im in enumerate(ims, 1):
+        out = ASSETS / f"pain_rank{i}.webp"
+        cropped = im.crop(union)
+        cropped.save(out, "WEBP", quality=88, method=6)
+        print(f"  wrote assets/pain_rank{i}.webp  {cropped.size[0]}x{cropped.size[1]}"
+              f"  {out.stat().st_size / 1024:.0f} KB")
     return 0 if wrote == 2 else 1
 
 

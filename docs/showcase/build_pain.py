@@ -237,6 +237,13 @@ EXTRA_CSS = """
 .bar i{display:block;height:100%;background:var(--accent)}
 td.why{font-size:.84rem;color:var(--ink-2)}
 td.unc{font-size:.82rem;color:var(--muted);font-style:italic}
+/* Four design cards, not the shared sheet's three: a 3-column grid strands the
+   fourth on a row of its own. Two-up rather than four-across because the
+   structures are the point — at four the cards are ~200px and `.mini`'s
+   two-column metric list starts wrapping its labels. All four share one camera,
+   so a 2x2 compares just as well as a row. */
+@media(min-width:700px){.cards{grid-template-columns:repeat(2,1fr)}}
+.cards .card img{height:230px}
 .tier{font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.06em;
   padding:2px 7px;border-radius:2px;background:var(--sunk);border:1px solid var(--rule-2);
   color:var(--muted);white-space:nowrap}
@@ -251,11 +258,19 @@ td.unc{font-size:.82rem;color:var(--muted);font-style:italic}
 """
 
 
-def img(name: str) -> str:
-    """Inline a render as a data URI — a page must have no external assets."""
+def img(name: str) -> str | None:
+    """Inline a render as a data URI — a page must have no external assets.
+
+    Returns None when the render is absent, so a checkout missing one still
+    builds (a card without its picture, rather than no page). Regenerate with
+    `.venv/bin/python docs/showcase/render_pain.py`.
+    """
     import base64
-    return ("data:image/webp;base64,"
-            + base64.b64encode((HERE / "assets" / f"{name}.webp").read_bytes()).decode())
+    path = HERE / "assets" / f"{name}.webp"
+    if not path.is_file():
+        print(f"  [warn] assets/{name}.webp missing — building without it")
+        return None
+    return "data:image/webp;base64," + base64.b64encode(path.read_bytes()).decode()
 
 
 def fmt(x, n=2):
@@ -281,7 +296,19 @@ def dropped_rows() -> str:
 
 
 def design_cards() -> str:
-    return "".join(f'''<article class="card"><div class="card-b">
+    """A card per top design: its refold, then its numbers.
+
+    The four renders are superposed on rank 1's target and share one camera and
+    one crop (see `render_pain.py`), so the grey target lands in the same place
+    in every card and the thing that visibly differs between them is the binder
+    — which is the only reason to show four pictures side by side.
+    """
+    out = []
+    for i, d in enumerate(D[:4], 1):
+        pic = img(f"pain_rank{i}")
+        shot = (f'<img src="{pic}" alt="The design ranked {i}, bound to RAMP1, '
+                f'on the same view as the other cards.">') if pic else ""
+        out.append(f'''<article class="card">{shot}<div class="card-b">
       <div class="card-h"><span class="rk">rank {i}</span><code>{d["name"]}</code></div>
       <dl class="mini">
         <div><dt>ipTM</dt><dd>{fmt(d["iptm"], 3)}</dd></div>
@@ -290,7 +317,8 @@ def design_cards() -> str:
         <div><dt>iface PAE</dt><dd>{fmt(d["iface_pae"])} Å</dd></div>
         <div><dt>hotspots</dt><dd>{100*d["engagement"]:.0f}%</dd></div>
         <div><dt>length</dt><dd>{d["len"]} aa</dd></div>
-      </dl></div></article>''' for i, d in enumerate(D[:4], 1))
+      </dl></div></article>''')
+    return "".join(out)
 
 
 def tier_rows() -> str:

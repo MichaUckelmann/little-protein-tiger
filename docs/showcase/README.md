@@ -107,7 +107,19 @@ external assets and no network dependency.
 `render_pain.py` is the one render scripted end to end — run
 `.venv/bin/python docs/showcase/render_pain.py` and it re-derives the hotspot
 numbering, aims the camera and writes `assets/pain_design.webp` +
-`assets/pain_epitope.webp`. It **verifies the author-to-refold residue mapping
+`assets/pain_epitope.webp` (the hero pair) and `assets/pain_rank1-4.webp` (the
+design cards).
+
+**The four card renders share one camera and one crop.** Each is a separate RF3
+refold, so its target sits in its own frame; rendered independently the cards
+would each be aimed differently and could not be compared, which is the only
+reason to show four side by side. So every target chain is superposed onto rank
+1's with `matchmaker` (aligning on `/B`, the target — never on the binders,
+which are different molecules), one camera is computed and framed over the
+union, and the models are shown one at a time **without** re-running `view`.
+The crop is the union of the four bounding boxes, not each image's own: cropping
+per image rescales and shifts every card independently and silently undoes the
+superposition. It **verifies the author-to-refold residue mapping
 against the coordinates and refuses to render if they disagree**, because a
 wrong offset paints ten arbitrary residues and produces a figure that looks
 perfectly fine. The other pages' renders predate it and were made by hand; port
