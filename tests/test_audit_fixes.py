@@ -1186,6 +1186,11 @@ def test_every_track_reports_exactly_one_anthropic_key_row():
 def test_a_missing_vector_index_names_fetch_corpus_on_an_empty_checkout():
     """`ingest_vectors.py` is the right fix only when there are fingerprints
     to ingest. On a fresh clone it embeds nothing and changes nothing."""
+    # LanceDB ships in the `corpus` extra, and CI installs only `.[dev]` on
+    # purpose (see scripts/ci_repro.sh) — reaching _get_table() without it
+    # raises ModuleNotFoundError from the import guard before the message
+    # under test is ever built. Same idiom as tests/test_ortholog_check.py.
+    pytest.importorskip("lancedb")
     from src.vector_store import VectorStore
     import src.vector_store as vs_mod
     with tempfile.TemporaryDirectory() as d:
