@@ -156,11 +156,7 @@ def main():
          [f"{100 * n['calibration']['backbone']['p_hat']:.1f}% hit rate",
           f"{n['n_survivors']} gated designs",
           f"{n['gpu_hours']['total']:.1f} GPU-h", f"${n['spend_usd']:.2f}"],
-         # No artwork: the only images available are the corpus network (which
-         # this page does not contain) and other campaigns' structures (which are
-         # other proteins). A ChimeraX render of the CALCRL/RAMP1 lead would fill
-         # this properly; a borrowed picture would assert something untrue.
-         None)
+         Image.open(ASSETS / "pain_design.webp").convert("RGBA"))
 
 
 if __name__ == "__main__":

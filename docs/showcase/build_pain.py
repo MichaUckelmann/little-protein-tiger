@@ -251,6 +251,13 @@ td.unc{font-size:.82rem;color:var(--muted);font-style:italic}
 """
 
 
+def img(name: str) -> str:
+    """Inline a render as a data URI — a page must have no external assets."""
+    import base64
+    return ("data:image/webp;base64,"
+            + base64.b64encode((HERE / "assets" / f"{name}.webp").read_bytes()).decode())
+
+
 def fmt(x, n=2):
     return f"{float(x):.{n}f}"
 
@@ -337,6 +344,17 @@ HTML = f"""{_HEAD}
   <div class="term"><span class="p">$</span> python scripts/run_pipeline.py --workflow ppi \\
   <br>&nbsp;&nbsp;&nbsp;&nbsp;--query "{F["query"]}" \\
   <br>&nbsp;&nbsp;&nbsp;&nbsp;--project pain_receptors_v3 --budget 5.00</div>
+  <figure class="hero-fig">
+    <img src="{img('pain_design')}" alt="The top-ranked designed mini-protein bound to RAMP1, covering the ten hotspot residues.">
+    <p class="legend">
+      <span><b style="background:#2f8f74"></b>designed binder, {D[0]["len"]} aa</span>
+      <span><b style="background:#9aa79d"></b>RAMP1 (target chain {F["target_chain"]})</span>
+      <span><b style="background:#c0872b"></b>the {N_HS} hotspots it was asked to cover</span>
+    </p>
+    <figcaption>The rank-1 design, refolded by RF3 from sequence alone with no template of
+    the complex, on the CALCRL-binding face of RAMP1. Dock RMSD to the pose it was designed
+    in: <strong>{fmt(D[0]["dock"])} Å</strong>. All {N_HS} hotspots engaged.</figcaption>
+  </figure>
   <div class="stats">
     <div class="stat"><b>${F["spend_usd"]:.2f}</b><span>total model spend</span></div>
     <div class="stat"><b>{F["gpu_hours"]["total"]:.1f}</b><span>GPU-hours</span></div>
@@ -435,6 +453,12 @@ HTML = f"""{_HEAD}
       hit rate falls as the set grows, which weakens the engagement gate rather than
       tightening it.</p>
       <p class="seq">{HOTSPOT_TEXT}</p>
+      <figure class="fig">
+        <img src="{img('pain_epitope')}" alt="RAMP1 alone, with the ten selected hotspot residues highlighted on one face.">
+        <figcaption>The same camera with the binder hidden: the ten selected residues form
+        one compact patch rather than a scatter across the surface, which is what makes them
+        a designable epitope.</figcaption>
+      </figure>
       <p>The trim kept <strong>{F["trim_residues"]} residues</strong> in
       {F["trim_segments"]} contiguous segment. A cut is refused outright if it would open
       hydrophobic core near the epitope — a fresh hydrophobic face is precisely what a

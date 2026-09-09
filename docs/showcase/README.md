@@ -93,6 +93,19 @@ external assets and no network dependency.
 
 ## Regenerating the structure images
 
+`render_pain.py` is the one render scripted end to end — run
+`.venv/bin/python docs/showcase/render_pain.py` and it re-derives the hotspot
+numbering, aims the camera and writes `assets/pain_design.webp` +
+`assets/pain_epitope.webp`. It **verifies the author-to-refold residue mapping
+against the coordinates and refuses to render if they disagree**, because a
+wrong offset paints ten arbitrary residues and produces a figure that looks
+perfectly fine. The other pages' renders predate it and were made by hand; port
+them to the same shape if they are ever regenerated. Two things it encodes:
+ChimeraX cannot write WebP (`No known data format for file suffix '.webp'`), so
+render PNG and convert; and aiming straight down the epitope vector puts the
+binder between the camera and everything it is covering, so the frame is tilted
+~52° off that axis.
+
 `assets/*.webp` are ChimeraX renders of the campaigns' own structures. The
 camera is computed, not hand-placed: for each figure a script takes the vector
 from the target's centroid to the hotspot centroid and points the camera down
