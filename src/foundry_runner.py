@@ -38,6 +38,7 @@ from typing import Callable, Iterable, Sequence
 
 from loguru import logger
 
+from src.env_config import resolve_env_path
 from src.foundry_spec import (
     RFD3_BINDER_CHAIN, RFD3_TARGET_CHAIN, build_mpnn_configs, parse_contig,
     strip_design_suffixes, validate_spec,
@@ -47,7 +48,58 @@ from src.job_registry import JobRegistry, JobRecord, STATUS_RUNNING
 # Measured on the RTX PRO 4500 Blackwell (32 GB) for a ~175-token complex.
 SEC_PER_RFD3_DESIGN = 5.4
 SEC_PER_MPNN_SEQ = 0.36
-SEC_PER_RF3_REFOLD = 8.4
+
+# RF3 refold cost grows with complex size, so a flat constant mis-sizes every
+# campaign that is not the one it was measured on. Fitted over four real
+# campaigns (pdl1_e2e, validate_bridge_kras, il7ra_e2e, mesothelioma_showcase;
+# pilot + calibration + production each, timed from rf3_out directory mtimes):
+#
+#     tokens   measured s/refold   flat-8.4 error
+#        195         9.7               -14%
+#        245        11.0               -23%
+#        264        15.7               -47%
+#        285        18.1               -54%
+#
+# t = 9.1 * (tokens/195)**1.62 fits those to within 7%, except the 245-token
+# point (+20%, and the only one without a production run behind it). The
+# exponent is between linear and quadratic because attention is O(N^2) but much
+# of the network is O(N) — do not "correct" it to 2.0 without re-measuring.
+SEC_PER_RF3_REFOLD = 9.1          # at REF_TOKENS
+REF_TOKENS = 195                  # the anchor campaign's complex size
+RF3_SIZE_EXPONENT = 1.62
+
+
+def rf3_seconds_per_refold(n_tokens: int | None) -> float:
+    """Estimated RF3 seconds per refold for a complex of ``n_tokens`` residues.
+
+    A MEASURED rate always beats this — see ``sec_per_refold_observed`` — but
+    the first stage of a campaign has nothing to measure yet.
+    """
+    if not n_tokens or n_tokens <= 0:
+        return SEC_PER_RF3_REFOLD
+    return SEC_PER_RF3_REFOLD * (n_tokens / REF_TOKENS) ** RF3_SIZE_EXPONENT
+
+
+def sec_per_refold_observed(paths: FoundryPaths) -> float:
+    """Seconds per refold actually achieved, from the refold directory mtimes.
+
+    Timed from the files themselves rather than from log lines: the driver
+    restarts RF3 through its own retry loops, so wall-clock between log ticks
+    includes gaps that are not refold time. Needs enough directories to be
+    meaningful; returns 0.0 when it cannot say.
+
+    This is the honest input for sizing the NEXT stage — it captures target
+    size, GPU, and whatever else the box is doing, none of which a constant can.
+    """
+    try:
+        stamps = sorted(e.stat().st_mtime for e in os.scandir(paths.rf3_dir)
+                        if e.is_dir())
+    except (OSError, AttributeError):
+        return 0.0
+    if len(stamps) < 50:
+        return 0.0
+    span = stamps[-1] - stamps[0]
+    return span / (len(stamps) - 1) if span > 0 else 0.0
 BYTES_PER_RF3_DIR = 2.5e6
 
 
@@ -199,6 +251,8 @@ def plan_campaign(
     mode: str = "production",
     n_batches: int | None = None,
     prefilter_rate: float = 0.59,
+    n_tokens: int | None = None,
+    sec_per_refold: float | None = None,
 ) -> CampaignPlan:
     """
     Size a campaign and check it against the disk budget.
@@ -218,9 +272,12 @@ def plan_campaign(
     expected_mpnn = int(expected_rfd3 * prefilter_rate) * n_seq
     expected_rf3 = expected_mpnn
 
+    # A rate this campaign actually achieved beats any formula; fall back to
+    # the size-scaled estimate when there is nothing measured yet.
+    per_refold = sec_per_refold or rf3_seconds_per_refold(n_tokens)
     seconds = (expected_rfd3 * SEC_PER_RFD3_DESIGN
                + expected_mpnn * SEC_PER_MPNN_SEQ
-               + expected_rf3 * SEC_PER_RF3_REFOLD)
+               + expected_rf3 * per_refold)
     disk = expected_rf3 * BYTES_PER_RF3_DIR / 1e9
     have = free_gb(paths.campaign_dir)
     budget_gb = float(f.get("disk_budget_gb", 120))
@@ -242,7 +299,7 @@ def plan_campaign(
         expected_rf3 = expected_mpnn
         seconds = (expected_rfd3 * SEC_PER_RFD3_DESIGN
                    + expected_mpnn * SEC_PER_MPNN_SEQ
-                   + expected_rf3 * SEC_PER_RF3_REFOLD)
+                   + expected_rf3 * per_refold)
         disk = expected_rf3 * BYTES_PER_RF3_DIR / 1e9
 
     plan = CampaignPlan(
@@ -251,10 +308,13 @@ def plan_campaign(
         expected_mpnn=expected_mpnn, expected_rf3=expected_rf3,
         est_gpu_hours=round(seconds / 3600.0, 1), est_disk_gb=round(disk, 1),
         free_disk_gb=round(have, 1), warnings=warnings)
+    basis = ("measured" if sec_per_refold
+             else f"{n_tokens}-token estimate" if n_tokens else "default")
     logger.info(
         f"{mode} plan: {expected_rfd3:,} designs -> ~{expected_mpnn:,} sequences "
         f"-> {expected_rf3:,} refolds | ~{plan.est_gpu_hours:,.0f} GPU-h, "
-        f"~{plan.est_disk_gb:,.0f} GB (free {have:,.0f} GB)")
+        f"~{plan.est_disk_gb:,.0f} GB (free {have:,.0f} GB) | "
+        f"{per_refold:.1f} s/refold ({basis}), prefilter {prefilter_rate:.2f}")
     for w in warnings:
         logger.warning(w)
     return plan
@@ -286,8 +346,15 @@ def prefilter_designs(
     the previous ones behind.
 
     `max_chainbreaks` must be DERIVED from the number of target segments, not
-    hard-coded: a single-segment target scores exactly 1, and a two-segment trim
-    scores 2. Passing the constant 1 against a multi-segment target rejects every
+    hard-coded. `n_chainbreaks` counts breaks in the OUTPUT structure, and the
+    target is fixed conditioning rather than something RFD3 builds, so an
+    N-segment target contributes an unavoidable N-1 before the binder is even
+    considered. Measured over four campaigns: single-segment targets score 0 on
+    ~95% of designs, the occasional 1-2 being a genuine break in the DIFFUSED
+    BINDER — which is the thing worth filtering. A 3-segment target scored
+    exactly 2 on all 400 designs sampled: no variance, no signal. Deriving the
+    limit from the segment count keeps the budget for real binder breaks at 1
+    either way; the constant 1 against a multi-segment target rejects every
     design.
     """
     rfd3_dir, out_dir = Path(rfd3_dir), Path(out_dir)
@@ -372,6 +439,9 @@ CAMPAIGN="{campaign}"
 LPT="{lpt}"
 PY="{py}"
 
+# design.foundry.cuda_device — which GPU this campaign gets on a multi-GPU box.
+export CUDA_VISIBLE_DEVICES="{cuda_device}"
+
 RFD3_DIR="$CAMPAIGN/rfd3"
 FILTERED="$CAMPAIGN/designs_filtered"
 MPNN_OUT="$CAMPAIGN/mpnn_out"
@@ -408,6 +478,8 @@ done
 log "prefiltering"
 $PY "$LPT/src/foundry_stages.py" prefilter "$RFD3_DIR" "$FILTERED" \\
     --max-chainbreaks {max_chainbreaks} --min-non-loop {min_non_loop} \\
+    --max-sidechain-clashes {max_sidechain_clashes} \\
+    --max-backbone-clashes {max_backbone_clashes} \\
     --report "$CAMPAIGN/filter_report.csv" >> "$LOGS/filter.log" 2>&1
 log "prefilter kept $(find "$FILTERED" -maxdepth 1 -name '*.cif.gz' | wc -l)"
 
@@ -415,7 +487,8 @@ log "prefilter kept $(find "$FILTERED" -maxdepth 1 -name '*.cif.gz' | wc -l)"
 log "MPNN"
 $PY "$LPT/src/foundry_stages.py" mpnn "$FILTERED" "$MPNN_OUT" \\
     --checkpoint "{mpnn_ckpt}" --n-seq {n_seq} --chunk-size {mpnn_chunk} \\
-    --foundry "$FOUNDRY" --mpnn-bin "{mpnn_bin}" --skip-existing \\
+    --foundry "$FOUNDRY" --mpnn-bin "{mpnn_bin}" --ckpt-dir "{ckpt_dir}" \\
+    --skip-existing \\
     >> "$LOGS/mpnn.log" 2>&1
 EXPECTED_RF3=$(count_mpnn)
 log "MPNN produced $EXPECTED_RF3 sequences"
@@ -443,11 +516,11 @@ log "campaign finished: rfd3=$(count_rfd3) mpnn=$(count_mpnn) rf3=$(count_rf3)"
 
 
 def _rfd3_command(cfg: dict, spec_path: Path, paths: FoundryPaths,
-                  plan: CampaignPlan) -> str:
+                  plan: CampaignPlan, *, bin_: str | None = None) -> str:
     f = cfg.get("foundry") or {}
     rfd3 = f.get("rfd3") or {}
     sampler = rfd3.get("inference_sampler") or {}
-    bin_ = f.get("rfd3_bin", ".venv-blackwell/bin/rfd3")
+    bin_ = bin_ or f.get("rfd3_bin", ".venv-blackwell/bin/rfd3")
     launcher = " ".join(f.get("launcher") or ["uv", "run"])
     rfd3_ckpt = f.get("ckpt", {}).get("rfd3", "rfd3")
     parts = [
@@ -464,6 +537,55 @@ def _rfd3_command(cfg: dict, spec_path: Path, paths: FoundryPaths,
         if key in sampler:
             parts.append(f"inference_sampler.{key}={sampler[key]}")
     return " \\\n      ".join(parts)
+
+
+# foundry's engines live in a uv venv inside the foundry checkout, and the
+# DEFAULT paths here say `.venv-blackwell` because that is what this repo's
+# reference workstation had to hand-build (its card is sm_120, which the
+# shipped container's torch was not built for). That name is an accident of
+# one machine's GPU. Anyone whose foundry venv is called something else —
+# which is everyone not on a Blackwell card — would otherwise get a driver
+# that launches, retries a nonexistent binary ten times over five minutes,
+# and aborts, with the real cause named nowhere.
+_VENV_GLOBS = (".venv*", "venv*", "env*")
+
+
+def _resolve_foundry_bin(root: Path, configured: str, name: str) -> str:
+    """Path (relative to `root`) of one foundry engine binary.
+
+    Uses the configured path when it exists. Otherwise looks for exactly one
+    venv under the checkout that provides the binary, and says so. Ambiguity
+    and absence both raise here — at config time, before a detached campaign
+    launches — rather than inside the driver five minutes later.
+    """
+    if (root / configured).exists():
+        return configured
+    found = sorted({
+        candidate for pattern in _VENV_GLOBS
+        for candidate in root.glob(f"{pattern}/bin/{name}")
+        if candidate.is_file()
+    })
+    if len(found) == 1:
+        rel = found[0].relative_to(root).as_posix()
+        logger.info(
+            f"foundry {name}: configured {configured!r} not present, using "
+            f"{rel!r} (set design.foundry.{name}_bin to silence this)")
+        return rel
+    if not found:
+        raise FoundryValidationError(
+            f"foundry's {name} binary was not found under {root}.\n"
+            f"Looked for {configured!r} (the configured path) and for "
+            f"{'/'.join(_VENV_GLOBS)}/bin/{name}.\n"
+            f"The default names a venv this project's reference machine "
+            f"hand-built for a Blackwell (sm_120) card; your foundry install "
+            f"almost certainly uses a different one. Point "
+            f"design.foundry.{name}_bin at yours — the path is relative to "
+            f"LPT_FOUNDRY_ROOT — and check the install with "
+            f"`python scripts/doctor.py`.")
+    raise FoundryValidationError(
+        f"foundry has {len(found)} candidate {name} binaries under {root}: "
+        + ", ".join(f.relative_to(root).as_posix() for f in found)
+        + f".\nSet design.foundry.{name}_bin to the one built for your GPU.")
 
 
 def write_campaign_driver(
@@ -485,12 +607,27 @@ def write_campaign_driver(
     if max_cb is None:
         max_cb = n_target_segments
 
-    foundry_root = f.get("root")
+    foundry_root = resolve_env_path("LPT_FOUNDRY_ROOT", f.get("root"))
     if not foundry_root:
         raise FoundryValidationError(
-            "design.foundry.root is not set in config.yaml — it must point at "
+            "foundry root is not set — set the LPT_FOUNDRY_ROOT env var "
+            "(see .env.example) or design.foundry.root in config.yaml to "
             "this machine's foundry checkout (the directory containing "
             ".venv-blackwell). There is no cross-machine default.")
+
+    root_path = Path(foundry_root)
+    rfd3_bin = _resolve_foundry_bin(
+        root_path, f.get("rfd3_bin", ".venv-blackwell/bin/rfd3"), "rfd3")
+    mpnn_bin = _resolve_foundry_bin(
+        root_path, f.get("mpnn_bin", ".venv-blackwell/bin/mpnn"), "mpnn")
+    rf3_bin = _resolve_foundry_bin(
+        root_path, f.get("rf3_bin", ".venv-blackwell/bin/rf3"), "rf3")
+    # The driver runs detached with its own environment, so the checkpoint
+    # directory is resolved here and baked in rather than read from $HOME at
+    # run time.
+    ckpt_dir = resolve_env_path(
+        "LPT_FOUNDRY_CKPT_DIR", f.get("ckpt_dir")) or str(
+            Path.home() / "pip_rcfoundry_ckpt")
 
     text = _DRIVER_TEMPLATE.format(
         foundry=foundry_root,
@@ -500,17 +637,24 @@ def write_campaign_driver(
         expected_rfd3=plan.expected_rfd3,
         n_seq=plan.n_seq,
         mode=plan.mode,
+        cuda_device=int(f.get("cuda_device", 0)),
         max_rfd3_attempts=int(f.get("max_rfd3_attempts", 10)),
         max_rf3_attempts=int(f.get("max_rf3_attempts", 20)),
         min_free_gb=int(f.get("min_free_gb", 20)),
-        rfd3_cmd=_rfd3_command(cfg, spec_path, paths, plan),
+        rfd3_cmd=_rfd3_command(cfg, spec_path, paths, plan, bin_=rfd3_bin),
         max_chainbreaks=int(max_cb),
         min_non_loop=float(prefilter.get("min_non_loop", 0.6)),
+        # Rendered explicitly rather than left to foundry_stages' own
+        # argparse defaults: they happened to agree, so raising either of
+        # these in config.yaml silently did nothing.
+        max_sidechain_clashes=int(prefilter.get("max_sidechain_clashes", 0)),
+        max_backbone_clashes=int(prefilter.get("max_backbone_clashes", 0)),
         mpnn_ckpt=(f.get("ckpt") or {}).get("mpnn", "solublempnn"),
-        mpnn_bin=f.get("mpnn_bin", ".venv-blackwell/bin/mpnn"),
+        mpnn_bin=mpnn_bin,
+        ckpt_dir=ckpt_dir,
         mpnn_chunk=int(mpnn.get("chunk_size", 250)),
         rf3_ckpt=(f.get("ckpt") or {}).get("rf3", "rf3"),
-        rf3_bin=f.get("rf3_bin", ".venv-blackwell/bin/rf3"),
+        rf3_bin=rf3_bin,
         rf3_template=rf3.get("template", "target"),
         rf3_dbs=int(rf3.get("diffusion_batch_size", 1)),
         rf3_seed=int(rf3.get("seed", 0)),
@@ -604,7 +748,18 @@ def run_design(
     second one on the same GPU.
     """
     paths.mkdirs()
-    max_target = ((cfg.get("foundry") or {}).get("target_residue_budget"))
+    # The same allowance `_stage_trim` uses when it keeps a marginally-oversized
+    # target whole rather than accept a cut that fails a quality guard. The trim
+    # never exceeds the plain budget on its own, so widening the ceiling here
+    # admits exactly that fallback's output and nothing else — without it, the
+    # trim stage's decision was overruled two stages later by a second read of
+    # the same config key, and a 222-residue target against a 220 budget died
+    # anyway.
+    _foundry = cfg.get("foundry") or {}
+    max_target = _foundry.get("target_residue_budget")
+    if max_target:
+        max_target = round(int(max_target) * (
+            1.0 + float(_foundry.get("target_budget_overshoot", 0.15))))
     try:
         validate_spec(spec_path, kept_segments=kept_segments,
                       max_target_residues=max_target)

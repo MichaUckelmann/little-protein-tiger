@@ -1,6 +1,10 @@
 ---
 name: protein-design-script
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Generates input YAML/JSON for protein design models BoltzGen and RFDiffusion3
   (RFD3). Input is a target-site analysis report with hotspot residues — the
   report may come from PPI mode (disrupt or stabilize; hotspots are interface
@@ -45,7 +49,7 @@ indexing and atom names). Use these directly — do not re-derive residue indice
 ## Output Location
 
 If invoked by the orchestrator, a `run_folder` path will be provided in the handoff
-message (e.g. `C:\Users\micha\Documents\LittleProteinTiger\YAP_TEAD4_2026-04-01\04_design_inputs\`).
+message (e.g. `outputs/YAP_TEAD4_2026-04-01/04_design_inputs/`).
 
 - Create the `04_design_inputs\` subfolder using the filesystem tool if it does not exist.
 - Write all output files (YAML, JSON, submission scripts) to that folder using `filesystem:write_file`.
@@ -127,14 +131,31 @@ entities:
 Notes:
 
 - `binding:` takes a **comma-separated list of integers** with no quotes and
-  no brackets — these are `label_seq_id` values (1-indexed mmCIF) copied
-  verbatim from MODEL-READY HOTSPOTS.
+  no brackets — 1-indexed residue positions, taken from the `label_seq_id`
+  column of MODEL-READY HOTSPOTS.
+- **Those integers are only valid for the file the hotspot table was written
+  about.** They are not a property of the residue; they are a property of the
+  residue *in one file*. BoltzGen reads `label_seq` straight out of an mmCIF,
+  but a PDB file has none, so it synthesises one as the 1-based position among
+  that chain's modelled residues — and the two disagree whenever the deposited
+  `entity_poly_seq` starts before the first modelled residue, or the structure
+  has been cropped. Measured on one campaign: target residue auth 256 is
+  `54` in the deposited `5GN0_ba1.cif` and `53` in the cropped
+  `trim/trimmed.pdb`.
+
+  So: if the `path:` you write into the yaml is the SAME structure the
+  MODEL-READY HOTSPOTS table was built from, copy the column as-is. If it is
+  any other file — a cropped target, a PDB export, a re-downloaded assembly —
+  the numbers must be recomputed against that file. Say which file you used in
+  your report; an off-by-one here silently constrains the binder to the wrong
+  residues, and every downstream metric still looks healthy.
 - For cyclic peptides include `cyclic: True` on the designed entity.
   For mini-proteins omit it.
 - For `inhibit_active_site` mode the structure has only a single target
   chain (no partner) — the YAML shape is **identical** to a PPI binder.
-- The reference file at `references/boltzgen_example_yaml_cyclic_peptide.yaml`
-  is the same schema; use it as a sanity check if anything above is unclear.
+- The reference file `boltzgen_example_yaml_cyclic_peptide.yaml`, alongside
+  this SKILL.md, is the same schema; use it as a sanity check if anything
+  above is unclear.
 
 ### Validation
 
@@ -160,7 +181,7 @@ inference_sampler.gamma_0=0.2
 ```
  
 ### Example JSON
-See references/RFD3_protein_binder_design.md
+See `RFD3_protein_binder_design.md`, alongside this SKILL.md.
  
 ## Shell Context
 The jobs are submitted on a SLURM-managed HPC cluster. Generate a complete
@@ -242,12 +263,18 @@ omitted `- ` prefix.
 - go_recommendation: GO
 - design_files: <comma-separated filenames of all generated YAML/JSON/sh files>
 - hotspot_regions: <1 or 2>
-- modality: <cyclic_peptide | mini_protein | either>
+- modality: mini_protein          # default; the operator opts into cyclic_peptide at kickoff
 - target_complex: <ProteinA / ProteinB>
 
 ## Reference
  
-For BoltzGen input YAML structure see references/boltzgen_reference.md
-For BoltzGen cyclic peptide example see references/boltzgen_example_yaml_cyclic_peptide.yaml
-For RFD3 input specification see references/RFD3input.md
-For RFD3 protein binder design examples see references/RFD3_protein_binder_design.md
+These files sit alongside this SKILL.md, in the same directory — read them by
+plain filename, with no directory prefix.
+
+- BoltzGen input YAML structure — `boltzgen_reference.md`
+- BoltzGen cyclic peptide example — `boltzgen_example_yaml_cyclic_peptide.yaml`
+- RFD3 overview, install and inference usage — `RFD3_reference.md`
+- RFD3 input specification — `RFD3input.md`
+- RFD3 protein binder design examples — `RFD3_protein_binder_design.md`
+- Worked example of the upstream PPI analysis this skill consumes —
+  `example_output_KRAS_RAF1_PPI_analysis_6XHB.md`

@@ -1,3 +1,11 @@
+> **Upstream document — redistributed under its own licence, not LPT's.**
+> Verbatim copy of `models/rfd3/README.md` from
+> [RosettaCommons/foundry](https://github.com/RosettaCommons/foundry) (branch
+> `production`), retrieved 2026-05-21. BSD 3-Clause, Copyright (c) 2025,
+> Institute for Protein Design, University of Washington — full licence text in
+> [`THIRD_PARTY_LICENSES.md`](../../THIRD_PARTY_LICENSES.md). Upstream is the
+> authority; re-fetch before assuming this copy is current.
+
 # De novo Design of Biomolecular Interactions with RFdiffusion3
 
 RFdiffusion3 (RFD3) is a diffusion method that can design protein structures 

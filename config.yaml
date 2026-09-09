@@ -18,9 +18,14 @@ quality:
   # Minimum priority_score to attempt download (0.0 = download everything).
   min_score_to_download: 0.0
 
-  # Restrict downloads to papers from journals in the tier 1/2 list only.
-  # TODO: set to false once initial high-quality database is built and curated,
-  #       then re-run to pull in broader literature.
+  # Restrict downloads to papers from journals in the tier 1/2 list only
+  # (src/ranking.py). Search still INDEXES every hit, so widening this later
+  # and re-running fetch_papers.py needs no re-search.
+  #
+  # On the shipped corpus this gate passes 32% of indexed papers; turning it
+  # off multiplies downloads ~3.1x, with matching curation cost and disk.
+  # See docs/journal-filtering.md for the tier lists, what is excluded, and
+  # how to extend them (tier1_extra / tier2_extra above).
   require_tiered_journal: true
 
 # ---------------------------------------------------------------------------
@@ -28,22 +33,22 @@ quality:
 # ---------------------------------------------------------------------------
 keywords:
   # Gap: developmental biology
-  - "embryonic patterning[Title/Abstract] AND mechanism[Title/Abstract]"
-  - "embryonic patterning[Title/Abstract] AND gradients[Title/Abstract]"
-  - "embryonic patterning[Title/Abstract] AND gene regulatory networks[Title/Abstract]"
-  - "embryonic patterning[Title/Abstract] AND transcription factors[Title/Abstract]"
-  - "Lineage-specific transcription factors[Title/Abstract]"
-  - "honey bee[Title/Abstract] AND epigenetics[Title/Abstract]"
-  - "varroa mite[Title/Abstract] AND inhibitor[Title/Abstract]"
-  - "varroa mite[Title/Abstract] AND proteome[Title/Abstract]"
-  - "varroa mite[Title/Abstract] AND biochemistry[Title/Abstract]"
-  - "honey bee[Title/Abstract] AND pest[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "honey bee[Title/Abstract] AND varroa mite[Title/Abstract]"
-  - "honey bee[Title/Abstract] AND biochemistry[Title/Abstract]"
-  - "varroa mite[Title/Abstract] AND proteomics[Title/Abstract]"
-  - "varroa mite[Title/Abstract] AND protein[Title/Abstract]"
-  - "bee parasites[Title/Abstract] AND molecular mechanism[Title/Abstract]"
-  - "varroa mite[Title/Abstract] AND molecular mechanism[Title/Abstract]"
+  - "histone chaperone[Title/Abstract] AND mechanism[Title/Abstract]"
+  - "histone chaperone[Title/Abstract] AND structure[Title/Abstract]"
+  - "histone chaperone[Title/Abstract] AND biochemistry[Title/Abstract]"
+  - "H2A[Title/Abstract] AND H2B[Title/Abstract] AND chaperone[Title/Abstract]"
+  - "FACT[Title/Abstract] AND H2A[Title/Abstract] AND H2B[Title/Abstract]"
+  - "histone chaperones[Title/Abstract] AND epigenetics[Title/Abstract]"
+  - "NAP1[Title/Abstract] AND H2A[Title/Abstract] AND H2B[Title/Abstract]"
+  - "NAP1[Title/Abstract] AND chaperone[Title/Abstract]"
+  - "H2A[Title/Abstract] AND chaperone[Title/Abstract]"
+  - "histone chaperone[Title/Abstract] AND molecular mechanism[Title/Abstract]"
+  - "H2A[Title/Abstract] AND chaperone[Title/Abstract] AND molecular mechanism[Title/Abstract]"
+  - "FACT[Title/Abstract] AND histone[Title/Abstract]"
+  - "NAP1[Title/Abstract] AND histone[Title/Abstract]"
+  - "FACT[Title/Abstract] AND structure[Title/Abstract] AND histone[Title/Abstract]"
+  - "H2A[Title/Abstract] AND chaperone[Title/Abstract] AND structure[Title/Abstract]"
+  - "H2B[Title/Abstract] AND chaperone[Title/Abstract]"
 
   
 
@@ -144,14 +149,26 @@ models:
     claude-sonnet-5:    {input: 3.00,  output: 15.00}   # $2/$10 intro rate through 2026-08-31
     claude-haiku-4-5:   {input: 1.00,  output: 5.00}
     claude-fable-5:     {input: 10.00, output: 50.00}
-    gemini-3.7-flash:              {input: 0.75, output: 3.75}   # intro rate through 2026-12-31; 1.50/7.50 after
-    gemini-3.1-flash-lite-preview: {input: 0.10, output: 0.40}
+    gemini-3.7-flash:              {input: 0.75, output: 3.75}   # intro rate; DOUBLES to 1.50/7.50 in January 2027
+    gemini-3.1-flash-lite:         {input: 0.25, output: 1.50}
+    # Retired name, kept so ledger lines written before the GA rename
+    # still price rather than logging as unpriced.
+    gemini-3.1-flash-lite-preview: {input: 0.25, output: 1.50}
 
 curation:
-  provider: "claude"            # "claude" | "gemini" | "local". Override per-run with --provider.
+  # gemini, like every other LLM stage in this repo. It was "claude" long
+  # after the pipeline-wide default moved, which meant the onboarding docs
+  # ("Gemini is the default provider") and the code disagreed, and a user
+  # with only a Gemini key had every paper in a batch fail on the same
+  # missing ANTHROPIC_API_KEY.
+  provider: "gemini"            # "claude" | "gemini" | "local". Override per-run with --provider.
   model: "claude-haiku-4-5"    # options: "claude-haiku-4-5" and "claude-sonnet-5"
-  gemini_model: "gemini-3.1-flash-lite"  # used when provider = "gemini"
-  # alternatives: "gemini-3-flash-preview" (standard), "gemini-3.1-flash-lite-preview" (high-volume/lower-cost)
+  # flash-lite over flash: curation is high-volume and schema-constrained
+  # (strict JSON against extraction_schema.json, with a validator that feeds
+  # errors back as a correction turn), which is the shape of work the smaller
+  # model handles at ~1/8 the cost.
+  gemini_model: "gemini-3.1-flash-lite"
+  # alternatives: "gemini-3.7-flash" (stronger, ~8x the cost), "gemini-3-flash-preview"
 
   # ── Local provider ────────────────────────────────────────────────────────
   # Default points at Ollama's OpenAI-compatible endpoint.
@@ -211,17 +228,30 @@ design:
     mode: standard
 
   # --workflow ppi ONLY (the binder track always runs foundry regardless of
-  # this key). "boltzgen" (default, src/design_runner.py) or "foundry"
-  # (hands off to the same RFD3 -> solubleMPNN -> RF3 stage machine
+  # this key). "foundry" (the default) or "boltzgen" (src/design_runner.py)
+  # (foundry hands off to the same RFD3 -> solubleMPNN -> RF3 stage machine
   # --workflow binder uses, right after PPI's own structure stage — see
   # PipelineRunner._bridge_ppi_to_foundry and UNIFY_DESIGN_BACKEND_NOTES.md).
-  # This key was dead until that bridge existed — do not assume any other
-  # value here does anything. CLI --design-engine overrides this value when
-  # explicitly passed; foundry requires --project.
-  backend: boltzgen
+  # DEFAULT since the bridge was validated on a real KRAS/RAF1 GPU campaign:
+  # both --workflow ppi and --workflow binder now run the same RFD3 ->
+  # solubleMPNN -> RF3 machine, so a target discovered by the PPI stages is
+  # designed the same way as one named directly. CLI --design-engine overrides
+  # this; foundry requires --project.
+  #
+  # 'boltzgen' remains fully supported and is selected automatically by
+  # --modality cyclic_peptide, which RFD3 cannot build.
+  backend: foundry
 
   foundry:
-    root: "/home/m.uckelmann_cbs-niob.local/code/foundry"
+    # Machine-specific — set via the LPT_FOUNDRY_ROOT env var instead (see
+    # .env.example and docs/environment_setup.md). This key is a same-machine
+    # fallback only; leave it null so a fresh clone doesn't inherit someone
+    # else's path.
+    root: null
+    # Where foundry's checkpoint registry lives. Machine-specific like `root`
+    # — set LPT_FOUNDRY_CKPT_DIR instead. null falls back to foundry's own
+    # default, ~/pip_rcfoundry_ckpt.
+    ckpt_dir: null
     # cwd MUST be `root` for `uv run` to resolve the venv. The Blackwell card is
     # sm_120, which the shipped container's torch is not built for — hence the
     # separate .venv-blackwell.
@@ -233,13 +263,19 @@ design:
       rfd3: "rfd3"            # checkpoint-registry aliases resolve to ~/pip_rcfoundry_ckpt
       rf3:  "rf3"
       mpnn: "solublempnn"
+    # Exported as CUDA_VISIBLE_DEVICES by the generated run_campaign.sh.
     cuda_device: 0
 
-    gpu_memory_gb: 32
     # Calibrated at ONE point (a ~175-token complex ran comfortably). RF3
     # attention is O(N^2) in tokens; re-measure by bisecting n_batches=2 runs at
     # increasing target size until OOM, then take 80% of the last passing value.
     target_residue_budget: 220
+    # If a trim fails one of its own quality guards (a cut that opens
+    # hydrophobic core, or loses too much interface) AND the target is within
+    # this fraction over target_residue_budget, keep the target whole instead
+    # of failing the campaign. Keeping it whole is strictly safer for the
+    # design; it costs only GPU time, and RF3 scales as (tokens/195)**1.62.
+    target_budget_overshoot: 0.15
     # RF3 output is ~2.5 MB per design directory, so disk — not GPU — is the
     # binding constraint: 48,000 refolds is ~120 GB.
     disk_budget_gb: 120
@@ -259,7 +295,9 @@ design:
         gamma_0: 0.2
 
     prefilter:
-      enabled: true
+      # Always runs — the geometric gates are not optional (of designs with
+      # iPTM > 0.7, only 45%/8% on the two reference campaigns were docked on
+      # target). There was an `enabled` key here that nothing read.
       # null => derive from the trim's segment count. A single-segment target
       # scores exactly 1 chainbreak; a two-segment trim scores 2, and a hardcoded
       # 1 would then reject every design.
@@ -295,6 +333,28 @@ design:
     # instead. Overridable per invocation via --max-local-hours.
     max_local_hours: 48
 
+    # Wall-clock budget the CALIBRATION VERDICT is decided against
+    # (src/campaign_calibration.calibrate -> _decide): a plan whose
+    # Wilson-pessimistic cost exceeds max_campaign_days * 24 GPU-hours cannot
+    # return SCALE_UP, and `adaptive_bar` will not raise the excellence bar to
+    # a rung that does not fit it. Read by _stage_calibration with a hardcoded
+    # default of 5 (= 120 GPU-h); declared here so the budget that decides
+    # SCALE_UP vs SCALE_UP_PARTIAL is tunable without a code edit.
+    max_campaign_days: 5
+
+    # Delete the PAE matrices (`*_confidences.json`) of designs that did NOT
+    # survive the hard gates, once scoring has finished. They are ~50% of an
+    # RF3 output tree (405 KB of a typical 792 KB design directory) and disk —
+    # not GPU — is the binding constraint on a production campaign.
+    #
+    # OFF by default because it is IRREVERSIBLE: ipSAE is computed from these
+    # matrices and cannot be recomputed once they are gone, so re-gating an
+    # existing campaign at a softer bar (exactly what an ITERATE verdict
+    # recommends) would no longer be possible for the pruned designs. Turn it
+    # on for long production campaigns where disk is tight. Survivors are
+    # always kept, and pruning is skipped entirely when nothing survived.
+    prune_confidences: false
+
   # Cluster compute path (src/cluster_runner.py): an ALTERNATIVE to the local
   # `foundry` GPU path above, for campaigns too big for one workstation. LPT
   # cannot reach the SLURM scheduler directly (no login-node access from this
@@ -303,7 +363,7 @@ design:
   # storage — then pauses with the exact command for a human to run on the
   # cluster. Resuming re-attaches and reads results back once they exist on
   # disk. Modelled directly on, and REUSES,
-  # g-groups/group_sahtoe/muckelmann/binder_pipeline (RFD3 -> solubleMPNN ->
+  # g-groups/.../binder_pipeline (RFD3 -> solubleMPNN ->
   # {RF3 | Protenix/IntelliFold2/...} refold, SLURM array jobs, apptainer
   # containers) rather than reimplementing it — that pipeline's own
   # `config/site.sh` is the actual source of truth for partition/account/
@@ -315,15 +375,21 @@ design:
     enabled: false
     # Absolute path to a `binder_pipeline`-shaped checkout, reachable from
     # THIS machine for staging inputs (its bin/ scripts run on the cluster,
-    # not here — this path is read/write, not executed).
-    pipeline_root: "/home/m.uckelmann_cbs-niob.local/g-groups/group_sahtoe/muckelmann/binder_pipeline"
+    # not here — this path is read/write, not executed). Machine-specific —
+    # set via LPT_CLUSTER_PIPELINE_ROOT instead (see .env.example and
+    # docs/environment_setup.md); left null here so a fresh clone doesn't
+    # inherit someone else's path.
+    pipeline_root: null
     # Where campaign inputs get staged, relative to pipeline_root: mirrors its
     # own examples/<name>/ convention so `bin/run_pipeline.sh` needs no
     # changes to find them.
     stage_subdir: "examples"
     # Free text shown verbatim in the pause instructions — this is the one
     # thing genuinely specific to "which human, which login node" and cannot
-    # be inferred from the filesystem.
+    # be inferred from the filesystem. Can also be set via
+    # LPT_CLUSTER_SUBMIT_INSTRUCTIONS (a real multi-line .env value works —
+    # see docs/environment_setup.md); the block below is a template, not a
+    # real login node.
     submit_instructions: |
       ssh <cluster-login-node>
       cd <pipeline_root-as-seen-from-the-cluster>
@@ -346,7 +412,9 @@ design:
     # use this if no local Protenix install exists; LPT then adds the two
     # extra manual commands to the pause instructions instead of running them.
     msa_source: protenix_hosted
-    protenix_repo: "/home/m.uckelmann_cbs-niob.local/code/protenix"
+    # Machine-specific — set via LPT_CLUSTER_PROTENIX_REPO instead (see
+    # .env.example and docs/environment_setup.md).
+    protenix_repo: null
     protenix_venv: ".venv"
     # GPUs available to a campaign at once. Maps to the cluster pipeline's
     # NARRAY (one array task = one GPU, stages 01/02); refold sharding
@@ -376,7 +444,18 @@ design:
     thresholds:
       binder_rmsd_dock_max: 5.0     # the mis-dock gate; does the most work
       epitope_recall_min: 0.5
-      hotspot_engagement_min: 1.0
+      # Fraction of the declared hotspots the binder must contact, so it scales
+      # with however many were declared. Was 1.0 — every hotspot — which is a
+      # bar the DESIGNS THEMSELVES often miss: on the 12-hotspot YAP1/TEAD1
+      # calibration only 49% of RFD3 backbones contacted all 12, and 92.5% of
+      # refolds engaged at least as many as their own design did. So 1.0 was
+      # mostly rejecting refolds for missing residues the design never targeted.
+      # Measured on that run, over the 1,392 refolds passing every other gate:
+      #   12/12 -> 738 survivors, median iptm 0.847, dock 1.232
+      #    9/12 -> 978 survivors, median iptm 0.842, dock 1.259
+      # i.e. +33% yield for -0.005 iptm. The discarded 7-11 band had identical
+      # pLDDT (0.798 vs 0.797) — well-folded, well-docked binders, not junk.
+      hotspot_engagement_min: 0.75
       binder_rmsd_fold_max: 2.0
       binder_plddt_min: 0.75
       # ipsae_min is high-precision/low-recall: >0.5 is ~70% precise against the
@@ -453,8 +532,10 @@ design:
   workstation:
     # Absolute path to the boltzgen entry point. The shebang on this script
     # carries its own venv's Python, so we can invoke it directly without
-    # activating the env or going through `uv run`.
-    boltzgen_executable: "/home/m.uckelmann_cbs-niob.local/code/boltzgen/.venv/bin/boltzgen"
+    # activating the env or going through `uv run`. Machine-specific — set
+    # via LPT_BOLTZGEN_EXECUTABLE instead (see .env.example and
+    # docs/environment_setup.md).
+    boltzgen_executable: null
     cuda_device: 0
     timeout_hours: 24
 
@@ -497,11 +578,37 @@ design:
     top_k: 20
 
   pyrosetta:
+    # PyRosetta is OPTIONAL. It is used in exactly two places, both AFTER
+    # designs already exist, and never to generate anything:
+    #   * PPI track    — per-design hotspot SASA (burial of the target's
+    #                    hotspot residues), in stage 5 analysis;
+    #   * binder track — relax + InterfaceAnalyzer on designs that already
+    #                    passed the geometric gates, in binder_scoring.
+    # Both tracks run end-to-end without it; you lose those metrics and the
+    # filters/weights that use them, nothing else.
+    #
+    #   auto  (default) use it when an interpreter is configured and present,
+    #                   otherwise skip those steps with a warning, note the
+    #                   skip in the stage report, and do NOT apply the
+    #                   hotspot_sasa filter (rather than failing every design
+    #                   for a metric that was never computed).
+    #   true            require it — fail loudly at the point of use if it is
+    #                   not configured. Use this for a reproducible campaign
+    #                   where a silently different ranking rubric is worse
+    #                   than a failed run.
+    #   false           never use it, even if installed.
+    #
+    # NOTE: PyRosetta is free for academic / non-commercial use only.
+    # Commercial use needs a licence — see docs/pyrosetta_setup.md.
+    enabled: auto
+
     # PyRosetta runs in its own conda env (Python 3.11) because the
     # installed pyrosetta build is ABI-incompatible with the LPT venv's
     # Python. src/pyrosetta_sasa.py subprocesses scripts/_sasa_worker.py
     # under this interpreter; results come back as JSON on stdout.
-    python_executable: "/home/m.uckelmann_cbs-niob.local/miniconda3/envs/pyrosetta/bin/python"
+    # Machine-specific — set via LPT_PYROSETTA_PYTHON instead (see
+    # .env.example and docs/environment_setup.md).
+    python_executable: null
     init_flags: "-mute all -ignore_unrecognized_res -load_PDB_components false"
 
   # Hard ground rules for what the pipeline will design against. The

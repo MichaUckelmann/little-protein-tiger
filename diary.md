@@ -3661,3 +3661,334 @@ integration test).
 4. BoltzGen's own `design_metrics`/`design_ranking` path is untouched and
    remains fully live (the maintainer's explicit choice to keep it as an
    escape hatch) — no dead-code cleanup there, by design, not oversight.
+
+## 2026-08-30/31 — MASH/MASLD benchmark run: PAUSED at production
+
+`projects/mash_e2e` round-2 (TAZ/TEAD4 on 5GN0) is **paused before
+production, by operator decision**. Everything through calibration is
+complete and on disk; the manifest carries a `campaign_paused`
+checkpoint with the resume command and the numbers below.
+
+### Where it got to
+
+Discovery -> structure -> trim -> spec -> pilot -> calibration all
+finished, $2.21 of API spend against a $5 cap, ~17 GPU-h. The trial is
+good: 9/527 backbones produced an excellent design (1.71%, 95% CI
+1.71% point / 0.90-3.21%), best iPTM 0.9165, prefilter kept 91%, 15
+refolds cleared every hard gate out of 2,108 scored.
+
+### Why it is paused rather than running
+
+Production launched on a `SCALE_UP` verdict that was costed with
+`campaign_calibration`'s flat `SEC_PER_RF3_REFOLD = 8.4`. `foundry_runner`
+had long since stopped costing that way, so the log carried both numbers
+four lines apart — 63 GPU-h "inside the 120 h budget" from the gate,
+138 GPU-h from `plan_campaign` at the measured 20.6 s/refold, for the
+same 22,184 refolds. The target is ~300 tokens and the anchor is only
+right near 175-195.
+
+Killed at 16/6,104 designs. Cost model fixed; re-gating the trial data
+already on disk (no GPU) returns **SCALE_UP_PARTIAL** — ~43 of the 50
+target designs are affordable inside the budget — and the excellence bar
+stays at the requested 0.7 rather than the 0.8 the faulty cost had
+justified raising it to.
+
+**The open decision is machine time, not science.** Local at ~120 GPU-h
+(~5 days), or the cluster, which `choose_compute()` already chose at
+>48 h and which `--compute local` overrode.
+
+### What the run found on the way (all fixed, all committed)
+
+The point of the run was to shake out bugs, and it did. In order of what
+they would have cost:
+
+1. `_verify_hotspot_grounding` rebound `residues` before its comparison
+   loop, so it compared the structure against itself. The 8ZNL guard had
+   **never once fired**, on either track.
+2. The chain-assignment guard called a legitimate ortholog "a different
+   molecule" on sequence identity alone — a verdict identity cannot make,
+   since an S. pombe ortholog and the PD-L1 incident's VHH sit in the
+   same band. Now decided on the UniProt protein NAME, with a measured
+   epitope-conservation gate behind it and the human AlphaFold model
+   fetched alongside.
+3. The gate/planner cost drift above.
+4. `search_corpus` post-filtered, so every study_category outside the two
+   that make up 90% of the corpus returned zero — including the
+   `experimental_structural` the literature skill is told to prefer.
+5. `get_fingerprint` stripped the two blocks that skill reads by name and
+   kept the 36.5% one nothing reads.
+6. The design analyst could overwrite a deterministic STOP with GO, and
+   its prompt was written for BoltzGen's columns throughout.
+7. The trim failed a campaign to shed two residues off a 222-residue
+   target against a 220 budget.
+8. `label_seq_id` was being derived by counting in four places the
+   corrector did not reach — and the corrector's own fallback invented a
+   positional index when the file carried no label_seq, which is the same
+   counting one layer down.
+9. The measured prefilter rate never reached the next stage's plan.
+10. Structure-tool payloads were 40% whitespace and truncated mid-JSON.
+
+### Not addressed
+
+`_matches` in `find_pdb_structures` is a bare substring test with a
+3-char floor, so `BID` matches `cannaBIDiol` — which is how a de novo
+binder-design paper (8T5E) was reported as the CASP6 structure. Any
+short symbol (BID, BAX, SRC, MDM2) is polluted. Left alone; it needs a
+word-boundary match and a look at the whole ranking path around it.
+
+---
+
+## 2026-08-31/09-08 — Source audit, two GPCR trials, and the first end-to-end PPI campaign
+
+A session that started as "write a technical report on how this works" and became
+eleven commits, because reading the source turned up six real defects and then
+two live trials turned up six more. Every fix below is in the tree with a test;
+the numbers are measured, not estimated.
+
+### What the audit found (6 defects, none caught by the suite)
+
+1. `_stage_analysis` called `check_available(cfg)` with no `cfg` in scope. The
+   BoltzGen branch is unreachable under `design.backend: foundry`, so it failed
+   only for `--design-engine boltzgen`, as a NameError swallowed into
+   `result.error`. Now guarded by a `symtable` scope check over EVERY function in
+   `src/` — the interpreter's own analyser, so closures don't false-positive.
+2. `prune_confidences` was documented as running and had no call site. Wired in
+   after `write_ranking_outputs`, behind `design.foundry.prune_confidences`,
+   default FALSE (ipSAE cannot be recomputed once the PAE matrices are gone),
+   skipped for cluster trees and skipped entirely when nothing survived.
+3. `campaign_calibration` kept a flat 8.4 s refold anchor while the planner had
+   long since scaled with complex size — and it is the GATE's own budget check.
+   Anchor and size law now imported from `foundry_runner`; `calibrate()` takes
+   `n_tokens` so no caller can silently take the wrong rate.
+4. The "closed enums" were prompt guidance only — nothing ever loaded
+   `extraction_schema.json`, and 565 of 11,052 fingerprints carried a category in
+   neither the prompt nor the schema. Enums are now parsed OUT of the schema at
+   import, and the three categories the corpus already used (`enzymology`,
+   `biocatalysis`, `computational_chemistry`) are declared rather than discarded.
+5. Vector ingestion was add-only on `paper_key`: a re-curated fingerprint kept a
+   stale vector forever and a deleted one never left. 704 rows on the live index
+   were older than their fingerprint. Now keys on key AND embedded text.
+6. `design.foundry.max_campaign_days` was read from a key that did not exist, so
+   the 120 GPU-h budget behind every SCALE_UP verdict was untunable.
+
+### What the trials found
+
+Two prompts, deliberately broad: "orphan GPCR in metabolic disease" and "pain
+receptors that are promising drug targets".
+
+**Run 1 died correctly.** Pathway found GPR146 (right answer, one paper in the
+corpus), no structure existed, so it substituted the downstream SCAP/SREBP2
+complex — whose only structure is a *S. pombe* ortholog. `_check_ortholog_
+conservation` hard-failed at 5/24 hotspots conserved (21%, bar is 60%). First
+firing of that guard since it was fixed. Cost $0.81, no GPU.
+
+**Run 2 exposed a guard hole.** Asked for the CALCRL/RAMP1 heterodimer in 6E3Y —
+where chain E *is* RAMP1 — the structure stage analysed chain P, the 38-residue
+CGRP agonist peptide, and rewrote `target_complex` to "CALCRL / CGRP". Chain R
+really is CALCRL, so the chain guard, hotspot grounding and the identity check
+all passed. `_verify_ppi_chain_assignment` reads `target_complex` out of the SAME
+handoff whose chain choice is under test, so a stage that renames the complex
+validates its own substitution. That swap is also what put three hotspots inside
+the membrane.
+
+`_verify_partner_chain_is_requested` takes the complex the UPSTREAM stages
+settled on. It accepts either requested protein (a target/partner swap is a
+legitimate correction) or an ortholog of one, and fails only when the partner is
+neither. **It reproduced on a third independent run** — the same substitution on
+the same structure with a de-primed prompt — and was caught at the point of
+substitution.
+
+### SCAP/SREBP was leakage, not a corpus bias
+
+Three unrelated prompts had landed on SCAP/SREBP. It was in `pathway-expert`'s
+own OUTPUT TEMPLATE: `5GRS`/`4YHC` sitting in the very slot the model fills, plus
+"SCAP-SREBP" offered as an example `pathway_hint`. Corpus weight does not explain
+it — SCAP and SREBF sit at ~1% each, BELOW YAP1/TEAD1 (3.9%), KRAS (2.8%) and
+EGFR (2.4%), which the pipeline does not fixate on. De-primed; the next run
+produced GCGR/RAMP2/LPAR1/GPR17 and no SCAP.
+
+### Corpus expansion: GPCR + pain
+
+Orphan GPCRs were 48 of 11,052 fingerprints (0.43%), 34 receptors, mode ONE paper
+each. GPR146 had exactly one. No config had ever searched for them.
+`config_gpcr_pain.yaml`, 30 terms in house style: 2,218 indexed, 385 past the
+tier gate, 381 curated for $0.94. GPCR-related 547 -> 847, orphan 48 -> 87 across
+57 receptors, pain/nociception 110. The gate passed 19.5% against 32.1%
+corpus-wide, because GPCR pharmacology publishes outside the tier list; 1,786
+indexed papers wait behind it and `quality.tier2_extra` is the lever.
+
+`curate_papers.py --paper-keys-file` exists because `--limit 400` would otherwise
+have spent the budget on the 3,481-paper chromatin backlog. It intersects the
+whole queue rather than limiting first, and keeps the QUEUE's priority order, not
+the file's.
+
+Vector index afterwards: 381 new + 704 re-embedded + 1,747 orphans pruned. Every
+orphan was a *stale duplicate* — a row keyed on the filename stem because the
+fingerprint had no DOI when it was embedded, later re-keyed once the
+canonical-metadata backfill filled it. All 1,747 verified 1:1 against a live
+`doi:` key before deleting. Index is now 11,397 rows, 0 duplicates, 0 stem keys.
+
+### Structure choice: best-evidenced is not best-designable
+
+The binder track has resolved targets to UniProt and ranked REAL computed
+interfaces since it was written. The PPI track had none of that: it takes
+whichever PDB the corpus cites and infers the chain pair from entity
+descriptions. That is why two runs picked the CGRP peptide — measured, the two
+interfaces in 6E3Y are the same size (R/P 3858 A^2, R/E 3862 A^2), so the skill
+was choosing the most conspicuous, not the largest, with nothing to compare.
+
+`_ppi_interface_options` gives the stage measured interfaces for the chosen
+entry. `_select_designable_structure` runs between pathway and literature —
+choice has to be settled there, because the structure stage cannot switch
+entries once its hotspots refer to one — and prefers an entry whose dominant
+interface IS the requested one. On CALCRL it switches 6E3Y (3.3 A, 7 chains,
+Gs + Nb35 + CGRP) to 3N7S, "Crystal structure of the ectodomain complex of the
+CGRP receptor": 2.1 A, CALCRL ECD 115 aa + RAMP1 ECD 96 aa, nothing else.
+Conservative on purpose — it overrides an evidence-based choice, so it fires only
+on a measurable defect and `--pdb` always wins.
+
+### Which GPCR site a binder can actually reach
+
+A binder is a folded protein in solution; it engages one face of the membrane.
+Reachable and clinically validated: class B ECDs (erenumab blocks CALCRL/RAMP1
+and is an approved migraine drug), class C Venus flytraps, class F CRDs, and the
+N-termini/ECLs of peptide-binding class A receptors. Not reachable: the
+orthosteric pocket of any lipid-ligand receptor — those are inside the bundle and
+entered LATERALLY from the bilayer (S1P1 is capped by its own N-terminal helix;
+CB1 has lipid-facing portals) — deep aminergic pockets, and any TM surface.
+Practical test given to the skills: would an antibody work here?
+
+Added to all four skills that choose targets or residues. `complex-structure-
+analysis` had no mention of membranes at all, which is where a CB1R run returned
+seven hotspots of which five were transmembrane.
+
+### Trim: spans must be grounded in residues that exist
+
+That CB1R run was refused with "the domains carrying the hotspots are 3881
+residues, over the 220-residue budget" — for a 439-residue chain. 5TGZ chain A is
+a CB1R-flavodoxin chimera running auth -2..1148; two CATH spans mapped onto
+endpoints that are not residues of the chain (-2..2109, 333..2101) and
+`n_residues` was `end - start + 1`. Now counted from observed residues, and a
+source whose spans miss the chain falls through to the next tier.
+
+Fusion partners are also excluded from the design target now
+(`_target_accession_residues`), via the deposited RCSB entity alignment — no
+sequence alignment of ours. 5TGZ keeps 291 CB1R residues of 439; 5XEZ keeps 403
+GCGR of 574.
+
+### And the one that had been broken for ten days
+
+`--start-from production` — the documented normal case after a multi-day
+campaign — died instantly with `'_TrimFromDisk' object has no attribute
+'n_residues_after'`. `plan_campaign` has sized RF3 cost from that field since
+b9eb184 (2026-08-29); `_TrimFromDisk` was never given it. Every fresh-process
+resume into pilot, calibration or production has been dead since. trim_map.json
+carried the value the whole time. The test now checks by reflection over every
+`trim.<attr>` the module reads.
+
+### The campaign that came out of it
+
+CALCRL/RAMP1 on 3N7S. Trim 84 -> 84 residues, one segment, 10/10 hotspots kept,
+BSA retention 104%. Pilot prefilter 92/100. Calibration: 2,108 refolds, 600
+survivors, backbone hit rate 99/527 = 18.8% [15.7-22.3%], verdict **SCALE_UP**
+with the adaptive bar RAISED 0.7 -> 0.85 (150 designs still clear it), 3.4 GPU-h
+pessimistic. Total LLM spend $0.51.
+
+The funnel is unlike anything previously recorded here: hotspot_engagement passes
+alone at 99.4% and `no clash` at 45.9% — steric packing is the binding
+constraint, not finding the site. That is what a small, solvent-exposed epitope
+does, and the opposite of the YAP1/TEAD1 campaign where engagement was the
+dominant drop at 43.7%.
+
+### The lesson that held every time
+
+Prompt guidance improved what the model CHOSE — target selection went from a
+yeast ortholog and an intramembrane pocket to three validated extracellular PPIs.
+It changed no mechanical decision. The chain swap happened twice on the same
+structure with explicit instructions not to; the structure choice needed code;
+the domain spans needed code. Anything that must be true should be checked, not
+requested.
+
+### Reading the finished report turned up one more
+
+The report's own title read "occupy the RAMP1 interface on CALCRL" while the
+trim contig said `D27-110` — chain D of 3N7S is RAMP1. `_bridge_ppi_to_foundry`
+took `names[0]` from "CALCRL / RAMP1" as target_gene, but the structure stage had
+chosen the SECOND protein's chain as the target. Not just a label:
+`_stage_trim` calls `restriction_for(pdb, target_chain, target_uniprot)`, and
+with the other protein's accession `uniprot_to_auth` finds no alignment, the
+restriction silently does not apply, and NO transmembrane stripping happens.
+Harmless on an ectodomain-only entry; silent on a full-length one.
+`_order_names_by_chain` now orders the pair by the chain assignment.
+
+### The swap was invisible to a reader
+
+Reading the finished campaign: `00_pathway.md` recommends 6E3Y eight times,
+`02_structure.md` says 3N7S, and nothing in between explains it. The account
+existed only in a log WARNING and a `structure_switched` manifest checkpoint —
+neither of which anyone reading the run's markdown or report.html will find. The
+earlier prose fix rewrote `structure_query`/`design_query`, which the NEXT STAGE
+consumes, not anything a person opens. (It also landed six minutes after that
+run started, so this campaign predates it entirely.)
+
+`_note_structure_switch` now appends a `## STRUCTURE SUBSTITUTION` section to
+the stage file whose choice was overridden — appended, not rewritten, because
+what the pathway stage concluded on the evidence it had is worth keeping intact
+— and the bridged `20_target_intel.md` carries the same note, so it reaches the
+HTML report's "Why this structure, why this site" section. Both name `--pdb
+<original>` as the way to override. The pain_receptors_v3 pathway report was
+backfilled from its checkpoint.
+
+### Cleaned up afterwards
+
+- A pause is no longer logged as `Pipeline error` — every `--stop-after` and
+  every `--detach` handoff printed one.
+- `Target complex: unknown` in the completion banner on a mid-track resume:
+  target_intel carries both names, nothing read them.
+- `TargetNode.dysregulation` is Optional, like its sibling
+  `genetic_dependency_evidence`. As a required `str` against a legitimately-null
+  field it cost a full extra LLM round-trip on 4.4% of curations.
+- `find_pdb_structures` matches whole symbols. `q in s` meant BID matched
+  "cannaBIDiol", SRC matched "reSouRCe", BAX matched "BAXter".
+
+### One report, the whole run
+
+Following the same thread — the record a reader can actually open — every
+report now ends with an appendix that renders each stage's own markdown WHOLE,
+not the slice a section quotes. A binder report for a PPI-bridged campaign
+therefore carries `00_pathway.md` / `01_literature.md` / `02_structure.md` from
+one level up alongside its own `20`..`28`, which is exactly the set of files I
+was flipping between while chasing the 6E3Y question.
+
+Two things had to be fixed for the markdown to survive the trip, both because a
+stage report is written to be read in a terminal first:
+
+- Handoff blocks are bullets. Twenty `- key: value` lines are a field list, so
+  they render as a two-column table now. Presentational only — `parse_handoff`
+  still reads the file on disk, and a block a model wrote prose into is left
+  exactly as it was rather than half-converted.
+- `25_calibration.md`'s cost ladders are indented TWO spaces. Markdown's
+  code-block rule is four, so it read them as a paragraph and collapsed every
+  run of spaces: an aligned ladder of designs/refolds/GPU-h became one run-on
+  sentence of numbers. They are fenced now. Checked across all 110 stage files
+  on disk: the transform touches those files and nothing else.
+
+`22_trim.md` had the same shape of problem at the source — five facts on five
+lines, which markdown folds into one paragraph — so it writes bullets now.
+
+**And the appendix immediately found a real bug.** `safe_json` escaped `<!--`
+as `<\!--`. JavaScript drops the backslash from an unknown escape, so every
+report ever generated rendered correctly, but the payload was not valid JSON —
+and nothing noticed, because no stage narrative had ever contained an HTML
+comment. The appendix carries whole files, `21_interface.md` opens with
+`<!-- MODE: DISRUPT -->`, and three binder-report tests failed at once. Both
+reports had their own copy of that function; it is now one shared
+`report_common.safe_json` using `\/` and `\u003c`, valid in JSON and in
+JavaScript alike.
+
+### Not addressed
+- 1,786 GPCR/pain papers indexed and blocked by the tier gate.
+- Two-structure design (hotspots on the complex, design on a clean ectodomain)
+  was scoped and deferred — the numbering transfer is now safe via
+  `uniprot_to_auth`, but the conformational mismatch risk is real and better
+  structure SELECTION may remove the need.

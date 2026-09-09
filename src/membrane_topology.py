@@ -10,8 +10,16 @@ annotates it precisely, per residue.
 
 So: pull `Transmembrane` and `Topological domain` features from UniProt, map the
 residue ranges through the RCSB entity alignment into the structure's author
-numbering, and restrict the design target to the extracellular side unless the
-caller explicitly asks otherwise.
+numbering, and restrict the design target to ONE face of the membrane.
+
+Which face is not a fixed answer, and the caller decides it. For a cell-surface
+receptor it is the extracellular side; for an intracellular-organelle membrane
+protein it is not — SCAP sits in the ER membrane and the SREBP-binding WD40
+domain it is designed against faces the cytosol, so "extracellular" names no
+real surface at all. `PipelineRunner._infer_membrane_side` therefore derives the
+side from where the declared hotspots actually sit and passes it in;
+`side="any"` disables the restriction. What is NOT optional either way is
+dropping the transmembrane segments themselves — see `restriction_for`.
 
 Soluble proteins (KRAS, VEGF-A) simply have no such features, and everything here
 degrades to "no restriction".

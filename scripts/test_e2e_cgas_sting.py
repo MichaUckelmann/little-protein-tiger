@@ -43,10 +43,22 @@ def main() -> int:
     )
     ap.add_argument("--pilot", type=int, default=50)
     ap.add_argument("--production", type=int, default=100)
+    ap.add_argument("--project", type=str, default="cgas_sting",
+                    help="Project slug for the persistent manifest — required "
+                         "by the runner whenever the PPI track uses the "
+                         "foundry design engine (the config default).")
+    ap.add_argument("--provider", choices=["gemini", "claude"], default="gemini",
+                    help="LLM provider for every stage. Default: gemini.")
     args = ap.parse_args()
 
+    from src.project import Project
+
+    project = Project.create(args.project, query=PROMPT, workflow="ppi")
+    rnd = project.new_round(note=PROMPT[:80])
+    round_id = rnd["run_id"]
     run_dir = args.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[setup] project: {project.slug}  round: {round_id}")
     print(f"[setup] run_dir: {run_dir}")
 
     cfg = yaml.safe_load((_ROOT / "config.yaml").read_text())
@@ -67,11 +79,13 @@ def main() -> int:
 
     runner = PipelineRunner(
         config=cfg,
-        provider="claude",
+        provider=args.provider,
         output_dir=run_dir,
         max_iter=30,
         max_tokens=120_000,
         capture_traces=True,  # dump per-stage trace_raw.json + trace_rendered.md
+        project=project,
+        round_id=round_id,
     )
 
     print(f"[start] {time.strftime('%Y-%m-%d %H:%M:%S')}")

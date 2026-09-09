@@ -6,6 +6,8 @@ from pathlib import Path
 from fastmcp import FastMCP
 from loguru import logger
 
+from src import _tool_views as _tv
+
 ROOT = Path(__file__).resolve().parent.parent
 _log_file = ROOT / "data" / "structure_tools.log"
 logger.remove()
@@ -21,7 +23,22 @@ from src.structure_tools import (
     score_surface_patch,
 )
 
-mcp = FastMCP("structure-tools")
+mcp = FastMCP(
+    "structure-tools",
+    instructions=(
+        "Deterministic structural-biology calculations over local PDB/CIF "
+        "files: interface analysis, buried surface area, residue contacts, "
+        "mutation clash checks, sequence/numbering maps, surface patches.\n\n"
+        "DO NOT reach for these tools on your own. Use them only when the "
+        "user explicitly asks for a calculation on a specific structure — "
+        "'analyse the interface of 6VJJ chains A and B', 'what contacts does "
+        "residue 45 make'.\n\n"
+        "These compute real numbers from real coordinates, so they are worth "
+        "using when a structure is genuinely in question. They are not a "
+        "substitute for what you already know about a protein, and they need "
+        "the structure file to be present locally."
+    ),
+)
 
 
 from src._path_resolve import resolve as _resolve_path
@@ -67,7 +84,7 @@ def tool_analyze_interface(
     """
     try:
         result = analyze_interface(_resolve(file_path), chain_a, chain_b, cutoff)
-        return json.dumps(result, indent=2)
+        return _tv.dumps(_tv.llm_view_interface(result))
     except Exception as e:
         logger.exception("analyze_interface failed")
         return json.dumps({"error": str(e)})
@@ -98,7 +115,7 @@ def tool_get_residue_contacts(
     """
     try:
         result = get_residue_contacts(_resolve(file_path), chain, resnum, partner_chain, cutoff)
-        return json.dumps(result, indent=2)
+        return _tv.dumps(result)
     except Exception as e:
         logger.exception("get_residue_contacts failed")
         return json.dumps({"error": str(e)})
@@ -140,7 +157,7 @@ def tool_check_mutation_clash(
         aa = one_to_three.get(aa, aa)
     try:
         result = check_mutation_clash(_resolve(file_path), chain, resnum, aa, partner_chain)
-        return json.dumps(result, indent=2)
+        return _tv.dumps(result)
     except Exception as e:
         logger.exception("check_mutation_clash failed")
         return json.dumps({"error": str(e)})
@@ -162,7 +179,7 @@ def tool_get_sequence_map(file_path: str, chain: str) -> str:
     """
     try:
         result = get_sequence_map(_resolve(file_path), chain)
-        return json.dumps(result, indent=2)
+        return _tv.dumps(result)
     except Exception as e:
         logger.exception("get_sequence_map failed")
         return json.dumps({"error": str(e)})
@@ -190,7 +207,7 @@ def tool_score_surface_patch(
     """
     try:
         result = score_surface_patch(_resolve(file_path), chain, residue_list)
-        return json.dumps(result, indent=2)
+        return _tv.dumps(result)
     except Exception as e:
         logger.exception("score_surface_patch failed")
         return json.dumps({"error": str(e)})
@@ -241,7 +258,7 @@ def tool_find_glue_pockets(
             min_periface_sasa=min_periface_sasa,
             top_n=top_n,
         )
-        return json.dumps(result, indent=2)
+        return _tv.dumps(result)
     except Exception as e:
         logger.exception("find_glue_pockets failed")
         return json.dumps({"error": str(e)})

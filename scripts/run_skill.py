@@ -34,9 +34,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 import yaml
-from dotenv import load_dotenv
+from src.env_config import load_env
 
-load_dotenv(_ROOT / ".env")
+load_env(_ROOT / ".env")
 
 from src.skill_runner import SkillRunner
 
@@ -46,14 +46,20 @@ _DEFAULT_MODELS = {
 }
 
 
+def _available_skills() -> list[str]:
+    """Every skills/<name>/ that has a SKILL.md, so the help cannot go stale."""
+    skills_dir = _ROOT / "skills"
+    if not skills_dir.is_dir():
+        return []
+    return sorted(p.name for p in skills_dir.iterdir()
+                  if (p / "SKILL.md").is_file())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run a pipeline skill via Claude or Gemini API.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Skills: complex-structure-analysis, binder-optimizer, pathway-expert,\n"
-            "        molecular-biology-expert, complex-expert, protein-design-script, orchestrator"
-        ),
+        epilog="Skills: " + ", ".join(_available_skills()),
     )
 
     parser.add_argument(

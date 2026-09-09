@@ -31,14 +31,16 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import requests
 import yaml
-from dotenv import load_dotenv
 from loguru import logger
 
 _ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(_ROOT / ".env")
 sys.path.insert(0, str(_ROOT))
 
+from src.env_config import load_env  # noqa: E402
+load_env(_ROOT / ".env")
+
 from src import handoff as _handoff
+from src.env_config import resolve_env_path
 from src.design_metrics import (
     enrich_with_hotspot_sasa,
     parse_boltzgen_outputs,
@@ -79,6 +81,33 @@ _THINKING_UPGRADE_MODEL = "claude-sonnet-5"
 _REFUSAL_FALLBACK_MODELS = ["gemini:gemini-3.7-flash", "claude-opus-5",
                            "claude-haiku-4-5"]
 
+# Model-id prefix -> provider, for refusal_fallbacks entries written WITHOUT an
+# explicit "provider:model" prefix.
+_MODEL_ID_PROVIDERS = (("claude-", "claude"), ("gemini-", "gemini"))
+
+
+def _split_fallback(fallback: str, current_provider: str) -> tuple[str, str]:
+    """Resolve one `refusal_fallbacks` entry to (provider, model_id).
+
+    An explicit "provider:model" always wins. Otherwise the provider is inferred
+    from the model-id prefix, and only falls back to the CURRENT provider for an
+    id we don't recognise (a local/Ollama model, say).
+
+    Inferring rather than inheriting matters: `models.gemini.refusal_fallbacks`
+    is `["claude-opus-5", "claude-haiku-4-5"]` with no prefix, and gemini is the
+    default provider for every stage. Inheriting the current provider sent those
+    Claude ids to the Gemini endpoint, which 404s — and a 404 raises HTTPError,
+    not SkillRefusedError, so it escapes the refusal handler and kills the run.
+    The safety net turned a recoverable refusal into a hard crash.
+    """
+    if ":" in fallback:
+        provider, model_id = fallback.split(":", 1)
+        return provider, model_id
+    for prefix, provider in _MODEL_ID_PROVIDERS:
+        if fallback.startswith(prefix):
+            return provider, fallback
+    return current_provider, fallback
+
 # Per-stage default model overrides keyed by stage name. Picks up before the
 # global _default_model but after an explicit user override via stage_models.
 # Currently: stage 6 (summary) defaults to Haiku because Sonnet-class models
@@ -110,6 +139,14 @@ _STAGE_TO_SKILL: dict[str, str] = {
 }
 
 
+#: Written into the label_seq_id column when the structure carries no
+#: label_seq for that residue — a PDB-format file has none at all. It is a
+#: deliberately non-numeric token: anything numeric here would be read
+#: downstream as a measured value, and BoltzGen consumes this column as
+#: label_seq.
+_LABEL_SEQ_UNAVAILABLE = "UNAVAILABLE"
+
+
 class _TrimFromDisk:
     """
     The subset of TrimResult the later binder stages use, rebuilt from
@@ -123,6 +160,18 @@ class _TrimFromDisk:
         self.trimmed_path = Path(mapping.get("trimmed_path")
                                  or mapping.get("source", ""))
         self.bsa_retention = float(mapping.get("bsa_retention", 1.0))
+        # Needed by `plan_campaign`'s token estimate, which sizes RF3 cost as
+        # (tokens/195)**1.62. Missing here since the size law landed (b9eb184,
+        # 2026-08-29), so EVERY fresh-process resume — `--start-from
+        # production` is the documented normal case after a multi-day campaign
+        # — died with "'_TrimFromDisk' object has no attribute
+        # 'n_residues_after'" before launching anything. trim_map.json has
+        # carried the value all along; nothing read it.
+        self.n_residues_after = int(
+            mapping.get("n_residues_after")
+            or sum(hi - lo + 1 for lo, hi in self.kept_segments))
+        self.n_residues_before = int(
+            mapping.get("n_residues_before") or self.n_residues_after)
         self.target_chain = mapping.get("target_chain", "")
         self.partner_chain = mapping.get("partner_chain", "")
         self.pdb_id = mapping.get("pdb_id", "")
@@ -150,6 +199,17 @@ def _stage_for_skill(skill_name: str) -> str:
 
 class PipelineError(RuntimeError):
     """Non-recoverable pipeline failure."""
+
+
+def _binder_midpoint(contig: str, default: int = 78) -> int:
+    """Midpoint of the binder length range at the head of an RFD3 contig.
+
+    A contig looks like ``70-86,/0,A195-229`` — the leading token is the
+    binder's length range. Used only to size the folded complex for a runtime
+    estimate, so the midpoint is enough and a malformed contig just falls back.
+    """
+    m = re.match(r"\s*(\d+)\s*-\s*(\d+)", contig or "")
+    return (int(m.group(1)) + int(m.group(2))) // 2 if m else default
 
 
 class PipelineBlockedError(PipelineError):
@@ -196,6 +256,10 @@ class PipelineResult:
     # Persisted handoff dicts so later stages can read fields from earlier
     # stages even when prev_handoff has been rebound. Set by _stage_pathway,
     # _stage_structure, and _stage_literature.
+    #: Set when `_select_designable_structure` overrode the pathway stage's
+    #: choice, so the substitution is visible in artifacts a person reads and
+    #: not only in the log and the manifest checkpoint.
+    structure_switch: dict | None = None
     pathway_handoff: dict | None = None
     structure_handoff: dict | None = None
     literature_handoff: dict | None = None
@@ -204,6 +268,11 @@ class PipelineResult:
     # stage surfaces it to the LLM as evidence (synonym → proceed,
     # paralog mismatch → NO_GO).
     pdb_identity_check: dict | None = None
+    # Populated only when the target chain turned out to be an ORTHOLOG of the
+    # human protein: the per-hotspot conservation table, the human accession,
+    # and the human AlphaFold model fetched alongside it. See
+    # PipelineRunner._check_ortholog_conservation.
+    ortholog_conservation: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +334,8 @@ class PipelineRunner:
         trial_backbones: int = 300,
         escalate_to: int | None = 1000,
         stop_after: str | None = None,
-        design_engine: str = "boltzgen",
+        design_engine: str | None = None,
+        modality: str = "mini_protein",
     ) -> None:
         self.config = config
         self.provider = provider
@@ -335,6 +405,13 @@ class PipelineRunner:
         self._trial_backbones = int(trial_backbones)
         self._escalate_to = escalate_to
         self._stop_after = stop_after
+        self._last_switch_reason: str | None = None
+        # Set by _verify_target_chain_assignment when the target chain is an
+        # ortholog rather than the human protein; read by
+        # _check_ortholog_conservation, which is the gate that decides
+        # whether that ortholog's epitope is worth designing against.
+        self._ortholog = None
+        self._ortholog_human_acc = ""
         # "standard" = pathway-expert | "wildcard" = wildcard-expert.
         # CLI / explicit kwarg overrides config; if caller passed the default
         # "standard" verbatim, fall back to whatever config says so users can
@@ -349,10 +426,11 @@ class PipelineRunner:
                 f"'standard' or 'wildcard'."
             )
         self._pathway_mode: str = resolved_mode
-        # "boltzgen" (default, unchanged today) | "foundry" — PPI-track only
-        # (the binder track always runs foundry regardless of this key).
-        # Opt-in per UNIFY_DESIGN_BACKEND_NOTES.md: --workflow ppi still
-        # defaults to BoltzGen; --design-engine foundry hands a
+        # "foundry" (default) | "boltzgen" — PPI-track only (the binder
+        # track always runs foundry regardless of this key). Flipped to
+        # foundry once a real KRAS/RAF1 campaign validated the bridge
+        # end-to-end on GPU; UNIFY_DESIGN_BACKEND_NOTES.md predates that
+        # flip. --design-engine foundry hands a
         # PPI-discovered target off to the same RFD3->solubleMPNN->RF3 stage
         # machine --workflow binder uses, right after PPI's own structure
         # stage (see `_bridge_ppi_to_foundry`). `design.backend` in
@@ -360,14 +438,29 @@ class PipelineRunner:
         # override-precedence pattern as `pathway_mode` above: an explicit
         # non-default kwarg (i.e. what the CLI's --design-engine passed) wins;
         # otherwise config.yaml sets the project-wide default.
-        cfg_design_engine = (config.get("design") or {}).get("backend", "boltzgen")
-        resolved_engine = design_engine if design_engine != "boltzgen" else cfg_design_engine
+        # None means "not specified" — config decides. Using a real engine
+        # name as the default made an EXPLICIT choice of that engine
+        # indistinguishable from silence, so config could override the caller.
+        cfg_design_engine = (config.get("design") or {}).get("backend", "foundry")
+        resolved_engine = design_engine or cfg_design_engine
         if resolved_engine not in {"boltzgen", "foundry"}:
             raise ValueError(
                 f"Invalid design_engine={resolved_engine!r}; expected "
                 f"'boltzgen' or 'foundry'."
             )
         self._design_engine = resolved_engine
+        # What the operator asked to design. LLM stages PROPOSE a modality;
+        # this decides. See _resolve_modality.
+        if modality not in ("mini_protein", "cyclic_peptide"):
+            raise PipelineError(
+                f"Invalid modality={modality!r}; expected 'mini_protein' or "
+                f"'cyclic_peptide'.")
+        if modality == "cyclic_peptide" and resolved_engine == "foundry":
+            raise PipelineError(
+                "modality='cyclic_peptide' cannot run on the foundry design "
+                "engine — RFD3 has no cyclic-peptide path. Use "
+                "design_engine='boltzgen' for a cyclic-peptide campaign.")
+        self._modality = modality
 
     @property
     def model_id(self) -> str:
@@ -523,6 +616,49 @@ class PipelineRunner:
                             "or re-run in auto mode."
                         )
                     raise PipelinePausedError("pathway_choice", {"choices": choices})
+
+            # Two deterministic checks on what the pathway stage just chose,
+            # BEFORE paying for another LLM stage. Neither needs the structure
+            # on disk; between them they cost one GraphQL call.
+            if start_idx <= 1 and result.pdb_id:
+                self._check_af_model_intent(handoff)
+                # Structure choice has to be settled HERE. The structure stage
+                # cannot switch entries — by the time it emits a handoff it has
+                # already analysed one, and its hotspots refer to those
+                # coordinates.
+                better = self._select_designable_structure(
+                    result.target_complex or "", result.pdb_id,
+                    operator_pinned=bool(pdb_id))
+                if better:
+                    # Rewrite the FREE-TEXT fields too. `structure_query` is
+                    # prose the pathway stage wrote naming the old entry, and it
+                    # flows into the literature prompt — leaving it stale made
+                    # the literature stage reason about, and cite, a structure
+                    # the pipeline was no longer using. Behaviour was correct
+                    # (the trim and the interface measurement both used the new
+                    # entry); the narrative in the artifacts and the report was
+                    # not, which is worse than useless to a reader.
+                    stale = result.pdb_id
+                    for field in ("structure_query", "design_query"):
+                        text = handoff.get(field)
+                        if text and stale:
+                            handoff[field] = re.sub(
+                                re.escape(stale), better, text,
+                                flags=re.IGNORECASE)
+                    handoff["structure_query"] = (
+                        (handoff.get("structure_query") or "").rstrip()
+                        + f" (Structure switched from {stale} to {better} "
+                          f"deterministically: cleaner entry for this "
+                          f"interface. Analyse {better}.)")
+                    result.structure_switch = {
+                        "from": stale, "to": better,
+                        "reason": self._last_switch_reason or "",
+                    }
+                    self._note_structure_switch(result, stale, better)
+                    result.pdb_id = better
+                    handoff["pdb_id"] = better
+                self._check_structure_organism(
+                    result.pdb_id, result.target_complex or "")
 
             # ── Stage 1: molecular-biology-expert ────────────────────────────
             # Runs BEFORE structure: literature-derived target_site_hint goes
@@ -685,6 +821,15 @@ class PipelineRunner:
 
         except PipelineBlockedError:
             raise
+        except PipelinePausedError as exc:
+            # A pause is a checkpoint, not a failure — state is saved and the
+            # run resumes with --start-from. It subclasses PipelineError, so
+            # without this branch every `--stop-after` and every --detach
+            # handoff was logged as "Pipeline error", the same confusion that
+            # once recorded a healthy detached campaign as FAILED.
+            logger.info(f"Paused at {exc.pause_point} — state checkpointed, "
+                        f"resume when ready")
+            raise
         except Exception as exc:
             result.error = str(exc)
             logger.error(f"Pipeline error: {exc}")
@@ -737,6 +882,34 @@ class PipelineRunner:
         for d in dirs.values():
             d.mkdir(parents=True, exist_ok=True)
         return dirs
+
+    def _cluster_slug(self, dirs: dict[str, Path]) -> str:
+        """Name this campaign gets on the SHARED cluster filesystem.
+
+        Must be unique across projects. `dirs["binder"].parent.name` is the
+        run directory, which for a project run is literally "round-1" — so
+        every project's first round staged into the same directory under
+        `pipeline_root`, overwriting each other's spec and mixing outputs.
+        A site trial nests one level deeper (`binder/sites/<site_id>/binder`),
+        so the site id is carried too.
+
+        `_run_cluster_stage` (which stages) and `_cluster_paths_for_mode`
+        (which reads back) must derive this identically — hence one method.
+        """
+        parent = dirs["binder"].parent
+        site = parent.name if parent.parent.name == "sites" else None
+        if self._project is not None:
+            base = f"{self._project.slug}_{self._round_id or 'round'}"
+        elif site is not None:
+            base = parent.parent.parent.name
+        else:
+            base = parent.name
+        base = base or "campaign"
+        return f"{base}_{site}" if site else base
+
+    def _is_site_dirs(self, dirs: dict[str, Path]) -> bool:
+        """True when `dirs` belongs to a `--trial-sites` site, not the top level."""
+        return dirs["binder"].parent.parent.name == "sites"
 
     def _load_binder_handoff(self, binder_dir: Path, stage: str) -> dict[str, str]:
         """Parse a prior binder stage's handoff from its .md, for resume."""
@@ -848,6 +1021,35 @@ class PipelineRunner:
         result.stages_completed.append("target_intel")
         return handoff
 
+    def _resolve_modality(self, proposed: str | None, *, source: str) -> str:
+        """The modality a run will ACTUALLY design, given what a stage proposed.
+
+        The operator's `--modality` decides; an LLM stage only proposes. Two
+        reasons this is not just "trust the handoff":
+
+        * cyclic_peptide is opt-in. It needs specialised synthesis, costs
+          substantially more, and has a thinner experimental record than
+          mini-protein binders — so a stage suggesting it must not silently
+          commit a campaign to it.
+        * RFD3/foundry has no cyclic-peptide path at all, and
+          `binder_sizes.cyclic_peptide` is 12-15 residues. Feeding that to RFD3
+          asks for something it cannot build, and it fails quietly.
+        """
+        wanted = self._modality or "mini_protein"
+        proposed = (proposed or "").strip() or wanted
+        if proposed == wanted or proposed == "either":
+            return wanted
+        if proposed == "cyclic_peptide" and wanted != "cyclic_peptide":
+            logger.info(
+                f"  {source} proposed modality=cyclic_peptide; designing a "
+                f"mini_protein instead. Cyclic peptides are opt-in — re-run "
+                f"with --modality cyclic_peptide (which also selects the "
+                f"boltzgen engine) if that is what you want.")
+            return wanted
+        logger.info(f"  {source} proposed modality={proposed!r}; using "
+                    f"{wanted!r} (--modality decides)")
+        return wanted
+
     @staticmethod
     def _binder_sites(intel: dict[str, str], limit: int = 1) -> list[dict]:
         """
@@ -957,13 +1159,34 @@ class PipelineRunner:
         handoff = self._run_stage("complex-structure-analysis", q, [], out,
                                   stage="interface")
         text = out.read_text(encoding="utf-8")
+        # Same skill, same table, same failure — and until now only the PPI
+        # track corrected it. label_seq_id is a lookup in a file already on
+        # disk, and models derive it by counting instead: 23/23 wrong on 5GRS,
+        # 10/10 on 5GN0, every one off by the same amount. This is the
+        # binder-track half of that fix, deliberately OUTSIDE any try/except —
+        # an unverifiable numbering is not a warning.
+        text = self._correct_label_seq_ids(
+            text, out, self._binder_structure_path(result.pdb_id or pdb),
+            handoff.get("target_chain") or intel.get("target_chain") or "A")
         hotspots = self._parse_hotspot_residues(text, handoff)
         if not hotspots:
             raise PipelineError(
                 "the interface stage produced no MODEL-READY HOTSPOTS table; the "
                 "RFD3 spec cannot be built without atom-level hotspots")
         self._verify_target_chain_assignment(intel, handoff, result.pdb_id or pdb)
+        # ADDED alongside the three existing guards, not in place of any of
+        # them. The binder track is less exposed than PPI — `target_gene` comes
+        # from target_intel and the interface stage cannot rewrite it — but the
+        # interface stage does choose `partner_chain`, and nothing checked that
+        # it is still the partner target_intel picked out of the candidate
+        # table. Same failure shape as the PPI CALCRL/CGRP swap.
+        self._verify_partner_chain_is_requested(
+            " / ".join(n for n in (intel.get("target_gene"),
+                                   intel.get("partner_name")) if n),
+            handoff, result.pdb_id or pdb,
+            source="The target-intel stage")
         self._verify_hotspot_grounding(hotspots, result.pdb_id or pdb)
+        self._check_ortholog_conservation(hotspots, result.pdb_id or pdb, result)
         result.hotspot_residues_json = hotspots
         result.stage_files["interface"] = out
         result.stages_completed.append("interface")
@@ -997,6 +1220,203 @@ class PipelineRunner:
         if not observed:
             return None
         return sequence_identity(observed, uniprot_seq)
+
+    def _infer_membrane_side(self, pdb_id: str, chain: str, uniprot: str,
+                             hotspots: list[dict], topo) -> str | None:
+        """
+        Which face of the membrane is the declared epitope actually on?
+
+        Returns a side name to restrict to, or None for "do not restrict" —
+        which covers a soluble protein, an unmappable structure, and the two
+        cases where restricting would be a guess: no hotspot could be placed,
+        or the hotspots straddle both faces.
+
+        This replaces a hardcoded "extracellular" default. A binder against a
+        cell-surface receptor does have to bind the outside, but that is a
+        property of THAT target, not a law: SCAP sits in the ER membrane and
+        its SREBP-binding WD40 domain faces the cytosol, so "extracellular"
+        names no real surface at all. The interface stage read the structure
+        and chose an interface; the topology's job here is to keep the trim on
+        the same face as that choice and strip the lipid-buried helices, not to
+        veto the choice.
+
+        A hotspot lying INSIDE the membrane is still an error, and is raised by
+        the caller's `restriction_for` path — that one is not a matter of side.
+        """
+        from src.membrane_topology import (CYTOPLASMIC, EXTRACELLULAR,
+                                           TRANSMEMBRANE, uniprot_to_auth)
+
+        if not topo.fetched or not topo.is_membrane:
+            return None
+        mapping = uniprot_to_auth(pdb_id, chain, uniprot)
+        if not mapping:
+            logger.info(
+                f"topology: no UniProt->author alignment for {pdb_id} chain "
+                f"{chain}; not restricting by membrane side")
+            return None
+        auth_to_pos = {auth: pos for pos, auth in mapping.items()}
+
+        counts: dict[str, int] = {}
+        in_membrane = []
+        for h in hotspots:
+            try:
+                auth = int(h["auth_seq_id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            pos = auth_to_pos.get(auth)
+            if pos is None:
+                continue
+            kind = topo.kind_at(pos)
+            if kind == TRANSMEMBRANE:
+                in_membrane.append(auth)
+                continue
+            if kind in (EXTRACELLULAR, CYTOPLASMIC):
+                counts[kind] = counts.get(kind, 0) + 1
+        if in_membrane:
+            raise PipelineError(
+                f"hotspot(s) {in_membrane} on {uniprot} lie INSIDE "
+                f"the membrane (UniProt annotates them transmembrane). That "
+                f"surface is buried in lipid in a cell, so a binder against it "
+                f"cannot work whichever side the rest of the epitope is on. "
+                f"Pick a site on one face.")
+        if not counts:
+            logger.info("topology: no hotspot could be placed on either face; "
+                        "not restricting by membrane side")
+            return None
+        if len(counts) > 1:
+            logger.warning(
+                f"topology: hotspots straddle both faces "
+                f"({counts}) — not restricting by membrane side. The epitope "
+                f"spans the membrane, which no single binder can engage; check "
+                f"the interface stage's chain assignment.")
+            return None
+        side = next(iter(counts))
+        logger.info(
+            f"topology: membrane_side inferred as {side!r} from {counts[side]} "
+            f"declared hotspot(s) — TM residues are dropped either way")
+        return side
+
+    def _check_ortholog_conservation(self, hotspots_json: str, pdb_id: str,
+                                     result: "PipelineResult") -> None:
+        """
+        When the target chain turned out to be an ORTHOLOG, is the epitope it
+        carries actually present in the human protein?
+
+        An ortholog structure is a legitimate, often unavoidable choice — no
+        human SCAP/SREBP complex has ever been solved, and a site conserved
+        between the two is the same site. What is not legitimate is designing
+        against residues the human protein does not have: the binder is then
+        optimised for a surface that exists only in the other organism.
+
+        So this is the gate that replaces "reject every ortholog". It maps each
+        declared hotspot onto human numbering (SIFTS, then a full-length global
+        alignment — see `src.ortholog_check.hotspot_conservation` for why the
+        obvious fragment alignment is not good enough) and requires
+        `MIN_HOTSPOT_CONSERVATION` of them to be identical. It also pulls the
+        human AlphaFold model, because the same alignment yields the epitope's
+        human residue numbers, which is what makes that model usable as a
+        design target instead of the ortholog crystal.
+
+        Fail-open on anything it cannot compute: a UniProt outage must not
+        halt a run. Only a MEASURED shortfall raises.
+        """
+        verdict = getattr(self, "_ortholog", None)
+        if not verdict or not verdict.is_ortholog or not hotspots_json:
+            return
+        from src.ortholog_check import (MIN_HOTSPOT_CONSERVATION,
+                                        fetch_alphafold_model,
+                                        hotspot_conservation)
+
+        data = json.loads(hotspots_json)
+        chain = data.get("target_chain")
+        hotspots = data.get("residues") or []
+        human_acc = getattr(verdict, "human_uniprot", "") or self._ortholog_human_acc
+        if not chain or not hotspots or not human_acc:
+            return
+        try:
+            cons = hotspot_conservation(
+                pdb_id, chain, hotspots, human_uniprot=human_acc,
+                chain_uniprot=verdict.chain_uniprot)
+        except Exception as exc:
+            logger.warning(f"ortholog conservation check failed: {exc}")
+            return
+        if not cons.total:
+            logger.warning("ortholog conservation check produced no rows — "
+                           "the epitope could not be mapped to human numbering")
+            return
+
+        logger.info(f"  ortholog conservation ({cons.method}): {cons.summary()}")
+        for row in cons.rows:
+            logger.info(
+                f"    {row['residue']}{row['auth_seq_id']} "
+                f"({verdict.organism or 'ortholog'}) -> "
+                f"{row['human_aa'] or '?'}{row['human_auth'] or '?'} (human) "
+                f"— {row['status']}")
+
+        af = None
+        try:
+            structures_dir = _ROOT / ((self.config.get("paths") or {}).get(
+                "structures_dir", "data/structures"))
+            af = fetch_alphafold_model(human_acc, structures_dir / "alphafold")
+        except Exception as exc:
+            logger.warning(f"could not fetch the human AlphaFold model: {exc}")
+
+        result.ortholog_conservation = {
+            "pdb_id": pdb_id, "chain": chain,
+            "ortholog_uniprot": verdict.chain_uniprot,
+            "organism": verdict.organism, "human_uniprot": human_acc,
+            "identity": verdict.identity, "method": cons.method,
+            "low_confidence": cons.low_confidence,
+            "fraction_conserved": cons.fraction_conserved,
+            "summary": cons.summary(), "rows": cons.rows,
+            "human_alphafold_model": str(af) if af else None,
+        }
+        self._binder_checkpoint("ortholog_target", "structure", "gate",
+                                result.ortholog_conservation)
+
+        if cons.fraction_conserved < MIN_HOTSPOT_CONSERVATION:
+            raise PipelineError(
+                f"{pdb_id} chain {chain} is an ortholog "
+                f"({verdict.organism or 'non-human'}, {verdict.chain_uniprot}) "
+                f"and its declared epitope is NOT conserved in human "
+                f"{human_acc}: {cons.summary()} — below the "
+                f"{MIN_HOTSPOT_CONSERVATION:.0%} bar. Designing here would "
+                f"optimise a binder for residues the human protein does not "
+                f"carry. Pick a human structure, pick a conserved site on this "
+                f"one, or design against the human AlphaFold model"
+                + (f" now at {af}" if af else " (AlphaFold has no model for it)")
+                + ". Per-hotspot human equivalents are in the "
+                  "'ortholog_target' manifest checkpoint.")
+
+    def _classify_target_chain(self, pdb_id: str, chain: str,
+                               identity: float | None, gene: str,
+                               uniprot: str):
+        """
+        Is a low-identity chain an ortholog of the target, or a different
+        molecule? Fail-open to `mismatch` if the metadata lookup dies — the
+        caller raises on `mismatch`, and a network blip must not silently
+        convert a wrong-molecule campaign into an accepted one.
+        """
+        from src.ortholog_check import MISMATCH, ChainVerdict, classify_chain
+        from src.target_resolve import entry_metadata
+
+        desc, accs = "", []
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+            info = (meta.get("chains") or {}).get(chain) or {}
+            desc = info.get("description") or ""
+            accs = list(info.get("uniprots") or [])
+        except Exception as exc:
+            logger.warning(f"could not read {pdb_id} chain metadata: {exc}")
+        try:
+            return classify_chain(identity=identity, description=desc,
+                                  gene=gene, uniprot=uniprot,
+                                  chain_accessions=accs)
+        except Exception as exc:
+            logger.warning(f"ortholog classification failed for {pdb_id}: {exc}")
+            return ChainVerdict(verdict=MISMATCH, identity=identity,
+                                description=desc,
+                                reason="ortholog classification was not possible")
 
     def _verify_target_chain_assignment(self, intel: dict[str, str],
                                         handoff: dict[str, str],
@@ -1062,6 +1482,24 @@ class PipelineRunner:
                                 f"  chain assignment OK — target_chain "
                                 f"{target_chain} is {target_id:.0%} identical "
                                 f"to {uniprot}")
+                            # High identity settles WHICH PROTEIN this is, not
+                            # which ORGANISM. Mouse Tead4 is 96% identical to
+                            # human TEAD4 — past every "same protein" threshold
+                            # — so returning here skipped the conservation
+                            # check entirely on a non-human structure. It is
+                            # 12/12 conserved on that target, and the only way
+                            # to know is to measure it; the alternative is
+                            # trusting the discovery stage's prose.
+                            verdict = self._classify_target_chain(
+                                pdb_id, target_chain, target_id, gene, uniprot)
+                            if verdict.is_ortholog:
+                                self._ortholog = verdict
+                                self._ortholog_human_acc = uniprot
+                                logger.info(
+                                    f"  — but it is a NON-HUMAN ortholog: "
+                                    f"{verdict.reason}. The declared hotspots "
+                                    f"will be checked for conservation in human "
+                                    f"{gene or uniprot}.")
                             return
                         partner_id = self._chain_identity_to_uniprot(
                             structure_path, partner_chain, ref_seq)
@@ -1077,6 +1515,30 @@ class PipelineRunner:
                                 f"identical. Designing against target_chain as "
                                 f"stated would build binders against the wrong "
                                 f"molecule.")
+                        # Low identity is NOT automatically the wrong molecule.
+                        # An ortholog of the target sits in exactly the same
+                        # 20-40% band as an unrelated chain (5GRS's S. pombe
+                        # Scp1 is 29% identical to human SCAP; the PD-L1
+                        # incident's VHH was ~20%), so sequence alone cannot
+                        # separate them. `classify_chain` asks the chain's OWN
+                        # UniProt entry for its recommended protein name and
+                        # organism — an ortholog carries the identical protein
+                        # name under a different taxid. An ortholog is a
+                        # legitimate design target when the site is conserved,
+                        # so it is recorded and passed to the conservation
+                        # check, not rejected here.
+                        verdict = self._classify_target_chain(
+                            pdb_id, target_chain, target_id, gene, uniprot)
+                        if verdict.is_ortholog:
+                            self._ortholog = verdict
+                            self._ortholog_human_acc = uniprot
+                            logger.warning(
+                                f"  ⚠ target_chain={target_chain} in {pdb_id} "
+                                f"is an ORTHOLOG, not the human protein: "
+                                f"{verdict.reason}. Continuing — the declared "
+                                f"hotspots will be checked for conservation in "
+                                f"human {gene or uniprot} before any GPU work.")
+                            return
                         raise PipelineError(
                             f"target_chain={target_chain} in {pdb_id} is only "
                             f"{target_id:.0%} identical to {gene or uniprot} "
@@ -1085,8 +1547,7 @@ class PipelineRunner:
                                f"{partner_id:.0%}" if partner_id is not None
                                else "")
                             + " — neither chain looks like the intended target "
-                              "by sequence. The interface stage may have picked "
-                              "the wrong entry or chains entirely.")
+                              "by sequence. " + verdict.reason)
                     logger.debug(
                         f"could not extract a sequence for chain {target_chain} "
                         f"in {structure_path}; falling back to metadata")
@@ -1167,11 +1628,24 @@ class PipelineRunner:
         path = ba1 if ba1.exists() else structures_dir / f"{pdb_id.upper()}.cif"
         try:
             seq_map = get_sequence_map(str(path), chain)
+            # get_sequence_map RETURNS {"error": ...} for a missing/empty
+            # chain rather than raising, so this subscript has to be inside
+            # the guard too — outside it, an absent chain aborted the run
+            # with a bare KeyError instead of the intended fail-open warning.
+            #
+            # Bind under its OWN name. This used to reuse `residues`, which
+            # shadowed the CLAIMED hotspot list parsed above, so the loop
+            # below compared the structure against itself: `three_letter`
+            # rows carry no "residue" key, `claimed` was always "",
+            # every iteration hit the `continue`, and `mismatches` could
+            # never be non-empty. The guard this docstring describes has
+            # never once fired.
+            struct_residues = seq_map["residues"]
         except Exception as exc:
             logger.warning(
                 f"could not verify hotspot grounding against {path}: {exc}")
             return
-        by_auth = {r["auth_seq_id"]: r["three_letter"] for r in seq_map["residues"]}
+        by_auth = {r["auth_seq_id"]: r["three_letter"] for r in struct_residues}
 
         mismatches = []
         for h in residues:
@@ -1189,6 +1663,616 @@ class PipelineRunner:
                 f"textbook/literature numbering for a well-known protein instead "
                 f"of reading this specific structure's residues — re-run the "
                 f"stage, or pick a different structure.")
+
+    @staticmethod
+    def _combine_allowed(restrict, chimera_keep: set[int] | None) -> set[int] | None:
+        """Intersect the topology restriction with the chimera filter.
+
+        Either may be absent. Both are "keep only these author ids", so the
+        conjunction is the intersection; None means no restriction at all.
+        """
+        topo = set(restrict.allowed_auth) if (restrict and restrict.applies) else None
+        if topo is None:
+            return chimera_keep
+        if chimera_keep is None:
+            return topo
+        return topo & chimera_keep
+
+    def _target_accession_residues(self, pdb_id: str, chain: str,
+                                   uniprot: str) -> set[int] | None:
+        """
+        On a CHIMERA, the author residues that are actually the target.
+
+        Crystallisation constructs routinely fuse a soluble partner into a
+        receptor to make it behave — 5XEZ is GCGR-endolysin, 5TGZ is
+        CB1R-flavodoxin — and RCSB reports both accessions on the one chain.
+        The fusion partner is not the target: it should never carry a hotspot,
+        never be trimmed *to*, and never count against the residue budget.
+
+        The deposited RCSB entity alignment already says which author residues
+        correspond to which UniProt sequence, so this needs no sequence
+        alignment of our own and no heuristic — the same primitive the membrane
+        topology path maps its segments through.
+
+        Returns None (meaning "no restriction") unless the chain really does
+        carry more than one accession and the mapping is non-empty, so a normal
+        single-protein chain is untouched.
+        """
+        if not (pdb_id and chain and uniprot):
+            return None
+        from src.membrane_topology import uniprot_to_auth
+        from src.target_resolve import entry_metadata
+
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+            accs = [a for a in ((meta.get("chains") or {}).get(chain) or {})
+                    .get("uniprots", []) if a]
+        except Exception as exc:
+            logger.debug(f"chimera check skipped for {pdb_id} {chain}: {exc}")
+            return None
+        if len(accs) < 2:
+            return None                      # not a fusion construct
+        try:
+            mapping = uniprot_to_auth(pdb_id, chain, uniprot)
+        except Exception as exc:
+            logger.warning(
+                f"  ⚠ {pdb_id} chain {chain} is a fusion construct ({accs}) but "
+                f"the {uniprot} alignment could not be read ({exc}) — the "
+                f"fusion partner is NOT being excluded")
+            return None
+        keep = {int(a) for a in mapping.values() if a is not None}
+        if not keep:
+            return None
+        logger.info(
+            f"  {pdb_id} chain {chain} is a fusion construct ({', '.join(accs)}); "
+            f"keeping the {len(keep)} residues that align to {uniprot} and "
+            f"excluding the fusion partner from the design target")
+        return keep
+
+    def _designable_chain_sizes(self, pdb_id: str, chain_counts: dict[str, int],
+                                over: int) -> dict[str, int]:
+        """
+        For each oversized chain, how many residues survive TM stripping.
+
+        A membrane protein's raw chain length is not the number that will be
+        designed against. `structure_trim` drops the transmembrane span AND the
+        opposite face before anything reaches RFD3 — always, because in an
+        isolated structure a TM helix is an exposed hydrophobic slab that
+        preferentially attracts binders which cannot work in a cell. Judging the
+        target-size policy on the raw length therefore refuses targets that are
+        comfortably designable once cropped.
+
+        Measured on the run that motivated this: 5XEZ chain A is a
+        GCGR-endolysin fusion, 574 residues, so the structure stage returned
+        NO_GO against a 500-residue limit and recommended "crop to the ECD or
+        use an isolated-ECD PDB" — which is exactly what the trim stage two
+        steps later does automatically. GCGR's UniProt topology leaves 167
+        extracellular residues, inside even the 220-residue trim budget, and all
+        four declared hotspots sit in the 26-136 ECD.
+
+        No new heuristic: the segments are deposited UniProt annotation mapped
+        into author numbering through the deposited RCSB entity alignment, and
+        the real cut still happens in `structure_trim` with every one of its
+        refusals intact (MIN_TARGET_RESIDUES, the exposed-hydrophobic rules,
+        BSA retention). This only stops the structure stage refusing early on a
+        number that is not the operative one.
+
+        Returns `{chain: designable_count}` for oversized chains where the
+        answer is both known and smaller. Silent for soluble proteins, for
+        chains with no resolvable accession, and whenever the topology lookup
+        fails — in each case the caller keeps the raw number.
+        """
+        from src.membrane_topology import fetch_topology, restriction_for
+        from src.target_resolve import entry_metadata
+
+        oversized = {c: n for c, n in chain_counts.items() if n and n > over}
+        if not oversized:
+            return {}
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+        except Exception as exc:
+            logger.debug(f"designable-size lookup skipped for {pdb_id}: {exc}")
+            return {}
+        chains = meta.get("chains") or {}
+
+        out: dict[str, int] = {}
+        for chain, raw in oversized.items():
+            accs = [a for a in ((chains.get(chain) or {}).get("uniprots") or []) if a]
+            for acc in accs:
+                try:
+                    topo = fetch_topology(acc)
+                    if not (topo.fetched and topo.is_membrane):
+                        continue
+                    restrict = restriction_for(pdb_id, chain, acc,
+                                               side="extracellular", topology=topo)
+                except Exception as exc:
+                    logger.debug(f"topology lookup failed for {acc}: {exc}")
+                    continue
+                if restrict.applies and 0 < len(restrict.allowed_auth) < raw:
+                    out[chain] = len(restrict.allowed_auth)
+                    logger.info(
+                        f"  chain {chain} is {raw} residues but only "
+                        f"{out[chain]} are designable once the trim drops the "
+                        f"transmembrane span and the cytoplasmic face")
+                    break
+        return out
+
+    #: Chains that are crystallisation or cryo-EM scaffolding rather than
+    #: biology: a designed binder never targets them, and their presence means
+    #: the entry was solved to study something other than the requested pair.
+    _SCAFFOLD_MARKERS = (
+        "nanobody", "fab ", "antibody", "single-chain", "scfv",
+        "guanine nucleotide-binding", "g(s) subunit", "g(i)/g(s)",
+        "lysozyme", "endolysin", "flavodoxin", "bril", "apocytochrome",
+        "rubredoxin", "thermostabilised apocytochrome", "green fluorescent",
+        "maltose", "thioredoxin", "legobody",
+    )
+
+    def _select_designable_structure(self, target_complex: str, chosen: str,
+                                     operator_pinned: bool) -> str | None:
+        """
+        Prefer a structure whose dominant interface IS the requested one.
+
+        "Best-evidenced structure" and "best structure to design against" are
+        different questions, and the pathway stage only answers the first: it
+        takes whichever PDB id the corpus cites, which is normally the landmark
+        paper's. For a receptor that is typically the full-length, agonist-bound,
+        G-protein-coupled cryo-EM complex — the hardest possible design target,
+        carrying a nanobody, a heterotrimeric G protein and a fusion partner,
+        with the requested interface buried among them.
+
+        On CALCRL the corpus cites 6E3Y (3.3 A, 7 chains, Gs + Nb35 + CGRP).
+        RCSB also holds 3N7S: CALCRL ECD with RAMP1 ECD at 2.1 A and nothing
+        else in the box. Same interface, better resolution, no scaffolding.
+
+        Deliberately conservative — this OVERRIDES an evidence-based choice, so
+        it only fires when the chosen entry is measurably unfit and a candidate
+        is measurably fit. All from metadata; no interfaces are computed here.
+        Never fires when the operator pinned `--pdb`.
+        """
+        if operator_pinned or not chosen or chosen.upper().startswith("AF-"):
+            return None
+        names = self._split_target_complex_names(target_complex)[:2]
+        if len(names) < 2:
+            return None
+        from src.target_resolve import (
+            entry_metadata, find_complex_structures, resolve_target,
+        )
+
+        try:
+            resolved = [resolve_target(n) for n in names]
+            accs = [r.uniprot for r in resolved if r and r.ok and r.uniprot]
+            if len(accs) < 2:
+                return None
+            ids = find_complex_structures(accs[0], rows=40)
+            if chosen.upper() not in {i.upper() for i in ids}:
+                ids = [chosen] + ids
+            meta = entry_metadata(ids[:25])
+        except Exception as exc:
+            logger.debug(f"structure preference skipped: {exc}")
+            return None
+        if not meta:
+            return None
+
+        def profile(entry: dict) -> dict | None:
+            chains = entry.get("chains") or {}
+            if not chains:
+                return None
+            have = {a.upper() for i in chains.values()
+                    for a in (i.get("uniprots") or []) if a}
+            if not {a.upper() for a in accs} <= have:
+                return None                      # requested pair not both present
+            target_chains = [i for i in chains.values()
+                             if accs[0].upper() in
+                             {a.upper() for a in (i.get("uniprots") or [])}]
+            chimeric = any(len([a for a in (i.get("uniprots") or []) if a]) > 1
+                           for i in target_chains)
+            scaffold = sum(
+                1 for i in chains.values()
+                if any(m in (i.get("description") or "").lower()
+                       for m in self._SCAFFOLD_MARKERS))
+            return {
+                "chimeric": chimeric,
+                "scaffold": scaffold,
+                "entities": len({(i.get("description") or "") for i in chains.values()}),
+                "res": entry.get("resolution_A") or 99.0,
+                "target_len": min((i.get("length") or 9999) for i in target_chains),
+            }
+
+        profiles = {pid: pr for pid, entry in meta.items()
+                    if (pr := profile(entry)) is not None}
+        here = profiles.get(chosen.upper())
+        if not profiles:
+            return None
+
+        def rank(item):
+            pid, pr = item
+            return (pr["chimeric"], pr["scaffold"], pr["entities"], pr["res"])
+
+        best_id, best = min(profiles.items(), key=rank)
+        if best_id == chosen.upper():
+            return None
+
+        # Only override on a measurable defect in what was chosen.
+        if here is None:
+            reason = f"{chosen} does not contain both {names[0]} and {names[1]}"
+        elif here["chimeric"] and not best["chimeric"]:
+            reason = (f"{chosen}'s {names[0]} chain is a fusion construct and "
+                      f"{best_id}'s is not")
+        elif here["scaffold"] - best["scaffold"] >= 2 and best["res"] <= here["res"]:
+            reason = (f"{chosen} carries {here['scaffold']} scaffolding chain(s) "
+                      f"(nanobody / G protein / fusion partner) against "
+                      f"{best['scaffold']} in {best_id}, at no worse resolution "
+                      f"({best['res']} A vs {here['res']} A)")
+        else:
+            return None
+
+        self._last_switch_reason = reason
+        logger.warning(
+            f"  ⚠ switching design structure {chosen} -> {best_id}: {reason}. "
+            f"Both contain {names[0]} and {names[1]}; {best_id} is the cleaner "
+            f"target for the requested interface. Pin --pdb {chosen} to keep "
+            f"the original.")
+        self._binder_checkpoint(
+            "structure_switched", "pathway", "choice",
+            {"from": chosen.upper(), "to": best_id, "reason": reason,
+             "profiles": {k: v for k, v in profiles.items()
+                          if k in (chosen.upper(), best_id)}})
+        return best_id
+
+    def _ppi_interface_options(self, pdb_id: str, target_complex: str) -> str:
+        """
+        MEASURED interfaces in the chosen entry, plus alternatives, for the prompt.
+
+        The binder track resolves its target to UniProt and ranks real,
+        computed interfaces before an LLM sees anything
+        (`target_resolve.build_candidate_table`). The PPI track had no
+        equivalent: its pathway stage picks whichever PDB id the corpus
+        mentions, and the structure stage then infers the chain pair from
+        entity descriptions alone. That is how two independent runs on 6E3Y
+        both chose the 38-residue CGRP peptide over chain E, RAMP1 — the
+        peptide is the most conspicuous thing in an agonist-bound cryo-EM
+        structure, and nothing had measured the alternative.
+
+        This gives the same stage measured ground truth: every chain pair in
+        the entry that buries a real interface with the target, ranked, with
+        BSA and H-bond counts. Advisory only — the skill still chooses, and the
+        deterministic guards still check what it chose.
+
+        Bounded cost, deliberately: interfaces are computed for THIS entry
+        only, and alternative entries are listed from metadata without
+        analysing them. Returns "" on any failure; the stage runs as before.
+        """
+        names = self._split_target_complex_names(target_complex)
+        if not names or not pdb_id or pdb_id.upper().startswith("AF-"):
+            return ""
+        from src.target_resolve import (
+            analyse_entry, entry_metadata, find_complex_structures,
+            rank_interfaces, resolve_target,
+        )
+
+        try:
+            resolved = resolve_target(names[0])
+            uniprot = resolved.uniprot if (resolved and resolved.ok) else ""
+            if not uniprot:
+                return ""
+            path = self._binder_structure_path(pdb_id)
+            if not path.exists():
+                return ""
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+            cands = rank_interfaces(analyse_entry(path, pdb_id, meta, uniprot))
+        except Exception as exc:
+            logger.debug(f"interface options unavailable for {pdb_id}: {exc}")
+            return ""
+        if not cands:
+            return ""
+
+        rows = "\n".join(
+            f"  {c.target_chain} / {c.partner_chain}  "
+            f"BSA {c.bsa_A2:>7.0f} A^2  {c.n_interface_residues:>3} residues  "
+            f"{c.n_hbonds:>2} H-bonds  partner: {c.partner_entity[:44]}"
+            for c in cands[:6])
+
+        alt = ""
+        others_for_manifest: list[dict] = []
+        try:
+            others = [p for p in find_complex_structures(uniprot, rows=25)
+                      if p.upper() != pdb_id.upper()][:6]
+            ometa = entry_metadata(others) if others else {}
+            lines = []
+            for oid in others:
+                m = ometa.get(oid.upper()) or {}
+                partners = ", ".join(
+                    sorted({(i.get("description") or "")[:30]
+                            for c, i in (m.get("chains") or {}).items()
+                            if uniprot not in (i.get("uniprots") or [])}))[:70]
+                lines.append(
+                    f"  {oid}  {m.get('method', '?')[:12]:12s} "
+                    f"{(str(m.get('resolution_A')) + ' A') if m.get('resolution_A') else '':>8s}  "
+                    f"partners: {partners or '(none - unbound)'}")
+                others_for_manifest.append(
+                    {"pdb_id": oid, "method": m.get("method"),
+                     "resolution_A": m.get("resolution_A"), "partners": partners})
+            if lines:
+                alt = ("\n\nOther deposited structures containing "
+                       f"{resolved.gene or names[0]} (NOT analysed — metadata only):\n"
+                       + "\n".join(lines))
+        except Exception as exc:
+            logger.debug(f"alternative-entry listing failed: {exc}")
+
+        logger.info(
+            f"  measured {len(cands)} interface(s) in {pdb_id}; best is "
+            f"{cands[0].target_chain}/{cands[0].partner_chain} at "
+            f"{cands[0].bsa_A2:.0f} A^2")
+        # Recorded, not acted on. The structure stage cannot switch entries —
+        # by the time it emits a handoff it has already analysed this one — so
+        # choosing a better STRUCTURE has to happen before this stage runs.
+        # Until it does, put the ranked options where an operator will see them
+        # and can re-run with `--pdb <id>`.
+        self._binder_checkpoint(
+            "structure_alternatives", "structure", "choice",
+            {"chosen": pdb_id.upper(),
+             "measured_interfaces": [
+                 {"target_chain": c.target_chain, "partner_chain": c.partner_chain,
+                  "partner": c.partner_entity, "bsa_A2": round(c.bsa_A2, 1),
+                  "n_hbonds": c.n_hbonds} for c in cands[:6]],
+             "other_entries": others_for_manifest})
+        return (
+            f"\n\nMEASURED interfaces in {pdb_id.upper()} involving "
+            f"{resolved.gene or names[0]}, computed from the coordinates and "
+            f"ranked (BSA, H-bonds, hydrophobic fraction, smaller target "
+            f"preferred):\n{rows}\n"
+            f"\nThese are measurements, not suggestions — use them instead of "
+            f"guessing the chain pair from entity descriptions. Pick the pair "
+            f"that matches the interface the campaign was chosen for, which is "
+            f"not always the largest: an agonist-bound structure buries a lot "
+            f"of area against its LIGAND, and designing there targets a "
+            f"different biology than a receptor/accessory-protein interface."
+            + alt)
+
+    def _check_structure_organism(self, pdb_id: str, target_complex: str) -> None:
+        """
+        Say at TARGET-SELECTION time that the chosen structure is not human.
+
+        The conservation gate (`_check_ortholog_conservation`) is the thing
+        that can actually refuse a non-human epitope, and it cannot run until
+        hotspots exist — two LLM stages later. On the orphan-GPCR run that cost
+        $0.57 and three stages to reach a stop that was foreseeable at stage 0:
+        the pathway report itself printed "5GRS (Schizosaccharomyces pombe —
+        ortholog)" next to the id it had just chosen.
+
+        This does not refuse anything. An ortholog is often a perfectly good
+        template — that is *why* the conservation check measures rather than
+        assumes — so this warns, names the human alternatives if RCSB has any,
+        and records a checkpoint. Costs one GraphQL call and no LLM tokens.
+        """
+        if (not pdb_id or pdb_id.upper().startswith("AF-")
+                or pdb_id.upper() == "NOT_FOUND"):
+            return
+        names = self._split_target_complex_names(target_complex)[:2]
+        if not names:
+            return
+        from src.target_resolve import (
+            entry_metadata, find_complex_structures, resolve_target,
+        )
+
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+        except Exception as exc:
+            logger.debug(f"organism pre-check skipped for {pdb_id}: {exc}")
+            return
+        chains = meta.get("chains") or {}
+        if not chains:
+            return
+        present = {str(a).upper()
+                   for info in chains.values()
+                   for a in (info.get("uniprots") or []) if a}
+        if not present:
+            return
+
+        missing: list[tuple[str, str]] = []
+        for name in names:
+            try:
+                resolved = resolve_target(name)
+            except Exception:
+                continue
+            acc = resolved.uniprot if (resolved and resolved.ok) else ""
+            if acc and acc.upper() not in present:
+                missing.append((name, acc))
+        if not missing:
+            return
+
+        alternatives: list[str] = []
+        try:
+            alternatives = [
+                pid for pid in find_complex_structures(missing[0][1], rows=25)
+                if pid.upper() != pdb_id.upper()
+            ][:5]
+        except Exception as exc:
+            logger.debug(f"human-alternative lookup failed: {exc}")
+
+        detail = ", ".join(f"{n} ({acc})" for n, acc in missing)
+        logger.warning(
+            f"  ⚠ {pdb_id} carries no human accession for {detail} — this is "
+            f"very likely an ortholog structure. The epitope will not be "
+            f"checked against the human protein until after the structure "
+            f"stage, so a non-conserved site costs two more LLM stages before "
+            f"it is caught."
+            + (f" Human structures containing {missing[0][0]}: "
+               f"{', '.join(alternatives)}." if alternatives else
+               " RCSB lists no human co-complex for it."))
+        self._binder_checkpoint(
+            "non_human_structure", "pathway", "gate",
+            {"pdb_id": pdb_id, "target_complex": target_complex,
+             "not_present_as_human": [{"name": n, "human_uniprot": a}
+                                      for n, a in missing],
+             "human_alternatives": alternatives})
+
+    @staticmethod
+    def _check_af_model_intent(handoff: dict) -> None:
+        """
+        An AlphaFold model is a MONOMER, so it cannot supply a PPI interface.
+
+        `_ensure_structure` accepts an `AF-<accession>` pseudo-id and fetches
+        the model, which is what makes a structure-less target designable at
+        all — the orphan-GPCR run wrote "de novo AlphaFold structural modeling
+        is required" and then fell back to a downstream complex, because the
+        pathway skill did not know the id was legal. It is legal now, but only
+        for the single-chain mode: `disrupt` and `stabilize` both need two
+        chains to compute an interface from, and there is only one here.
+        """
+        pdb_id = str(handoff.get("pdb_id") or "")
+        if not pdb_id.upper().startswith("AF-"):
+            return
+        intent = str(handoff.get("design_intent") or "").strip().lower()
+        if intent in ("", "inhibit_active_site"):
+            handoff["design_intent"] = "inhibit_active_site"
+            return
+        raise PipelineBlockedError(
+            f"design_intent={intent!r} was chosen with the AlphaFold model "
+            f"{pdb_id}, but an AlphaFold model is a single chain — there is no "
+            f"partner in it to disrupt or stabilise. Either target it as a "
+            f"single-chain pocket (design_intent: inhibit_active_site), or "
+            f"pick an experimental co-complex structure.")
+
+    def _verify_partner_chain_is_requested(
+        self, requested_complex: str, handoff: dict, pdb_id: str, *,
+        source: str,
+    ) -> None:
+        """
+        The partner chain must be a protein the campaign was JUSTIFIED against.
+
+        `_verify_ppi_chain_assignment` cannot catch a substitution here, by
+        construction: it reads `target_complex` out of the SAME handoff whose
+        chain choice is under test, so an analysing stage that rewrites the
+        complex to name whatever it actually looked at ends up validating its
+        own substitution. This guard is given the complex the UPSTREAM stages
+        settled on and never lets the analysing stage redefine it.
+
+        Caught on a real run. Asked for the CALCRL/RAMP1 heterodimer in 6E3Y —
+        where chain E *is* RAMP1 — the structure stage analysed CALCRL against
+        chain P, the 38-residue CGRP agonist PEPTIDE, and rewrote
+        target_complex to "CALCRL / CGRP". Chain R really is CALCRL, so the
+        chain-assignment guard, hotspot grounding and the identity check all
+        passed. The substitution is also what put three hotspots inside the
+        membrane: the CGRP peptide binds down a class-B vestibule that
+        penetrates the TM bundle, which the RAMP1 interface does not.
+
+        Accepts when the partner chain is EITHER requested protein — a
+        deliberate target/partner swap is legitimate, the interface skill is
+        explicitly told to correct a backwards assignment — or an ORTHOLOG of
+        one, which is the ortholog guard's business, not this one. Hard fails
+        only when it is neither. Fail-open wherever the evidence is missing,
+        like every other verify here.
+        """
+        names = self._split_target_complex_names(requested_complex)[:2]
+        if len(names) < 2:
+            return  # single-protein / inhibit_active_site mode has no partner
+        partner_chain = str(handoff.get("partner_chain")
+                            or handoff.get("chain_b") or "").strip()
+        if not partner_chain or not pdb_id:
+            return
+        structure_path = self._binder_structure_path(pdb_id)
+        if not structure_path.exists():
+            logger.warning(
+                f"  ⚠ partner chain not verified — {structure_path} is not on "
+                f"disk")
+            return
+
+        from src.ortholog_check import MISMATCH
+        from src.target_resolve import fetch_uniprot_sequence, resolve_target
+
+        def classify(chain: str, gene: str, acc: str):
+            identity = None
+            ref_seq = fetch_uniprot_sequence(acc)
+            if ref_seq:
+                identity = self._chain_identity_to_uniprot(
+                    structure_path, chain, ref_seq)
+            return self._classify_target_chain(pdb_id, chain, identity, gene, acc)
+
+        resolved: dict[str, tuple[str, str]] = {}
+        for name in names:
+            try:
+                r = resolve_target(name)
+            except Exception as exc:
+                logger.debug(f"could not resolve {name!r}: {exc}")
+                continue
+            if r and r.ok and r.uniprot:
+                resolved[name] = (r.gene or name, r.uniprot)
+        if not resolved:
+            logger.warning(
+                f"  ⚠ partner chain not verified — could not resolve either of "
+                f"{names} to a UniProt accession")
+            return
+
+        # Which requested protein is the TARGET? Everything else is the partner.
+        # Without this the loop below compares the partner chain against the
+        # TARGET's accession, gets a mismatch, and raises — which is how an
+        # antibody partner (`mAb1`, `anti-PD-L1 VHH`, `Nanobody 35`: none of
+        # them resolve to a gene) turned a correct chain assignment into a hard
+        # failure on a real GCGR run.
+        target_chain = str(handoff.get("target_chain")
+                           or handoff.get("chain_a") or "").strip()
+        # No `len(resolved) > 1` shortcut here: the case that matters most is
+        # exactly the one where only ONE name resolved, because then the
+        # unresolved one is the partner and there is nothing to check it with.
+        target_name = None
+        if target_chain:
+            for name, (gene, acc) in resolved.items():
+                if classify(target_chain, gene, acc).verdict != MISMATCH:
+                    target_name = name
+                    break
+
+        partner_candidates = {n: v for n, v in resolved.items() if n != target_name}
+        if not partner_candidates:
+            unresolved = [n for n in names if n not in resolved]
+            logger.warning(
+                f"  ⚠ partner chain not verified — the requested partner "
+                f"{unresolved or names} did not resolve to a UniProt accession "
+                f"(antibodies, nanobodies and peptides usually do not). "
+                f"Chain {partner_chain} is taken on trust.")
+            return
+
+        # A target/partner swap is legitimate, so accept EITHER requested
+        # protein; only "neither" is evidence of a substitution.
+        verdicts: dict[str, object] = {}
+        for name, (gene, acc) in resolved.items():
+            verdict = classify(partner_chain, gene, acc)
+            verdicts[name] = verdict
+            if verdict.verdict != MISMATCH:
+                logger.info(
+                    f"  partner chain OK — {partner_chain} in {pdb_id} is "
+                    f"{name} ({verdict.verdict}): {verdict.reason}")
+                return
+
+        detail = "; ".join(f"vs {n}: {v.reason}" for n, v in verdicts.items())
+        raise PipelineError(
+            f"partner_chain={partner_chain} in {pdb_id} is not one of the "
+            f"proteins this campaign was chosen for. {source} settled on "
+            f"{requested_complex!r}, but chain {partner_chain} matches neither "
+            f"of {names}. {detail}. "
+            f"{self._chain_inventory(pdb_id)} "
+            f"Designing here would target an interface nobody selected — "
+            f"re-run the stage against the intended partner, or change the "
+            f"target upstream if the substitution was deliberate.")
+
+    @staticmethod
+    def _chain_inventory(pdb_id: str) -> str:
+        """One-line 'what is actually in this entry' for a guard message."""
+        from src.target_resolve import entry_metadata
+
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+        except Exception:
+            return ""
+        chains = meta.get("chains") or {}
+        if not chains:
+            return ""
+        listing = ", ".join(
+            f"{cid}={(info.get('description') or '?')[:40]}"
+            f" ({info.get('length')} aa)"
+            for cid, info in sorted(chains.items()))
+        return f"Chains in {pdb_id.upper()}: {listing}."
 
     def _verify_ppi_chain_assignment(self, target_complex: str,
                                      handoff: dict[str, str], pdb_id: str) -> None:
@@ -1256,6 +2340,85 @@ class PipelineRunner:
                  for n in re.split(r"\s*/\s*", target_complex or "")]
         return [n for n in names if n]
 
+    def _note_structure_switch(self, result: "PipelineResult", stale: str,
+                               better: str) -> None:
+        """
+        Write the substitution into the artifact whose choice it overrode.
+
+        The switch happens between stages, so `00_pathway.md` is already on
+        disk naming the entry that was replaced — on the first campaign that
+        used this, the pathway report said 6E3Y eight times, the structure
+        report said 3N7S, and the only account of why sat in a log line and a
+        manifest checkpoint. A reader of the run had no way to find it.
+
+        Appended rather than rewritten: what the pathway stage concluded, on
+        the evidence it had, is worth keeping intact.
+        """
+        path = result.stage_files.get("pathway")
+        if not path or not Path(path).exists():
+            return
+        reason = self._last_switch_reason or "a cleaner entry for this interface"
+        try:
+            with Path(path).open("a", encoding="utf-8") as fh:
+                fh.write(
+                    f"\n\n---\n\n## STRUCTURE SUBSTITUTION (deterministic, "
+                    f"post-stage)\n\n"
+                    f"This report recommends **{stale}**. The pipeline designed "
+                    f"against **{better}** instead.\n\n"
+                    f"- **Why:** {reason}\n"
+                    f"- **Decided by:** `_select_designable_structure`, between "
+                    f"the pathway and literature stages — structure choice has "
+                    f"to be settled before the structure stage analyses "
+                    f"anything, because its hotspots then refer to those "
+                    f"coordinates.\n"
+                    f"- **Both entries contain the requested proteins.** The "
+                    f"switch only fires on a measurable defect in the chosen "
+                    f"one: partner absent, target chain a fusion construct, or "
+                    f"materially more scaffolding at no better resolution.\n"
+                    f"- **To keep the original:** re-run with `--pdb {stale}`.\n"
+                    f"\nThe reasoning above is the pathway stage's own, on the "
+                    f"evidence it had, and is left unedited.\n")
+        except OSError as exc:
+            logger.warning(f"could not annotate {path} with the switch: {exc}")
+
+    def _order_names_by_chain(self, names: list[str], structure_handoff: dict,
+                              pdb_id: str, primary: str, partner: str
+                              ) -> tuple[str, str]:
+        """
+        Which of the two named proteins is on `target_chain`?
+
+        Returns (target_name, partner_name) ordered to match the structure
+        stage's chain assignment, or the inputs unchanged when the question
+        cannot be answered — the accessions do not resolve, the entry metadata
+        is unavailable, or the target chain carries neither accession.
+        """
+        target_chain = str(structure_handoff.get("target_chain") or "").strip()
+        if len(names) < 2 or not target_chain or not pdb_id:
+            return primary, partner
+        from src.target_resolve import entry_metadata, resolve_target
+
+        try:
+            meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+            accs = {a.upper() for a in
+                    ((meta.get("chains") or {}).get(target_chain) or {})
+                    .get("uniprots", []) if a}
+            if not accs:
+                return primary, partner
+            for name in names[:2]:
+                r = resolve_target(name)
+                if r and r.ok and r.uniprot and r.uniprot.upper() in accs:
+                    other = next(n for n in names[:2] if n != name)
+                    if name != primary:
+                        logger.info(
+                            f"  target/partner ordered by chain assignment: "
+                            f"chain {target_chain} of {pdb_id} is {name}, not "
+                            f"{primary} — swapping so target_gene matches the "
+                            f"chain actually being designed against")
+                    return name, other
+        except Exception as exc:
+            logger.debug(f"could not order names by chain: {exc}")
+        return primary, partner
+
     def _bridge_ppi_to_foundry(
         self, query: str, run_dir: Path, result: PipelineResult, *,
         auto_mode: bool,
@@ -1305,29 +2468,66 @@ class PipelineRunner:
         partner_name = names[1] if len(names) > 1 else ""
 
         from src.target_resolve import resolve_target
+        # Order the pair by the CHAIN ASSIGNMENT the structure stage made, not
+        # by the order they happen to appear in `target_complex`. The structure
+        # stage picks whichever chain carries the epitope, and that is often the
+        # second name: on 3N7S it chose chain D (RAMP1) as the target while
+        # `target_complex` reads "CALCRL / RAMP1", so target_gene said CALCRL
+        # for a campaign designed against RAMP1's ectodomain.
+        #
+        # More than a label. `_stage_trim` does fetch_topology(target_uniprot)
+        # and restriction_for(pdb, target_chain, target_uniprot): with the
+        # accession of the OTHER protein, `uniprot_to_auth` finds no alignment,
+        # the restriction quietly does not apply, and NO transmembrane stripping
+        # happens. Harmless on an ectodomain-only entry, silent on a full-length
+        # one.
+        primary_name, partner_name = self._order_names_by_chain(
+            names, (result.structure_handoff or {}), result.pdb_id or "",
+            primary_name, partner_name)
         resolved = resolve_target(primary_name)
 
         design_intent = (lit.get("design_intent") or pathway.get("design_intent")
                          or "disrupt")
-        modality = lit.get("modality") or "mini_protein"
+
+        structure_handoff = result.structure_handoff or {}
+        modality = self._resolve_modality(
+            structure_handoff.get("modality") or lit.get("modality"),
+            source="the PPI structure/literature stages")
+
         sizes = (self._binder_cfg().get("constraints") or {}).get("binder_sizes") or {}
         size = sizes.get(modality) or sizes.get("mini_protein") or {}
 
+        # The chain assignment lives in the INTERFACE handoff (PPI's structure
+        # stage chose it). `_binder_sites` reads it from the TARGET-INTEL
+        # handoff, so without carrying it across, every path that builds a site
+        # list — `--stop-after spec`, `--stop-after trial`, `--trial-sites N` —
+        # died with "target-intel did not name usable chains". Found by a real
+        # bridged GPU run; `--stop-after spec` is the recommended first command
+        # for a new user, so this was the first thing they would have hit.
         intel_handoff = {
             "pdb_id": result.pdb_id or "",
             "target_gene": primary_name,
             "target_uniprot": resolved.uniprot or "",
             "partner_name": partner_name,
+            "target_chain": structure_handoff.get("target_chain", ""),
+            "partner_chain": structure_handoff.get("partner_chain", ""),
             "design_intent": design_intent,
             "modality": modality,
             "binder_length_min": size.get("min", 70),
             "binder_length_max": size.get("max", 86),
-            "interface_rationale": lit.get("go_rationale", ""),
+            "interface_rationale": (lit.get("go_rationale")
+                                    or structure_handoff.get("interface_summary", "")),
             "go_recommendation": result.go_recommendation or "GO",
         }
         target_intel_out = dirs["binder"] / self._BINDER_STAGE_FILES["target_intel"]
         self._write_binder_report(
             target_intel_out, "Target intelligence (bridged from PPI literature)",
+            (f"**Structure substituted:** the pathway stage recommended "
+             f"{result.structure_switch['from']}; this campaign was designed "
+             f"against {result.structure_switch['to']} instead — "
+             f"{result.structure_switch['reason']}. Re-run with `--pdb "
+             f"{result.structure_switch['from']}` to keep the original.\n\n"
+             if result.structure_switch else "") +
             f"Bridged from the PPI track's pathway/literature/structure stages "
             f"for {target_complex} — see 00_pathway.md / 01_literature.md / "
             f"02_structure.md for the full reasoning. This file exists only "
@@ -1381,41 +2581,70 @@ class PipelineRunner:
         self._ensure_structure(result.pdb_id)
         structure = self._binder_structure_path(result.pdb_id)
 
-        # Membrane topology: keep the design target on the reachable side and
-        # always drop transmembrane residues. An exposed TM helix is a
+        # Membrane topology. Two separate jobs, and only one of them is a rule.
+        #
+        # Always drop TRANSMEMBRANE residues: an exposed TM helix is a
         # hydrophobic slab that preferentially attracts binders which cannot
-        # work in a cell, where that surface is buried in lipid.
+        # work in a cell, where that surface is buried in lipid. That part is
+        # physics and stays unconditional.
+        #
+        # Which SIDE to design against is not a rule. This used to default to
+        # "extracellular" and hard-fail any hotspot outside it, which is wrong
+        # in two ways at once: for an intracellular-organelle membrane protein
+        # (SCAP in the ER) "extracellular" is not even a meaningful side, and
+        # the cytosolic face is the correct thing to target; and the interface
+        # stage has already looked at the real structure and picked a real
+        # interface, so its choice is evidence, not a proposal to be overruled
+        # by a default. `membrane_side` now defaults to "auto": the side is
+        # INFERRED from where the declared hotspots actually sit, and an
+        # explicit value is still honoured. Only two things still fail: a
+        # hotspot inside the membrane, and hotspots split across both faces —
+        # neither is a site a binder can engage as one epitope.
         restrict = None
-        side = (intel.get("membrane_side") or "extracellular").strip()
+        side = (intel.get("membrane_side") or "auto").strip().lower()
         uniprot = intel.get("target_uniprot")
-        if uniprot and side != "not_applicable":
+        if uniprot and side not in ("not_applicable", "any"):
             from src.membrane_topology import fetch_topology, restriction_for
 
             topo = fetch_topology(uniprot)
-            restrict = restriction_for(result.pdb_id, hs["target_chain"], uniprot,
-                                       side=side, topology=topo)
-            logger.info(f"topology: {restrict.note}")
-            if restrict.applies:
-                bad = [h for h in hs["residues"]
-                       if int(h["auth_seq_id"]) not in restrict.allowed_auth]
-                if bad:
-                    raise PipelineError(
-                        f"hotspot(s) "
-                        f"{[h.get('auth_seq_id') for h in bad]} lie outside the "
-                        f"{side} region of {intel.get('target_gene')} — the chosen "
-                        f"interface is not reachable by a binder. Pick a different "
-                        f"site, or pass membrane_side explicitly if this is "
-                        f"deliberate.")
+            if side == "auto":
+                side = self._infer_membrane_side(
+                    result.pdb_id, hs["target_chain"], uniprot, hs["residues"],
+                    topo)
+            if side is None:
+                restrict = None
+            else:
+                restrict = restriction_for(result.pdb_id, hs["target_chain"],
+                                           uniprot, side=side, topology=topo)
+                logger.info(f"topology: {restrict.note}")
+                if restrict.applies:
+                    bad = [h for h in hs["residues"]
+                           if int(h["auth_seq_id"]) not in restrict.allowed_auth]
+                    if bad:
+                        # Reaching here means the side was pinned explicitly and
+                        # the hotspots disagree with it — inference would have
+                        # followed them. Say which, so the operator can drop the
+                        # override rather than guess.
+                        raise PipelineError(
+                            f"hotspot(s) "
+                            f"{[h.get('auth_seq_id') for h in bad]} lie outside "
+                            f"the {side} region of {intel.get('target_gene')}, "
+                            f"which was requested explicitly via membrane_side. "
+                            f"Set membrane_side=auto to design against the side "
+                            f"the hotspots are actually on, or any to disable "
+                            f"the topology restriction entirely.")
 
-        try:
-            res = trim_target(
+        def _trim(with_budget: int):
+            return trim_target(
                 structure,
                 target_chain=hs["target_chain"],
                 partner_chain=hs.get("partner_chain"),
                 hotspots=hs["residues"],
-                allowed_auth=(restrict.allowed_auth
-                              if restrict and restrict.applies else None),
-                budget=budget,
+                allowed_auth=self._combine_allowed(
+                    restrict,
+                    self._target_accession_residues(
+                        result.pdb_id, hs["target_chain"], uniprot or "")),
+                budget=with_budget,
                 out_dir=dirs["trim"],
                 pdb_id=result.pdb_id,
                 binder_min=int(intel.get("binder_length_min", 70)),
@@ -1423,8 +2652,61 @@ class PipelineRunner:
                 chainsaw_cmd=trim_cfg.get("chainsaw_cmd"),
                 min_bsa_retention=float(trim_cfg.get("min_bsa_retention", 0.90)),
             )
+
+        try:
+            res = _trim(budget)
         except (TrimError, TrimBudgetError) as exc:
-            raise PipelineError(f"target trimming failed: {exc}") from exc
+            # A trim that fails a QUALITY guard is telling us this particular
+            # cut is bad, not that the target is undesignable — and its own
+            # error already names the alternative ("design against the
+            # untrimmed target"). Nothing used to take it.
+            #
+            # It matters most exactly where the trim is least worth doing. A
+            # 227-residue TEAD4 against a 220 budget has to shed SEVEN
+            # residues, and the cut that does it opened hydrophobic core
+            # inside 10 A of the epitope — so a campaign died over a 3%
+            # overshoot. Keeping the target whole is strictly safer for the
+            # design (no fresh hydrophobic face at all); it only costs GPU
+            # time, and RF3 scales as (tokens/195)**1.62, so 15% more target
+            # is ~18% more refold time on a stage the calibration gate sizes
+            # from measurement anyway.
+            #
+            # Only for a marginal overshoot, and only once: a target far over
+            # budget genuinely has to be cut, and re-raising there keeps the
+            # operator's decision in front of them.
+            overshoot = float((cfg.get("foundry") or {}).get(
+                "target_budget_overshoot", 0.15))
+            n_target = self._target_chain_residue_count(
+                structure, hs["target_chain"])
+            # round(), not int(): 220 * 1.15 is 252.99999... in binary, so a
+            # truncating ceiling quietly excludes the residue count the
+            # allowance was written to include.
+            ceiling = round(budget * (1.0 + overshoot))
+            if n_target and budget < n_target <= ceiling:
+                logger.warning(
+                    f"  ⚠ the trim failed its own quality guard ({exc}). The "
+                    f"target is {n_target} residues against a {budget} budget "
+                    f"— only {n_target - budget} over, within the "
+                    f"{overshoot:.0%} overshoot allowance — so it is kept "
+                    f"WHOLE instead. This costs GPU time, not design quality.")
+                try:
+                    res = _trim(n_target)
+                except (TrimError, TrimBudgetError) as exc2:
+                    raise PipelineError(
+                        f"target trimming failed: {exc}; keeping the "
+                        f"{n_target}-residue target whole failed too: "
+                        f"{exc2}") from exc2
+                res.warnings.append(
+                    f"the trim was skipped: its cut failed a quality guard "
+                    f"({exc}), and at {n_target} residues the target is only "
+                    f"{n_target - budget} over the {budget} budget, so it is "
+                    f"used whole")
+                self._binder_checkpoint(
+                    "trim_skipped_overshoot", "trim", "gate",
+                    {"n_target": n_target, "budget": budget,
+                     "overshoot_allowance": overshoot, "reason": str(exc)})
+            else:
+                raise PipelineError(f"target trimming failed: {exc}") from exc
 
         if res.bsa_retention < 0.95 or res.warnings:
             self._binder_checkpoint(
@@ -1435,12 +2717,12 @@ class PipelineRunner:
 
         out = dirs["binder"] / self._BINDER_STAGE_FILES["trim"]
         body = "\n".join([
-            f"Method: **{res.method}**",
-            *( [f"Topology: {restrict.note}"] if restrict else [] ),
-            f"Residues: {res.n_residues_before} -> {res.n_residues_after} "
+            f"- Method: **{res.method}**",
+            *( [f"- Topology: {restrict.note}"] if restrict else [] ),
+            f"- Residues: {res.n_residues_before} -> {res.n_residues_after} "
             f"in {res.n_segments} segment(s) {res.kept_segments}",
-            f"Interface area of the kept residues retained: {res.bsa_retention:.1%}",
-            f"Hotspots kept: {len(res.hotspots_retained)}/"
+            f"- Interface area of the kept residues retained: {res.bsa_retention:.1%}",
+            f"- Hotspots kept: {len(res.hotspots_retained)}/"
             f"{len(res.hotspots_retained) + len(res.hotspots_lost)}",
             "",
             *(f"- warning: {w}" for w in res.warnings),
@@ -1523,7 +2805,7 @@ class PipelineRunner:
         ccfg = ClusterConfig.from_cfg(self.config)
         _, spans = parse_contig(trim.contig)
         target_chain = spans[0][0]
-        slug = dirs["binder"].parent.name or "campaign"
+        slug = self._cluster_slug(dirs)
 
         paths, plan = stage_campaign(
             spec_path, trim, dirs, ccfg, mode=mode, slug=slug,
@@ -1546,14 +2828,21 @@ class PipelineRunner:
                 f"Resume with the command below once the SLURM jobs finish.",
                 {"run_dir": str(paths.run_dir), "resume_stage": mode})
             self._record_stage(mode, "awaiting_user", out, stage=mode)
+            proj = self._project.slug if self._project else "<slug>"
             resume_cmd = (
+                # resume_cluster_calibration.py's --site is a directory name
+                # under binder/sites/, so it only applies to a site trial.
                 f"python scripts/resume_cluster_calibration.py "
-                f"--project {self._project.slug if self._project else '<slug>'} "
-                f"--site {slug} --n-batches {plan.n_batches} --n-gpus {plan.n_gpus}"
+                f"--project {proj} --site {dirs['binder'].parent.name} "
+                f"--n-batches {plan.n_batches} --n-gpus {plan.n_gpus}"
+                if mode == "calibration" and self._is_site_dirs(dirs) else
+                f"python scripts/run_pipeline.py --project {proj} "
+                f"--workflow binder --start-from {mode} --compute cluster"
                 if mode == "calibration" else
                 # No standalone resume script for other modes yet — this is
                 # the one the current workflow needs; ask if production ever
                 # needs the same treatment.
+                f"python scripts/run_pipeline.py --project {proj} "
                 f"--workflow binder --start-from {mode}  # NOTE: only works "
                 f"for a top-level (non-site-trial) campaign"
             )
@@ -1600,16 +2889,37 @@ class PipelineRunner:
                                            n_batches=n_batches)
 
         from src.foundry_runner import (
-            collect, plan_campaign, prefilter_rate_observed, progress,
-            render_progress, resume, run_design, wait_for_campaign,
+            FoundryError, collect, plan_campaign, prefilter_rate_observed,
+            progress, render_progress, resume, run_design,
+            sec_per_refold_observed, wait_for_campaign,
         )
 
         cfg = self._binder_cfg()
         paths = self._binder_paths(dirs, mode)
         paths.mkdirs()
-        observed = prefilter_rate_observed(paths)
+        # This stage's OWN directory is empty when it is being planned, so
+        # prefilter_rate_observed() returns 0 on a fresh stage and the fallback
+        # decides the estimate. Prefer what the trial actually measured over the
+        # generic default: on YAP1/TEAD1 the real rate was 0.83 while the
+        # default is 0.59, which under-called production by ~380 refolds and
+        # under-called the disk and GPU-hour estimates with it. This does not
+        # affect completion — progress() swaps in the real MPNN count once MPNN
+        # has written — but the disk CLAMP is computed from the estimate, so a
+        # campaign sized near the budget could be under-clamped.
+        observed = (prefilter_rate_observed(paths)
+                    or self._persisted_prefilter_rate(dirs, mode)
+                    or 0.59)
+        # Same argument for the refold rate: a rate this target actually
+        # achieved on this GPU beats any constant. Prefer this stage's own
+        # (a resume mid-stage has one), then whatever the earlier stages
+        # measured; failing both, plan_campaign scales its default by the
+        # complex size, which a flat constant under-called by up to 54%.
+        n_tokens = trim.n_residues_after + _binder_midpoint(trim.contig)
+        rate = (sec_per_refold_observed(paths)
+                or self._earlier_refold_rate(dirs, mode))
         plan = plan_campaign(cfg, paths, mode=mode, n_batches=n_batches,
-                             prefilter_rate=observed or 0.59)
+                             prefilter_rate=observed, n_tokens=n_tokens,
+                             sec_per_refold=rate or None)
 
         if paths.driver_path.exists():
             job = resume(paths, cfg, plan)
@@ -1645,6 +2955,37 @@ class PipelineRunner:
         final = wait_for_campaign(
             paths, plan,
             poll_s=float((cfg.get("foundry") or {}).get("poll_interval_s", 120)))
+        # `wait_for_campaign` returns when the work is done OR the driver
+        # stopped — its own docstring calls those independent facts. So a
+        # campaign that aborted (a half-installed foundry, a driver crash, a
+        # GPU fault) lands here exactly like a finished one, and recording it
+        # "complete" sends an empty campaign into calibration, which then
+        # reports a STOP verdict phrased as a MEASURED rate. Nothing in that
+        # chain ever says "this never ran".
+        #
+        # A campaign that produced FEWER refolds than planned is a different
+        # thing and stays legitimate — a disk clamp or a per-shard GPU ECC
+        # fault leaves a real, smaller sample, and the Wilson interval sizes
+        # correctly off it. Only zero is unrecoverable.
+        if final.n_rf3 == 0:
+            log_hint = paths.logs_dir / "driver.log"
+            raise FoundryError(
+                f"the {mode} campaign produced no refolds at all "
+                f"(RFD3 backbones: {final.n_rfd3:,}, MPNN sequences: "
+                f"{final.n_mpnn:,}, RF3 refolds: 0 of {plan.expected_rf3:,} "
+                f"planned). There is nothing to score, so this is not a weak "
+                f"result — the campaign did not run.\n"
+                f"The driver logs its own reason (look for a line starting "
+                f"'ABORT:'):\n    tail -40 {log_hint}\n"
+                f"Most common cause on a new machine is an incomplete foundry "
+                f"install — check it with `python scripts/doctor.py`.")
+        if not final.complete:
+            logger.warning(
+                f"[{mode}] campaign stopped short: {final.n_rf3:,} of "
+                f"{plan.expected_rf3:,} planned refolds. Scoring the "
+                f"{final.n_rf3:,} that exist — the interval widens, the "
+                f"verdict stays honest. Driver log: "
+                f"{paths.logs_dir / 'driver.log'}")
         summary = collect(paths)
         self._write_binder_report(
             out, f"{mode.title()} campaign", render_progress(final), summary)
@@ -1767,9 +3108,16 @@ class PipelineRunner:
         """
         from src.cluster_runner import ClusterPaths
 
-        slug = dirs["binder"].parent.name or "campaign"
-        run_name = f"{slug}_{mode}"
-        run_dir = cluster_cfg.pipeline_root / cluster_cfg.stage_subdir / run_name
+        stage_root = cluster_cfg.pipeline_root / cluster_cfg.stage_subdir
+        run_name = f"{self._cluster_slug(dirs)}_{mode}"
+        run_dir = stage_root / run_name
+        if not run_dir.exists():
+            # Campaigns staged before the slug carried the project name live
+            # under the bare round/site directory name. Re-attach to one
+            # rather than staging a duplicate beside it.
+            legacy = f"{dirs['binder'].parent.name or 'campaign'}_{mode}"
+            if (stage_root / legacy).exists():
+                run_name, run_dir = legacy, stage_root / legacy
         return ClusterPaths(
             run_name=run_name, run_dir=run_dir,
             spec_path=run_dir / "unused.json",
@@ -1788,7 +3136,8 @@ class PipelineRunner:
         from src.binder_ranking import EXCELLENT_IPSAE_MIN
         from src.campaign_calibration import calibrate, choose_compute, render_report
         from src.cluster_runner import ClusterConfig
-        from src.foundry_runner import prefilter_rate_observed
+        from src.foundry_runner import (prefilter_rate_observed,
+                                        sec_per_refold_observed)
 
         run = self._run_gpu_stage("calibration", spec_path, trim, dirs, result,
                                   attach=attach, n_batches=n_batches)
@@ -1816,6 +3165,23 @@ class PipelineRunner:
             n_seq=int((fcfg.get("mpnn") or {}).get("n_seq", 4)),
             prefilter_rate=(plan.prefilter_rate if run.get("cluster_cfg")
                            else (prefilter_rate_observed(paths) or plan.prefilter_rate)),
+            # The SAME refold rate `plan_campaign` sizes production with.
+            # Without this the gate costed every campaign at the flat 8.4 s
+            # anchor while the planner used a measured or size-scaled rate, so
+            # the gate's budget check and the plan it approved disagreed — by
+            # 2.45x on MASH/TEAD4 (63 GPU-h claimed, 138 planned), which is the
+            # difference between inside and outside the 120 h budget the
+            # SCALE_UP verdict and the auto-raised bar were both decided on.
+            # `or None`, not `or 0.0`: sec_per_refold_observed returns 0.0 when
+            # it has too few timestamps to fit a rate, and calibrate() must see
+            # None to fall through to the n_tokens size law rather than to the
+            # bare anchor. The size-law fallback now lives in calibrate(), so
+            # the gate and the planner cannot drift apart again.
+            sec_per_rf3_refold=(
+                sec_per_refold_observed(paths)
+                or self._earlier_refold_rate(dirs, "calibration")
+                or None),
+            n_tokens=trim.n_residues_after + _binder_midpoint(trim.contig),
             disk_budget_gb=float(fcfg.get("disk_budget_gb", 120)),
             max_campaign_days=float(fcfg.get("max_campaign_days", 5)),
             adaptive_bar=bool(rcfg.get("adaptive_bar", True)),
@@ -1866,7 +3232,21 @@ class PipelineRunner:
         if "calibration" not in result.stages_completed:
             result.stages_completed.append("calibration")
         logger.info(f"calibration verdict: {res.verdict} — {res.verdict_reason}")
-        compute = compute_choice.compute if compute_choice else "local"
+        # `choose_compute` PROPOSES a placement; it only DECIDES under
+        # `--compute auto`. An explicit `--compute local` / `--compute cluster`
+        # forces every GPU stage onto one path unconditionally, so honouring the
+        # proposal here would silently override the user: a 20 GPU-h estimate
+        # under `--compute cluster` would run for a day on the workstation, and
+        # a 60 GPU-h one under `--compute local` would stage a SLURM package and
+        # pause on a machine explicitly told to stay local.
+        if self._compute == "auto":
+            compute = compute_choice.compute if compute_choice else "local"
+        else:
+            compute = self._compute
+            if compute_choice is not None and compute_choice.compute != compute:
+                logger.info(
+                    f"compute choice {compute_choice.compute!r} overridden by "
+                    f"explicit --compute {compute}")
         n_batches_chosen = n_batches_cluster if compute == "cluster" else n_batches_local
         return {"result": res, "n_batches": n_batches_chosen, "compute": compute,
                "n_batches_local": n_batches_local, "n_batches_cluster": n_batches_cluster}
@@ -1892,6 +3272,75 @@ class PipelineRunner:
             return None
         return max(1, int(designs / max(dbs, 1) / max(n_gpus, 1)))
 
+    def _earlier_refold_rate(self, dirs: dict[str, Path], mode: str) -> float:
+        """Seconds per refold measured by a stage that already ran.
+
+        Stages get cheaper-to-more-expensive (pilot -> calibration ->
+        production) against the same target on the same GPU, so an earlier
+        stage's achieved rate is the best available predictor for the next
+        one. Measured within ~10-17% of production on all three campaigns that
+        have run both.
+        """
+        from src.foundry_runner import sec_per_refold_observed
+        order = ["pilot", "calibration", "production"]
+        earlier = order[:order.index(mode)] if mode in order else []
+        for prior in reversed(earlier):          # nearest in size wins
+            rate = sec_per_refold_observed(self._binder_paths(dirs, prior))
+            if rate:
+                return rate
+        return 0.0
+
+    def _persisted_prefilter_rate(self, dirs: dict[str, Path],
+                                  mode: str = "production") -> float:
+        """The prefilter rate an EARLIER stage measured, or 0.0.
+
+        Two sources, and both are needed. `_stage_calibration` writes its rate
+        to calibration.json alongside the batch counts, which is what lets a
+        production stage planned in a FRESH process (the normal
+        `--start-from production` case) size itself on measurement. But that
+        file does not exist yet when CALIBRATION itself is being planned, and
+        the pilot has already measured a rate by then — so fall back to
+        reading it off the earlier stages' directories directly, nearest in
+        size first, exactly as `_earlier_refold_rate` does for seconds per
+        refold.
+
+        That hop was missing, and it is not cosmetic. On the MASH/TEAD4
+        campaign the pilot measured 0.86 and calibration was nonetheless
+        planned at the 0.59 default: 580 backbones planned as
+        int(580*0.59)*4 = 1,368 refolds where the real figure is
+        int(580*0.86)*4 = 1,992, a 46% under-count of the work, and with it
+        the disk clamp, the GPU-hour estimate, and the local-vs-cluster
+        decision `choose_compute()` makes from it.
+        """
+        from src.foundry_runner import prefilter_rate_observed
+
+        def _ok(rate: float) -> float:
+            # A nonsense rate would silently distort every downstream estimate.
+            return rate if 0.0 < rate <= 1.0 else 0.0
+
+        path = dirs["calibration"] / "calibration.json"
+        try:
+            rate = _ok(float(json.loads(path.read_text(encoding="utf-8"))
+                             .get("prefilter_rate") or 0.0))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            rate = 0.0
+        if rate:
+            return rate
+
+        order = ["pilot", "calibration", "production"]
+        earlier = order[:order.index(mode)] if mode in order else []
+        for prior in reversed(earlier):          # nearest in size wins
+            try:
+                rate = _ok(prefilter_rate_observed(self._binder_paths(dirs, prior)))
+            except Exception as exc:
+                logger.debug(f"could not read {prior} prefilter rate: {exc}")
+                continue
+            if rate:
+                logger.info(f"  prefilter rate {rate:.2f} measured by the "
+                            f"{prior} stage (default is 0.59)")
+                return rate
+        return 0.0
+
     def _resolve_production_plan(self, calib: dict | None, dirs: dict[str, Path],
                                   n_batches: int | None) -> tuple[int | None, str]:
         """
@@ -1911,8 +3360,16 @@ class PipelineRunner:
         that only lived in memory.
         """
         default_compute = self._compute if self._compute != "auto" else "local"
+        # An explicit --compute on THIS invocation outranks whatever placement
+        # was persisted, so a resume can be redirected (the cluster queue is
+        # full; the workstation GPU is now free) without editing calibration
+        # JSON. Under `auto` the persisted decision stands — re-deciding on a
+        # resume is what `_resolve_production_plan` exists to prevent.
+        forced = self._compute if self._compute != "auto" else None
         if calib:
-            compute = calib.get("compute", default_compute)
+            # `or`, not `.get(k, default)`: the key can be present-but-None
+            # (a site-trial winner whose calibration never set a placement).
+            compute = forced or calib.get("compute") or default_compute
             got = calib.get(f"n_batches_{compute}") or calib.get("n_batches")
             if got:
                 return got, compute
@@ -1925,7 +3382,7 @@ class PipelineRunner:
             if verdict not in ("SCALE_UP", "SCALE_UP_PARTIAL"):
                 return n_batches, default_compute
             cc = data.get("compute_choice") or {}
-            compute = cc.get("compute", default_compute)
+            compute = forced or cc.get("compute") or default_compute
             resolved = data.get(f"n_batches_{compute}")
             if not resolved:
                 return n_batches, compute
@@ -1960,6 +3417,11 @@ class PipelineRunner:
         # this a `--compute auto`/`--compute cluster` production campaign
         # could never be scored.
         rows, source = None, None
+        # Set ONLY for a local RF3 campaign. `prune_confidences` walks the RF3
+        # layout (`<id>/<id>_summary_confidences.json`), which a cluster
+        # Protenix tree does not have, and a cluster tree is on shared storage
+        # this process should not be deleting from anyway.
+        scored_rf3_dir: Path | None = None
         for mode in ("production", "calibration", "pilot"):
             if self._binder_compute_for_mode(mode, dirs, calib) == "cluster":
                 from src.cluster_runner import ClusterConfig, refold_counts
@@ -1980,6 +3442,7 @@ class PipelineRunner:
                 if count_rf3(paths.rf3_dir):
                     rows = self._score_campaign(paths, dirs, dirs["scoring"])
                     source = mode
+                    scored_rf3_dir = paths.rf3_dir
                     break
         if rows is None:
             scores = dirs["calibration"] / "refold_scores.csv"
@@ -2000,7 +3463,16 @@ class PipelineRunner:
 
         rosetta_note = ""
         rcfg_ros = rcfg.get("rosetta") or {}
-        if rcfg_ros.get("enabled", True) and gated.survivors:
+        # Two switches, deliberately: `design.pyrosetta.enabled` is the global
+        # "is PyRosetta available/wanted at all" (shared with the PPI track's
+        # SASA stage), while `design.binder_ranking.rosetta.enabled` turns off
+        # just this track's scoring even on a machine that has it. Checking
+        # availability here rather than inside score_designs means a missing
+        # install produces one clear line instead of 300 per-design failures.
+        from src.pyrosetta_sasa import check_available
+
+        ros_available, ros_reason = check_available(cfg)
+        if rcfg_ros.get("enabled", True) and gated.survivors and ros_available:
             from src.rosetta_metrics import (
                 merge_into, score_designs, select_for_rosetta,
             )
@@ -2030,8 +3502,23 @@ class PipelineRunner:
                 rosetta_note = f"\n\nRosetta metrics skipped: {ros.skipped_reason}"
                 ranking = gated
         else:
+            if gated.survivors and not ros_available:
+                # Say WHY, and say it in the report as well as the log — the
+                # composite is weighted differently without these terms, so a
+                # reader comparing two campaigns needs to know.
+                logger.warning(
+                    f"Rosetta interface metrics skipped — {ros_reason}. Designs "
+                    f"are ranked on the folding/geometry terms only.")
+                rosetta_note = (
+                    f"\n\nRosetta interface metrics were **not** computed for "
+                    f"this run ({ros_reason}). PyRosetta is optional and is "
+                    f"used only here, after the gates; ranking used the "
+                    f"folding-confidence and geometry terms only. Composite "
+                    f"scores are not comparable with a run that had it.")
             ranking = gated
         paths_out = write_ranking_outputs(ranking, dirs["scoring"])
+
+        prune_note = self._prune_scored_confidences(scored_rf3_dir, gated.survivors)
 
         out = dirs["binder"] / self._BINDER_STAGE_FILES["binder_scoring"]
         self._write_binder_report(
@@ -2040,7 +3527,7 @@ class PipelineRunner:
             f"```\n{ranking.filter_stats.render()}\n```\n\n"
             f"{len(gated.survivors):,} survivors across "
             f"{gated.n_backbones:,} distinct backbones; "
-            f"top {len(ranking.top_k)} selected.{rosetta_note}",
+            f"top {len(ranking.top_k)} selected.{rosetta_note}{prune_note}",
             {"scores_csv": str(dirs["scoring"] / "refold_scores.csv"),
              "top_k_csv": str(paths_out["top_k"]),
              "n_scored": len(rows), "n_survivors": len(ranking.survivors)})
@@ -2049,6 +3536,59 @@ class PipelineRunner:
         result.stage_files["binder_scoring"] = out
         result.stages_completed.append("binder_scoring")
         return {"ranking": ranking, "top_k": paths_out["top_k"]}
+
+    def _prune_scored_confidences(self, rf3_dir: Path | None,
+                                  survivors: list[dict]) -> str:
+        """
+        Delete the PAE matrices of gate FAILURES, once scoring has finished.
+
+        `*_confidences.json` is ~half an RF3 design directory (405 KB of a
+        typical 792 KB), and disk — not GPU — is the binding constraint on a
+        production campaign. This is the only call site of
+        `binder_metrics.prune_confidences`, and it is deliberately placed after
+        `write_ranking_outputs`: ipSAE is computed FROM these matrices and
+        cannot be recomputed once they are gone, so nothing may run before the
+        scores and the ranking are on disk.
+
+        Three guards, in order:
+
+        * off unless `design.foundry.prune_confidences` is set — it is
+          irreversible, so the default keeps the data;
+        * local RF3 campaigns only (`rf3_dir` is None for a cluster run);
+        * **skipped entirely when nothing survived** — a zero-survivor run is
+          exactly the one an ITERATE verdict tells you to re-gate at a softer
+          bar, and pruning would delete the evidence needed to do that.
+
+        Returns a markdown note for the stage report ("" when nothing ran), so
+        a reader of the report knows the tree is no longer re-gateable.
+        """
+        if not bool((self.config.get("design") or {}).get("foundry", {})
+                    .get("prune_confidences", False)):
+            return ""
+        if rf3_dir is None:
+            logger.info("confidence pruning skipped: not a local RF3 campaign")
+            return ""
+        if not survivors:
+            logger.warning(
+                "confidence pruning skipped: nothing survived the gates, so the "
+                "PAE matrices are the only way to re-gate this campaign at a "
+                "softer bar")
+            return ""
+
+        from src.binder_metrics import prune_confidences
+
+        keep = {str(r.get("name", "")) for r in survivors if r.get("name")}
+        try:
+            removed = prune_confidences(rf3_dir, keep)
+        except OSError as exc:  # never fail a scored campaign over housekeeping
+            logger.warning(f"confidence pruning failed: {exc}")
+            return ""
+        return (
+            f"\n\nPruned **{removed / 1e9:.2f} GB** of PAE matrices from "
+            f"{len(keep):,} kept / all scored designs "
+            f"(`design.foundry.prune_confidences`). ipSAE cannot be recomputed "
+            f"for the pruned designs — re-gating this campaign at a softer bar "
+            f"would need a re-fold.")
 
     # Columns the analyst actually needs. `binder_seq` is deliberately ABSENT:
     # the sequences are not needed to review a ranking, and including them
@@ -2067,7 +3607,8 @@ class PipelineRunner:
         import csv as _csv
         import io as _io
 
-        rows = list(_csv.DictReader(Path(top_k_csv).open(encoding="utf-8")))
+        with Path(top_k_csv).open(encoding="utf-8") as _fh:
+            rows = list(_csv.DictReader(_fh))
         if not rows:
             return "(no designs survived ranking)"
         cols = [c for c in cls._BINDER_SUMMARY_COLS if c in rows[0]]
@@ -2087,7 +3628,8 @@ class PipelineRunner:
         """
         import csv as _csv
 
-        rows = list(_csv.DictReader(Path(top_k_csv).open(encoding="utf-8")))
+        with Path(top_k_csv).open(encoding="utf-8") as _fh:
+            rows = list(_csv.DictReader(_fh))
         entries = [r for r in rows if r.get("binder_seq")]
         if not entries:
             return None
@@ -2103,22 +3645,77 @@ class PipelineRunner:
 
     def _stage_binder_summary(self, top_k_csv: Path, intel: dict[str, str],
                               dirs: dict[str, Path],
-                              result: PipelineResult) -> dict[str, str]:
+                              result: PipelineResult, *,
+                              ranking=None, calib: dict | None = None,
+                              ) -> dict[str, str]:
         fasta = self._write_binder_fasta(top_k_csv, dirs["scoring"] / "top_k.fasta")
         if fasta:
             logger.info(f"orderable sequences -> {fasta}")
         slim = self._slim_binder_top_k(top_k_csv)
+
+        # What the run already DECIDED, stated up front. Without it the analyst
+        # sees only a top-20 of the best surviving designs — which look good by
+        # construction, because that is what a top-20 is — and has no way to
+        # know the campaign was declared not worth scaling, or how many refolds
+        # were dropped to produce them. Both completed campaigns' reports say
+        # "No red flags identified" over funnels that discarded ~75% of refolds.
+        facts = [f"Track: foundry (RFD3 -> solubleMPNN -> RF3). The columns "
+                 f"below are foundry metrics, NOT BoltzGen's."]
+        if calib and calib.get("result") is not None:
+            cr = calib["result"]
+            facts.append(
+                f"Calibration verdict: {cr.verdict} — {cr.verdict_reason}")
+        if result.go_recommendation == "NO_GO":
+            facts.append(
+                "The pipeline has already recorded NO_GO for this campaign on "
+                "the calibration measurement above. Your verdict may not be "
+                "GO. Report the best of these designs plainly and put the "
+                "re-tune in Recommended next steps.")
+        if ranking is not None:
+            try:
+                facts.append(
+                    f"Gate funnel: {ranking.filter_stats.n_records:,} refolds "
+                    f"scored, {ranking.filter_stats.n_survivors:,} passed every "
+                    f"hard gate, top {len(ranking.top_k)} shown. Drop reasons:\n"
+                    f"{ranking.filter_stats.render()}")
+            except Exception as exc:      # a stats-shape change must not fail a run
+                logger.debug(f"could not render filter stats for the analyst: {exc}")
+        hs = result.hotspot_residues_json
+        if hs:
+            try:
+                facts.append(f"The interface stage declared "
+                             f"{len(json.loads(hs).get('residues') or [])} hotspots; "
+                             f"`hotspot_engagement` is the FRACTION of those a "
+                             f"design contacts, and the gate is 0.75, not 1.0.")
+            except Exception:
+                pass
+
         q = (f"Review the top designed binders against "
              f"{intel.get('target_gene', 'the target')} "
              f"({intel.get('partner_name', 'partner')} interface, "
-             f"{intel.get('design_intent', 'disrupt')} mode).\n\n{slim}")
+             f"{intel.get('design_intent', 'disrupt')} mode).\n\n"
+             + "\n\n".join(facts) + f"\n\n{slim}")
         out = dirs["binder"] / self._BINDER_STAGE_FILES["binder_summary"]
         handoff = self._run_stage("design-analyst", q, [], out,
                                   stage="binder_summary")
         result.stage_files["binder_summary"] = out
         result.stages_completed.append("binder_summary")
-        result.go_recommendation = handoff.get("go_recommendation",
-                                               result.go_recommendation)
+        # Validate the enum, and never let the analyst UPGRADE a deterministic
+        # NO_GO. `_run_binder_track` sets NO_GO from the calibration verdict and
+        # then calls this stage to report on what the trial did produce; an
+        # unconditional assignment here let an LLM looking at a flattering
+        # top-20 flip a measured STOP back to GO. The PPI sibling
+        # (`_stage_summary`) has had the enum check for a while; this path had
+        # neither it nor the floor.
+        go = (handoff.get("go_recommendation") or "").upper().replace("-", "_")
+        if go in ("GO", "CONDITIONAL_GO", "NO_GO"):
+            if result.go_recommendation == "NO_GO" and go != "NO_GO":
+                logger.warning(
+                    f"  ⚠ design-analyst returned {go} for a campaign the "
+                    f"calibration gate already declared NO_GO — keeping NO_GO. "
+                    f"Its written report is still in {out.name}.")
+            else:
+                result.go_recommendation = go
         return handoff
 
     def _run_site_trials(
@@ -2224,12 +3821,29 @@ class PipelineRunner:
                 trials.append({
                     "site_id": site_id, "site": site, "calibration": res,
                     "n_batches": calib.get("n_batches"),
+                    # Both sizings + the placement, so the winner's production
+                    # stage isn't re-derived (and mis-sized) downstream.
+                    "compute": calib.get("compute"),
+                    "n_batches_local": calib.get("n_batches_local"),
+                    "n_batches_cluster": calib.get("n_batches_cluster"),
                     "dirs": site_dirs, "spec": spec, "trim": trim,
                     "n_refolds": count_rf3(paths.rf3_dir),
                     "contig": trim.contig, "error": None,
                 })
-            except (PipelineError, PipelineBlockedError) as exc:
-                # One unusable site must not abandon the others.
+            except PipelinePausedError:
+                # A pause is the pipeline working as designed, not a failed
+                # site: `--detach` raises "<mode>_running" and `--compute
+                # cluster` raises "<mode>_cluster_pending". PipelinePausedError
+                # subclasses PipelineError, so catching PipelineError below
+                # swallowed it and recorded a perfectly healthy running campaign
+                # as "FAILED: Paused at calibration_running" — and, if every
+                # site paused, returned NO_GO "every site trial failed" while
+                # the GPU jobs ran on. Let it propagate so the user sees the
+                # pause and its resume instructions.
+                raise
+            except PipelineError as exc:
+                # One unusable site must not abandon the others. (PipelineError
+                # covers PipelineBlockedError, which subclasses it.)
                 logger.error(f"site {site_id} failed: {exc}")
                 trials.append({"site_id": site_id, "site": site,
                                "calibration": None, "error": str(exc),
@@ -2491,6 +4105,16 @@ class PipelineRunner:
                     })
             intel = H["target_intel"]
             result.pdb_id = result.pdb_id or intel.get("pdb_id")
+            # A `--start-from production` resume never runs the discovery
+            # stages, so nothing else repopulates this and the completion
+            # banner printed "Target complex: unknown" for a campaign that knew
+            # exactly what it was designing against. target_intel has both.
+            if not result.target_complex:
+                gene = intel.get("target_gene")
+                partner = intel.get("partner_name")
+                if gene:
+                    result.target_complex = (
+                        f"{gene} / {partner}" if partner else gene)
 
             # ── Site trials: compare epitopes by measured yield ─────────────
             # Reasoning cannot settle which of two defensible sites is more
@@ -2522,12 +4146,27 @@ class PipelineRunner:
                     "partner_chain": best["site"].get("partner_chain"),
                 }}
                 dirs = best["dirs"]
+                # `binder_dir` was bound from the TOP-LEVEL run dir before the
+                # site trials ran; rebinding `dirs` without it left B1's resume
+                # branch reading a top-level 21_interface.md that a multi-site
+                # run never writes (its real artifacts live under
+                # binder/sites/<site_id>/binder/), killing the campaign right
+                # after paying for N GPU trials.
+                binder_dir = dirs["binder"]
                 result.pdb_id = best["site"].get("pdb_id")
                 start_idx = 6           # straight to production for the winner
                 spec_path = best["spec"]
                 trim = best["trim"]
+                # Carry the winner's compute placement and BOTH sizings forward:
+                # `n_batches` alone is whichever the trial chose, and
+                # `_resolve_production_plan` would then read a cluster-sized
+                # count (already divided by n_gpus) as a local total and run
+                # production at 1/n_gpus of the intended size.
                 calib = {"result": best["calibration"],
-                         "n_batches": best.get("n_batches")}
+                         "n_batches": best.get("n_batches"),
+                         "compute": best.get("compute"),
+                         "n_batches_local": best.get("n_batches_local"),
+                         "n_batches_cluster": best.get("n_batches_cluster")}
 
             # ── B1: interface + model-ready hotspots ────────────────────────
             if start_idx <= 1:
@@ -2582,7 +4221,9 @@ class PipelineRunner:
                     # Still score and rank what the calibration produced — an
                     # ITERATE round has real designs worth looking at.
                     scored = self._stage_binder_scoring(dirs, result, calib=calib)
-                    self._stage_binder_summary(scored["top_k"], intel, dirs, result)
+                    self._stage_binder_summary(
+                        scored["top_k"], intel, dirs, result,
+                        ranking=scored.get("ranking"), calib=calib)
                     self._generate_binder_report(dirs["binder"])
                     return result
                 if not auto_mode or self._stop_after == "calibration":
@@ -2611,7 +4252,8 @@ class PipelineRunner:
             # ── B8: analyst review ──────────────────────────────────────────
             if start_idx <= 8:
                 H["binder_summary"] = self._stage_binder_summary(
-                    scored["top_k"], intel, dirs, result)
+                    scored["top_k"], intel, dirs, result,
+                    ranking=scored.get("ranking"), calib=locals().get("calib"))
 
             self._generate_binder_report(dirs["binder"])
 
@@ -2701,6 +4343,13 @@ class PipelineRunner:
         max_target = int(constraints_cfg.get("max_target_residues", 500))
         warn_target = int(constraints_cfg.get("target_residues_warn", 250))
 
+        # Only when a trim will actually follow. `--design-engine boltzgen` has
+        # no trim stage, so there the raw length IS the operative number and
+        # the existing refusal is correct.
+        designable: dict[str, int] = {}
+        if self._design_engine == "foundry":
+            designable = self._designable_chain_sizes(pdb_id, chain_counts, max_target)
+
         chain_hint = ""
         if chain_descs or chain_counts:
             lines: list[str] = []
@@ -2708,6 +4357,9 @@ class PipelineRunner:
                 desc = chain_descs.get(ch, "")
                 n = chain_counts.get(ch)
                 size_tag = f" [{n} residues]" if n is not None else ""
+                if ch in designable:
+                    size_tag = (f" [{n} residues raw, {designable[ch]} designable "
+                                f"after transmembrane stripping]")
                 lines.append(f"  Chain {ch}: {desc}{size_tag}")
             chain_hint = (
                 "\n\nChain entity descriptions and sizes from the mmCIF header "
@@ -2719,7 +4371,16 @@ class PipelineRunner:
                 f"≤ {warn_target} is preferred. If no candidate chain fits, recommend "
                 f"cropping to the binding domain or selecting a different PDB rather "
                 f"than proceeding.\n"
-                f"\nSelect the chains that form the biologically relevant "
+                + ("\n**Judge the policy on the DESIGNABLE count where one is "
+                   "given.** That chain is a membrane protein, and the pipeline's "
+                   "own trim stage drops its transmembrane span and its "
+                   "cytoplasmic face automatically before any design runs — a "
+                   "binder against lipid-buried surface cannot work in a cell. "
+                   "The raw length is not what will be designed against, so do "
+                   "not return NO_GO on it, and do not recommend cropping the "
+                   "structure by hand: that is what the next stage does. Pick "
+                   "hotspots on the extracellular face.\n" if designable else "")
+                + f"\nSelect the chains that form the biologically relevant "
                 f"{target_complex} interface. "
                 f"Do NOT analyse crystal-packing contacts between identical chain copies."
             )
@@ -2736,7 +4397,7 @@ class PipelineRunner:
             query = handoff_query.replace(str(asu_path), str(analysis_path))
             if str(analysis_path) not in query:
                 query = query + f"\n\nStructure file to use: {analysis_path}"
-            query += chain_hint
+            query += chain_hint + self._ppi_interface_options(pdb_id, target_complex)
         else:
             # Non-primary choice: look up the matching entry in choices_json to get
             # the correct complex name, design_intent, and evidence context.
@@ -2747,7 +4408,7 @@ class PipelineRunner:
                 prev_handoff=pathway_handoff,
                 context_files=context_files,
             )
-            query += chain_hint
+            query += chain_hint + self._ppi_interface_options(pdb_id, target_complex)
 
         # Append literature-derived design_intent + target_site_hint so the
         # structure stage knows whether to run DISRUPT / STABILIZE /
@@ -2791,7 +4452,20 @@ class PipelineRunner:
                                   stage="structure")
         result.stages_completed.append("structure")
         result.stage_files["structure"] = output_file
-        result.target_complex = handoff.get("target_complex") or result.target_complex
+        # What the pathway/literature stages actually settled on, captured
+        # BEFORE this stage's handoff is allowed to overwrite it. Both verify
+        # guards below are given THIS value: a stage that renames the complex
+        # to whatever it happened to analyse must not get to validate its own
+        # substitution (see _verify_partner_chain_is_requested).
+        requested_complex = result.target_complex or target_complex
+        delivered_complex = handoff.get("target_complex") or result.target_complex
+        if (requested_complex and delivered_complex
+                and delivered_complex.strip() != requested_complex.strip()):
+            logger.warning(
+                f"  ⚠ the structure stage renamed the target complex: "
+                f"{requested_complex!r} -> {delivered_complex!r}. Verifying "
+                f"chain assignment against the requested complex.")
+        result.target_complex = delivered_complex
         result.structure_handoff = handoff  # persist so _stage_design can compare modalities
 
         # Extract MODEL-READY HOTSPOTS as JSON so the analysis stage can compute
@@ -2801,20 +4475,19 @@ class PipelineRunner:
         # failed inside the skill) and run a residue-name sanity check that
         # surfaces mouse/human numbering mismatches.
         hotspots_json = None
+        # The numbering correction sits OUTSIDE the try below. It used to be
+        # inside it, so any exception — including one raised by the correction
+        # itself — was swallowed as "could not parse hotspot residues" and the
+        # model's own counted label_seq_ids sailed through to the design spec.
+        # A number that is a lookup in a file on disk must never degrade to a
+        # log line.
+        structure_text = output_file.read_text(encoding="utf-8")
+        target_chain = (handoff.get("target_chain", "")
+                        or handoff.get("chain_a", "")
+                        or "A")
+        structure_text = self._correct_label_seq_ids(
+            structure_text, output_file, analysis_path, target_chain)
         try:
-            structure_text = output_file.read_text(encoding="utf-8")
-            target_chain = (handoff.get("target_chain", "")
-                            or handoff.get("chain_a", "")
-                            or "A")
-            fixed_text, name_warnings = self._resolve_unverified_label_seq_ids(
-                structure_text, analysis_path, target_chain,
-            )
-            if fixed_text != structure_text:
-                output_file.write_text(fixed_text, encoding="utf-8")
-                structure_text = fixed_text
-                logger.info("  resolved UNVERIFIED label_seq_ids via gemmi auth→label map")
-            for w in name_warnings:
-                logger.warning(f"  ⚠ structure stage: {w}")
             hotspots_json = self._parse_hotspot_residues(structure_text, handoff)
             if hotspots_json:
                 result.hotspot_residues_json = hotspots_json
@@ -2830,11 +4503,34 @@ class PipelineRunner:
         # campaign once. Deliberately OUTSIDE the try/except above: a real
         # mismatch here must halt the run, not degrade to a warning the way a
         # missing hotspot table does.
+        verify_pdb = result.pdb_id or pdb_id
+        # Chain assignment needs only the handoff, NOT the hotspot table, so it
+        # runs unconditionally. It used to sit behind `if hotspots_json:` — a
+        # variable assigned inside the try above — so any parse failure there
+        # was swallowed as a warning AND silently skipped both guards. That
+        # defeated the stated intent: a chain swap produces real,
+        # correctly-numbered residues on the WRONG protein, which is exactly
+        # the failure that burned a full campaign, and it is most likely
+        # precisely when the report is malformed enough to break parsing.
+        self._verify_ppi_chain_assignment(
+            requested_complex or result.target_complex, handoff, verify_pdb)
+        # Separate question, separate guard: the one above asks "is the TARGET
+        # chain one of the named proteins", which chain R (CALCRL) passes even
+        # when the partner has been swapped for an unrelated molecule.
+        self._verify_partner_chain_is_requested(
+            requested_complex or result.target_complex, handoff, verify_pdb,
+            source="The pathway and literature stages")
+
+        # Grounding genuinely needs the hotspot table. If it's missing, say so
+        # loudly rather than letting "no table" read as "table verified".
         if hotspots_json:
-            verify_pdb = result.pdb_id or pdb_id
-            self._verify_ppi_chain_assignment(
-                result.target_complex or target_complex, handoff, verify_pdb)
             self._verify_hotspot_grounding(hotspots_json, verify_pdb)
+            self._check_ortholog_conservation(hotspots_json, verify_pdb, result)
+        else:
+            logger.warning(
+                "  ⚠ hotspot grounding NOT verified — no parseable MODEL-READY "
+                "HOTSPOTS table in the structure report. Residue names in any "
+                "downstream spec are unchecked against the real structure.")
 
         return handoff
 
@@ -3030,7 +4726,9 @@ class PipelineRunner:
         logger.info(f"  modality={modality} → protocol={protocol}")
         logger.info(f"  yaml={yaml_path.name}  output={bg_output}")
 
-        executable = ws_cfg.get("boltzgen_executable", "boltzgen")
+        executable = resolve_env_path(
+            "LPT_BOLTZGEN_EXECUTABLE", ws_cfg.get("boltzgen_executable")
+        ) or "boltzgen"
 
         # `boltzgen check` first — abort fast on a malformed YAML.
         try:
@@ -3221,15 +4919,40 @@ class PipelineRunner:
             key=lambda r: (r.get("quality_score") if r.get("quality_score") is not None else -1.0),
             reverse=True,
         )
-        enrich_with_hotspot_sasa(
-            records,
-            target_chain=target_chain,
-            binder_chain=binder_chain,
-            hotspots=hotspots_remapped,
-            python_executable=pyr_cfg["python_executable"],
-            init_flags=pyr_cfg.get("init_flags"),
-            max_designs=enrich_top_k,
-        )
+        # PyRosetta is OPTIONAL. It is used only here (hotspot burial) and in
+        # the binder track's post-gate Rosetta scoring — never to generate
+        # anything — so a run without it is a real run with one fewer metric,
+        # not a broken one. Deciding up front (rather than letting every design
+        # fail individually) is what keeps the SASA gate in step with reality:
+        # when enrichment doesn't run, `rank_designs` skips that gate instead of
+        # dropping all 100 designs for "missing_hotspot_sasa" and reporting it
+        # as a design-quality problem.
+        from src.pyrosetta_sasa import check_available
+
+        # `design_cfg`, not `cfg`: this stage has no `cfg` local (unlike
+        # `_stage_binder_scoring`, whose `cfg = self._binder_cfg()` is the same
+        # `design` sub-tree). `check_available` reads `cfg["pyrosetta"]`, so
+        # `design_cfg` is the right object; passing an undefined name raised
+        # NameError here and failed the whole run with "name 'cfg' is not
+        # defined" three stages after the real work.
+        sasa_available, sasa_reason = check_available(design_cfg)
+        if sasa_available:
+            enrich_with_hotspot_sasa(
+                records,
+                target_chain=target_chain,
+                binder_chain=binder_chain,
+                hotspots=hotspots_remapped,
+                python_executable=resolve_env_path(
+                    "LPT_PYROSETTA_PYTHON", pyr_cfg.get("python_executable")
+                ),
+                init_flags=pyr_cfg.get("init_flags"),
+                max_designs=enrich_top_k,
+            )
+        else:
+            logger.warning(
+                f"hotspot-SASA enrichment skipped — {sasa_reason}. The "
+                f"hotspot_sasa_delta filter will not be applied; designs are "
+                f"ranked on iPTM/iPAE and the BoltzGen terms only.")
 
         # Write enriched CSV before ranking so the artifact survives a
         # later ranking-time crash.
@@ -3243,6 +4966,7 @@ class PipelineRunner:
             weights=weights,
             mmr=mmr,
             top_k=top_k,
+            hotspot_sasa_available=sasa_available,
         )
 
         ranking_dir = run_dir / "05_ranking"
@@ -3261,6 +4985,7 @@ class PipelineRunner:
                 ranked_path=ranked_p,
                 top_k_path=top_k_p,
                 stats_path=stats_p,
+                sasa_skipped_reason=(None if sasa_available else sasa_reason),
             ),
             encoding="utf-8",
         )
@@ -3511,11 +5236,26 @@ class PipelineRunner:
         ranked_path: Path,
         top_k_path: Path,
         stats_path: Path,
+        sasa_skipped_reason: str | None = None,
     ) -> str:
         stats = ranking.filter_stats
         lines = [
             "# Stage 5 — Analysis report",
             "",
+        ]
+        if sasa_skipped_reason:
+            # A reader comparing two runs must be able to see that they were
+            # filtered by different rubrics.
+            lines += [
+                "> **Note — hotspot-SASA filter not applied.** PyRosetta was "
+                f"not used for this run ({sasa_skipped_reason}), so no design "
+                "carries `lpt_hotspot_sasa_delta` and that gate was skipped "
+                "rather than failed. Ranking used iPTM, iPAE and the BoltzGen "
+                "terms only. Counts below are not comparable with a run that "
+                "had PyRosetta available.",
+                "",
+            ]
+        lines += [
             f"- boltzgen output: `{bg_output}`",
             f"- target chain: `{target_chain}`  binder chain: `{binder_chain}`",
             f"- hotspot residues ({len(hotspots)}): "
@@ -3677,7 +5417,7 @@ class PipelineRunner:
             from src.token_budget import price
 
             estimate = self._estimate_stage_usage(
-                runner, query, context_text, model_id)
+                runner, query, context_text, model_id, provider)
             projected_usd = price(model_id, estimate)
             try:
                 self._ledger.preflight(stage=stage_key, model=model_id,
@@ -3703,9 +5443,7 @@ class PipelineRunner:
                             provider=provider, model=model_id,
                             usage=runner.usage(),
                             note=f"refused (category={refusals[-1].category})")
-                    fb_provider, fb_model = (
-                        fallback.split(":", 1) if ":" in fallback
-                        else (provider, fallback))
+                    fb_provider, fb_model = _split_fallback(fallback, provider)
                     runner = SkillRunner(
                         skill_name=skill_name, provider=fb_provider,
                         model_id=fb_model, config=self.config,
@@ -3728,7 +5466,11 @@ class PipelineRunner:
         finally:
             if self._ledger is not None:
                 entry = self._ledger.record(
-                    stage=stage_key, skill=skill_name, provider=self.provider,
+                    # `provider`, not `self.provider`: a cross-provider refusal
+                    # fallback rebinds both, and billing the run's default
+                    # provider for a call another provider actually served makes
+                    # the ledger's per-provider spend wrong.
+                    stage=stage_key, skill=skill_name, provider=provider,
                     model=model_id, usage=runner.usage(),
                 )
                 if projected_usd:
@@ -3812,6 +5554,7 @@ class PipelineRunner:
         query: str,
         context_text: str | None,
         model_id: str,
+        provider: str = "claude",
     ) -> Usage:
         """
         Project a stage's token usage for the pre-flight budget check.
@@ -3820,23 +5563,35 @@ class PipelineRunner:
         calls 2..n read it back at ~0.1x while the message history grows. This
         is a guard, not accounting — any failure degrades to a rough character
         heuristic rather than blocking the run.
+
+        The counter is provider-specific. Anthropic's `count_tokens` 404s on a
+        non-Claude model id, and the default provider is Gemini, so EVERY stage
+        used to pay a wasted round trip and log a scary "count_tokens
+        unavailable (404 ... model: gemini-3.7-flash)" before landing on the
+        heuristic anyway. Ask only the provider that can answer.
         """
         n_calls = self._STAGE_CALL_PRIOR.get(runner.skill_name, 8)
         first_input = context_text and len(context_text) or 0
-        system_tokens = 0
-        try:
-            import anthropic
+        # ~4 chars/token is close enough for a ceiling check.
+        heuristic = (len(runner.system_prompt) + first_input + len(query)) // 4
+        system_tokens = heuristic
+        if provider == "claude":
+            try:
+                import anthropic
 
-            client = anthropic.Anthropic()
-            system_tokens = client.messages.count_tokens(
-                model=model_id,
-                system=[{"type": "text", "text": runner.system_prompt}],
-                messages=[{"role": "user", "content": (context_text or "") + query}],
-            ).input_tokens
-        except Exception as exc:
-            # ~4 chars/token is close enough for a ceiling check.
-            system_tokens = (len(runner.system_prompt) + first_input + len(query)) // 4
-            logger.debug(f"count_tokens unavailable ({exc}); using char heuristic")
+                client = anthropic.Anthropic()
+                system_tokens = client.messages.count_tokens(
+                    model=model_id,
+                    system=[{"type": "text", "text": runner.system_prompt}],
+                    messages=[{"role": "user",
+                               "content": (context_text or "") + query}],
+                ).input_tokens
+            except Exception as exc:
+                system_tokens = heuristic
+                logger.debug(f"count_tokens unavailable ({exc}); using char heuristic")
+        else:
+            logger.debug(
+                f"no token counter for provider {provider!r}; using char heuristic")
 
         # Each turn re-sends every prior turn, so the total input across a stage
         # is quadratic in the call count. Per-call input is capped at the same
@@ -4017,6 +5772,42 @@ class PipelineRunner:
         """
         return _handoff.parse_hotspot_residues(text, handoff)
 
+    @staticmethod
+    def _target_chain_residue_count(structure: Path, chain: str) -> int:
+        """
+        Designable residues in the target chain, or 0 if it cannot be read.
+
+        Counted the way `structure_trim` counts them — anything carrying an
+        N/CA/C backbone, whatever the residue is called — so the number
+        compared against the budget here is the same number the trim compares
+        against it.
+        """
+        try:
+            import gemmi
+
+            from src.structure_tools import is_chain_residue
+
+            st = gemmi.read_structure(str(structure))
+            for ch in st[0]:
+                if ch.name == chain:
+                    return sum(1 for r in ch if is_chain_residue(r))
+        except Exception as exc:
+            logger.debug(f"could not count residues in chain {chain}: {exc}")
+        return 0
+
+    @staticmethod
+    def _alphafold_accession(pdb_id: str) -> str:
+        """
+        The UniProt accession behind an `AF-<acc>` / `AF:<acc>` pseudo-id, or
+        "". A real PDB accession is four characters, so there is no collision.
+        """
+        raw = (pdb_id or "").strip().upper()
+        for prefix in ("AF-", "AF:", "ALPHAFOLD:"):
+            if raw.startswith(prefix):
+                acc = raw[len(prefix):].split("-", 1)[0]
+                return acc if acc.isalnum() else ""
+        return ""
+
     def _ensure_structure(self, pdb_id: str) -> Path:
         """Return local ASU CIF path, downloading from RCSB if absent.
 
@@ -4024,6 +5815,34 @@ class PipelineRunner:
         is used by the structure stage to avoid crystal-contact confusion.
         """
         structures_dir = _ROOT / self.config.get("paths", {}).get("structures_dir", "data/structures")
+
+        # `AF-<accession>` is not an RCSB id — it is the AlphaFold DB model for
+        # a UniProt accession, and it exists so a campaign can be pointed at
+        # the HUMAN protein when the only experimental structure is an
+        # ortholog's. There is no biological assembly and no RCSB metadata for
+        # one; every downstream lookup that would want them (entry_metadata,
+        # uniprot_to_auth) already fails open, so a predicted monomer degrades
+        # to "no restriction" rather than breaking.
+        af_acc = self._alphafold_accession(pdb_id)
+        if af_acc:
+            from src.ortholog_check import fetch_alphafold_model
+
+            path = fetch_alphafold_model(af_acc, structures_dir)
+            if path is None:
+                raise PipelineError(
+                    f"AlphaFold DB has no model for {af_acc}. Give a PDB "
+                    f"accession instead, or check the accession is a UniProt "
+                    f"entry AFDB covers.")
+            # Land it under the id the caller used, not AFDB's own filename:
+            # every later path in the pipeline is built as
+            # `<structures_dir>/<PDB_ID>.cif` (and `_ba1.cif`), so a file named
+            # AF-Q12770-F1.cif would be fetched and then never found again.
+            dest = structures_dir / f"{pdb_id.upper()}.cif"
+            if path != dest:
+                dest.write_bytes(path.read_bytes())
+            logger.info(f"  AlphaFold model for {af_acc}: {dest}")
+            return dest
+
         dest = structures_dir / f"{pdb_id.upper()}.cif"
         if not dest.exists():
             logger.info(f"  Downloading {pdb_id} from RCSB...")
@@ -4186,7 +6005,8 @@ class PipelineRunner:
             return {}
 
     @staticmethod
-    def _build_label_seq_id_map(cif_path: Path, chain_id: str) -> dict[int, tuple[int, str]]:
+    def _build_label_seq_id_map(
+            cif_path: Path, chain_id: str) -> dict[int, tuple[int | None, str]]:
         """Return ``{auth_seq_id: (label_seq_id, residue_name_3letter)}`` for one chain.
 
         Uses gemmi; returns empty dict on failure or missing chain. The
@@ -4195,6 +6015,21 @@ class PipelineRunner:
         structure at that auth_seq_id — protecting against mouse/human
         numbering mismatches and similar errors that wouldn't be caught by
         just blindly resolving label_seq_id.
+
+        ``label_seq_id`` is ``None`` when the structure does not carry one.
+        That is not rare and not an error: label_seq is an mmCIF concept, so
+        EVERY residue of a PDB-format file has None — including
+        ``trim/trimmed.pdb``, which this pipeline writes itself and hands to
+        RFD3 — and a real mmCIF still has None on het rows (5 of 227 on
+        5GN0).
+
+        This used to fall back to the residue's 1-indexed position in the
+        chain, which is exactly the counting the caller exists to catch,
+        wearing a lab coat: on a PDB input it would replace the model's
+        counted numbers with different counted numbers and report the column
+        verified. Returning None makes "the file does not say" a distinct
+        answer from "the file says N", which is the only way the caller can
+        decline to fabricate.
         """
         try:
             import gemmi  # type: ignore
@@ -4204,19 +6039,40 @@ class PipelineRunner:
             for chain in st[0]:
                 if chain.name != chain_id:
                     continue
-                mapping: dict[int, tuple[int, str]] = {}
-                # gemmi exposes label_seq directly; if a residue's
-                # label_seq is None (rare — typically only for het rows),
-                # fall back to 1-indexed position in the chain.
-                for i, res in enumerate(chain, start=1):
+                mapping: dict[int, tuple[int | None, str]] = {}
+                for res in chain:
                     auth = int(res.seqid.num)
-                    label = res.label_seq if res.label_seq is not None else i
-                    mapping[auth] = (int(label), res.name.upper())
+                    label = res.label_seq
+                    mapping[auth] = (
+                        int(label) if label is not None else None,
+                        res.name.upper(),
+                    )
                 return mapping
             return {}
         except Exception as exc:
             logger.warning(f"Could not build auth→label map for {chain_id}@{cif_path}: {exc}")
             return {}
+
+    def _correct_label_seq_ids(self, text: str, report_path: Path,
+                               cif_path: Path, target_chain: str) -> str:
+        """
+        Overwrite the report's label_seq_id column with the structure's own
+        values, persist the corrected report, and surface what changed.
+
+        Both tracks call this — the PPI `structure` stage and the binder
+        `interface` stage run the SAME skill and produce the SAME table, so a
+        correction that only one of them applied was a track-parity gap of
+        exactly the shape CLAUDE.md documents for the PD-L1 verify guards.
+        """
+        fixed, warns = self._resolve_unverified_label_seq_ids(
+            text, cif_path, target_chain)
+        if fixed != text:
+            report_path.write_text(fixed, encoding="utf-8")
+            logger.info("  label_seq_ids replaced with the structure's own "
+                        "(gemmi auth→label map)")
+        for w in warns:
+            logger.warning(f"  ⚠ {w}")
+        return fixed
 
     def _resolve_unverified_label_seq_ids(
         self,
@@ -4248,11 +6104,29 @@ class PipelineRunner:
         disagreed with gemmi's.
         """
         warnings: list[str] = []
+        has_table = bool(re.search(r"###\s*MODEL.READY HOTSPOTS", structure_text,
+                                   re.IGNORECASE))
         auth_to_label_and_name = self._build_label_seq_id_map(cif_path, target_chain)
         if not auth_to_label_and_name:
+            if has_table:
+                # label_seq_id is not a judgement call, it is a lookup in a file
+                # already on disk. If that lookup is impossible we cannot ship
+                # the LLM's own number in its place: it is derived by counting,
+                # and BoltzGen reads `binding:` as label_seq, so a wrong value
+                # constrains the binder to the wrong residues — the documented
+                # cause of zero hotspot occlusion on the YAP-TEAD run. Fail
+                # loudly rather than pass through unverified numbers.
+                raise PipelineError(
+                    f"cannot build the auth->label map for chain {target_chain} "
+                    f"in {cif_path.name}, so the MODEL-READY HOTSPOTS table's "
+                    f"label_seq_id column cannot be verified against the "
+                    f"structure. Those values are derived by the model, not "
+                    f"read from the file, and BoltzGen consumes them as "
+                    f"label_seq. Check the chain id and that the structure is "
+                    f"on disk.")
             logger.warning(
                 f"  cannot build gemmi auth→label map for {target_chain}@{cif_path.name} "
-                f"— hotspot table left as-is, downstream stages may misnumber residues"
+                f"— no hotspot table to correct"
             )
             return structure_text, warnings
 
@@ -4265,9 +6139,21 @@ class PipelineRunner:
         )
         seen: set[tuple[str, int]] = set()
         substitutions = 0
+        rows_seen = 0
+        offsets: list[int] = []
+        unavailable: list[int] = []
+        # What BoltzGen would call these residues in THIS file. Only consulted
+        # when the file itself has no label_seq to read.
+        try:
+            from src.structure_tools import boltzgen_residue_indices
+            bg_index = boltzgen_residue_indices(str(cif_path), target_chain)
+        except Exception as exc:
+            logger.debug(f"could not compute BoltzGen indices: {exc}")
+            bg_index = {}
 
         def _row_sub(match: re.Match) -> str:
-            nonlocal substitutions
+            nonlocal substitutions, rows_seen
+            rows_seen += 1
             prefix = match.group(1)
             expected_name = match.group(2)
             auth_s = int(match.group(3))
@@ -4296,15 +6182,34 @@ class PipelineRunner:
                         f"structure has {actual_name} — likely a numbering offset"
                     )
 
-            # Compare LLM value to gemmi truth; always emit gemmi truth in
-            # the rewritten cell.
+            # Compare LLM value to the structure's own, and emit the
+            # structure's in the rewritten cell.
             try:
                 llm_label = int(llm_label_raw)
             except ValueError:
                 llm_label = None
+
+            if true_label is None:
+                # The file carries no label_seq for this residue (every
+                # residue of a PDB-format file). That does NOT mean the number
+                # is unknowable: BoltzGen synthesises one itself, and
+                # `boltzgen_residue_indices` reproduces that algorithm, so the
+                # right value is computed rather than left to the model — or
+                # to a marker the design script would have to work around.
+                bg = bg_index.get(auth_s)
+                unavailable.append(auth_s)
+                if bg is None:
+                    if llm_label is not None:
+                        substitutions += 1
+                    return f"{prefix} {_LABEL_SEQ_UNAVAILABLE} |"
+                if llm_label != bg:
+                    substitutions += 1
+                return f"{prefix} {bg} |"
+
             if llm_label != true_label:
                 substitutions += 1
                 if llm_label is not None:
+                    offsets.append(true_label - llm_label)
                     warnings.append(
                         f"label_seq_id correction at {expected_name}{auth_s}: "
                         f"LLM said {llm_label}, gemmi says {true_label} "
@@ -4313,6 +6218,51 @@ class PipelineRunner:
             return f"{prefix} {true_label} |"
 
         new_text = row_pat.sub(_row_sub, structure_text)
+
+        if has_table and rows_seen == 0:
+            # A table is present and not one row matched the row pattern, so
+            # nothing was checked and nothing was corrected — silently. This is
+            # the failure mode that left `_verify_hotspot_grounding` inert for
+            # months: a guard that runs, finds nothing to do, and says so to
+            # no one. The table format lives in a SKILL.md that gets edited.
+            raise PipelineError(
+                "the MODEL-READY HOTSPOTS table did not match the expected "
+                "`| RES | auth_seq_id | label_seq_id | ... |` row format, so no "
+                "label_seq_id could be verified against the structure. The "
+                "skill's table format and this parser have drifted apart — fix "
+                "one to match the other rather than shipping unverified "
+                "numbering to the design spec.")
+
+        if unavailable:
+            resolved = sum(1 for a in unavailable if a in bg_index)
+            warnings.append(
+                f"{cif_path.name} carries no label_seq for {len(unavailable)} "
+                f"of {rows_seen} hotspot row(s) — normal, since label_seq is an "
+                f"mmCIF concept and a PDB-format file has none. "
+                + (f"{resolved} were filled in with the index BoltzGen itself "
+                   f"would assign to this file (1-based position among the "
+                   f"chain's modelled polymer residues, per its pdb_parser), "
+                   f"not with a number the model derived. "
+                   if resolved else "")
+                + f"These indices are valid for {cif_path.name} ONLY: the same "
+                  f"residue can carry a different label_seq in a different "
+                  f"file, so a BoltzGen `binding:` list must be recomputed "
+                  f"against whatever path ends up in its yaml.")
+
+        if offsets and len(offsets) >= 3 and len(set(offsets)) == 1:
+            # Every disagreement identical means the column was DERIVED, not
+            # read: the model counted positions instead of looking up
+            # `auth_to_label`, and a constant offset is that signature. Worth
+            # separating from the scattered single-residue case, because it
+            # says something about the rest of the report — a model that
+            # fabricated a whole column may have fabricated more than this one.
+            warnings.append(
+                f"SYSTEMATIC label_seq_id offset: all {len(offsets)} corrected "
+                f"rows were off by exactly {offsets[0]:+d}. That is the "
+                f"signature of the model COUNTING residue positions rather "
+                f"than reading `auth_to_label` from tool_get_sequence_map. The "
+                f"numbers have been replaced with the structure's own, but "
+                f"treat other derived values in this report with suspicion.")
 
         # Rewrite the BoltzGen `binding:` line in each MODEL-READY HOTSPOTS
         # section independently. The structure-expert may produce one or
@@ -4336,6 +6286,18 @@ class PipelineRunner:
                 except ValueError:
                     pass
             if not local_residues:
+                # No row yielded a numeric label_seq — the structure has none
+                # (a PDB-format file never does). Returning the section
+                # unchanged would leave the model's own counted `binding:`
+                # list standing, which is the one thing that must not happen:
+                # BoltzGen reads it AS label_seq. Replace it with a statement.
+                if re.search(r"^\s*binding:", section, re.MULTILINE):
+                    return re.sub(
+                        r"^\s*binding:\s*[^\n]+",
+                        f"binding: {_LABEL_SEQ_UNAVAILABLE} — this structure "
+                        f"carries no label_seq; use auth_seq_id (RFD3 "
+                        f"`select_hotspots`), not this line",
+                        section, flags=re.MULTILINE)
                 return section
             # Dedupe preserving order
             dedup: list[int] = []

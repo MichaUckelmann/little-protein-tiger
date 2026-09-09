@@ -38,6 +38,16 @@ Deconstruct the provided paper into a **concise** structured JSON object. The fi
   - 2.3 µM → 2.3e-6
   - 100 pM → 1e-10
 - If units are ambiguous or not stated, set to null.
+- `protein_origin_organism` MUST be a list of **NCBI Taxonomy integer IDs**,
+  never organism names. The validator rejects a name outright.
+  - Homo sapiens → 9606
+  - Mus musculus → 10090
+  - Saccharomyces cerevisiae (S288C) → 559292
+  - Escherichia coli K-12 → 83333
+  - Drosophila melanogaster → 7227
+  - Xenopus laevis → 8355
+  - If you do not know the taxid for an organism, use `[]` rather than
+    guessing a number or writing the name.
 
 # CONFIDENCE SCORE RUBRIC
 Assign `confidence_score` (0.0–1.0) per finding:
@@ -61,6 +71,9 @@ Set `study_category` using the following closed enum. This is **orthogonal** to 
 - `biochemistry` — binding assays, inhibitor characterisation, affinity measurements (Kd/Ki), mutagenesis mapping binding energy; the focus is molecular interaction at the protein or chemical level
 - `pathway_biology` — signalling cascade mechanisms, disease-specific pathway dysregulation, genetic dependency (CRISPR essentiality, siRNA screens), oncogenic mechanisms, upstream/downstream node relationships
 - `structural_biology` — primarily structural determination (X-ray, cryo-EM, NMR) with minimal functional or binding data; structure is the end goal
+- `enzymology` — catalytic mechanism, kinetics (kcat, Km, kcat/Km), active-site chemistry, substrate specificity; the focus is how an enzyme turns substrate over, not what it binds
+- `biocatalysis` — enzymes engineered or applied for synthesis, directed evolution campaigns, process/industrial biocatalysis
+- `computational_chemistry` — QM/MM, free-energy calculations, docking or MD as the primary result rather than a supporting method
 - `host_pathogen` — protein-level interactions between a pathogen (bacterial, viral, fungal) and host proteins; includes virulence factor mechanisms, immune evasion, effector-host protein binding, and antimicrobial resistance mechanisms at the molecular level
 - `clinical` — patient cohort data, clinical outcomes, biomarker studies, epidemiology
 - `review` — literature review, meta-analysis, or perspective with no original experimental data

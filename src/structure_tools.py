@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import gemmi
 import numpy as np
@@ -883,6 +883,55 @@ def check_mutation_clash(
     }
 
 
+# Crystallisation additives that are essentially never functional: cryo-
+# protectants, buffers and precipitants. Deliberately CONSERVATIVE — it holds no
+# ions (SO4 and PO4 routinely sit in phosphate-binding sites), no sugars (they
+# may be glycans), no nucleotides, no metals. Anything not listed is kept, so an
+# unrecognised ligand survives rather than being guessed away.
+CRYSTALLISATION_ADDITIVES = frozenset({
+    "EDO", "GOL", "PEG", "PG4", "PGE", "1PE", "2PE", "P6G", "PG0", "MPD",
+    "DMS", "ACT", "ACY", "FMT", "TRS", "MES", "EPE", "IMD", "CIT", "FLC",
+    "TLA", "BME", "DTT", "MRD", "BU3", "IPA", "EOH",
+})
+
+
+def is_chain_residue(res) -> bool:
+    """True if this gemmi residue is part of the polypeptide.
+
+    ``_is_protein_residue`` asks gemmi's chemical-component table whether a NAME
+    is an amino acid, and that table does not recognise every modification a
+    depositor may make. 3KYS residue A344 is ``P1L`` — S-palmitoyl-cysteine —
+    which gemmi reports as ``kind=UNKNOWN, is_amino_acid=False`` even though it
+    carries a full N/CA/C backbone and sits at 3.86 A and 3.85 A from residues
+    343 and 345. Filtering on the name alone deleted it, which split TEAD1 into
+    an extra segment AND silently removed the palmitoylation that the whole
+    TEAD-inhibitor literature is about.
+
+    So: trust the geometry, not the dictionary. Anything carrying a backbone is
+    chain, whatever it is called.
+    """
+    if _is_protein_residue(res.name):
+        return True
+    return all(res.find_atom(a, "*") is not None for a in ("N", "CA", "C"))
+
+
+def is_solvent_or_additive(resname: str) -> bool:
+    """True for water and common crystallisation additives — never for the chain.
+
+    The polypeptide check comes FIRST and is the backstop: gemmi's residue table
+    recognises modified amino acids (MSE, SEP, TPO, PTR, PCA, CSO, UNK), so a
+    depositor's selenomethionine or phosphoserine can never be stripped by this,
+    whatever else it is called.
+    """
+    name = (resname or "").strip().upper()
+    if not name or _is_protein_residue(name):
+        return False
+    info = gemmi.find_tabulated_residue(name)
+    if info is not None and info.is_water():
+        return True
+    return name in CRYSTALLISATION_ADDITIVES
+
+
 def _is_protein_residue(resname: str) -> bool:
     info = gemmi.find_tabulated_residue(resname)
     if info is not None:
@@ -1462,3 +1511,91 @@ def _extract_plddt(chain, resnum_set: set[int]) -> dict[int, float]:
         if bfactors:
             result[rn] = round(bfactors[0], 1)
     return result
+
+
+def boltzgen_residue_indices(
+    file_path: str,
+    chain: str,
+    auth_seq_ids: Sequence[int] | None = None,
+) -> dict[int, int]:
+    """
+    `{auth_seq_id: index}` as BoltzGen itself would number one chain.
+
+    BoltzGen's `binding:` field is 1-indexed and converted to 0-indexed on
+    read (`parse_range`: "Single number. Convert it from 1 indexed to 0
+    indexed"), and the value it indexes depends on how BoltzGen parsed the
+    file:
+
+    - **mmCIF** — `data/parse/mmcif.py` uses `res.label_seq` directly
+      (`res_idx = res.label_seq - 1`), so the index IS the deposited
+      label_seq.
+    - **PDB** — a PDB file carries no label_seq at all, so
+      `data/parse/pdb_parser.py` synthesises one: it builds `full_sequence`
+      from the polymer subchain when the entity has none, aligns the subchain
+      to it, and assigns `sc[i].label_seq = j + 1`. With a sequence taken from
+      the subchain itself that alignment is the identity, so the index is the
+      1-based position of the residue among that chain's MODELLED polymer
+      residues, in file order.
+
+    The two disagree, and that is the point of this function. On the MASH
+    campaign, target residue auth 256 is label_seq **54** in the deposited
+    `5GN0_ba1.cif` (whose entity_poly_seq starts before the first modelled
+    residue) and index **53** in `trim/trimmed.pdb` (a contiguous 204-425
+    crop). A `binding:` list is therefore only meaningful relative to ONE
+    file, and copying it from a report written about a different file is an
+    off-by-one straight into the design spec — the documented cause of zero
+    hotspot occlusion on the YAP-TEAD run. Always compute against the file
+    that will appear in the yaml's `path:`.
+
+    `auth_seq_ids` restricts the result; omit for the whole chain. Author ids
+    absent from the chain are simply not in the returned mapping.
+    """
+    st = _load_gemmi(file_path)
+    st.setup_entities()
+    if len(st) == 0:
+        return {}
+
+    wanted = None if auth_seq_ids is None else {int(a) for a in auth_seq_ids}
+    out: dict[int, int] = {}
+
+    for entity in st.entities:
+        if entity.entity_type.name != "Polymer" or not entity.subchains:
+            continue
+        for sub_name in entity.subchains:
+            try:
+                sub = st[0].get_subchain(sub_name)
+            except Exception:
+                continue
+            if len(sub) == 0:
+                continue
+            # gemmi renames chains when a PDB is promoted to mmCIF internally
+            # ("A" -> "Axp"), so match on the author chain the residues carry.
+            auth_names = {r.subchain for r in sub}
+            if chain not in sub_name and chain not in auth_names \
+                    and not sub_name.startswith(chain):
+                continue
+
+            labels = [r.label_seq for r in sub]
+            if all(x is not None for x in labels):
+                idx = [int(x) for x in labels]
+            else:
+                # Reproduce pdb_parser.py's alignment fallback exactly.
+                full = list(entity.full_sequence) or [r.name for r in sub]
+                match = gemmi.align_sequence_to_polymer(
+                    full, sub, entity.polymer_type,
+                    gemmi.AlignmentScoring()).match_string
+                idx, i = [], 0
+                for j, a in enumerate(match):
+                    if a == "|":
+                        if i < len(sub):
+                            idx.append(j + 1)
+                        i += 1
+                if len(idx) != len(sub):        # alignment did not cover it
+                    idx = list(range(1, len(sub) + 1))
+            for res, n in zip(sub, idx):
+                auth = int(res.seqid.num)
+                if wanted is None or auth in wanted:
+                    out.setdefault(auth, n)
+            if out or wanted is None:
+                return out
+    return out

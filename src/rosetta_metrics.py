@@ -23,16 +23,14 @@ module drives `scripts/_rosetta_worker.py` as a subprocess — the same pattern 
 from __future__ import annotations
 
 import csv
-import json
 import os
-import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Sequence
 
 from loguru import logger
+
 
 _ROOT = Path(__file__).resolve().parents[1]
 _WORKER = _ROOT / "scripts" / "_rosetta_worker.py"
@@ -66,22 +64,34 @@ class RosettaResult:
 
 
 def _interpreter(cfg: dict) -> str:
-    """The pyrosetta env's python, from config with the usual fallback."""
-    exe = ((cfg.get("pyrosetta") or {}).get("python_executable")
-           or shutil.which("python"))
-    if not exe or not Path(exe).exists():
+    """The pyrosetta env's python: LPT_PYROSETTA_PYTHON env var, then config.
+
+    Resolution is shared with the PPI track's SASA path (`pyrosetta_sasa`) so
+    the two cannot disagree about whether PyRosetta is usable. Note there is
+    deliberately no `shutil.which("python")` fallback: that resolved the LPT
+    venv's own interpreter, which has no pyrosetta, so `available()` said True
+    and the worker then died on `import pyrosetta` — surfaced to the user as
+    the baffling "worker produced no output (rc=1)".
+    """
+    from src.pyrosetta_sasa import resolve_interpreter
+
+    exe = resolve_interpreter(cfg)
+    if not exe:
         raise RosettaUnavailable(
-            "no pyrosetta interpreter configured — set "
-            "design.pyrosetta.python_executable in config.yaml")
+            "no pyrosetta interpreter configured — set the LPT_PYROSETTA_PYTHON "
+            "env var (see .env.example) or design.pyrosetta.python_executable "
+            "in config.yaml. PyRosetta is optional: with "
+            "design.pyrosetta.enabled: auto (the default) the pipeline simply "
+            "skips the Rosetta scoring terms.")
     return exe
 
 
 def available(cfg: dict) -> bool:
-    try:
-        _interpreter(cfg)
-    except RosettaUnavailable:
-        return False
-    return _WORKER.exists()
+    """True when Rosetta scoring can run — honours design.pyrosetta.enabled."""
+    from src.pyrosetta_sasa import check_available
+
+    usable, _reason = check_available(cfg)
+    return usable and _WORKER.exists()
 
 
 def score_designs(
@@ -147,7 +157,8 @@ def score_designs(
         return RosettaResult([], None, 0, 0,
                              f"worker produced no output (rc={proc.returncode})")
 
-    rows = list(csv.DictReader(out_csv.open(encoding="utf-8")))
+    with out_csv.open(encoding="utf-8") as _fh:
+        rows = list(csv.DictReader(_fh))
     failed = [r for r in rows if r.get("error")]
     logger.info(f"Rosetta: {len(rows) - len(failed):,} scored, {len(failed)} failed")
     return RosettaResult(rows, out_csv, len(rows) - len(failed), len(failed))

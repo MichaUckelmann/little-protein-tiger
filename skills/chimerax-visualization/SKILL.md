@@ -1,6 +1,10 @@
 ---
 name: chimerax-visualization
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Generates a ready-to-run ChimeraX (.cxc) script that loads a PPI structure,
   renders the target chain as the focal object (colored cartoon + semi-transparent
   surface with hotspot patches highlighted), and washes out the binder/partner chain

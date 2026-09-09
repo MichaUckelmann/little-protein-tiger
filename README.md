@@ -1,27 +1,79 @@
+> ### ⚠️ Not yet public-ready
+>
+> **The literature corpus has not been packaged and released yet.**
+> `scripts/fetch_corpus.py` — which the setup docs tell users to run — will
+> find nothing until it is. See **[RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)**
+> before flipping this repository to public.
+
 # Little Protein Tiger
 
 An end-to-end pipeline for PPI drug target discovery. Covers automated paper discovery, Claude-powered structured extraction, a vector database for semantic search, and a suite of AI expert skills for pathway analysis, structural interface analysis, and binder design. Skills run either inside Claude Desktop (via MCP) or from the CLI using the Claude or Gemini API directly.
 
-**Current corpus state (2026-04-01):** ~9,865 papers indexed · 1,944 downloaded · 988 curated fingerprints
+**Current corpus state:** ~57,900 papers indexed · ~14,700 downloaded · ~14,500 curated fingerprints. The published archive (`scripts/fetch_corpus.py`) ships the curated fingerprints and the index; source documents are excluded.
 
 ---
 
+
+> **New here / beta testing?** **[docs/beta-testing.md](docs/beta-testing.md)**
+> is the step-by-step path from a clean machine to your first design run and
+> your first literature query, with the prompts to try and what each one costs.
+>
+> **Setting up with a coding agent?** Paste
+> **[SETUP_AGENT.md](SETUP_AGENT.md)** into Claude Code from a fresh clone and
+> it will interview you, install only the tracks you need, and verify each step.
+>
+> **No GPU?** You can still run both design tracks' entire reasoning path —
+> target resolution, structure choice, epitope selection, trimming, spec
+> generation — with an API key alone. Add `--stop-after spec`, which halts
+> immediately before the first GPU stage.
+>
+> **Just want to see it work?** `python scripts/quickstart.py` — about 7
+> seconds, plus a one-off ~1 MB structure download on the first run. No API
+> key, no GPU, no corpus.
+>
+> **Want the literature corpus?** `python scripts/fetch_corpus.py` — ~106 MB,
+> free, about a minute. 14,517 curated papers, ready to search. You only pay
+> if you later extend it with your own search terms.
+>
+> **Want to see what it produces first?** Three illustrated walkthroughs built
+> from real runs in this repository — a complete PD-L1 binder campaign, a
+> corpus-explorer session, and the PPI discovery track — live in
+> **[docs/showcase/](docs/showcase/)**. Open the `.html` files directly; they are
+> self-contained.
+>
+> **Something not working?** `python scripts/doctor.py` reports readiness per
+> track and prints the command that fixes each problem.
+>
+> **Have a Claude subscription?** Register the MCP servers and use the corpus
+> and structure tools conversationally, no API key — see
+> **[docs/mcp.md](docs/mcp.md)**.
+
 ## Requirements
 
-- Python 3.12+
+- Python 3.12–3.14 (`pyproject.toml` pins `>=3.12,<3.15`)
 - Virtual environment (`.venv` recommended)
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Linux/macOS
-pip install -e .              # core dependencies
-pip install -e ".[web,dev]"   # + web backend and test tooling, if needed
+
+pip install -e ".[dev]"           # core + test tooling
+pip install -e ".[corpus,dev]"    # ALSO the corpus track (~3 GB: torch,
+                                  # lancedb, sentence-transformers)
+
+# Required by the ppi and binder tracks — without it, stage 0 dies
+# immediately with a bare FileNotFoundError. ~52 MB, public, no key.
+python scripts/fetch_reference_data.py
 ```
 
-Or run `scripts/setup.sh` to do all of the above (venv creation, dependency
-install, `.env` bootstrap, PDB metadata cache fetch, and a GPU-tool
-diagnostic) in one step — see [Bootstrap script](#bootstrap-script) below.
+The `corpus` extra is what `search_corpus`, `ingest_vectors.py` and
+`ask_corpus.py` need; install it if you want the literature track, skip it if
+you only want structure/design work.
+
+Or run `scripts/setup.sh` to do all of the above in one step
+(`--with-corpus` adds the corpus extra and fetches the pre-built archive) —
+see [Bootstrap script](#bootstrap-script) below.
 
 Copy `.env.example` to `.env` and fill in your API keys:
 
@@ -32,24 +84,36 @@ cp .env.example .env
 `.env` keys:
 | Key | Required for |
 |-----|---|
-| `ANTHROPIC_API_KEY` | Curation, CLI skills with `--model claude` |
-| `GEMINI_API_KEY` | CLI skills with `--model gemini` |
+| `GEMINI_API_KEY` | **The default provider for every pipeline stage** |
+| `ANTHROPIC_API_KEY` | Curation (`curation.provider` is `claude`), `--provider claude`, and the refusal fallback |
 | `NCBI_EMAIL` | Polite crawling (NCBI rate limits) |
 | `NCBI_API_KEY` | Higher NCBI rate limit (optional) |
+| `S2_API_KEY` | Higher Semantic Scholar rate limit (optional) |
+| `LPT_CA_BUNDLE` | CA bundle path, if a TLS-inspecting proxy breaks downloads |
+| `LPT_SSL_RELAX_STRICT` | `1` to clear one X.509 flag on Python 3.13+ behind such a proxy — keeps trust-chain, hostname and expiry checks |
+
+Tool paths (`LPT_FOUNDRY_ROOT`, `LPT_BOLTZGEN_EXECUTABLE`,
+`LPT_PYROSETTA_PYTHON`, `LPT_CLUSTER_PIPELINE_ROOT`) live in `.env` too — see
+`.env.example`, which documents every one.
 
 ---
 
 ## Bootstrap script
 
-`scripts/setup.sh` automates the manual steps above for a fresh checkout:
-creates `.venv` if it doesn't exist, installs the project with dev extras
-(`pip install -e ".[dev]"`), copies `.env.example` to `.env` (without
-overwriting an existing one), fetches the RCSB PDB metadata cache, and
-prints a diagnostic of which external GPU tools (BoltzGen, PyRosetta,
-foundry) are configured and actually found on this machine.
+`scripts/setup.sh` automates the manual steps above for a fresh checkout, in
+this order: creates `.venv` if it doesn't exist, installs the project with dev
+extras (`pip install -e ".[dev]"`), copies `.env.example` to `.env` (without
+overwriting an existing one), fetches the reference data the ppi and binder
+tracks require, optionally fetches the pre-built corpus, refreshes the RCSB
+PDB metadata cache (a no-op on a fresh checkout, which has no fingerprints to
+derive PDB ids from — it says so rather than reporting success), and finally
+runs `scripts/doctor.py`, which probes each external GPU tool by running it
+rather than path-testing a config value.
 
 ```bash
-./scripts/setup.sh
+./scripts/setup.sh                 # core tracks
+./scripts/setup.sh --with-corpus   # also install and fetch the corpus
+./scripts/setup.sh --check         # re-run the readiness report only
 ```
 
 It's optional — everything it does is also documented step-by-step in this
@@ -128,6 +192,18 @@ PipelineRunner.run(query="Design therapeutics for ...")
            wildcard-expert (alt mode)   (novelty-driven; see --pathway-mode)
   stage 1  molecular-biology-expert   → tractability + target_site_hint
   stage 2  complex-structure-analysis → MODEL-READY HOTSPOTS (auth + label_seq)
+
+  ── then one of two design backends (`--design-engine`, `design.backend`) ──
+
+  foundry (DEFAULT) — hands the discovered target straight to the binder
+  track's own stage machine, unchanged, from its `trim` stage onward:
+      trim → binder_spec → pilot → calibration → production
+           → binder_scoring → binder_summary       (RFD3 → solubleMPNN → RF3)
+  Requires `--project`: these are multi-day GPU campaigns and the manifest
+  is what makes them resumable. See "Two design workflows" below.
+
+  boltzgen (`--design-engine boltzgen`; also selected automatically by
+  `--modality cyclic_peptide`, which RFD3 cannot build):
   stage 3  protein-design-script      → BoltzGen YAML + RFD3 JSON
   stage 4  design_runner              → BoltzGen pilot → gate → production
                                           (workstation GPU subprocess)
@@ -163,7 +239,9 @@ between mol-bio and structure stages, and BoltzGen's output renumbering
 quirks. See `src/pipeline_runner.py` for the full state machine and
 `diary.md` for the design notes and known failure modes.
 
-End-to-end driver: `scripts/test_e2e.py --prompt "..." --slug runname`.
+End-to-end driver: `scripts/run_pipeline.py --workflow ppi --query "..."
+--project runname`. (`scripts/test_e2e.py` wraps the same runner with
+per-stage trace capture and dialled-down BoltzGen batch sizes.)
 Configuration lives under `design:` in `config.yaml` (workstation
 executable, pilot/production batch sizes, hard filters, ranking weights,
 pyrosetta env path).
@@ -197,7 +275,7 @@ Search all keywords in `config.yaml`, upsert metadata to `data/literature.db`, a
 # Full run
 python scripts/fetch_papers.py
 
-# Dry run — search only, no downloads, no DB writes
+# Dry run — search and index only, no downloads (hits are still upserted)
 python scripts/fetch_papers.py --dry-run
 
 # Use a separate config (e.g. a topic expansion)
@@ -255,7 +333,7 @@ Query the corpus in a conversational loop using Claude + semantic search.
 python scripts/ask_corpus.py
 
 # Options
-python scripts/ask_corpus.py --model claude-sonnet-5 --top-k 10
+python scripts/ask_corpus.py --provider claude --top-k 10
 ```
 
 ### 5. Run expert skills from the CLI
@@ -280,7 +358,7 @@ usage: run_skill.py --skill SKILL --query QUERY
 | `binder-optimizer` | Takes a predicted binder-target complex, proposes 4 single-point mutations, validates clashes, and emits AF3 submission JSONs |
 | `molecular-biology-expert` | Queries the corpus for biochemical detail on a specific protein pair (binding affinities, hotspot residues, inhibitor data) |
 | `complex-expert` | Corpus search focused on a named protein complex — mechanism, structure, existing inhibitors |
-| `protein-design-script` | Generates RFDiffusion / BoltzDesign run scripts from a hotspot spec |
+| `protein-design-script` | Generates RFdiffusion3 / BoltzGen run scripts from a hotspot spec |
 | `chimerax-visualization` | Generates a ChimeraX `.cxc` script to visualise the interface: target in focus, binder washed out, hotspot patches highlighted |
 | `orchestrator` | End-to-end multi-stage run: pathway → interface → design → optimization |
 | `binder-target-intel` | Stage 0 of the binder-track pipeline: given a named target and design intent plus a pre-computed candidate-interface table, picks which structure/chain-pair/interface to design a binder against. Invoke only when the target is already named and no literature discovery is wanted |
@@ -442,36 +520,46 @@ Restart Claude Desktop to pick up the new fingerprints via MCP.
 
 ### 7. Run the binder design pipeline end-to-end
 
-The 7-stage design pipeline drives `PipelineRunner` (see `src/pipeline_runner.py`)
-from a free-text prompt. Stages 0–3 + 6 are LLM-driven skills; stage 4
-runs BoltzGen on the local GPU; stage 5 enriches the top-K with hotspot
-SASA via PyRosetta and ranks. The wrapper script in `scripts/test_e2e.py`
-takes a prompt + slug and captures per-stage conversation traces for audit.
+The design pipeline drives `PipelineRunner` (see `src/pipeline_runner.py`)
+from a free-text prompt: pathway → literature → structure discovery, then the
+design backend selected by `design.backend` / `--design-engine`. On the
+default (`foundry`) it bridges into the binder track's RFD3 → solubleMPNN →
+RF3 stages and **`--project` is required**; on `--design-engine boltzgen` it
+continues into BoltzGen design/execution/analysis instead.
 
 ```bash
 # Standard run (pathway-expert, validated-target-biased — picks YAP1/TEAD1-class
 # targets with clinical precedent and a known PDB)
-.venv/bin/python scripts/test_e2e.py \
-  --prompt "Design cancer therapeutics to target key nodes in mesothelioma." \
-  --slug mesothelioma \
-  --pilot 50 --production 100
+python scripts/run_pipeline.py --workflow ppi \
+  --query "Design cancer therapeutics to target key nodes in mesothelioma." \
+  --project mesothelioma
 
 # Wildcard run (wildcard-expert, novelty-driven — graph + DepMap triage,
 # prefers HYPOTHESIS / SYNTHETIC_LETHALITY / CROSS_INDICATION_TRANSFER /
 # DEPMAP-COUPLED candidates over VALIDATED when a tractable novel target
 # exists). Works on basic-biology prompts too:
-.venv/bin/python scripts/test_e2e.py \
-  --prompt "Identify a novel tractable PPI in the unfolded protein response." \
-  --slug upr_wildcard \
-  --pilot 50 --production 100 \
+python scripts/run_pipeline.py --workflow ppi \
+  --query "Identify a novel tractable PPI in the unfolded protein response." \
+  --project upr_wildcard \
   --pathway-mode wildcard
+
+# The BoltzGen path, with a small pilot, and per-stage conversation traces
+# captured for audit:
+.venv/bin/python scripts/test_e2e.py \
+  --prompt "Design cancer therapeutics to target key nodes in mesothelioma." \
+  --slug mesothelioma \
+  --pilot 50 --production 100
 ```
 
-Configuration lives under `design:` in `config.yaml`:
+Configuration lives under `design:` in `config.yaml`, except for
+machine-specific paths (BoltzGen, PyRosetta, foundry, cluster staging), which
+are set via env vars instead — see
+[Environment setup](docs/environment_setup.md) for the full list and why
+they don't live in the tracked `config.yaml`:
 
-- `design.workstation.boltzgen_executable` — absolute path to the BoltzGen entry
-  point (we use the entry script's own shebang to invoke its conda/uv env, no
-  `conda activate` needed).
+- `design.workstation.boltzgen_executable` (or `LPT_BOLTZGEN_EXECUTABLE`) —
+  absolute path to the BoltzGen entry point (we use the entry script's own
+  shebang to invoke its conda/uv env, no `conda activate` needed).
 - `design.workstation.cuda_device` / `timeout_hours` — GPU and time limits.
 - `design.pilot` / `design.production` — `num_designs` + `budget` per phase. The
   pilot result gates the production run (raises `PipelinePausedError`
@@ -483,9 +571,9 @@ Configuration lives under `design:` in `config.yaml`:
 - `design.constraints` — target-size limits (`max_target_residues`,
   `target_residues_warn`) and binder size ranges (`cyclic_peptide` 12..15,
   `mini_protein` 70..86 by default).
-- `design.pyrosetta.python_executable` — absolute path to a conda env where
-  PyRosetta imports cleanly (typically Python 3.11; see
-  `docs/pyrosetta_setup.md`).
+- `design.pyrosetta.python_executable` (or `LPT_PYROSETTA_PYTHON`) — absolute
+  path to a conda env where PyRosetta imports cleanly (typically Python 3.11;
+  see `docs/pyrosetta_setup.md`).
 
 Run outputs land under `outputs/<slug>/`:
 
@@ -516,10 +604,13 @@ python scripts/fetch_pdb_metadata.py   # writes data/pdb_metadata.json
 
 The pipeline expects BoltzGen and PyRosetta envs already configured. For
 BoltzGen, install per its README (`pip install boltzgen` or `uv pip install`)
-and set the absolute path in `config.yaml`. For PyRosetta, see
-`docs/pyrosetta_setup.md` — the LPT venv
+and set `LPT_BOLTZGEN_EXECUTABLE` in `.env`. For PyRosetta, see
+`docs/pyrosetta_setup.md` and set `LPT_PYROSETTA_PYTHON` — the LPT venv
 itself does NOT need PyRosetta installed; the orchestrator subprocesses out
-to a dedicated env via `scripts/_sasa_worker.py`.
+to a dedicated env via `scripts/_sasa_worker.py`. See
+[Environment setup](docs/environment_setup.md) for the full list of
+machine-specific env vars (foundry, cluster staging included) and why they
+live in `.env` rather than the tracked `config.yaml`.
 
 See `diary.md` for design notes, known failure modes, and the long-term
 plan for a ground-truth PDB→protein lookup table.
@@ -566,7 +657,7 @@ python scripts/run_pipeline.py --workflow binder --target KRAS --project kras
 # days). Resume with --start-from; every stage is skip-existing.
 python scripts/run_pipeline.py --workflow binder --target KRAS --project kras --detach
 python scripts/campaign_status.py projects/kras
-python scripts/run_pipeline.py --workflow binder --project kras --start-from calibration
+python scripts/run_pipeline.py --workflow binder --target KRAS --project kras --start-from calibration
 
 # A cheap smoke test: 8 designs, ~4 minutes of GPU.
 python scripts/run_pipeline.py --workflow binder --target KRAS --project kras_smoke \
@@ -882,14 +973,14 @@ sqlite3 data/literature.db "SELECT curation_status, COUNT(*) FROM papers GROUP B
 
 ## MCP server (Claude Desktop integration)
 
-The MCP server exposes two tools to LLM agents:
+The MCP servers expose 23 tools (15 literature-db + 8 structure-tools) — see **[docs/mcp.md](docs/mcp.md)** for the full list, setup and the subscription-driven workflow. The two used most often:
 
 | Tool | Description |
 |------|-------------|
 | `search_corpus` | Semantic search over curated fingerprints |
 | `get_fingerprint` | Retrieve full fingerprint JSON by DOI or paper key |
 
-The server is launched via `scripts/launch_mcp.py`, which auto-detects the venv and sets all data paths relative to the project root. Registration lives in `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/.config/Claude/claude_desktop_config.json` (macOS/Linux). Restart Claude Desktop after any config change.
+The server is launched via `scripts/launch_mcp.py`, which auto-detects the venv and sets all data paths relative to the project root. Registration lives in `%APPDATA%\Claude\claude_desktop_config.json` (Windows), `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `~/.config/Claude/claude_desktop_config.json` (Linux). Restart Claude Desktop after any config change.
 
 To debug connection issues, check `data/mcp_server.log`. Known fix for sentence_transformers import hang on Windows: `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, and `TOKENIZERS_PARALLELISM=false` — these are set automatically by the launcher.
 
@@ -904,9 +995,11 @@ little_protein_tiger/
 ├── extraction_schema.json       # Target JSON schema for fingerprints (v2.0)
 ├── pyproject.toml               # Single source of truth for dependencies (pip install -e .)
 ├── .env.example
-├── .mcp.json                    # MCP server registration for Claude Code
+│                                # (.mcp.json is generated per checkout, not tracked —
+│                                #  see scripts/setup_mcp_json.py)
 │
 ├── src/
+│   ├── pipeline_runner.py       # The stage machine: both ppi and binder tracks
 │   ├── models.py                # Pydantic Paper + CurationStatus models
 │   ├── database.py              # SQLite wrapper (upsert, status tracking)
 │   ├── search.py                # Europe PMC + NCBI search clients
@@ -921,7 +1014,14 @@ little_protein_tiger/
 │   ├── structure_tools_server.py# FastMCP wrapper for structure_tools (MCP)
 │   └── skill_runner.py          # Agentic loop: loads SKILL.md, calls Claude/Gemini API
 │
-├── scripts/
+├── scripts/                     # (not exhaustive — run any with --help)
+│   ├── run_pipeline.py          # CLI: THE entry point — ppi and binder tracks
+│   ├── setup.sh                 # Bootstrap a fresh checkout
+│   ├── doctor.py                # Per-track readiness report + the fix for each gap
+│   ├── quickstart.py            # A real analysis in ~7 s, no key, no GPU
+│   ├── fetch_corpus.py          # Install the pre-built literature corpus
+│   ├── fetch_reference_data.py  # UniProt id-mapping + HGNC (ppi/binder need it)
+│   ├── setup_mcp_json.py        # Generate .mcp.json for this checkout
 │   ├── fetch_papers.py          # CLI: search + download
 │   ├── curate_papers.py         # CLI: Claude curation pipeline
 │   ├── ingest_vectors.py        # CLI: embed fingerprints into LanceDB
@@ -929,7 +1029,7 @@ little_protein_tiger/
 │   ├── launch_mcp.py            # Launcher for literature-db MCP server
 │   ├── launch_structure_tools.py# Launcher for structure-tools MCP server
 │   ├── run_skill.py             # CLI: run any expert skill via Claude/Gemini API
-│   ├── test_e2e.py              # Driver for the full binder-design pipeline
+│   ├── test_e2e.py              # PPI-track driver with per-stage trace capture
 │   ├── compare_providers.py     # Sandboxed claude/gemini/local provider bake-off
 │   ├── score_provider_compare.py# Scorecard + REPORT.md across providers
 │   └── pymol_show_topk.py       # PyMOL viewer for top-K designs (run inside PyMOL)
@@ -941,8 +1041,11 @@ little_protein_tiger/
 │   ├── binder-optimizer/        # Point mutation proposals + AF3 JSON generation
 │   ├── molecular-biology-expert/# Corpus search for a specific protein pair
 │   ├── complex-expert/          # Corpus search for a named complex
-│   ├── protein-design-script/   # RFDiffusion / BoltzDesign script generation
+│   ├── protein-design-script/   # RFdiffusion3 / BoltzGen script generation
 │   ├── chimerax-visualization/  # ChimeraX .cxc script for interface figures
+│   ├── corpus-explorer/         # Conversational free-form corpus exploration
+│   ├── binder-target-intel/     # Binder track stage 0: pick structure + interface
+│   ├── design-analyst/          # Terminal stage: review the ranked top-K, GO/NO_GO
 │   └── orchestrator/            # End-to-end multi-stage pipeline
 │
 └── data/                        # Gitignored
@@ -978,8 +1081,9 @@ cd little_protein_tiger
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Linux/macOS
-pip install -e .              # core dependencies
-pip install -e ".[web,dev]"   # + web backend and test tooling, if needed
+pip install -e ".[corpus,dev]"    # drop `corpus,` if you don't want the
+                                  # literature track
+python scripts/fetch_reference_data.py   # required by ppi/binder
 ```
 
 **2. Copy data directories**
@@ -988,44 +1092,75 @@ Transfer `data/literature.db`, `data/fingerprints/`, and `data/vectors/` to the 
 
 **3. Recreate `.env`**
 
-Copy `.env.example` to `.env` and fill in your API keys.
+Copy `.env.example` to `.env` and fill in your API keys. If you use the
+binder/design track, also fill in the `LPT_BOLTZGEN_EXECUTABLE` /
+`LPT_PYROSETTA_PYTHON` / `LPT_FOUNDRY_ROOT` / `LPT_CLUSTER_*` vars for
+wherever those tools live on the new machine — see
+[Environment setup](docs/environment_setup.md). `config.yaml` itself needs
+no path edits; it never carries machine-specific values.
 
-**4. Update MCP configs — one path each**
+**4. Regenerate the MCP configs**
 
-The MCP server is launched via `scripts/launch_mcp.py`, which auto-derives all data paths from its own location. The only hardcoded value is the project root (`cwd`).
+`.mcp.json` holds absolute, machine-specific paths, so it is not tracked in
+git — a fresh clone has none. Generate one for this checkout:
 
-In **`.mcp.json`** (Claude Code):
+```bash
+python scripts/setup_mcp_json.py     # backs up any existing file to .mcp.json.bak
+```
+
+That writes both servers with the current venv's Python. The launchers
+(`scripts/launch_mcp.py`, `scripts/launch_structure_tools.py`) derive every
+data path from their own location; what is machine-specific is the absolute
+`command` and `args`, which is exactly what the generator fills in. To write
+it by hand instead:
+
 ```json
 {
   "mcpServers": {
     "literature-db": {
       "command": "/path/to/little_protein_tiger/.venv/Scripts/python.exe",
       "args": ["/path/to/little_protein_tiger/scripts/launch_mcp.py"]
+    },
+    "structure-tools": {
+      "command": "/path/to/little_protein_tiger/.venv/Scripts/python.exe",
+      "args": ["/path/to/little_protein_tiger/scripts/launch_structure_tools.py"]
     }
   }
 }
 ```
 
-In **`%APPDATA%\Claude\claude_desktop_config.json`** (Claude Desktop, Windows) or **`~/.config/Claude/claude_desktop_config.json`** (macOS/Linux):
+In **`%APPDATA%\Claude\claude_desktop_config.json`** (Claude Desktop, Windows), **`~/Library/Application Support/Claude/claude_desktop_config.json`** (macOS) or **`~/.config/Claude/claude_desktop_config.json`** (Linux):
 ```json
 "literature-db": {
   "command": "/path/to/little_protein_tiger/.venv/Scripts/python.exe",
   "args": ["/path/to/little_protein_tiger/scripts/launch_mcp.py"]
+},
+"structure-tools": {
+  "command": "/path/to/little_protein_tiger/.venv/Scripts/python.exe",
+  "args": ["/path/to/little_protein_tiger/scripts/launch_structure_tools.py"]
 }
 ```
+
+Register both, or the 8 structure tools listed above are silently missing.
 
 > Use absolute paths for both `command` and `args`. Claude Desktop does not reliably honour `cwd` on Windows — relative paths resolve to `C:\Windows\System32`. Point `command` directly at the venv Python so the launcher's re-exec logic is a no-op.
 
 **5. Handle the embedding model cache**
 
-The MCP server runs with `HF_HUB_OFFLINE=1`, so it uses a locally cached copy of `NeuML/pubmedbert-base-embeddings`. Two options:
+`scripts/launch_mcp.py` sets `HF_HUB_OFFLINE=1` itself (it is not in
+`.mcp.json`, so there is nothing there to edit), meaning the server needs
+`NeuML/pubmedbert-base-embeddings` already in the HuggingFace cache. Two
+options:
 - **Copy the cache**: transfer `~/.cache/huggingface/` from the old machine
-- **Re-download**: temporarily remove `HF_HUB_OFFLINE` from `.mcp.json`, start the server once to trigger the download, then add it back
+- **Warm it once**, which is what `doctor.py` recommends too:
+  ```bash
+  python -c "from sentence_transformers import SentenceTransformer as S; S('NeuML/pubmedbert-base-embeddings')"
+  ```
 
 **6. Verify**
 
 ```bash
-python -c "from src.vector_store import VectorStore; v = VectorStore('data/vectors'); print(v.count(), 'vectors')"
+python scripts/doctor.py --track literature
 ```
 
 Restart Claude Desktop after updating its config.
@@ -1046,3 +1181,92 @@ python scripts/ingest_vectors.py
 
 # 4. Restart Claude Desktop to pick up new fingerprints via MCP
 ```
+
+## Journal filtering — read this before building a corpus
+
+**By default LPT downloads only papers from journals on a curated tier list.**
+On the shipped corpus that gate passes **32% of indexed papers** and blocks the
+other 68% — *PLoS One*, *bioRxiv*, *Scientific Reports* and *IJMS* are the
+largest exclusions. This is a deliberate quality judgement, and it shapes the
+corpus, the vector search, the interaction graph, and every target a discovery
+workflow proposes.
+
+The tier lists live in `src/ranking.py` (`_TIER1_JOURNALS`, `_TIER2_JOURNALS`)
+and reflect a **molecular / structural / chemical biology** focus. If your field
+sits elsewhere you will want to extend them via `quality.tier1_extra` /
+`tier2_extra`, or switch the gate off:
+
+```yaml
+# config.yaml
+quality:
+  require_tiered_journal: false   # ~3.1x more downloads, matching cost + disk
+```
+
+**→ [docs/journal-filtering.md](docs/journal-filtering.md)** — the tier lists,
+what is excluded and why, the scoring ladder, known gaps, and how to extend it.
+
+## Responsible use
+
+Little Protein Tiger designs de novo protein binders. Every design it emits is
+an **unvalidated computational hypothesis** — a sequence and a predicted pose,
+not a working binder. If you synthesize anything derived from it, screening the
+sequence is your responsibility; use a synthesis provider that screens orders
+(see the [IGSC Harmonized Screening Protocol](https://genesynthesisconsortium.org/)).
+
+Read **[docs/responsible-use.md](docs/responsible-use.md)** before using the
+design tracks. It covers intended use, what the confidence metrics do and do
+not tell you, biosecurity expectations, and this project's position on safety
+classifiers (short version: model fallback is fine, prompt-engineering around a
+safety check is not).
+
+## Licence and third-party tools
+
+LPT itself is MIT-licensed (see `LICENSE`) and comes with no warranty.
+
+**The MIT licence covers this repository only.** LPT orchestrates external
+models and tools that it does not ship and grants no rights to. Some are free
+for academic use but **restricted for commercial use** — check each one against
+your own use case before relying on it. The few third-party files LPT *does*
+redistribute keep their own licences, reproduced in
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md):
+
+| Tool | Needed for | Licence — check before commercial use |
+|---|---|---|
+| [RFdiffusion3 / solubleMPNN / RF3 (foundry)](https://github.com/RosettaCommons/foundry) | `--workflow binder`, and `--workflow ppi` by default | **BSD 3-Clause** (repository, verified 2026-08-27). Model weights install separately via `foundry install` — confirm their terms yourself |
+| [BoltzGen](https://github.com/HannesStark/boltzgen) | `--workflow ppi --design-engine boltzgen`; also `--modality cyclic_peptide` | **MIT** (repository, verified 2026-08-27). Model weights download separately — confirm their terms yourself |
+| PyRosetta (**optional**) | hotspot SASA, Rosetta composite terms — see below | **free for academic / non-commercial only**; commercial licence via `license@uw.edu` — see [docs/pyrosetta_setup.md](docs/pyrosetta_setup.md) |
+| Protenix | cluster refold backend (optional) | see upstream repository |
+| ChimeraX / PyMOL | optional visualisation | separate licences |
+
+**PyRosetta is optional.** It is used in exactly two places, both *after*
+designs already exist — per-design hotspot SASA in the PPI track's analysis
+stage, and relax + InterfaceAnalyzer on gate survivors in the binder track's
+scoring stage. Nothing generative depends on it. With the default
+`design.pyrosetta.enabled: auto`, a machine without it runs both tracks
+end-to-end, skips those metrics, does **not** apply the hotspot-SASA filter,
+and says so in the stage report. Set `enabled: true` to require it (fail
+loudly instead) or `false` to never use it.
+
+**foundry is not optional** for the binder track — see
+[docs/environment_setup.md](docs/environment_setup.md#what-each-tool-actually-is-and-how-to-get-one) for
+install notes, GPU/disk requirements, and the checkpoint-registry gotcha.
+
+Bundled third-party material — see
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) for the full texts:
+
+- **Mol\*** (`assets/vendor/molstar/`) — MIT, vendored so generated reports have
+  no runtime network dependency. Licence and pinned version in
+  `assets/vendor/molstar/`.
+- **RFdiffusion3 documentation** (`skills/protein-design-script/RFD3_*.md`) —
+  BSD 3-Clause, © 2025 Institute for Protein Design, University of Washington.
+  Vendored because the `protein-design-script` skill reads them as in-context
+  reference and they pin the contig/spec format `src/foundry_spec.py` validates
+  against. Neither the IPD, the University of Washington, nor the foundry
+  contributors endorse LPT.
+- **BoltzGen documentation and example spec**
+  (`skills/protein-design-script/boltzgen_*`) — MIT, © 2025 Hannes Stärk.
+
+Python dependencies are MIT/BSD/Apache, with one to be aware of: **PyMuPDF is
+AGPL-3.0-or-later**. It is imported at runtime by `src/text_extractor.py` for
+PDF parsing and is not linked into anything distributed here, but if you
+redistribute a derivative that bundles it, read its terms.

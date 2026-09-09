@@ -899,16 +899,50 @@ def _resolve_node(g: nx.Graph, name: str) -> str | None:
     return None
 
 
-def _resolve_seeds(g: nx.Graph, seeds: list[str]) -> tuple[list[str], list[str]]:
+def _symbol_to_nodes(g: nx.Graph) -> dict[str, list[str]]:
+    """Approved gene symbol -> every graph node that resolves to it.
+
+    The graph keeps one node per raw name, so a single gene is scattered over
+    its aliases: YAP1 is also ``YAP``, ``YAP/TAZ``, ``YKI`` and five more.
+    ``build_edge_index`` collapses those by symbol before persisting, so a map
+    seeded on the literal string sees a strictly smaller neighbourhood than
+    the edge index has — YAP1 alone has 169 neighbours where its aliases
+    together have 291. This index is what lets seeding close that gap.
+    """
+    cached = g.graph.get("_symbol_to_nodes")
+    if cached is not None:
+        return cached
+    idx: dict[str, list[str]] = {}
+    for node, data in g.nodes(data=True):
+        sym = (data.get("human_gene_symbol") or "").upper()
+        if sym:
+            idx.setdefault(sym, []).append(node)
+    g.graph["_symbol_to_nodes"] = idx
+    return idx
+
+
+def _resolve_seeds(g: nx.Graph, seeds: list[str],
+                   alias_aware: bool = True) -> tuple[list[str], list[str]]:
     """Each seed expands to ALL matching nodes (so 'TEAD' picks up TEAD1/2/3/4).
 
     Matching is one-directional: ``target in node_key`` only, with min length
     3 on both sides. This is critical to avoid a long missing-seed query like
     ``'NOT_A_REAL_PROTEIN_XYZ'`` matching every short node whose key happens
     to be a substring of it.
+
+    With ``alias_aware`` (the default), a seed ALSO pulls in every node that
+    resolves to the same approved gene symbol, so a map drawn from these seeds
+    agrees with the DepMap edge index instead of quietly under-reporting.
     """
     resolved: set[str] = set()
     missing: list[str] = []
+    sym_idx = _symbol_to_nodes(g) if alias_aware else {}
+
+    def add_aliases(node: str) -> None:
+        sym = (g.nodes[node].get("human_gene_symbol") or "").upper()
+        if sym:
+            resolved.update(sym_idx.get(sym, ()))
+
     for seed in seeds:
         target = _normalize_protein(seed)
         if not target or len(target) < 2:
@@ -916,6 +950,8 @@ def _resolve_seeds(g: nx.Graph, seeds: list[str]) -> tuple[list[str], list[str]]
             continue
         if target in g:
             resolved.add(target)
+            if alias_aware:
+                add_aliases(target)
             continue
         if len(target) < 3:
             missing.append(seed)
@@ -923,6 +959,9 @@ def _resolve_seeds(g: nx.Graph, seeds: list[str]) -> tuple[list[str], list[str]]
         hits = [n for n in g.nodes() if len(n) >= 3 and target in n]
         if hits:
             resolved.update(hits)
+            if alias_aware:
+                for h in hits:
+                    add_aliases(h)
         else:
             missing.append(seed)
     return sorted(resolved), missing

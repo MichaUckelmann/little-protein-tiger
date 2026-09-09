@@ -1,7 +1,12 @@
+# Adapted from `example/cylcic_against_kras_with_specific_site/cyclicdesign.yaml`
+# in https://github.com/HannesStark/boltzgen (branch `main`, retrieved
+# 2026-05-21): MIT License, Copyright (c) 2025 Hannes Stärk. Full licence text
+# in THIRD_PARTY_LICENSES.md. Changes: LPT structure paths, LPT-specific
+# comments, and the cyclic peptide length range LPT's config uses.
 entities:
   # Specification of the target which is extracted from a .cif file
   - file:
-      path: /home/muckelmann/proteinDesign/designTargets/6g6k.cif
+      path: data/structures/6g6k.cif
 
       # Which chain and residues in the .cif file to use as target (uses all chains if unspecified)
       include:

@@ -1,3 +1,11 @@
+> **Upstream document — redistributed under its own licence, not LPT's.**
+> Verbatim copy of `models/rfd3/docs/examples/protein_binder_design.md` from
+> [RosettaCommons/foundry](https://github.com/RosettaCommons/foundry) (branch
+> `production`), retrieved 2026-05-21. BSD 3-Clause, Copyright (c) 2025,
+> Institute for Protein Design, University of Washington — full licence text in
+> [`THIRD_PARTY_LICENSES.md`](../../THIRD_PARTY_LICENSES.md). Upstream is the
+> authority; re-fetch before assuming this copy is current.
+
 # RFdiffusion3 — Protein binder design examples
 RFD3 is a highly proficient protein binder designer. The following arguments have to be specified to RFD3 to make protein binders.
 - input: the PDB or CIF file of the structure you want to bind

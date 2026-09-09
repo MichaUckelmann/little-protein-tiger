@@ -47,6 +47,49 @@ function renderHero() {
   `;
 }
 
+/* ---------------------------------------------------------------- appendix */
+/* Every stage's own markdown report, rendered whole (REPORT.appendix, built
+ * by report_common.stage_documents). Track-agnostic: a track decides WHICH
+ * files go in the list, not how they are shown. */
+function renderAppendix() {
+  const wrap = document.getElementById('appendix-docs');
+  if (!wrap) return;
+  const docs = REPORT.appendix || [];
+  const idx = document.getElementById('appendix-index');
+  if (!docs.length) {
+    wrap.innerHTML = '<div class="empty-note">No stage reports found for this run.</div>';
+    return;
+  }
+  idx.innerHTML =
+    docs.map(d => `<a class="docchip" href="#${esc(d.id)}">${esc(d.num)} · ${esc(d.label)}</a>`).join('') +
+    '<button class="docchip toggle" id="appendix-toggle">Collapse all</button>';
+  wrap.innerHTML = docs.map(d => `
+    <details class="stagedoc" open id="${esc(d.id)}">
+      <summary>
+        <span class="num">${esc(d.num)}</span>
+        <span class="label">${esc(d.label)}</span>
+        <span class="file mono">${esc(d.path)}${(d.also || []).map(a => ' = ' + esc(a)).join('')}</span>
+      </summary>
+      <div class="docbody"><div class="prose">${d.html}</div></div>
+    </details>`).join('');
+
+  // An index link must not scroll to a collapsed section — open it first.
+  idx.querySelectorAll('a.docchip').forEach(a => {
+    a.addEventListener('click', () => {
+      const target = document.getElementById(a.getAttribute('href').slice(1));
+      if (target) target.open = true;
+    });
+  });
+  const btn = document.getElementById('appendix-toggle');
+  btn.dataset.next = 'collapse';
+  btn.addEventListener('click', () => {
+    const collapse = btn.dataset.next !== 'expand';
+    wrap.querySelectorAll('details.stagedoc').forEach(d => { d.open = !collapse; });
+    btn.dataset.next = collapse ? 'expand' : 'collapse';
+    btn.textContent = collapse ? 'Expand all' : 'Collapse all';
+  });
+}
+
 /* ---------------------------------------------------------------- footer */
 function renderFooter() {
   document.getElementById('methods').innerHTML = REPORT.footer_html;

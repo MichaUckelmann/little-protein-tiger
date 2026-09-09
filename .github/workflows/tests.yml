@@ -6,8 +6,58 @@ on:
   pull_request:
     branches: [main]
 
+# A superseded run tells you nothing once a newer commit exists.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.13 is supported, so it is tested — not assumed. It already differs
+        # from 3.12 in TLS behaviour (VERIFY_X509_STRICT), which is exactly the
+        # kind of thing a single-version matrix hides.
+        python-version: ["3.12", "3.13"]
+    name: test (py${{ matrix.python-version }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      # The suite is green without this (tests that need it skip), but skipping
+      # is not the same as passing: these cover the chain-assignment and
+      # hotspot-grounding guards, which exist because a real campaign once ran
+      # against the wrong molecule. ~52 MB, public, no credentials.
+      - name: Fetch reference data
+        run: python scripts/fetch_reference_data.py
+
+      - name: Run tests
+        run: pytest tests/ -q
+
+      - name: Report what skipped
+        if: always()
+        run: pytest tests/ -q -rs | tail -40
+
+  # The editable install used above puts the repo ROOT on sys.path, which hides
+  # a whole class of packaging bug: `scripts/`, `skills/` and `assets/` are not
+  # in the wheel, so the console-script entry points and every runtime asset
+  # lookup break for anyone who runs `pip install little-protein-tiger`. Build
+  # the real artifact and exercise it from a clean venv.
+  wheel:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,9 +66,44 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build --wheel
 
-      - name: Run tests
-        run: pytest tests/ -q
+      - name: Install the wheel into a clean venv and exercise it
+        run: |
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/pip install --quiet dist/*.whl
+          echo "--- console scripts ---"
+          /tmp/wheeltest/bin/lpt-run-pipeline --help > /dev/null
+          /tmp/wheeltest/bin/lpt-run-skill --help > /dev/null
+          /tmp/wheeltest/bin/lpt-fetch-papers --help > /dev/null
+          /tmp/wheeltest/bin/lpt-curate-papers --help > /dev/null
+          echo "--- packaged assets resolve outside a source checkout ---"
+          cd /tmp && /tmp/wheeltest/bin/python -c "
+          from pathlib import Path
+          import src.binder_report as br, src.skill_runner as sr
+          assert br._MOLSTAR_DIR.is_dir(), f'vendored Mol* missing: {br._MOLSTAR_DIR}'
+          skills = Path(sr.__file__).resolve().parent.parent / 'skills'
+          assert skills.is_dir(), f'skills/ missing from the wheel: {skills}'
+          print('ok')
+          "
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ruff
+        run: |
+          pip install ruff
+          # Non-blocking for now: the codebase predates any linter, so this
+          # reports without failing the build. Tighten once the backlog is
+          # cleared.
+          ruff check . --output-format=github || true

@@ -10,20 +10,25 @@ that this integration would inherit wholesale and must not silently violate.
 ## STATUS (2026-08-24, later session)
 
 First implementation pass landed. See `CLAUDE.md`'s "The PPI -> foundry
-bridge (opt-in `design_engine`)" section for the shipped architecture and
+bridge (`design_engine`, foundry by default)" section for the shipped architecture and
 `diary.md`'s matching dated entry for the full session narrative — both are
 now the authoritative descriptions; this file is kept for the original
 scoping rationale (the three maintainer decisions below, and the
 alternatives considered) rather than duplicated here.
 
 Resolved, as answered by the maintainer:
-- BoltzGen stays as a live opt-in escape hatch (`design.backend: boltzgen`,
-  the default) — no dead-code removal of `design_metrics`/`design_ranking`.
+- BoltzGen stays as a live escape hatch — no dead-code removal of
+  `design_metrics`/`design_ranking`. (It was the default when this was
+  written; see the correction below.)
 - `--project` is required for `--design-engine foundry`, matching the
   binder track's own requirement (point 5 below).
 - Shipped opt-in (`--design-engine foundry` / `design.backend: foundry`),
   **not** a default flip of `--workflow ppi` — matches point "Before
   starting real implementation"'s explicit recommendation below.
+  **SUPERSEDED:** `design.backend` is now `foundry` by default (commit
+  `a3f6d84`), flipped after a real KRAS/RAF1 campaign validated the bridge
+  end-to-end on GPU. `--design-engine boltzgen` selects the old path.
+  CLAUDE.md is authoritative for the current behaviour.
 - Finding #3 (the verify-gap) was fixed first, exactly as recommended, and
   turned out to change the integration shape for the better: since PPI's
   `_stage_structure` now runs the same guards `_stage_binder_interface`

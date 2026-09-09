@@ -290,9 +290,22 @@ def test_target_flag_is_rejected_outside_the_binder_track():
 # design_engine: the opt-in PPI -> foundry bridge
 # ----------------------------------------------------------------------
 
-def test_design_engine_defaults_to_boltzgen(config):
+def test_design_engine_defaults_to_foundry(config):
+    """foundry is the default for --workflow ppi as well as binder, so both
+    tracks run the same RFD3 -> solubleMPNN -> RF3 machine. Validated by a real
+    KRAS/RAF1 GPU campaign before the default was flipped."""
     r = PipelineRunner(config, workflow="ppi")
-    assert r._design_engine == "boltzgen"
+    assert r._design_engine == "foundry"
+
+
+def test_an_explicit_engine_choice_beats_the_config(config):
+    """`design_engine` used to default to a real engine NAME, which made an
+    explicit choice of that engine indistinguishable from silence — so config
+    could override the caller. None is the only correct sentinel."""
+    assert PipelineRunner(
+        config, workflow="ppi", design_engine="boltzgen")._design_engine == "boltzgen"
+    assert PipelineRunner(
+        config, workflow="ppi", design_engine="foundry")._design_engine == "foundry"
 
 
 def test_design_engine_rejects_an_unknown_value(config):
@@ -332,13 +345,13 @@ def test_config_backend_key_is_no_longer_dead(config):
     was set but never read anywhere. Confirms the value in the checked-in
     config.yaml actually reaches PipelineRunner now.
     """
-    assert config.get("design", {}).get("backend") == "boltzgen"
+    assert config.get("design", {}).get("backend") == "foundry"
     r = PipelineRunner(config, workflow="ppi")
-    assert r._design_engine == "boltzgen"
+    assert r._design_engine == "foundry"
 
 
-def test_bridge_writes_target_intel_and_interface_then_hands_off_at_trim(
-        config, tmp_path, monkeypatch):
+@pytest.mark.network
+def test_bridge_writes_target_intel_and_interface_then_hands_off_at_trim(config, tmp_path, monkeypatch, reference_data):
     """
     Unit-level check on `_bridge_ppi_to_foundry`'s field mapping and file
     writes, with `_run_binder_track` stubbed out — this is not a GPU
@@ -801,7 +814,8 @@ def test_a_prepared_site_is_reused_rather_than_re_run(config, tmp_path):
 # Hotspot grounding
 # ----------------------------------------------------------------------
 
-def test_hotspots_must_be_grounded_in_the_actual_structure(config):
+@pytest.mark.network
+def test_hotspots_must_be_grounded_in_the_actual_structure(config, reference_data):
     """
     Real failure, caught during the four-target trial: the interface stage was
     asked to analyse 8ZNL and returned PD-L1's canonical literature numbering
@@ -853,6 +867,7 @@ def test_grounding_check_is_silent_when_it_cannot_verify(config, tmp_path):
 # Target/partner chain-assignment swap
 # ----------------------------------------------------------------------
 
+@pytest.mark.network
 def test_a_target_partner_chain_swap_is_caught(config):
     """
     Real failure from the four-target trial: for PD-L1 (7CZD, PD-L1 on RCSB
@@ -893,6 +908,7 @@ def test_chain_assignment_check_is_silent_when_it_cannot_verify(config):
         {}, {"target_chain": "A", "partner_chain": "B"}, "6VJJ")   # no target identity given
 
 
+@pytest.mark.network
 def test_a_stale_swapped_spec_is_caught_on_resume_not_just_fresh_generation(
         config, tmp_path):
     """
@@ -918,6 +934,7 @@ def test_a_stale_swapped_spec_is_caught_on_resume_not_just_fresh_generation(
              "partner_chain": trim.partner_chain}, trim.pdb_id)
 
 
+@pytest.mark.network
 def test_chain_assignment_check_uses_sequence_identity_not_just_metadata(config):
     """
     Sequence identity against the structure's actual modelled residues is the
@@ -933,8 +950,9 @@ def test_chain_assignment_check_uses_sequence_identity_not_just_metadata(config)
             {"target_chain": "A", "partner_chain": "B"}, "7CZD")
 
 
+@pytest.mark.network
 def test_neither_chain_matching_by_sequence_is_also_a_hard_stop(config,
-                                                                monkeypatch):
+                                                                monkeypatch, reference_data):
     """
     If sequence data is available and NEITHER chain looks like the intended
     target, that is stronger evidence of a problem than the metadata-only
@@ -957,6 +975,7 @@ def test_neither_chain_matching_by_sequence_is_also_a_hard_stop(config,
             {"target_chain": "A", "partner_chain": "B"}, "3KYS")
 
 
+@pytest.mark.network
 def test_falls_back_to_metadata_when_the_structure_is_not_yet_downloaded(
         config, tmp_path):
     """
@@ -974,6 +993,7 @@ def test_falls_back_to_metadata_when_the_structure_is_not_yet_downloaded(
             {"target_chain": "A", "partner_chain": "B"}, "7CZD")
 
 
+@pytest.mark.network
 def test_sequence_identity_separates_same_protein_from_unrelated(config):
     """Sanity check on the underlying primitive: a real match scores high,
     an unrelated sequence scores low, both against a real UniProt fetch."""
@@ -998,7 +1018,8 @@ def test_sequence_identity_separates_same_protein_from_unrelated(config):
 # since PPI has no single pre-declared "the target" the way binder's
 # target_intel does.
 
-def test_ppi_check_passes_when_target_chain_matches_the_first_named_protein(config):
+@pytest.mark.network
+def test_ppi_check_passes_when_target_chain_matches_the_first_named_protein(config, reference_data):
     """3KYS: chain A/C = TEAD1 (P28347), chain B/D = YAP1 (P46937) — real
     RCSB metadata, confirmed via entry_metadata."""
     r = PipelineRunner(config, workflow="ppi")
@@ -1006,7 +1027,8 @@ def test_ppi_check_passes_when_target_chain_matches_the_first_named_protein(conf
         "TEAD1 / YAP1", {"target_chain": "A", "partner_chain": "B"}, "3KYS")
 
 
-def test_ppi_check_passes_when_target_chain_matches_the_second_named_protein(config):
+@pytest.mark.network
+def test_ppi_check_passes_when_target_chain_matches_the_second_named_protein(config, reference_data):
     """Order in `target_complex` doesn't fix which protein is target_chain —
     either named protein is a legitimate choice for the PPI track."""
     r = PipelineRunner(config, workflow="ppi")
@@ -1014,7 +1036,8 @@ def test_ppi_check_passes_when_target_chain_matches_the_second_named_protein(con
         "TEAD1 / YAP1", {"target_chain": "B", "partner_chain": "A"}, "3KYS")
 
 
-def test_ppi_check_catches_neither_chain_matching_either_named_protein(config):
+@pytest.mark.network
+def test_ppi_check_catches_neither_chain_matching_either_named_protein(config, reference_data):
     """target_complex names TEAD1/YAP1 but the handoff's chains are actually
     PD-L1/nanobody (7CZD) — a stand-in for the interface stage having picked
     the wrong entry or fabricated chain letters entirely."""
@@ -1024,7 +1047,8 @@ def test_ppi_check_catches_neither_chain_matching_either_named_protein(config):
             "TEAD1 / YAP1", {"target_chain": "B", "partner_chain": "A"}, "7CZD")
 
 
-def test_ppi_check_handles_the_single_name_inhibit_active_site_case(config):
+@pytest.mark.network
+def test_ppi_check_handles_the_single_name_inhibit_active_site_case(config, reference_data):
     """No "/" in target_complex (inhibit_active_site mode) — falls straight
     through to `_verify_target_chain_assignment` against the one named
     protein, exactly like the binder track's own check."""

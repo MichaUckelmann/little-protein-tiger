@@ -23,8 +23,7 @@ _TIER1_JOURNALS: set[str] = {
     # Multidisciplinary flagships
     "nature", "science", "cell", "pnas",
     "proceedings of the national academy of sciences",
-    "new england journal of medicine","n engl j med",
-    "n"
+    "new england journal of medicine", "n engl j med", "nejm",
     # Nature family
     "nature chemical biology", "nat chem biol",
     "nature structural & molecular biology", "nat struct mol biol",
@@ -33,13 +32,14 @@ _TIER1_JOURNALS: set[str] = {
     "nature cell biology", "nat cell biol",
     "nature medicine", "nat med",
     "nature cancer", "nat cancer",
-    "nature genetics", "nat genet"
+    "nature genetics", "nat genet",
     # Cell Press
     "cell chemical biology","cell chem biol",
     "molecular cell", "mol cell",
     "cancer cell", 
     "cell reports", "cell rep",
     "cell research", "cell res",
+    "developmental cell", "dev cell",
     # Other high-impact
     "elife",
     "embo journal", "embo j",
@@ -63,7 +63,13 @@ _TIER1_JOURNALS: set[str] = {
     "nature immunology", "nat immunol",
     "cell systems", "cell sys", 
     "genes & development", "genes dev",
-    "molecular systems biology", "mol syst biol"
+    "molecular systems biology", "mol syst biol",
+    # Flagship primary-research journals, peers of the entries above.
+    # Every spelling the corpus actually contains is listed — matching is
+    # exact, so a missing variant is a silent 100% exclusion of that journal.
+    "journal of cell biology", "j cell biol",
+    "cell stem cell",
+    "genome biology", "genome biol",
 }
 
 # Tier 2 — solid domain-specific journals
@@ -75,6 +81,15 @@ _TIER2_JOURNALS: set[str] = {
     "biophysical journal", "biophys j",
     "febs journal", "febs j",
     "febs letters", "febs lett",
+    # Strong specialist venues, peers of JBC / JMB / Biochemical Journal.
+    "molecular and cellular biology", "mol cell biol",
+    "molecular biology of the cell", "mol biol cell",
+    "stem cell reports", "stem cell rep",
+    "embo molecular medicine", "embo mol med",
+    # "Development (Cambridge, England)" is PubMed's full form; the
+    # parenthetical normalises away to "development cambridge england".
+    "development", "development cambridge england", "dev camb",
+    "plos genetics", "plos genet",
     "chembiochem",
     "bioorganic & medicinal chemistry", "bioorg med chem",
     "european journal of medicinal chemistry", "eur j med chem",
@@ -120,8 +135,50 @@ _PUB_TYPE_WEIGHTS: dict[str, float] = {
 }
 
 
+# Trailing qualifiers PubMed appends to a journal's name that carry no
+# identity: the country/edition suffix on PNAS and Angewandte, chiefly.
+_JOURNAL_SUFFIXES = (
+    " of the united states of america",
+    " engl",
+    " international edition in english",
+)
+
+
 def _normalise(s: str) -> str:
-    return re.sub(r"[^a-z0-9 ]", " ", s.lower()).strip()
+    """Canonical form for journal-name matching.
+
+    Matching is exact against the tier lists, so every cosmetic difference in
+    how a source spells a journal is a silent exclusion. Measured against the
+    real corpus, three such differences were dropping ~1,300 papers from
+    journals that ARE listed:
+      * a leading "The"  — "The EMBO Journal", "The Journal of Biological
+        Chemistry", "The Biochemical Journal"
+      * PubMed's country suffix — "Proceedings of the National Academy of
+        Sciences of the United States of America" (827 papers alone)
+      * double spaces left behind when punctuation is blanked out
+    """
+    out = re.sub(r"[^a-z0-9 ]", " ", s.lower())
+    out = re.sub(r"\s+", " ", out).strip()
+    if out.startswith("the "):
+        out = out[4:]
+    for suffix in _JOURNAL_SUFFIXES:
+        if out.endswith(suffix):
+            out = out[: -len(suffix)].strip()
+            break
+    return out
+
+
+# Run the lists through the SAME normalisation as the lookup key.
+#
+# The lists are hand-written, so entries carry natural punctuation ("Genes &
+# Development", "Cell Host & Microbe", "Nature Structural & Molecular
+# Biology", "The ISME Journal"). Lookups normalise; the lists did not — so
+# those six entries could never match anything, and four well-known tier 1
+# journals were being silently excluded from the corpus despite being listed.
+# Normalising at import makes the whole class of mistake impossible: an entry
+# can now be written in whatever form reads naturally.
+_TIER1_JOURNALS = {_normalise(j) for j in _TIER1_JOURNALS}
+_TIER2_JOURNALS = {_normalise(j) for j in _TIER2_JOURNALS}
 
 
 def _journal_tier(journal: str | None, tier1_extra: set[str], tier2_extra: set[str]) -> float:

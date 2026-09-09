@@ -26,7 +26,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 # LPT_BCR_REFERENCE_DIR points at the root of the reference campaign's data;
 # see tests/conftest.py for the shared default and rationale.
 _BCR_ROOT = Path(os.environ.get(
-    "LPT_BCR_REFERENCE_DIR", "/home/m.uckelmann_cbs-niob.local/data/BCR"))
+    "LPT_BCR_REFERENCE_DIR", str(Path.home() / "data" / "BCR")))
 _BCR_INPUTS = _BCR_ROOT / "inputs"
 _BCR_RFD3 = _BCR_ROOT / "outputs" / "production" / "CD79b" / "rfd3"
 
@@ -312,7 +312,15 @@ def test_rf3_counter_keys_on_summary_confidences(tmp_path):
 # Planning + driver
 # ----------------------------------------------------------------------
 
-def test_plan_scales_with_batches(design_cfg, tmp_path):
+def test_plan_scales_with_batches(design_cfg, tmp_path, roomy_disk):
+    """n_batches scales the campaign linearly — with the disk clamp out of play.
+
+    `plan_campaign` clamps n_batches to what free disk allows, so on a machine
+    with little headroom BOTH plans clamp to the same floor and the scaling
+    property silently stops being tested: on a 14 GB CI runner this asserted
+    4 == 40. The clamp has its own test below; this one is about scaling, so it
+    pins free space rather than inheriting the host's.
+    """
     paths = FoundryPaths.under(tmp_path)
     small = plan_campaign(design_cfg, paths, mode="pilot", n_batches=10)
     big = plan_campaign(design_cfg, paths, mode="pilot", n_batches=100)
@@ -330,7 +338,7 @@ def test_plan_clamps_to_the_disk_budget(design_cfg, tmp_path):
 
 
 def test_driver_is_valid_bash_and_carries_the_ppi_settings(design_cfg, tmp_path,
-                                                           real_spec):
+                                                           real_spec, foundry_root):
     import subprocess
 
     spec_path, _, _ = real_spec
@@ -354,7 +362,8 @@ def test_driver_is_valid_bash_and_carries_the_ppi_settings(design_cfg, tmp_path,
     assert "MIN_FREE_GB" in text
 
 
-def test_driver_derives_the_chainbreak_threshold(design_cfg, tmp_path, real_spec):
+def test_driver_derives_the_chainbreak_threshold(design_cfg, tmp_path, real_spec,
+                                                 foundry_root):
     spec_path, _, _ = real_spec
     paths = FoundryPaths.under(tmp_path)
     paths.mkdirs()
@@ -478,3 +487,202 @@ def test_an_unmatched_alias_is_passed_through_not_swallowed(tmp_path):
     from src.foundry_stages import resolve_checkpoint
 
     assert resolve_checkpoint("nonesuch", tmp_path) == "nonesuch"
+
+
+# --- production must size on what the trial measured, not the default -------
+# plan_campaign's prefilter_rate defaults to 0.59. A production stage is planned
+# when its own directory is still empty, so prefilter_rate_observed() returns 0
+# and the fallback decides. On YAP1/TEAD1 the measured rate was 0.83, and
+# falling back to 0.59 under-called the campaign by ~380 refolds — harmless for
+# completion (progress() swaps in the real MPNN count) but it also under-calls
+# the disk estimate, and the disk CLAMP is computed from that.
+
+def test_persisted_prefilter_rate_is_read_back(tmp_path):
+    from src.pipeline_runner import PipelineRunner
+    calib = tmp_path / "calibration"; calib.mkdir()
+    (calib / "calibration.json").write_text(json.dumps({"prefilter_rate": 0.8293}))
+    got = PipelineRunner._persisted_prefilter_rate(None, {"calibration": calib})
+    assert got == pytest.approx(0.8293)
+
+
+@pytest.mark.parametrize("payload", [
+    {}, {"prefilter_rate": None}, {"prefilter_rate": 0}, {"prefilter_rate": 1.7},
+    {"prefilter_rate": -0.2}, {"prefilter_rate": "eighty percent"},
+])
+def test_a_missing_or_nonsense_rate_falls_back_rather_than_distorting(tmp_path, payload):
+    from src.pipeline_runner import PipelineRunner
+    calib = tmp_path / "calibration"; calib.mkdir()
+    (calib / "calibration.json").write_text(json.dumps(payload))
+    assert PipelineRunner._persisted_prefilter_rate(None, {"calibration": calib}) == 0.0
+
+
+def test_no_calibration_file_at_all_is_not_an_error(tmp_path):
+    from src.pipeline_runner import PipelineRunner
+    assert PipelineRunner._persisted_prefilter_rate(None, {"calibration": tmp_path}) == 0.0
+
+
+def test_the_rate_actually_changes_the_expected_refold_count():
+    """The whole point: 392 designs is 924 refolds at 0.59 and 1,300 at 0.83."""
+    assert int(392 * 0.59) * 4 == 924
+    assert int(392 * 0.8293) * 4 == 1300
+
+
+# --- RF3 refold cost scales with complex size, and is measured when possible --
+# A flat per-refold constant mis-sizes every campaign that is not the one it was
+# calibrated on: against four real campaigns the old 8.4 s was 14% low at 195
+# tokens and 54% low at 285. That drives est_gpu_hours, and through
+# choose_compute() the local-vs-cluster decision.
+
+def test_refold_estimate_grows_with_complex_size():
+    from src.foundry_runner import rf3_seconds_per_refold as f
+    assert f(195) < f(245) < f(285)
+    assert f(None) == f(0) == pytest.approx(9.1)
+
+
+@pytest.mark.parametrize("tokens,measured", [(195, 9.7), (264, 15.7), (285, 18.1)])
+def test_the_estimate_tracks_the_campaigns_it_was_fitted_on(tokens, measured):
+    """Within 15% on the three campaigns that have a production run behind them."""
+    from src.foundry_runner import rf3_seconds_per_refold as f
+    assert abs(f(tokens) - measured) / measured < 0.15
+
+
+def test_a_measured_rate_overrides_the_estimate(tmp_path, monkeypatch):
+    """A measured rate must beat the size-scaled estimate.
+
+    free_gb is pinned: on a host with less headroom than `min_free_gb` the disk
+    clamp squashes any campaign to n_batches=1, both estimates round to 0.0 h,
+    and the comparison passes or fails on the runner's spare disk rather than on
+    anything this test is about. CI (10 GB free) found that the hard way.
+    """
+    import src.foundry_runner as fr
+    monkeypatch.setattr(fr, "free_gb", lambda *_: 500.0)
+    paths = fr.FoundryPaths.under(tmp_path / "pilot")
+    paths.mkdirs()
+    cfg = {"foundry": {"pilot": {"n_batches": 200}}}
+    slow = fr.plan_campaign(cfg, paths, mode="pilot", n_tokens=285)
+    fast = fr.plan_campaign(cfg, paths, mode="pilot", n_tokens=285, sec_per_refold=2.0)
+    assert slow.n_batches == fast.n_batches == 200, "disk clamp fired — test is void"
+    assert slow.est_gpu_hours > 0 and fast.est_gpu_hours > 0
+    assert fast.est_gpu_hours < slow.est_gpu_hours
+
+
+def test_observed_rate_needs_enough_refolds_to_mean_anything(tmp_path):
+    from src.foundry_runner import FoundryPaths, sec_per_refold_observed
+    paths = FoundryPaths.under(tmp_path / "pilot")
+    paths.mkdirs()
+    for i in range(10):
+        (paths.rf3_dir / f"d{i}").mkdir()
+    assert sec_per_refold_observed(paths) == 0.0      # too few to time
+
+
+def test_binder_length_comes_from_the_contig():
+    from src.pipeline_runner import _binder_midpoint
+    assert _binder_midpoint("70-86,/0,A195-229") == 78
+    assert _binder_midpoint("40-120,/0,A1-169") == 80
+    assert _binder_midpoint("nonsense") == 78
+
+
+# ---------------------------------------------------------------------
+# Engine-binary resolution (beta onboarding, 2026-09-08)
+# ---------------------------------------------------------------------
+
+class TestFoundryBinResolution:
+    """`.venv-blackwell` is the name of ONE machine's hand-built venv, built
+    because its card is sm_120 and the shipped container's torch was not
+    built for it. It is the default in config.yaml, so every user on any
+    other GPU had a config landmine named after our hardware: the driver
+    launched, retried a nonexistent binary ten times over five minutes, and
+    aborted without naming the cause.
+    """
+
+    def _stub(self, root: Path, venv: str) -> None:
+        for engine in ("rfd3", "mpnn", "rf3"):
+            p = root / venv / "bin" / engine
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def test_the_configured_path_wins_when_it_exists(self, tmp_path):
+        from src.foundry_runner import _resolve_foundry_bin
+        self._stub(tmp_path, ".venv-blackwell")
+        self._stub(tmp_path, ".venv")
+        # Ambiguity is fine as long as the configured one is real.
+        assert _resolve_foundry_bin(
+            tmp_path, ".venv-blackwell/bin/rfd3", "rfd3") == ".venv-blackwell/bin/rfd3"
+
+    def test_a_differently_named_venv_is_found(self, tmp_path):
+        """The A100/H100 case: foundry installed normally, venv called .venv."""
+        from src.foundry_runner import _resolve_foundry_bin
+        self._stub(tmp_path, ".venv")
+        assert _resolve_foundry_bin(
+            tmp_path, ".venv-blackwell/bin/rfd3", "rfd3") == ".venv/bin/rfd3"
+
+    def test_two_candidates_refuse_rather_than_guess(self, tmp_path):
+        """Picking one would silently run the build for the wrong GPU."""
+        from src.foundry_runner import _resolve_foundry_bin, FoundryValidationError
+        self._stub(tmp_path, ".venv")
+        self._stub(tmp_path, ".venv-cuda12")
+        with pytest.raises(FoundryValidationError, match="2 candidate rfd3"):
+            _resolve_foundry_bin(tmp_path, "absent/bin/rfd3", "rfd3")
+
+    def test_no_binary_names_the_config_key_and_the_blackwell_trap(self, tmp_path):
+        from src.foundry_runner import _resolve_foundry_bin, FoundryValidationError
+        with pytest.raises(FoundryValidationError) as exc:
+            _resolve_foundry_bin(tmp_path, ".venv-blackwell/bin/rf3", "rf3")
+        msg = str(exc.value)
+        assert "design.foundry.rf3_bin" in msg
+        assert "Blackwell" in msg          # says WHY the default is wrong for them
+        assert "doctor.py" in msg
+
+    def test_the_driver_uses_the_resolved_path_not_the_default(
+            self, design_cfg, tmp_path, real_spec, monkeypatch):
+        """End-to-end: the rendered driver must call the binary that exists."""
+        spec_path, _, _ = real_spec
+        root = tmp_path / "foundry-a100"
+        self._stub(root, ".venv")
+        monkeypatch.setenv("LPT_FOUNDRY_ROOT", str(root))
+        paths = FoundryPaths.under(tmp_path)
+        paths.mkdirs()
+        plan = plan_campaign(design_cfg, paths, mode="pilot")
+        driver = write_campaign_driver(
+            design_cfg, spec_path, paths, plan).read_text()
+        assert ".venv/bin/rfd3" in driver
+        assert ".venv/bin/mpnn" in driver
+        assert ".venv/bin/rf3" in driver
+        assert ".venv-blackwell" not in driver
+
+
+class TestCheckpointDirOverride:
+    """The weights are wherever a user's foundry install put them — often a
+    shared lab volume. `~/pip_rcfoundry_ckpt` was hardcoded in three places
+    with no way to say otherwise."""
+
+    def test_the_driver_bakes_in_the_configured_checkpoint_dir(
+            self, design_cfg, tmp_path, real_spec, monkeypatch):
+        """The driver runs detached with its own environment, so the path has
+        to be resolved at write time, not read from $HOME at run time."""
+        spec_path, _, _ = real_spec
+        root = tmp_path / "foundry"
+        for engine in ("rfd3", "mpnn", "rf3"):
+            p = root / ".venv-blackwell" / "bin" / engine
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("LPT_FOUNDRY_ROOT", str(root))
+        monkeypatch.setenv("LPT_FOUNDRY_CKPT_DIR", "/mnt/lab/rcfoundry_ckpt")
+        paths = FoundryPaths.under(tmp_path)
+        paths.mkdirs()
+        plan = plan_campaign(design_cfg, paths, mode="pilot")
+        driver = write_campaign_driver(
+            design_cfg, spec_path, paths, plan).read_text()
+        assert '--ckpt-dir "/mnt/lab/rcfoundry_ckpt"' in driver
+
+    def test_it_falls_back_to_foundrys_own_default(
+            self, design_cfg, tmp_path, real_spec, foundry_root, monkeypatch):
+        from pathlib import Path as _P
+        monkeypatch.delenv("LPT_FOUNDRY_CKPT_DIR", raising=False)
+        spec_path, _, _ = real_spec
+        paths = FoundryPaths.under(tmp_path)
+        paths.mkdirs()
+        plan = plan_campaign(design_cfg, paths, mode="pilot")
+        driver = write_campaign_driver(
+            design_cfg, spec_path, paths, plan).read_text()
+        assert str(_P.home() / "pip_rcfoundry_ckpt") in driver

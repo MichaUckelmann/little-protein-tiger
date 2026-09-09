@@ -101,10 +101,15 @@ def filter_records(
     ipae_max: float,
     hotspot_sasa_delta_min: float,
     require_boltzgen_pass: bool,
+    hotspot_sasa_available: bool = True,
 ) -> tuple[list[DesignRecord], FilterStats]:
     """Apply hard filters. Drops a record on the **first** failure encountered,
     so per-reason counts attribute each drop to one cause (the first one
     tested) rather than double-counting.
+
+    ``hotspot_sasa_available`` says whether the SASA enrichment step actually
+    ran. It is False when PyRosetta is unavailable or disabled, and then the
+    SASA gate is SKIPPED rather than failed — see the note at its use below.
     """
     stats = FilterStats(n_input=len(records))
     survivors: list[DesignRecord] = []
@@ -132,15 +137,21 @@ def filter_records(
             stats.record_drop("ipae")
             continue
 
-        sasa_delta = _as_float(rec.get("lpt_hotspot_sasa_delta"))
-        if sasa_delta is None:
-            # SASA enrichment may have been capped to top-K; treat unenriched
-            # designs as failing this filter rather than silently skipping it.
-            stats.record_drop("missing_hotspot_sasa")
-            continue
-        if sasa_delta < hotspot_sasa_delta_min:
-            stats.record_drop("hotspot_sasa")
-            continue
+        # The SASA gate applies only if enrichment actually ran. When
+        # PyRosetta is absent or disabled, NOTHING has a SASA value, and
+        # treating that as a failure silently dropped every single design and
+        # then blamed the designs in 05_analysis.md. Skipping the gate is the
+        # honest behaviour: one fewer filter, reported as such.
+        if hotspot_sasa_available:
+            sasa_delta = _as_float(rec.get("lpt_hotspot_sasa_delta"))
+            if sasa_delta is None:
+                # Enrichment ran but capped to top-K: a design it never scored
+                # has not passed this filter, so it is still a drop.
+                stats.record_drop("missing_hotspot_sasa")
+                continue
+            if sasa_delta < hotspot_sasa_delta_min:
+                stats.record_drop("hotspot_sasa")
+                continue
 
         survivors.append(rec)
 
@@ -326,6 +337,7 @@ def rank_designs(
     weights: dict[str, float],
     mmr: dict[str, Any],
     top_k: int,
+    hotspot_sasa_available: bool = True,
 ) -> RankingResult:
     """Apply filters → composite score → MMR. Single entry point for stage 5.
 
@@ -340,6 +352,7 @@ def rank_designs(
         ipae_max=float(thresholds["ipae_max"]),
         hotspot_sasa_delta_min=float(thresholds["hotspot_sasa_delta_min"]),
         require_boltzgen_pass=bool(thresholds.get("require_boltzgen_pass", True)),
+        hotspot_sasa_available=hotspot_sasa_available,
     )
     logger.info(
         f"  ranking: {stats.n_survivors}/{stats.n_input} survived hard filters "

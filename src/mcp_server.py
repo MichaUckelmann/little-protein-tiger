@@ -4,13 +4,14 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
 from fastmcp import FastMCP
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT))
+
+from src.env_config import load_env  # noqa: E402
+load_env(ROOT / ".env")
 
 # Log to file so we can debug subprocess issues (stdout is reserved for MCP stdio)
 _log_file = ROOT / "data" / "mcp_server.log"
@@ -34,11 +35,36 @@ from src.fingerprint_store import load_fingerprint
 from src.vector_store import VectorStore
 
 logger.info("MCP server starting up — pre-importing sentence_transformers...")
-import sentence_transformers  # noqa: F401 — must import on main thread before FastMCP starts
+try:
+    import sentence_transformers  # noqa: F401 — must import on main thread before FastMCP starts
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "The literature-db MCP server needs the optional `corpus` extra:\n"
+        '    pip install -e ".[corpus]"\n'
+        "It provides sentence-transformers and lancedb for semantic search.\n"
+        "The structure-tools MCP server (scripts/launch_structure_tools.py) "
+        "needs none of this and works on the base install."
+    ) from exc
                                # its thread pool; importing from inside run_in_executor causes
                                # an OpenMP/MKL deadlock with the asyncio event loop.
 logger.info("sentence_transformers imported. Starting MCP server.")
-mcp = FastMCP("literature-db")
+mcp = FastMCP(
+    "literature-db",
+    instructions=(
+        "Tools over Little Protein Tiger's LOCAL curated corpus: ~11,000 "
+        "papers, heavily weighted toward chromatin, histone chaperones and "
+        "structural/chemical biology, filtered to tier 1-2 journals.\n\n"
+        "DO NOT reach for these tools on your own. Use them only when the "
+        "user explicitly asks about THIS corpus — 'search the corpus', "
+        "'what does the literature database say', 'which papers here...'.\n\n"
+        "For a general question about biology, a protein, or a mechanism, "
+        "answer from your own knowledge. It is far broader than this corpus, "
+        "which is one lab's reading list and is silent on most of biology. "
+        "Answering a general question from a corpus search will give the user "
+        "a narrower and worse answer than you would have given unaided, and "
+        "will make that narrowness look like the state of the field."
+    ),
+)
 
 # Paths from env (set in .mcp.json); fall back to config defaults
 _VECTOR_DB_PATH  = os.getenv("VECTOR_DB_PATH",  str(ROOT / "data/vectors"))
@@ -64,7 +90,8 @@ def search_corpus(query: str, top_k: int = 5, study_type: str = "", study_catego
     Each result includes the situational context, key quantitative findings
     (Kd, Ki), protein lists, DOI, study type, and study category.
 
-    Use this tool when asked about proteins, mechanisms, assay results,
+    Searches THIS corpus only. Use when the user explicitly asks what the
+    corpus/literature database contains about proteins, mechanisms, assays,
     inhibitors, binding affinities, or study designs present in the corpus.
 
     Args:
@@ -75,7 +102,8 @@ def search_corpus(query: str, top_k: int = 5, study_type: str = "", study_catego
                         experimental_in_vivo, experimental_structural,
                         computational, review, case_study. Leave empty for no filter.
         study_category: Optional domain filter — one of: biochemistry,
-                        pathway_biology, structural_biology, host_pathogen,
+                        pathway_biology, structural_biology, enzymology,
+                        biocatalysis, computational_chemistry, host_pathogen,
                         clinical, review. Use pathway_biology to find disease
                         mechanism and target selection papers. Use host_pathogen
                         for bacterial/viral virulence and AMR papers. Leave
@@ -110,7 +138,13 @@ def get_fingerprint(identifier: str) -> str:
     fp = load_fingerprint(paper_key, _FINGERPRINT_DIR)
     if fp is None:
         return json.dumps({"error": f"No fingerprint found for '{identifier}'"})
-    return json.dumps(fp, ensure_ascii=False, indent=2)
+    # Same view as the CLI transport. These two used to disagree: the CLI
+    # stripped `methodology` / `contradictions_and_negative_results` and this
+    # one stripped nothing, so the SAME skill saw different fields depending on
+    # how it was invoked. See src/skill_runner._llm_fingerprint.
+    from src.skill_runner import _llm_fingerprint
+
+    return json.dumps(_llm_fingerprint(fp), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
@@ -125,11 +159,11 @@ def get_interactions_for(
     deduplicated partner list with mention counts, supporting DOIs, and any
     quantitative anchors (Kd / Ki) reported in the same key_findings entry.
 
-    Use this when the user asks "which proteins interact with X?" or wants a
+    Use when the user explicitly asks what THIS CORPUS records about a
     network around a target — semantic search via search_corpus misses the
-    long tail of the interactome because top-k is small. Reach for this tool
-    early in relational queries rather than running multiple search_corpus
-    calls.
+    long tail of the interactome because top-k is small.
+
+    Corpus-derived, so it reflects one reading list — not the interactome.
 
     Args:
         protein:      Protein name (gene symbol or common name). Matching is
@@ -166,7 +200,7 @@ def find_quantitative_evidence(protein_pair: list[str], metric: str = "Kd") -> s
 
     Scans the entire corpus and returns only findings where the requested
     metric is non-null, sorted by metric value ascending (tightest binder
-    first). Use this when the user asks for the affinity of a specific pair
+    first). Use when the user explicitly asks what the corpus MEASURED for a pair
     or wants to know what's been measured experimentally.
 
     Args:
@@ -198,7 +232,7 @@ def shortest_interaction_path(
     min_mentions_along_path and weak_links_count so you can flag low-confidence
     steps when reporting to the user.
 
-    Use this for "is X connected to Y?" / "draw the cascade from X to Y"
+    Use when the user explicitly asks for a path THROUGH THIS CORPUS
     questions. Use get_interactions_for instead for "what does X bind?".
 
     Args:
@@ -415,7 +449,7 @@ def cluster_for_protein(protein: str) -> str:
     mentions * |DepMap r|). Returns the full cluster record with members,
     hub, internal/external edge counts, and max internal correlation.
 
-    Use this when the user asks "what pathway / module is X part of?" or
+    Use when the user explicitly asks about the corpus' own clustering, or
     wants the consensus co-essential neighbourhood — complements
     `find_cocorrelated_genes` (top-K pairwise) which returns one gene's
     nearest neighbours rather than the whole module.
@@ -462,6 +496,68 @@ def find_clusters_by_keyword(query: str, max_results: int = 20) -> str:
         max_results: Maximum number of clusters to return. Default 20.
     """
     result = _find_clusters_by_keyword(query, max_results=int(max_results))
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# PDB structure discovery
+# ---------------------------------------------------------------------------
+# These two were reachable only from the in-process CLI transport, so
+# pathway-expert, wildcard-expert and binder-target-intel silently degraded
+# under Claude Desktop / Claude Code — they would call the tool, get NOT_FOUND,
+# and carry on without a structure. CLAUDE.md requires every skill-referenced
+# tool to exist in BOTH transports; the implementations live in
+# src/skill_runner.py and are shared, not duplicated.
+
+
+@mcp.tool()
+def find_pdb_structures(proteins: list[str]) -> str:
+    """
+    Find PDB accessions for proteins by scanning the curated corpus.
+
+    Two sources per protein:
+      - pathway_context.target_nodes[].suggested_pdb_structures (pathway papers)
+      - paper_metadata.pdb_accessions of papers where the protein appears in
+        entities.proteins or key_findings.protein_pair
+
+    Corpus-sourced, so every hit carries a supporting DOI. Call this BEFORE
+    search_rcsb_pdb: a structure the corpus already cites is one the literature
+    connects to your target, whereas RCSB full-text search returns anything
+    whose title happens to match.
+
+    Matching is case-insensitive substring, so "YAP1" matches a stored
+    "YAP/TAZ". Queries shorter than 3 characters are ignored.
+
+    Args:
+        proteins: Gene symbols to look up, e.g. ["YAP1", "TEAD4", "NF2"].
+    """
+    from src.skill_runner import _find_pdb_structures
+
+    result = _find_pdb_structures(proteins, Path(_FINGERPRINT_DIR))
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def search_rcsb_pdb(proteins: list[str]) -> str:
+    """
+    Search RCSB PDB full-text for structures containing the given proteins.
+
+    The fallback for when find_pdb_structures returns total_found=0 — the
+    corpus has no PDB IDs for your target. Runs one RCSB full-text request per
+    protein (top 5 each), then batch-fetches title, method, resolution and
+    chain/entity metadata for any ID not already in the local cache.
+
+    Results are from RCSB, NOT the corpus: nothing here is vouched for by a
+    paper you have read. Check the entity descriptions actually match your
+    intended complex before using an ID — a full-text hit on "TEAD" can easily
+    be a different family member, or a fragment-screening entry.
+
+    Args:
+        proteins: Gene symbols to search for, e.g. ["YAP1", "TEAD4"].
+    """
+    from src.skill_runner import _search_rcsb_pdb
+
+    result = _search_rcsb_pdb(proteins, Path(_FINGERPRINT_DIR))
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 

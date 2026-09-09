@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+> **PRE-RELEASE BLOCKER:** the literature corpus is not yet packaged or
+> published, so `scripts/fetch_corpus.py` finds nothing and the literature
+> track is unusable for anyone but the maintainer. Run
+> `python scripts/package_corpus.py` and attach the archive to a GitHub
+> release. See `RELEASE_CHECKLIST.md`.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 `README.md` already documents commands, environment setup, the migration checklist, and the full skill catalogue. This file covers the architectural big picture and project-specific conventions that aren't obvious from a single file.
@@ -11,21 +17,33 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
 1. **Literature corpus pipeline** (`src/` + `scripts/`):
    `fetch_papers.py` → SQLite (`data/literature.db`) → `curate_papers.py` → fingerprint JSONs (`data/fingerprints/`) → LanceDB (`data/vectors/`) + edge index (`data/depmap_edges.parquet`) + clusters (`data/clusters.json`). Each stage is incremental and idempotent — papers carry `download_status` and `curation_status` columns that gate reruns.
 
+   **`fetch_papers.py` gates downloads on a journal tier list**
+   (`quality.require_tiered_journal`, default true; lists in `src/ranking.py`).
+   Search indexes every hit, but only tier 1/2 journals are downloaded — 32% of
+   indexed papers on the reference corpus. Matching is EXACT against a
+   normalised name, so a journal spelled a way the list doesn't contain is a
+   silent 100% exclusion, not a warning. See `docs/journal-filtering.md`.
+
    `curate_papers.py` self-runs three post-curation hooks at the end of each batch when at least one paper was curated successfully:
    1. **identifier normalization** (`run_backfill`) — adds the `protein_identifiers` sidecar block. Skip with `--skip-normalize`.
    2. **graph rebuild** (`build_and_cluster`) — refreshes `data/depmap_edges.parquet` and `data/clusters.json` so cluster tools see new papers. Skip with `--skip-graph-rebuild`.
    3. **vector ingestion** (`run_ingest`) — embeds new fingerprints into LanceDB so `search_corpus` can find them. Skip with `--skip-vector-ingest`.
 
-   All three are idempotent and skip cleanly when there's nothing to do. The standalone scripts (`normalize_identifiers.py`, `cluster_corpus.py`, `ingest_vectors.py`) remain available for migrations, force-rebuilds, and debugging. The in-process `_GRAPH_CACHE` in `src/_corpus_graph.py` is mtime-invalidated so a long-running MCP server picks up new fingerprints without restart.
+   All three are idempotent and skip cleanly when there's nothing to do. Vector
+   ingestion additionally **re-embeds a fingerprint whose text has changed**
+   (dedup keys on `paper_key` + the embedded text, not the key alone — on the
+   shipped corpus 704 rows carry a vector older than their fingerprint), and
+   reports rows whose fingerprint file is gone; deleting those needs an explicit
+   `--prune-orphans`. The standalone scripts (`normalize_identifiers.py`, `cluster_corpus.py`, `ingest_vectors.py`) remain available for migrations, force-rebuilds, and debugging. The in-process `_GRAPH_CACHE` in `src/_corpus_graph.py` is mtime-invalidated so a long-running MCP server picks up new fingerprints without restart.
 
 2. **Expert skill execution** (`skills/` + `src/skill_runner.py` + `src/pipeline_runner.py`):
    Each `skills/<name>/SKILL.md` is a system prompt plus tool-call protocol. Skills run in **two modes**:
    - **Claude Desktop / Claude Code**: via the two MCP servers in `.mcp.json` (`literature-db`, `structure-tools`).
    - **CLI / web backend**: via `scripts/run_skill.py`, which loads `SKILL.md` as the system prompt and routes tool calls **directly to Python functions** (no MCP subprocess). Same skill, same tools, different transport.
 
-   `src/pipeline_runner.py` chains skills end-to-end (pathway → structure → literature → design) by parsing `### PIPELINE HANDOFF` blocks out of each skill's markdown output. Editing handoff format in one skill requires updating the consumers.
+   `src/pipeline_runner.py` chains skills end-to-end (pathway → literature → structure → design) by parsing `### PIPELINE HANDOFF` blocks out of each skill's markdown output. Editing handoff format in one skill requires updating the consumers.
 
-3. **Web platform** (`web/`): FastAPI + Celery backend (`web/backend/`), React/Vite frontend (`web/frontend/`). Celery wraps `pipeline_runner` as a background task. BYOK API keys are Fernet-encrypted (`web/backend/crypto.py`).
+3. **Web platform** (`web/`) — **EXCLUDED FROM THE RELEASE, DO NOT WORK ON IT** unless explicitly asked. FastAPI + Celery + React. It is untracked (see `.gitignore`) and unmaintained: `_TrackedRunner._run_stage` in `web/backend/tasks.py` has a stale signature against `PipelineRunner._run_stage` (which gained a keyword-only `stage`), so it raises `TypeError` on the first PPI stage; it also knows nothing about `--workflow binder` and handles 4 of the 11 pause points the runner now raises. Branch `archive/web-platform` marks the last commit that tracked it. The CLI is the supported entry point.
 
 ## Two design workflows in one orchestrator
 
@@ -108,14 +126,47 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
   extend a track's own `app.js` when the content is genuinely specific to
   that track — don't grow one at the expense of the other's readability.
 
-## The PPI -> foundry bridge (opt-in `design_engine`)
+  **Every report ends with the stage reports themselves.** The narrative
+  sections each render ONE slice of a stage's markdown (the prose before its
+  handoff, the hotspot rationale, the verdict); the `#appendix` section
+  renders every stage file WHOLE, so a single `report.html` is the complete
+  run record and not a set of quoted excerpts —
+  `report_common.stage_documents` builds it and each track only decides which
+  files go in the list. A PPI-bridged campaign's binder report therefore also
+  carries `00_pathway.md`/`01_literature.md`/`02_structure.md` from one level
+  up, which is where the "why this target" reasoning actually lives. Two
+  presentational transforms are needed because a stage report is written to
+  be read in a TERMINAL first: handoff bullets become a two-column table, and
+  the two-space-indented cost ladders (`25_calibration.md`) are fenced, since
+  markdown's own code-block rule is four spaces and it otherwise collapses an
+  aligned ladder into a run-on sentence of numbers. Both act on the rendered
+  copy only — `handoff.parse_handoff` still reads the file on disk.
+
+  **`report_common.safe_json`, not a local copy.** Escaping `<!--` as `<\!--`
+  (both reports used to) produces a payload the BROWSER accepts — JavaScript
+  drops the backslash from an unknown escape — that is not valid JSON, so
+  every test reading `REPORT` back out of a built report breaks the moment a
+  stage's own HTML comment reaches the blob. The shared version uses `\/` and
+  `\u003c`, which are valid in both.
+
+## The PPI -> foundry bridge (`design_engine`, foundry by default)
 
 Scoped in `UNIFY_DESIGN_BACKEND_NOTES.md`, unification work started there.
-`--workflow ppi` still defaults to BoltzGen; `design.backend: foundry` in
-`config.yaml` (or `--design-engine foundry` on the CLI) hands a
+`design.backend` is now **`foundry` by default**, so `--workflow ppi` hands a
 PPI-discovered target off to the SAME RFD3->solubleMPNN->RF3 stage machine
 `--workflow binder` uses, instead of continuing into BoltzGen's
-design/execution/analysis stages. Requires `--project` — same reasoning as
+design/execution/analysis stages. Flipped after a real KRAS/RAF1 campaign
+validated the bridge end-to-end on GPU (82 min, top design iPTM 0.923 /
+dock-RMSD 0.39 A). `--design-engine boltzgen` selects the old path.
+
+**Modality is the operator's choice, not the model's.** `--modality` defaults
+to `mini_protein`; `cyclic_peptide` is opt-in and automatically selects
+BoltzGen, because RFD3 has no cyclic-peptide path and
+`binder_sizes.cyclic_peptide` (12-15 residues) fed to RFD3 asks for something
+it cannot build — quietly. `PipelineRunner._resolve_modality` is the single
+place that reconciles what a stage PROPOSED against what the operator CHOSE;
+every consumer goes through it, and the skill prompts no longer present
+modality as a menu. Requires `--project` — same reasoning as
 the binder track's own requirement: the foundry stages downstream are
 multi-day GPU campaigns that need a resumable manifest. `design.backend` was
 a dead config key before this (nothing read it — confirmed by grep); do not
@@ -169,9 +220,18 @@ membrane-topology resolution for a PPI-bridged target (falls back to
 `_stage_trim`'s "extracellular" default rather than binder-target-intel's
 own UniProt-topology check); `--trial-sites` multi-epitope comparison isn't
 wired into the bridge (PPI's structure stage picks exactly one interface);
-no real end-to-end GPU run has proven the bridge's output quality yet
-(current tests stub `_run_binder_track` — this is unit-level verification of
-the hand-off, not a campaign). BoltzGen's own `design_metrics`/
+`--trial-sites` multi-epitope comparison isn't
+wired into the bridge (PPI's structure stage picks exactly one interface).
+**The "no real GPU run has proven the bridge" gap is CLOSED** (2026-08-28):
+`projects/mesothelioma_showcase` went from the one-sentence query "Design cancer
+therapeutics to target key nodes in mesothelioma." through pathway → literature
+→ structure → bridge → trim → spec → pilot → calibration → production → scoring
+→ summary, unattended, for $0.79 of API spend and ~22 GPU-h. It picked
+YAP1/TEAD1 on 3KYS, calibrated at an 18.5% backbone hit rate (95% CI
+15.3–22.2%), and returned 317 gated survivors from 1,352 refolds with a best
+ipTM of 0.937 / dock-RMSD 0.63 Å. That run is also the first multi-segment trim
+(3 segments, 2 chain breaks) — the derived `max_chainbreaks` held, prefilter
+kept 86%. BoltzGen's own `design_metrics`/
 `design_ranking` path is untouched and stays fully live as a deliberate
 escape hatch, not oversight.
 
@@ -232,6 +292,22 @@ them without re-reading this list is how they get silently reverted.
   bar (`bar_raised_to` or `requested_bar`) a campaign was actually sized at, not
   the static config default, so the report's "excellent" highlighting always
   matches the verdict that was made.
+- **`hotspot_engagement` is a FRACTION of the declared hotspots, and the gate is
+  0.75, not 1.0.** Requiring every hotspot sounds strict and is mostly self-harm:
+  on the 12-hotspot YAP1/TEAD1 calibration only **49% of RFD3 backbones contacted
+  all twelve themselves**, and 92.5% of refolds engaged at least as many hotspots
+  as their own design did — so a 1.0 gate rejected refolds for missing residues
+  the design never targeted. Over the 1,392 refolds passing every other gate,
+  12/12 kept 738 (median iptm 0.847, dock 1.232) and 9/12 kept 978 (0.842, 1.259):
+  +33% yield for −0.005 iptm, with identical pLDDT in the discarded band. Being a
+  fraction, it scales with however many hotspots a region declares.
+- **One region declares at most 12 hotspots** (`foundry_spec.MAX_HOTSPOTS`, and
+  the rule the interface skill applies in Phase 2 Step 2b: keep the compact
+  hydrophobic cluster, drop rim/polar/backbone-only positions, say what was
+  dropped). More is not stricter — RFD3's hit rate on a full set falls as the set
+  grows, which weakens the engagement gate rather than tightening it.
+  `build_rfd3_spec` warns above the cap rather than truncating: choosing which to
+  drop needs the per-residue ΔΔG/BSA the skill had and the builder does not.
 - **A 300-backbone trial is often too small to size a campaign**, and that is
   measured, not assumed: at the 8TAC rate, 300 backbones gave a usable estimate in
   0/10 random seeds and 1000 in 8/10. Hence `--escalate-to`.
@@ -250,13 +326,97 @@ them without re-reading this list is how they get silently reverted.
 - **`os.scandir`, never `ls` or a glob.** Stage directories hold 50–100k entries;
   `ls | wc -l` in a pipeline silently reports 0, which reads as "this stage produced
   nothing" and aborts a completed run.
+- **`expected_rf3` is an ESTIMATE until MPNN writes, and `4 sequences per design`
+  applies to prefilter SURVIVORS, not to every design.** `plan_campaign` computes
+  `int(expected_rfd3 * prefilter_rate) * n_seq`, so 392 designs plans as 924
+  refolds at the 0.59 default and 1,300 at a measured 0.83. It cannot end a
+  campaign early — `progress()` does `expected_rf3 = n_mpnn or plan.expected_rf3`,
+  so the real MPNN count supersedes the estimate as soon as it exists — but the
+  disk CLAMP is computed from the estimate, so an under-called rate can
+  under-clamp a campaign sized near the budget. A stage's own directory is empty
+  when it is planned, so `prefilter_rate_observed()` returns 0 there;
+  `_persisted_prefilter_rate` reads the rate the trial measured back out of
+  `calibration.json` instead of falling through to the default.
+- **RF3 refold cost scales with complex size — `SEC_PER_RF3_REFOLD` is an
+  anchor, not a flat rate.** Fitted over four campaigns (timed from `rf3_out`
+  directory mtimes, not log ticks, which include the driver's retry gaps):
+  9.7 s/refold at 195 tokens, 11.0 at 245, 15.7 at 264, 18.1 at 285. The old
+  flat 8.4 s was 14% low at the small end and **54% low at the large end**,
+  which is how a 3 GPU-h estimate became an 8.8 h run. `rf3_seconds_per_refold`
+  scales it as `(tokens/195)**1.62` — between linear and quadratic, because
+  attention is O(N²) but much of the network is O(N); do not "correct" the
+  exponent to 2.0 without re-measuring. Better still, `sec_per_refold_observed`
+  reads the rate a PREVIOUS stage of the same campaign actually achieved
+  (`_earlier_refold_rate`), which tracked production within 10–17% on all three
+  campaigns that ran both. This feeds `est_gpu_hours`, and through
+  `choose_compute()` the local-vs-cluster decision.
+  **There is now ONE anchor and ONE law**: `campaign_calibration` imports both
+  from `foundry_runner` instead of holding its own (it kept a stale flat 8.4,
+  and it is the GATE's budget check, so on MASH/TEAD4 the gate costed 22,197
+  refolds at 63 GPU-h — "inside the 120 h budget" — while the planner costed the
+  same work at 138 GPU-h). `calibrate()` takes `n_tokens` and applies the size
+  law itself, so a caller that passes neither a measured rate nor a size gets a
+  warning rather than a silently under-costed SCALE_UP.
 - **Disk, not GPU, is the binding constraint**: ~2.5 MB per RF3 design directory,
   ~120 GB for a full production campaign. `plan_campaign` clamps `n_batches` to the
-  disk budget, and `prune_confidences` deletes PAE matrices for non-survivors.
-- **Trims preserve author numbering** so hotspot ids stay valid, and prefer a single
-  contiguous segment: every extra segment is an RFD3 chain break, and the prefilter's
-  `max_chainbreaks` is *derived from the segment count* — a hardcoded 1 against a
-  two-segment target rejects every design.
+  disk budget, and `prune_confidences` deletes PAE matrices for non-survivors —
+  wired into `_stage_binder_scoring` after `write_ranking_outputs`, and **off
+  unless `design.foundry.prune_confidences` is set**, because ipSAE cannot be
+  recomputed once the matrices are gone. It is skipped for a cluster campaign
+  and skipped entirely when nothing survived (that is exactly the run an
+  ITERATE verdict tells you to re-gate at a softer bar).
+- **Trims preserve author numbering** so hotspot ids stay valid. They prefer a single
+  contiguous segment, but NOT because RFD3 has to build across the gaps — it doesn't. The
+  target is fixed conditioning: the sidecar's `sampled_contig` reads
+  `72P,/0,A195,A196,...`, a diffused binder plus every target residue pinned by index.
+  What the segments change is `rfd3_n_chainbreaks`, which counts breaks in the OUTPUT
+  structure, so an N-segment target contributes an unavoidable N−1 before the binder is
+  looked at. Measured: single-segment campaigns score 0 on ~95% of designs (the rest are
+  genuine breaks in the DIFFUSED BINDER, which is the signal worth filtering); the
+  3-segment YAP1/TEAD1 target scored exactly 2 on all 400 designs sampled — no variance,
+  no information. `max_chainbreaks` is *derived from the segment count* so the budget for
+  real binder breaks stays at 1 either way; a hardcoded 1 against a multi-segment target
+  rejects every design.
+- **A trim is often a no-op, and that is a result.** PD-L1 kept 117 of 117 residues and
+  YAP1/TEAD1 208 of 208 — deciding a target is already within budget is as much this
+  stage's job as cutting one down, so a multi-segment contig does not imply anything was
+  trimmed away. 3KYS has exactly ONE real gap, the disordered 230–238; the campaign's
+  third segment was an artifact of the trim deleting A344, below.
+- **Chain membership is decided by BACKBONE, not by name** (`structure_tools.
+  is_chain_residue`). gemmi's chemical-component table does not know every modification a
+  depositor may make: 3KYS A344 is `P1L`, S-palmitoyl-cysteine, reported as
+  `kind=UNKNOWN, is_amino_acid=False`, yet it carries a full N/CA/C backbone 3.86 Å and
+  3.85 Å from residues 343 and 345. Filtering on the NAME deleted it, which removed the
+  palmitoylation the entire TEAD-inhibitor literature is about AND split TEAD1 into a
+  third segment that cost a chain break. Both the residue enumeration and `write_trimmed`
+  now keep anything carrying N/CA/C, whatever it is called — found by benchmarking the
+  trim across 19 complexes, not by a test.
+- **The trim only runs when the target does NOT fit.** It used to reduce to the
+  hotspot-carrying domain(s) regardless of size, so a 252-residue chain became 205 and a
+  364-residue one became 19 even though the budget is 220. If the whole chain fits
+  `design.foundry.target_residue_budget` it is now kept whole — 200 residues is
+  comfortable on a local GPU, and dropping a second interface is the operator's call,
+  not a silent default. Three refusals guard what remains, all measured on a 19-complex
+  benchmark: `MIN_TARGET_RESIDUES = 80` (a 19-residue "target" passed every other check
+  because its 4 hotspots survived), and the newly-exposed-hydrophobic rules below.
+- **A cut may not open hydrophobic core.** `MAX_EXPOSED_HYDROPHOBIC = 2` away from the
+  epitope, and ZERO within `EXPOSED_HOTSPOT_CLEARANCE_A = 10` Å of a hotspot — a fresh
+  hydrophobic face is what RFD3 preferentially binds (the same reason TM helices are
+  stripped), and one on the epitope competes with the site being designed for. Measured
+  per residue as ΔSASA > 15 Å² between the original and trimmed structures, **amino
+  acids only and one chain only in both**: include waters and you measure desolvation
+  instead — with solvent stripping on, a no-op trim of 7CZD "exposed" Met18 by 71 Å².
+  Both thresholds are `trim_target` kwargs, like `min_bsa_retention`; tests that
+  deliberately force an aggressive cut pass `max_exposed_hydrophobic=None`.
+- **Solvent never reaches the design or the interface maths.** `write_trimmed` drops
+  waters and crystallisation additives (`structure_tools.is_solvent_or_additive` — a
+  conservative denylist that checks `_is_protein_residue` FIRST, so MSE/SEP/TPO/PTR/PCA
+  can never be hit, and that keeps ions, metals, sugars, nucleotides and any unrecognised
+  ligand). Before this, ordered waters carried the target chain's id into
+  `_per_residue_bsa` where they could never match the trim's `kept_set`, so every
+  interface water counted as a residue the trim had "removed": on 7CZD, 20 waters worth
+  435 Å², 35% of the target-side total, opening a `trim_gate` checkpoint on a trim that
+  removed nothing.
 - **Insertion codes are refused, not worked around.** A Kabat-numbered antibody chain
   has repeated author ids, which an RFD3 contig cannot address; emitting `C92-92,C92-92`
   produces a spec RFD3 accepts and silently mis-models.
@@ -405,6 +565,42 @@ Celery writers); a rollup is mirrored into `manifest.json["budget"]` once per st
 replayed **with their `signature`**, or the next turn is rejected with
 `messages.N.content.0.thinking.signature: Field required`.
 
+## One agentic loop, not one per entry point
+
+`scripts/ask_corpus.py` is a thin front-end over `SkillRunner` running the
+`corpus-explorer` skill — it does NOT have its own loop. It used to, hardcoded
+to Anthropic with `search_corpus` as its only tool, and that second
+implementation silently missed everything the shared runner had learned:
+Gemini support, connection/429 retries, cross-provider refusal fallback, token
+accounting, and the other seventeen corpus tools. Any new conversational entry
+point goes through `SkillRunner` too.
+
+**The Gemini key goes in the `x-goog-api-key` HEADER, never the query string.**
+`requests` embeds the request URL in every exception it raises, so a key passed
+as `params={"key": ...}` is printed in full by any connection error, timeout or
+HTTP failure — to the terminal, into logs, and into whatever a user pastes into
+a bug report. Observed live: an SSL failure printed a working key.
+
+## foundry's venv name is one machine's accident
+
+`design.foundry.{rfd3,mpnn,rf3}_bin` default to `.venv-blackwell/bin/*` because
+this project's reference workstation had to hand-build that venv (its card is
+sm_120, which the shipped container's torch was not built for). Nothing else is
+Blackwell-specific, and every other GPU's foundry install uses a different venv
+name. `foundry_runner._resolve_foundry_bin` therefore globs the checkout for
+the binary when the configured path is absent, and refuses to guess between
+several candidates — picking one could run a build compiled for a different
+GPU. It resolves at `write_campaign_driver` time, so a wrong path fails before
+the detached driver launches rather than after ten retries and five minutes.
+
+The weights are resolved the same way: `LPT_FOUNDRY_CKPT_DIR` (or
+`design.foundry.ckpt_dir`), falling back to foundry's own
+`~/pip_rcfoundry_ckpt`. That path used to be hardcoded in three places, so a
+user whose weights lived on a shared lab volume had no way to say so. The
+driver runs DETACHED with its own environment, so the value is resolved at
+write time and baked into the generated script — reading `$HOME` at run time
+would resolve against whatever user the driver ends up running as.
+
 ## Safety-classifier refusals are an operational fact of this pipeline
 
 The binder track's `interface` stage (`complex-structure-analysis`) is routinely
@@ -457,6 +653,26 @@ check is not.
 
 `src/project.py` manages `projects/<slug>/` with an atomic `manifest.json` (the filesystem source of truth for stage/checkpoint state + artifact pointers; `web.db` stays authoritative for the web UI). Layout: `shared/{structures,ligands}/` + `runs/<round-N>/scratch/`. `PipelineRunner(project=, round_id=)` mirrors stage state into the manifest (`_record_stage`) and computes `run_dir` from it. The binder track requires `--project` — it iterates in rounds, and the manifest is what makes a multi-day GPU campaign resumable. When adding a binder pause point, set a manifest checkpoint (`_binder_checkpoint`) so resume state survives.
 
+## Two transports, opposite trigger rules
+
+The same `SKILL.md` and the same tool surface run under two transports, and they
+need OPPOSITE defaults:
+
+- **MCP** (Claude Desktop / Code): must NOT auto-trigger. The model is in a
+  general conversation, and the corpus is ~14.5k papers weighted to chromatin /
+  chaperones — auto-searching it on a general question yields a narrower answer
+  than the model's own knowledge, and makes the corpus's blind spots look like
+  the field's. Both servers set FastMCP `instructions` saying so, no tool
+  docstring contains "use this whenever", and every skill's frontmatter opens
+  with "Invoke ONLY when the user explicitly asks".
+- **API / pipeline** (`run_pipeline.py`, `run_skill.py`, `ask_corpus.py`): SHOULD
+  auto-use. The skill was already explicitly invoked for a corpus task, so
+  hesitating would just cost a turn. `skill_runner._TOOL_DEFS` and
+  `vector_store.SEARCH_TOOL_DEFINITION` keep their trigger language.
+
+These are separate description tables on purpose. Do not "fix" one to match the
+other; tests assert both directions and that they have not converged.
+
 ## Skill execution model
 
 - A skill's source of truth is its `SKILL.md` frontmatter + body. The `.zip` siblings in `skills/` are packaged artifacts — regenerate them, don't hand-edit.
@@ -477,25 +693,79 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 
 - **Strict provenance**: every claim carries a `source_span` (e.g. `"Page 4, Para 2"`). Tool consumers may reject fingerprints without it.
 - **Units are normalised at extraction time**: `affinities_kd_Molar` and `inhibitory_constant_Ki` are floats in **Molar** (not nM/µM). `protein_origin_organism` is an **NCBI taxonomy integer ID** (e.g. 9606). `confidence_score` is 0.0–1.0.
-- **Closed enums**: `study_type` and `study_category` are validated against the schema — adding a new category means updating both the schema and any pathway-expert / complex-expert skill prompts that filter on it.
+- **Closed enums**: `study_type` and `study_category` are validated against the
+  schema, and the enums are **parsed out of `extraction_schema.json` at import**
+  (`curator.load_schema_enums`) rather than restated in Python — that file is now
+  load-bearing, so schema and validator cannot drift. An out-of-enum value raises
+  a `ValidationError`, which the retry loop feeds back into the same conversation
+  as a correction turn. Adding a category means editing `extraction_schema.json`,
+  `curation_prompt.md`, and the `study_category` enum in BOTH tool definitions
+  (`skill_runner._TOOL_DEFS`, `vector_store.SEARCH_TOOL_DEFINITION`) — pinned by
+  `tests/test_audit_fixes.py`. `study_category` has nine values: the six original
+  plus `enzymology`, `biocatalysis` and `computational_chemistry`, which 565
+  shipped fingerprints already used before anything validated them.
 - **Curator output is strict JSON only**, no prose. Parsing in `src/curator.py` will fail loudly otherwise.
+
+## Identifier resolution: official symbols win, ambiguity is refused
+
+`src/identifier_normalizer.py` resolves a raw protein name to a human gene
+symbol through ordered tiers (exact HGNC symbol -> curated biology alias ->
+paralog-default -> HGNC alias -> prev_symbol -> UniProt ...). Two rules keep it
+from inventing answers, both added after the corpus was found resolving `NAP1`
+(a yeast name) to `ACOT8` and `p65` to `GORASP1`:
+
+1. **A synonym may never be another gene's approved symbol.** `BAP1` is listed
+   as a synonym of `RNF2` and is also the approved symbol of the deubiquitinase,
+   so the synonym link is dropped at load time and `BAP1` always means BAP1.
+   ~1,270 such collisions are dropped; `resolution_stats()` reports the count.
+2. **If several approved genes still claim a synonym, resolve to nothing.**
+   The old behaviour took the alphabetically-first claimant, which was right
+   about half the time by luck. A refusal is final — it does NOT fall through to
+   the UniProt tiers, which carry unreviewed entries literally gene-named
+   `NAP1` (Q540F3) and `P65` (O43245).
+
+`_BIOLOGY_ALIASES` (tier `curated_alias`, which runs BEFORE the alias tier) is
+the escape hatch for names where refusing would lose an answer that is not
+actually in doubt — `PD-1`, `p21`, `p62`, `p65`, `KAP1`, `NRF2`, `CAF-1` and
+others, each commented with the competing symbols. Add to it rather than
+loosening the two rules. `NAP1`, `RAS`, `AP-1`, `TFIIH`, `MLL4`, `ISWI` are
+deliberately left unresolved.
+
+**The corpus on disk still carries the old resolutions.** These rules apply at
+resolve time; `data/fingerprints/*.json` keeps whatever
+`normalize_identifiers.py` wrote. Re-running the backfill would change ~2,171
+of 74,414 identifier entries (2.9%) — ~390 corrections, the rest becoming
+unresolved — and the graph, edge index and clusters would need rebuilding after
+it.
 
 ## Configuration layering
 
-`config.yaml` is the main config; alternates (`config_search_expansion.yaml`, `config_flagship_journals.yaml`, `config_with_complexes.yaml`) are passed via `--config` to `fetch_papers.py` for targeted searches without polluting the primary keyword list. The current main config is focused on hypertrophic cardiomyopathy / sarcomere biology — keyword sets rotate as research focus shifts.
+`config.yaml` is the main config; alternates (`config_search_expansion.yaml`, `config_flagship_journals.yaml`, `config_with_complexes.yaml`) are passed via `--config` to `fetch_papers.py` for targeted searches without polluting the primary keyword list. The current main config is focused on histone chaperones / chromatin biology — keyword sets rotate as research focus shifts.
 
 ## MCP launchers (Windows gotcha)
 
-`scripts/launch_mcp.py` and `scripts/launch_structure_tools.py` set `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `TOKENIZERS_PARALLELISM=false`, and `HF_HUB_OFFLINE=1` before importing `sentence_transformers`. Without these, the MCP server hangs at import on Windows. Don't bypass the launcher when registering with Claude Desktop.
+`scripts/launch_mcp.py` sets `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `TOKENIZERS_PARALLELISM=false`, and `HF_HUB_OFFLINE=1` before importing `sentence_transformers`. Without these, the literature-db server hangs at import on Windows. Don't bypass the launcher when registering with Claude Desktop. `scripts/launch_structure_tools.py` sets none of them and does not need to — structure-tools never imports `sentence_transformers`.
 
-`.mcp.json` paths are absolute and **machine-specific** (currently pointing at `C:\Users\micha\Documents\little_protein_tiger\...`, which differs from this checkout's path). When working on this machine, expect MCP servers to potentially be stale until paths are reconciled — `README.md` "Migrating to a new machine" §4 has the canonical fix.
+`HF_HUB_OFFLINE=1` means the embedding model must already be in the HuggingFace cache: on a machine that has never downloaded it, the first `search_corpus` fails with an HF error that names nothing about LPT. Warm it once with `python -c "from sentence_transformers import SentenceTransformer as S; S('NeuML/pubmedbert-base-embeddings')"`.
+
+`.mcp.json` holds absolute, **machine-specific** paths, so it is NOT tracked in git (see `.gitignore`); each checkout generates its own. Run `python scripts/setup_mcp_json.py` to write one for the current venv and launcher paths — `README.md` "Migrating to a new machine" §4 has the context.
 
 `scripts/setup_mcp_json.py` automates that fix: it regenerates `.mcp.json` for the current checkout's venv Python and launcher paths (backing up the previous file to `.mcp.json.bak`), as an alternative to hand-editing.
 
 ## Common file pairs to keep in sync
 
-- `extraction_schema.json` ⇄ `src/models.py` (Pydantic) ⇄ `curation_prompt.md` — schema, validator, and prompt must agree.
-- `src/mcp_server.py` ⇄ `src/skill_runner.py` tool dispatch — same tool surface, two transports.
+- `extraction_schema.json` ⇄ `src/curator.py` (the `Fingerprint` / `KeyFinding` /
+  `PathwayContext` Pydantic models, validated in `curate_paper`) ⇄ `curation_prompt.md`
+  — schema, validator, and prompt must agree. `src/models.py` is the *paper*-level
+  model (`Paper`, `DownloadStatus`, `CurationStatus`), not the fingerprint one.
+- `src/mcp_server.py` ⇄ `src/skill_runner.py` tool dispatch — same tool surface, two
+  transports. `find_pdb_structures` / `search_rcsb_pdb` were CLI-only until this was
+  fixed, so three skills silently degraded under Claude Desktop. ONE deliberate
+  exception: `write_file` is CLI-only. The skills that want it name
+  `filesystem:write_file` (a different server the user configures), and
+  `complex-structure-analysis` forbids it — LPT exposing arbitrary file writes over
+  MCP would be a security surface for no benefit. Tests pin both the parity rule and
+  this exception. See `docs/mcp.md`.
 - `src/structure_tools.py` (pure logic) ⇄ `src/structure_tools_server.py` (MCP wrapper) — server is a thin shim; logic lives in the former.
 - `src/pipeline_runner.py` ⇄ each skill's "PIPELINE HANDOFF" output block.
 - `src/pipeline_runner.py` `_STAGE_TO_SKILL` is **many-to-one** — `complex-structure-analysis`
@@ -517,18 +787,95 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
   parses, without depending on `PipelineRunner`. All call sites must keep using the
   module, not a re-implementation, or they will silently drift on the next skill-prompt edit.
 - `src/report_common.py` (markdown rendering, `### PIPELINE HANDOFF` section splitting,
-  `## CITATION VERIFICATION` extraction, histogram binning) ⇄ `src/binder_report.py` ⇄
+  `## CITATION VERIFICATION` extraction, histogram binning, the full-stage-report
+  appendix, `safe_json`) ⇄ `src/binder_report.py` ⇄
   `src/ppi_report.py` — same reasoning as the `handoff.py` pairing above, one level up:
   both report generators read the SAME shape of markdown-plus-handoff stage output, so the
   reading logic lives once. `src/report_templates/_shared/{base.css,base.js}` is the
   matching pairing on the rendered side — both reports' `shell.html`/`app.js` source their
   palette, layout primitives, and Mol* explorer harness from there; see the binder-track
   section above ("Two reports, one design system").
-- Configs: alternates passed via `--config` to `fetch_papers.py` (and now `curate_papers.py`).
+- Configs: alternates passed via `--config` to `fetch_papers.py`. `curate_papers.py`
+  has no `--config` flag; it reads the main `config.yaml`.
+- `src/identifier_normalizer.py` (resolution) ⇄ `src/_corpus_graph.py`
+  `_resolve_seeds` (alias-aware seeding) ⇄ `src/edge_index.py` (collapses edges by
+  gene symbol) — all three must agree on what counts as one gene. A map is drawn on
+  RAW graph nodes, one per name, while the persisted edge index collapses aliases
+  first; before `_resolve_seeds` became alias-aware a map seeded on `YAP1` saw 169
+  neighbours where the index had 291, so the two disagreed about the same data.
+- `src/network_svg.py` — the single renderer for every interaction/DepMap map; see
+  its module docstring for the visual grammar. Don't hand-roll a second one.
 - `_verify_target_chain_assignment` ⇄ `_verify_ppi_chain_assignment` ⇄ `_verify_hotspot_grounding`
-  — the PD-L1/8ZNL guards. Now called from BOTH `_stage_binder_interface` (binder) and
-  `_stage_structure` (PPI); a future stage that also calls `complex-structure-analysis`
-  needs the same two calls, not a reason to skip them.
+  ⇄ `_verify_partner_chain_is_requested` — the PD-L1/8ZNL/6E3Y guards. All called from
+  BOTH `_stage_binder_interface` (binder) and `_stage_structure` (PPI); a future stage
+  that also calls `complex-structure-analysis` needs the same calls, not a reason to
+  skip them. **The partner guard must be given the complex the UPSTREAM stage settled
+  on, never `handoff["target_complex"]`**: a stage that renames the complex to whatever
+  it actually analysed would otherwise validate its own substitution. Asked for
+  CALCRL/RAMP1 in 6E3Y (chain E *is* RAMP1), the structure stage analysed chain P — the
+  38-residue CGRP agonist peptide — and renamed the complex to "CALCRL / CGRP"; chain R
+  really is CALCRL, so every other guard passed. That substitution is also what put
+  three hotspots inside the membrane, since the CGRP vestibule penetrates the TM bundle.
+- `_check_structure_organism` runs at TARGET-SELECTION time (after pathway, before
+  literature) and only warns: an ortholog is often a fine template, which is why
+  `_check_ortholog_conservation` measures rather than assumes. It costs one GraphQL
+  call and names the human alternatives — on 5GRS it reports that human SCAP structures
+  6M49/7ETW exist, two LLM stages before the conservation gate would refuse the yeast one.
+- **An `AF-<accession>` pseudo-id is a legal `pdb_id`** — `_ensure_structure` fetches the
+  AlphaFold model — but ONLY with `design_intent: inhibit_active_site`, because the model
+  is a monomer with no partner to disrupt. `_check_af_model_intent` enforces that pairing;
+  both target-selecting skills now know the id is available, which is what a
+  well-evidenced target with no PDB entry needs.
+## PPI structure and chain selection is deterministic, not prompted
+
+The binder track has always resolved its target to UniProt and ranked REAL
+computed interfaces before an LLM sees anything (`target_resolve.
+build_candidate_table`). The PPI track had none of that — it took whichever PDB
+the corpus cited and inferred the chain pair from entity descriptions — and three
+live runs showed that prompt guidance does not fix a mechanical choice. Four
+deterministic steps now sit between the pathway stage and the structure stage:
+
+- **`_select_designable_structure`** (between pathway and literature) prefers an
+  entry whose dominant interface IS the requested one. Best-evidenced and
+  best-designable are different questions: the corpus cites the landmark paper,
+  which for a receptor is the full-length agonist-bound cryo-EM complex. On
+  CALCRL it switches 6E3Y (3.3 Å, 7 chains, Gs + Nb35 + CGRP, 490-residue
+  7TM target) to 3N7S, the 2.1 Å ectodomain complex — CALCRL ECD 115 aa with
+  RAMP1 ECD 96 aa and nothing else. It **must** run here: the structure stage
+  cannot switch entries, because by the time it emits a handoff its hotspots
+  refer to one. It overrides an evidence-based choice, so it fires only on a
+  measurable defect (partner absent, target chain is a fusion construct, or ≥2
+  more scaffolding chains at no better resolution) and `--pdb` always wins.
+  A switch rewrites the free-text `structure_query`/`design_query` too — leaving
+  those stale made the literature stage cite a structure the run was not using.
+- **`_ppi_interface_options`** hands the structure stage MEASURED interfaces for
+  the chosen entry instead of letting it guess from descriptions. Measured, the
+  two interfaces in 6E3Y are the same size (R/P 3858 Å², R/E 3862 Å²), so the
+  stage was choosing the most conspicuous, not the largest. Bounded cost:
+  interfaces for this entry only, alternatives listed from metadata.
+- **`_verify_partner_chain_is_requested`** — see the guard list above.
+- **`_check_structure_organism`** and **`_designable_chain_sizes`** — organism
+  and size judged at selection time, on the number that will actually be
+  designed against (a 574-residue GPCR fusion is 167 designable residues once
+  the trim drops the TM span and the cytoplasmic face).
+
+**Membrane targets: which site a binder can reach** is now stated in all four
+skills that pick targets or residues (`pathway-expert`, `wildcard-expert`,
+`molecular-biology-expert`, `complex-structure-analysis` — the last had no
+mention of membranes at all). Reachable and clinically validated: class B ECDs
+(erenumab blocks CALCRL/RAMP1), class C Venus flytraps, class F CRDs, and the
+N-termini/ECLs of peptide-binding class A receptors. Not reachable: the
+orthosteric pocket of a lipid-ligand receptor — inside the bundle and entered
+LATERALLY from the bilayer — deep aminergic pockets, and any TM surface.
+
+**`_TrimFromDisk` must carry every attribute the GPU stages read.** It rebuilds a
+trim from `trim_map.json` so a resume need not redo it, and it silently lacked
+`n_residues_after` from the day `plan_campaign` started sizing RF3 by token
+count — which killed EVERY fresh-process `--start-from pilot|calibration|
+production` for ten days, the documented normal case after a multi-day campaign.
+`tests/test_audit_fixes.py` checks it by reflection over every `trim.<attr>` in
+the module, so the next field added to `TrimResult` cannot reintroduce it.
+
 - `_bridge_ppi_to_foundry` ⇄ `_run_binder_track`'s `"target_intel"`/`"interface"` stage-file
   loading (`_load_binder_handoff`) — the bridge writes synthetic/copied artifacts at those
   exact paths (`_BINDER_STAGE_FILES`) because `_run_binder_track` always reads them off disk
@@ -537,4 +884,4 @@ The fingerprint extraction is governed by `curation_prompt.md` + `extraction_sch
 
 ## Frontend
 
-`web/frontend/` is Vite + React 19 + TypeScript. Commands run from that directory: `npm run dev` (port 5173), `npm run build`, `npm run lint`. The backend's `FRONTEND_URL` env var must match the dev server origin for CORS.
+`web/frontend/` (Vite + React 19 + TypeScript) is part of the excluded web platform — see "Two intertwined systems" §3. Not part of the release and not maintained; don't wire new pipeline features into it.

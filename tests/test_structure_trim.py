@@ -155,9 +155,14 @@ def tead_hotspots():
 
 @pytest.mark.skipif(not _3KYS.exists(), reason="3KYS not downloaded")
 def test_trims_tead1_keeping_every_hotspot(tmp_path, tead_hotspots):
+    # budget=150 on a ~208-residue chain forces a cut, which is the point —
+    # these pin the trim MECHANICS. That cut does expose hydrophobic core near
+    # the epitope, so the exposure guard is relaxed here; the guard's own
+    # behaviour is pinned separately below.
     res = trim_target(_3KYS, target_chain="A", partner_chain="B",
                       hotspots=tead_hotspots, budget=150, out_dir=tmp_path,
-                      pdb_id="3KYS", binder_min=70, binder_max=86)
+                      pdb_id="3KYS", binder_min=70, binder_max=86,
+                      max_exposed_hydrophobic=None)
     assert res.n_residues_after <= 150
     assert res.n_residues_after < res.n_residues_before
     assert len(res.hotspots_retained) == 3 and not res.hotspots_lost
@@ -166,11 +171,12 @@ def test_trims_tead1_keeping_every_hotspot(tmp_path, tead_hotspots):
 
 
 @pytest.mark.skipif(not _3KYS.exists(), reason="3KYS not downloaded")
+@pytest.mark.network
 def test_rcsb_annotation_is_used_when_available(tmp_path, tead_hotspots):
     """3KYS chain A carries a CATH assignment; the geometric tier is the fallback."""
     res = trim_target(_3KYS, target_chain="A", partner_chain="B",
                       hotspots=tead_hotspots, budget=150, out_dir=tmp_path,
-                      pdb_id="3KYS")
+                      pdb_id="3KYS", max_exposed_hydrophobic=None)
     assert res.method in ("cath", "scop", "scop2", "ecod"), res.method
 
 
@@ -183,7 +189,7 @@ def test_author_numbering_is_preserved_so_hotspot_ids_stay_valid(tmp_path,
     """
     res = trim_target(_3KYS, target_chain="A", partner_chain="B",
                       hotspots=tead_hotspots, budget=150, out_dir=tmp_path,
-                      pdb_id="3KYS")
+                      pdb_id="3KYS", max_exposed_hydrophobic=None)
     mapping = load_mapping(res.mapping_path)
     assert mapping["identity_numbering"] is True
     assert mapping["auth_in_to_auth_out"] == {}
@@ -199,14 +205,16 @@ def test_losing_a_hotspot_is_a_hard_failure(tmp_path):
     with pytest.raises(TrimError, match="not present"):
         trim_target(_3KYS, target_chain="A", partner_chain="B",
                     hotspots=[{"residue": "LEU", "auth_seq_id": 9999}],
-                    budget=150, out_dir=tmp_path, pdb_id="3KYS")
+                    budget=150, out_dir=tmp_path, pdb_id="3KYS",
+                    max_exposed_hydrophobic=None)
 
 
 @pytest.mark.skipif(not _3KYS.exists(), reason="3KYS not downloaded")
 def test_contig_matches_the_kept_segments(tmp_path, tead_hotspots):
     res = trim_target(_3KYS, target_chain="A", partner_chain="B",
                       hotspots=tead_hotspots, budget=150, out_dir=tmp_path,
-                      pdb_id="3KYS", binder_min=70, binder_max=86)
+                      pdb_id="3KYS", binder_min=70, binder_max=86,
+                      max_exposed_hydrophobic=None)
     binder, _, spans = res.contig.partition(",/0,")
     assert binder == "70-86"
     assert spans == ",".join(f"A{lo}-{hi}" for lo, hi in res.kept_segments)
@@ -251,7 +259,11 @@ def test_dropping_a_second_native_interface_warns_but_does_not_fail(tmp_path):
                       hotspots=hotspots, budget=110, out_dir=tmp_path,
                       pdb_id="7XQ8")
     assert res.bsa_retention >= 0.9
-    assert res.bsa_dropped_A2 > 0.5 * res.interface_bsa_before_A2
+    # Compare against the TARGET-SIDE total, not the both-chain one:
+    # bsa_dropped_A2 counts only the trimmed chain's buried area, so measuring
+    # it against the whole interface is the apples-to-oranges comparison that
+    # made this warning fire on every trim, including no-ops.
+    assert res.bsa_dropped_A2 > 0.5 * res.interface_bsa_target_side_A2
     assert any("more than one interface" in w for w in res.warnings)
 
 
@@ -266,3 +278,154 @@ def test_insertion_codes_are_refused_not_silently_mis_numbered(tmp_path):
         trim_target(_7XQ8, target_chain="C", partner_chain="L",
                     hotspots=[{"residue": "TYR", "auth_seq_id": 150}],
                     budget=220, out_dir=tmp_path, pdb_id="7XQ8")
+
+
+# --- solvent hygiene -------------------------------------------------------
+# Ordered waters carry their target chain's id and their own numbering, so they
+# reached the per-residue interface accounting but could never be in the trim's
+# kept_set: every interface water was counted as a residue the trim had removed.
+# On 7CZD that was 20 waters worth 435 A^2 — 35% of the target-side total, which
+# tripped the 5% threshold and opened a trim_gate checkpoint on a trim that
+# removed nothing at all (117 residues in, 117 out).
+
+from src.structure_tools import is_solvent_or_additive  # noqa: E402
+
+
+@pytest.mark.parametrize("name", ["HOH", "DOD", "EDO", "GOL", "MPD", "DMS", "PEG"])
+def test_water_and_cryoprotectant_are_strippable(name):
+    assert is_solvent_or_additive(name)
+
+
+@pytest.mark.parametrize("name", [
+    "ALA", "GLY", "TRP",              # ordinary residues
+    "MSE", "SEP", "TPO", "PTR",       # modified residues a depositor may use
+    "PCA", "CSO", "UNK",              # and the odd ones
+])
+def test_the_polypeptide_is_never_strippable(name):
+    """The whole safety property: this must not be able to cut the chain."""
+    assert not is_solvent_or_additive(name)
+
+
+@pytest.mark.parametrize("name", [
+    "GTP", "GMPPNP", "ATP",   # functional ligands — KRAS campaigns need these
+    "ZN", "MG", "CA", "FE",   # metals, frequently structural
+    "SO4", "PO4",             # ions that sit in phosphate-binding sites
+    "NAG", "BMA",             # sugars, which may be a real glycan
+    "DA", "DT", "A", "U",     # nucleic acid
+])
+def test_anything_possibly_functional_is_kept(name):
+    """The list is a denylist on purpose — an unrecognised ligand survives."""
+    assert not is_solvent_or_additive(name)
+
+
+def test_case_and_whitespace_do_not_defeat_it():
+    assert is_solvent_or_additive(" hoh ")
+    assert not is_solvent_or_additive("")
+    assert not is_solvent_or_additive(None)  # type: ignore[arg-type]
+
+
+# --- the backbone rule ------------------------------------------------------
+# Membership of the chain is decided by GEOMETRY, not by name. gemmi's
+# chemical-component table does not know every modification a depositor may
+# make: 3KYS residue A344 is P1L, S-palmitoyl-cysteine, reported as
+# kind=UNKNOWN / is_amino_acid=False, yet it carries a full N/CA/C backbone at
+# 3.86 A and 3.85 A from residues 343 and 345. Filtering on the name deleted it,
+# which BOTH removed the palmitoylation the TEAD-inhibitor literature is about
+# AND split the chain into a third segment that cost a chain break downstream.
+
+from src.structure_tools import is_chain_residue  # noqa: E402
+
+
+class _FakeAtom:
+    pass
+
+
+class _FakeRes:
+    def __init__(self, name, atoms):
+        self.name, self._atoms = name, set(atoms)
+
+    def find_atom(self, name, altloc):
+        return _FakeAtom() if name in self._atoms else None
+
+
+def test_a_backbone_bearing_residue_is_chain_whatever_it_is_called():
+    assert is_chain_residue(_FakeRes("P1L", ("N", "CA", "C", "SG")))
+    assert is_chain_residue(_FakeRes("ZZZ", ("N", "CA", "C")))
+
+
+def test_a_recognised_residue_is_chain_even_with_atoms_missing():
+    """A poorly resolved sidechain, or a CA-only trace, is still chain."""
+    assert is_chain_residue(_FakeRes("ALA", ("CA",)))
+    assert is_chain_residue(_FakeRes("MSE", ()))
+
+
+def test_a_free_ligand_is_not_chain():
+    assert not is_chain_residue(_FakeRes("HOH", ("O",)))
+    assert not is_chain_residue(_FakeRes("GTP", ("PA", "PB", "O5'", "C5'")))
+    assert not is_chain_residue(_FakeRes("EDO", ("C1", "O1", "C2", "O2")))
+
+
+def test_a_partial_backbone_is_not_enough():
+    """N+CA without C is a fragment, not a linked residue."""
+    assert not is_chain_residue(_FakeRes("XYZ", ("N", "CA")))
+
+
+@pytest.mark.skipif(not Path("data/structures/3KYS_ba1.cif").exists(),
+                    reason="3KYS not in the structure cache")
+def test_the_real_palmitoyl_cysteine_survives_a_trim(tmp_path):
+    import gemmi
+    from src.structure_trim import write_trimmed
+    out = tmp_path / "t.cif"
+    write_trimmed(Path("data/structures/3KYS_ba1.cif"), out,
+                  {"A": list(range(195, 412))})
+    st = gemmi.read_structure(str(out))
+    names = {r.name for c in st[0] for r in c}
+    assert "P1L" in names, "the palmitoylated cysteine was deleted again"
+    assert "HOH" not in names, "solvent should still be stripped"
+
+
+# --- the three trim policies -----------------------------------------------
+# Benchmarking across 19 complexes showed the trim would happily return a
+# 19-residue "target" (7XT6, 364 residues in) and expose 2,427 A^2 of buried
+# hydrophobic core (1D8D) with nothing to stop either.
+
+def test_a_target_that_fits_the_budget_is_not_cut_at_all():
+    """200-residue proteins are fine to design against; domain selection was
+    cropping them anyway, which buys nothing the GPU cares about."""
+    from src.structure_trim import Domain, plan_trim
+    residues = [{"auth": i, "icode": "", "name": "ALA",
+                 "ca": np.array([float(i), 0.0, 0.0])} for i in range(1, 201)]
+    domains = [Domain(index=0, start_auth=1, end_auth=100, n_residues=100, source="cath"),
+               Domain(index=1, start_auth=101, end_auth=200, n_residues=100, source="cath")]
+    kept, warns = plan_trim(residues, domains, [{"auth_seq_id": 20}], budget=220)
+    assert len(kept) == 200, "a target inside the budget must be kept whole"
+
+
+def test_a_target_below_the_floor_is_refused():
+    from src.structure_trim import Domain, TrimError, plan_trim
+    residues = [{"auth": i, "icode": "", "name": "ALA",
+                 "ca": np.array([float(i), 0.0, 0.0])} for i in range(1, 41)]
+    with pytest.raises(TrimError, match="80-residue floor"):
+        plan_trim(residues,
+                  [Domain(index=0, start_auth=1, end_auth=40, n_residues=40, source="cath")],
+                  [{"auth_seq_id": 20}], budget=220)
+
+
+def test_the_floor_is_eighty():
+    from src.structure_trim import MIN_TARGET_RESIDUES
+    assert MIN_TARGET_RESIDUES == 80
+
+
+def test_two_exposed_hydrophobics_are_tolerated_but_three_are_not():
+    from src.structure_trim import MAX_EXPOSED_HYDROPHOBIC
+    assert MAX_EXPOSED_HYDROPHOBIC == 2
+
+
+@pytest.mark.skipif(not _3KYS.exists(), reason="3KYS not downloaded")
+def test_the_exposure_guard_fires_on_a_cut_that_opens_the_epitope(tmp_path, tead_hotspots):
+    """The same aggressive budget the mechanics tests opt out of."""
+    from src.structure_trim import TrimError
+    with pytest.raises(TrimError, match="hydrophobic"):
+        trim_target(_3KYS, target_chain="A", partner_chain="B",
+                    hotspots=tead_hotspots, budget=150, out_dir=tmp_path,
+                    pdb_id="3KYS", binder_min=70, binder_max=86)

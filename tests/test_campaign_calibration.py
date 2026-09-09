@@ -436,7 +436,12 @@ class TestChooseCompute:
         res = calibrate(_sample(100, 4, 40), target_designs=100, excellence_bar=0.7,
                         disk_budget_gb=10_000, max_campaign_days=100)
         choice = choose_compute(res, n_gpus_cluster=8)
-        assert choice.cluster_hours == pytest.approx(choice.local_hours / 8, rel=0.02)
+        # Absolute, not relative: both fields are rounded to one decimal for
+        # display, so at sub-hour cluster estimates the rounding step (0.05) is
+        # larger than any sensible relative tolerance — 4.2 / 8 = 0.525 stores
+        # as 0.5. A relative bound here passes or fails on where the anchor
+        # happens to land, not on whether the division is right.
+        assert choice.cluster_hours == pytest.approx(choice.local_hours / 8, abs=0.05)
 
     def test_max_local_hours_is_the_threshold_not_a_fixed_verdict(self):
         """Same result, evaluated at two thresholds either side of its hours,

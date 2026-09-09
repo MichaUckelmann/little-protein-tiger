@@ -2,9 +2,12 @@
 """
 Embed fingerprint JSONs into LanceDB for semantic search.
 
-Idempotent: ``VectorStore.ingest`` only embeds fingerprints whose
-paper_key is not already in the table. Pass ``--rebuild`` to drop the
-table and re-embed everything.
+Idempotent: ``VectorStore.ingest`` embeds fingerprints that are not yet
+indexed, and RE-embeds any whose text has changed since they were (a
+re-curated or re-normalised fingerprint). Unchanged ones are skipped.
+Pass ``--rebuild`` to drop the table and re-embed everything, or
+``--prune-orphans`` to also delete indexed rows whose fingerprint file
+no longer exists.
 
 Also imported by ``scripts/curate_papers.py`` so newly-curated
 fingerprints get embedded automatically — see ``run_ingest()``.
@@ -19,12 +22,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT))
+
+from src.env_config import load_env  # noqa: E402
+load_env(ROOT / ".env")
 
 from src.vector_store import VectorStore
 
@@ -40,6 +44,7 @@ def run_ingest(
     *,
     embedding_model: str = "NeuML/pubmedbert-base-embeddings",
     rebuild: bool = False,
+    prune_orphans: bool = False,
 ) -> dict[str, Any]:
     """Embed any new fingerprints into the vector store; return a stats dict.
 
@@ -53,17 +58,22 @@ def run_ingest(
         db_path:         LanceDB directory path.
         embedding_model: HuggingFace model name (default PubMedBERT).
         rebuild:         Drop the table before ingesting (re-embeds all).
+        prune_orphans:   Delete indexed rows with no fingerprint file left.
 
     Returns:
-        ``{"new_records": int, "db_path": str, "embedding_model": str}``
+        ``{"new_records", "db_path", "embedding_model"}`` plus the ingest
+        breakdown (``added``, ``updated``, ``unchanged``, ``pruned``,
+        ``orphans_seen``, ...).
     """
     logger.info(f"Vector ingest: fingerprints={fingerprint_dir} db={db_path} rebuild={rebuild}")
     store = VectorStore(db_path=db_path, embedding_model=embedding_model)
-    count = store.ingest(fingerprint_dir=fingerprint_dir, rebuild=rebuild)
+    count = store.ingest(fingerprint_dir=fingerprint_dir, rebuild=rebuild,
+                         prune_orphans=prune_orphans)
     return {
         "new_records": int(count),
         "db_path": str(db_path),
         "embedding_model": embedding_model,
+        **getattr(store, "last_ingest_stats", {}),
     }
 
 
@@ -80,6 +90,13 @@ def main() -> None:
         "--rebuild",
         action="store_true",
         help="Drop and recreate the vector table (re-embed everything).",
+    )
+    parser.add_argument(
+        "--prune-orphans",
+        action="store_true",
+        help=("Delete indexed rows whose fingerprint file no longer exists. "
+              "Destructive, so opt-in; without it those rows keep matching "
+              "search_corpus while get_fingerprint fails on them."),
     )
     args = parser.parse_args()
 
@@ -98,10 +115,16 @@ def main() -> None:
         db_path=db_path,
         embedding_model=embedding_model,
         rebuild=args.rebuild,
+        prune_orphans=args.prune_orphans,
     )
 
     print("\n--- Ingestion summary ---")
-    print(f"  New records ingested : {result['new_records']}")
+    print(f"  Rows written         : {result['new_records']}")
+    print(f"    new                : {result.get('added', 0)}")
+    print(f"    re-embedded        : {result.get('updated', 0)}")
+    print(f"  Unchanged (skipped)  : {result.get('unchanged', 0)}")
+    print(f"  Orphaned rows        : {result.get('orphans_seen', 0)}"
+          f" ({result.get('pruned', 0)} pruned)")
     print(f"  Vector DB            : {result['db_path']}")
 
 

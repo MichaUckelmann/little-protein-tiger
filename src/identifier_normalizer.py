@@ -155,6 +155,34 @@ _NON_PROTEIN_TERMS = frozenset({
 # Maps a *normalised* query form to an APPROVED HGNC gene symbol.
 # Only for high-frequency, unambiguous mappings — do not let this grow.
 _BIOLOGY_ALIASES: dict[str, str] = {
+    # --- Names several approved genes claim, where biology has one answer.
+    # These run BEFORE the HGNC alias tier, which now refuses to guess between
+    # competing claimants rather than taking the alphabetically-first one. Each
+    # entry below is a case where refusing would lose a resolution that is not
+    # actually in doubt; the competing symbols are noted so the call is checkable.
+    "PD1": "PDCD1",        # vs SNCA, SPATA2
+    "P21": "CDKN1A",       # vs H3P16, NSG1, TCEAL1
+    "P27": "CDKN1B",       # HGNC claimants (DCTN6, PSMD9, ...) omit the real one
+    "P62": "SQSTM1",       # vs DCTN4, NUP62, GTF2H1 — the autophagy receptor
+    "P65": "RELA",         # vs GORASP1, SYT1 — the NF-kB subunit
+    "P38": "MAPK14",       # vs AHSA1, AIMP2
+    "P97": "VCP",          # vs CFDP1, PSMD2, EIF4G2 — the AAA+ ATPase
+    "S6": "RPS6",          # vs PSMC4 — ribosomal protein S6
+    "CBP": "CREBBP",       # vs PAG1 — the acetyltransferase
+    "KAP1": "TRIM28",      # vs KIFAP3
+    "NRF2": "NFE2L2",      # vs GABPA, which is "NRF2" only in the older
+                           # nuclear-respiratory-factor sense
+    "TRF2": "TERF2",       # vs TBPL1 — the shelterin subunit
+    "DRP1": "DNM1L",       # vs CRMP1, DAPK2 — the fission GTPase
+    "GCN5": "KAT2A",       # vs KAT2B, which is PCAF
+    "ARP2": "ACTR2", "ARP3": "ACTR3",   # Arp2/3 complex subunits
+    "CD25": "IL2RA",       # vs ISG20
+    "CAF1": "CHAF1A",      # vs CHAF1B, CNOT8, and CNOT7 (whose PREVIOUS symbol
+                           # was CAF1) — in a chromatin corpus this is the
+                           # chromatin assembly factor, not the deadenylase
+    # Deliberately NOT curated, because they are genuinely ambiguous and a
+    # wrong guess is worse than nothing: NAP1 (a yeast name; the human
+    # paralogue family is NAP1L*), RAS, AP-1, TFIIH, MLL4, ISWI, H3.1, FSP1.
     # RNA polymerase II catalytic subunit
     "POLII": "POLR2A", "POL2": "POLR2A", "POLYMERASE2": "POLR2A",
     "RNAPII": "POLR2A", "RNAPOL2": "POLR2A", "RNAPOLII": "POLR2A",
@@ -453,6 +481,11 @@ class IdentifierNormalizer:
         self._hgnc_alias_to_symbol: dict[str, list[str]] = {}       # alias → [APPROVED symbol]
         self._hgnc_prev_to_symbol: dict[str, list[str]] = {}        # prev_symbol → [APPROVED]
 
+        # Official symbols always outrank synonyms; these three support that.
+        self._approved_symbols: set[str] = set()            # every approved symbol
+        self._dropped_synonyms: set[tuple[str, str]] = set()  # (synonym, gene that claimed it)
+        self._ambiguous_aliases: dict[str, list[str]] = {}   # synonym → competing symbols
+
         self._load_uniprot()
         self._load_hgnc()
 
@@ -488,14 +521,26 @@ class IdentifierNormalizer:
             except ValueError as exc:
                 raise RuntimeError(f"HGNC TSV missing expected column: {exc}") from None
 
-            for row in reader:
-                if len(row) <= max(i_symbol, i_alias, i_prev, i_uniprot, i_status):
-                    continue
-                if row[i_status] != "Approved":
-                    continue
+            rows = [r for r in reader
+                    if len(r) > max(i_symbol, i_alias, i_prev, i_uniprot, i_status)
+                    and r[i_status] == "Approved" and r[i_symbol].strip()]
+
+            # Pass 1 — every approved symbol, in both raw and normalised form.
+            # An official gene symbol OUTRANKS any synonym: BAP1 is a listed
+            # synonym of RNF2, but BAP1 is also the approved symbol of the
+            # deubiquitinase, so "BAP1" must always mean the deubiquitinase.
+            # Collecting the approved set first is what lets pass 2 drop those
+            # collisions instead of letting an alphabetical tie-break decide.
+            for row in rows:
+                s = row[i_symbol].strip().upper()
+                self._approved_symbols.add(s)
+                sn = normalize(row[i_symbol])
+                if sn:
+                    self._approved_symbols.add(sn)
+
+            # Pass 2 — indexes.
+            for row in rows:
                 symbol = row[i_symbol].strip().upper()
-                if not symbol:
-                    continue
                 # uniprot_ids can be pipe-separated for genes coding multiple
                 # isoforms with separate accessions; keep them all.
                 uniprots = [u for u in row[i_uniprot].split("|") if u]
@@ -507,19 +552,40 @@ class IdentifierNormalizer:
                         self._hgnc_symbol_to_uniprot.setdefault(sym_norm, uniprots)
                 for alias in row[i_alias].split("|"):
                     a = alias.strip().upper()
-                    if a:
-                        self._hgnc_alias_to_symbol.setdefault(a, []).append(symbol)
-                        # Also normalised form (greek + dehyphen) so "PD-L1" hits.
-                        an = normalize(alias)
-                        if an and an != a:
-                            self._hgnc_alias_to_symbol.setdefault(an, []).append(symbol)
+                    if not a:
+                        continue
+                    an = normalize(alias)
+                    if self._collides_with_symbol(a, an, symbol):
+                        continue
+                    self._hgnc_alias_to_symbol.setdefault(a, []).append(symbol)
+                    # Also normalised form (greek + dehyphen) so "PD-L1" hits.
+                    if an and an != a:
+                        self._hgnc_alias_to_symbol.setdefault(an, []).append(symbol)
                 for prev in row[i_prev].split("|"):
                     p = prev.strip().upper()
-                    if p:
-                        self._hgnc_prev_to_symbol.setdefault(p, []).append(symbol)
-                        pn = normalize(prev)
-                        if pn and pn != p:
-                            self._hgnc_prev_to_symbol.setdefault(pn, []).append(symbol)
+                    if not p:
+                        continue
+                    pn = normalize(prev)
+                    if self._collides_with_symbol(p, pn, symbol):
+                        continue
+                    self._hgnc_prev_to_symbol.setdefault(p, []).append(symbol)
+                    if pn and pn != p:
+                        self._hgnc_prev_to_symbol.setdefault(pn, []).append(symbol)
+
+    # ------------------------------------------------------------------
+    def _collides_with_symbol(self, raw: str, norm_form: str, owner: str) -> bool:
+        """True when this synonym is some OTHER gene's approved symbol.
+
+        Such a synonym is dropped rather than indexed, so the official name
+        always wins and the association is simply lost. That is deliberate:
+        the alternative is a silent alphabetical tie-break, which is how
+        "p65" came to mean GORASP1 rather than RELA.
+        """
+        for form in (raw, norm_form):
+            if form and form != owner and form in self._approved_symbols:
+                self._dropped_synonyms.add((form, owner))
+                return True
+        return False
 
     # ------------------------------------------------------------------
     def _hgnc_symbol_lookup(self, symbol: str) -> tuple[str | None, list[str]]:
@@ -627,24 +693,32 @@ class IdentifierNormalizer:
                     self._fill(res, sym, accs, "hgnc_alias", is_family=False, non_human=non_human)
                     return res
             else:
-                # Multiple HGNC symbols claim this alias — treat as family.
-                all_accs: list[str] = []
-                for s in unique:
-                    _, a = self._hgnc_symbol_lookup(s)
-                    all_accs.extend(a)
-                if all_accs:
-                    res.human_gene_symbol = unique[0]  # representative
-                    res.candidate_uniprots = sorted(set(all_accs))
-                    res.human_uniprot = res.candidate_uniprots[0]
-                    res.match_confidence = "hgnc_alias"
-                    res.is_family_head = True
-                    res.is_human_ortholog_mapping = non_human
-                    return res
+                # Several unrelated approved genes still claim this synonym
+                # and nothing here can choose between them, so refuse — and
+                # refuse for good. Previously this took `unique[0]`, i.e.
+                # alphabetical order, which is how NAP1 (a yeast name) came to
+                # mean ACOT8 and p65 to mean GORASP1.
+                #
+                # Returning rather than falling through is deliberate: the
+                # tiers below are UniProt Gene_Name/Synonym, which carry
+                # unreviewed entries literally named "NAP1" (Q540F3) and "P65"
+                # (O43245). Letting an ambiguous HGNC name drop into those
+                # trades a wrong human gene for a worse one. Anything with a
+                # real approved symbol already resolved at tier 2.
+                self._ambiguous_aliases[norm] = unique
+                res.filtered_reason = "ambiguous_synonym"
+                return res
 
         # 4. HGNC prev_symbol (deprecated approved symbol)
         prev_hits = self._hgnc_prev_to_symbol.get(norm) or []
         if prev_hits:
             unique = sorted(set(prev_hits))
+            if len(unique) > 1:
+                # Same rule as the alias tier: do not guess, and do not let a
+                # weaker tier pick it up afterwards.
+                self._ambiguous_aliases[norm] = unique
+                res.filtered_reason = "ambiguous_synonym"
+                return res
             sym, accs = self._hgnc_symbol_lookup(unique[0])
             if sym:
                 self._fill(res, sym, accs, "hgnc_prev", is_family=False, non_human=non_human)
@@ -736,6 +810,21 @@ class IdentifierNormalizer:
         return res
 
     # ------------------------------------------------------------------
+    def resolution_stats(self) -> dict[str, int]:
+        """How much the official-symbol rule is actually doing.
+
+        ``synonyms_dropped`` counts synonym→gene links refused because the
+        synonym is another gene's approved symbol; ``ambiguous_refused``
+        counts synonyms that survived that filter but still had more than one
+        claimant at resolve time, and so returned nothing rather than a guess.
+        """
+        return {
+            "approved_symbols": len(self._approved_symbols),
+            "synonyms_dropped": len(self._dropped_synonyms),
+            "ambiguous_refused": len(self._ambiguous_aliases),
+        }
+
+    # ------------------------------------------------------------------
     def _fill(
         self,
         res: Resolution,
@@ -768,10 +857,34 @@ _DEFAULT_HGNC = (
 _NORMALIZER: IdentifierNormalizer | None = None
 
 
+def _stats_docstring() -> None:  # pragma: no cover - documentation anchor
+    """See IdentifierNormalizer.resolution_stats()."""
+
+
+class ReferenceDataMissing(FileNotFoundError):
+    """A required reference dataset isn't on disk, with instructions to fix it."""
+
+
 def get_normalizer() -> IdentifierNormalizer:
     """Return a process-wide :class:`IdentifierNormalizer` (built on first call)."""
     global _NORMALIZER
     if _NORMALIZER is None:
+        # `data/` is gitignored, so these are absent on every fresh clone. This
+        # is the first thing the binder track touches (target_resolve, stage 0),
+        # and the bare FileNotFoundError that used to come out of gzip.open
+        # named a path but not what the file was, where to get it, or that a
+        # script exists to fetch it — the run just died two seconds in.
+        missing = [p for p in (_DEFAULT_IDMAPPING, _DEFAULT_HGNC) if not p.exists()]
+        if missing:
+            names = "\n  ".join(str(p) for p in missing)
+            raise ReferenceDataMissing(
+                f"required reference data is missing:\n  {names}\n\n"
+                f"These are public, free, and ~52 MB together. Fetch them with:\n"
+                f"    python scripts/fetch_reference_data.py\n"
+                f"(check what's present with --check). They map gene symbols and "
+                f"aliases to UniProt accessions, which target resolution, the "
+                f"chain-assignment guards and every graph tool depend on."
+            )
         _NORMALIZER = IdentifierNormalizer(_DEFAULT_IDMAPPING, _DEFAULT_HGNC)
     return _NORMALIZER
 

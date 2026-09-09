@@ -4,14 +4,44 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
-import pyarrow as pa
+import pyarrow as pa   # noqa: F401 — schema only; ships in the base install
 from loguru import logger
 
 # PubMedBERT-base output dimension. Verified at first ingest against the
 # actual model output; raise if there's a mismatch.
 _EMBEDDING_DIM = 768
+
+
+
+def _sql_quote(value: str) -> str:
+    """Quote a string for LanceDB's SQL-ish filter language.
+
+    These values reach us from an LLM tool call. The tool schema declares an
+    enum, but that is advisory — nothing enforces it at the API boundary — so
+    an embedded quote would otherwise break out of the literal and into the
+    predicate. Doubling single quotes is the SQL standard escape; control
+    characters are dropped outright since no legitimate enum value has any.
+    """
+    cleaned = "".join(ch for ch in str(value) if ch.isprintable())
+    return "'" + cleaned.replace("'", "''") + "'"
+
+
+
+_CORPUS_EXTRA_HINT = (
+    "This needs the optional `corpus` extra, which is not installed.\n"
+    "    pip install -e \".[corpus]\"\n"
+    "It pulls in sentence-transformers and lancedb (and, transitively, torch —\n"
+    "about 3 GB). It is optional because semantic corpus search is the only\n"
+    "thing that needs it: structure tools, both design tracks and the report\n"
+    "generators all run without it."
+)
+
+
+def _require_corpus_extra(module: str, exc: Exception) -> "NoReturn":
+    raise ModuleNotFoundError(f"{module} is required for corpus search.\n"
+                              f"{_CORPUS_EXTRA_HINT}") from exc
 
 
 class VectorStore:
@@ -89,6 +119,9 @@ class VectorStore:
                         "biochemistry",
                         "pathway_biology",
                         "structural_biology",
+                        "enzymology",
+                        "biocatalysis",
+                        "computational_chemistry",
                         "host_pathogen",
                         "clinical",
                         "review",
@@ -116,7 +149,10 @@ class VectorStore:
 
     def _get_db(self):
         if self._db is None:
-            import lancedb
+            try:
+                import lancedb
+            except ModuleNotFoundError as exc:
+                _require_corpus_extra("lancedb", exc)
             self.db_path.mkdir(parents=True, exist_ok=True)
             self._db = lancedb.connect(str(self.db_path))
         return self._db
@@ -133,15 +169,30 @@ class VectorStore:
                 self.TABLE_NAME, schema=self.SCHEMA, mode="create"
             )
         else:
+            # `ingest_vectors.py` is the right answer only when fingerprints
+            # exist to ingest. On a fresh clone `data/` is gitignored and
+            # empty, so that command runs, embeds nothing, and leaves the
+            # user exactly where they started — the real fix is to fetch the
+            # published corpus. Name whichever one actually applies.
+            fp_dir = Path(__file__).resolve().parent.parent / "data" / "fingerprints"
+            has_fingerprints = fp_dir.is_dir() and any(fp_dir.glob("*.json"))
+            fix = ("python scripts/ingest_vectors.py" if has_fingerprints
+                   else "python scripts/fetch_corpus.py")
             raise RuntimeError(
                 f"LanceDB table '{self.TABLE_NAME}' not found at {self.db_path}. "
-                "Run `python scripts/ingest_vectors.py` first."
+                f"Run `{fix}` first."
+                + ("" if has_fingerprints else
+                   f"\n(no curated fingerprints under {fp_dir} either — this "
+                   f"checkout has no corpus yet, so there is nothing to ingest.)")
             )
         return self._table
 
     def _get_encoder(self):
         if self._encoder is None:
-            from sentence_transformers import SentenceTransformer
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ModuleNotFoundError as exc:
+                _require_corpus_extra("sentence-transformers", exc)
             logger.info(f"Loading embedding model: {self.embedding_model_name}")
             try:
                 self._encoder = SentenceTransformer(
@@ -237,10 +288,15 @@ class VectorStore:
     # Public API
     # ------------------------------------------------------------------
 
+    #: Populated by every `ingest()` call. Keys: added, updated, unchanged,
+    #: pruned, skipped_irrelevant, skipped_empty, orphans_seen.
+    last_ingest_stats: dict[str, int]
+
     def ingest(
         self,
         fingerprint_dir: str | Path,
         rebuild: bool = False,
+        prune_orphans: bool = False,
     ) -> int:
         """
         Embed and index all relevant fingerprint JSONs.
@@ -251,11 +307,18 @@ class VectorStore:
             Directory containing ``*.json`` fingerprint files.
         rebuild : bool
             If True, drop and recreate the table before ingesting.
+        prune_orphans : bool
+            Delete indexed rows whose fingerprint file no longer exists.
+            Off by default because it is destructive; without it those rows
+            keep matching searches that a `get_fingerprint` follow-up cannot
+            then resolve.
 
         Returns
         -------
         int
-            Number of new records ingested.
+            Rows written (new + re-embedded). `last_ingest_stats` carries the
+            full breakdown: added / updated / unchanged / pruned /
+            skipped_irrelevant / skipped_empty / orphans_seen.
         """
         fingerprint_dir = Path(fingerprint_dir)
         db = self._get_db()
@@ -267,15 +330,33 @@ class VectorStore:
 
         table = self._get_table(create_if_missing=True)
 
-        # Collect already-indexed keys to enable incremental ingestion
-        existing_keys: set[str] = set()
+        stats = {"added": 0, "updated": 0, "unchanged": 0, "pruned": 0,
+                 "skipped_irrelevant": 0, "skipped_empty": 0, "orphans_seen": 0}
+        self.last_ingest_stats = stats
+
+        # Existing key -> the embed_text that was actually embedded for it.
+        # Keying on the TEXT, not just the key, is what makes a re-curated
+        # fingerprint re-embed: ingestion used to be add-only on `paper_key`,
+        # so an edited fingerprint kept its stale vector forever and only a
+        # full `--rebuild` could fix it.
+        existing: dict[str, str] = {}
         if not rebuild:
             try:
                 arrow_tbl = table.to_arrow()
-                existing_keys = set(arrow_tbl["paper_key"].to_pylist())
-                logger.info(f"{len(existing_keys)} fingerprints already indexed.")
+                existing = dict(zip(arrow_tbl["paper_key"].to_pylist(),
+                                    arrow_tbl["embed_text"].to_pylist()))
+                logger.info(f"{len(existing)} fingerprints already indexed.")
             except Exception as exc:
-                logger.warning(f"Could not read existing keys (will re-index all): {exc}")
+                # Deliberately fatal. The old behaviour logged "will re-index
+                # all" and carried on with an EMPTY key set, which does not
+                # re-index — `table.add` has no primary key, so it appends a
+                # second copy of the entire corpus.
+                raise RuntimeError(
+                    f"could not read the existing vector index ({exc}). "
+                    f"Refusing to continue: ingestion is an append, so running "
+                    f"without the current key set would duplicate every row. "
+                    f"Re-run with --rebuild to recreate the table from scratch."
+                ) from exc
 
         encoder = self._get_encoder()
 
@@ -284,6 +365,8 @@ class VectorStore:
 
         batch_texts: list[str] = []
         batch_meta: list[dict] = []
+        stale_keys: list[str] = []
+        seen_keys: set[str] = set()
 
         for fp_file in fp_files:
             try:
@@ -293,16 +376,28 @@ class VectorStore:
                 continue
 
             if not fp.get("relevant", True):
+                stats["skipped_irrelevant"] += 1
                 continue
 
             paper_key = self._derive_paper_key(fp, fp_file.stem)
-            if paper_key in existing_keys:
-                continue
+            seen_keys.add(paper_key)
 
             embed_text = self._build_embed_text(fp)
             if not embed_text:
                 logger.warning(f"No embeddable text for {fp_file.name} — skipping.")
+                stats["skipped_empty"] += 1
                 continue
+
+            if paper_key in existing:
+                if existing[paper_key] == embed_text:
+                    stats["unchanged"] += 1
+                    continue
+                # Re-curated (or re-normalised) since it was embedded: drop the
+                # old row and embed the new text in this same pass.
+                stale_keys.append(paper_key)
+                stats["updated"] += 1
+            else:
+                stats["added"] += 1
 
             batch_texts.append(embed_text)
             batch_meta.append({
@@ -315,8 +410,28 @@ class VectorStore:
                 "fingerprint_json": json.dumps(fp, ensure_ascii=False),
             })
 
+        # Rows whose fingerprint file is gone. Add-only ingestion could never
+        # remove them, so the shipped index carries ~1,700 rows that
+        # `get_fingerprint` cannot resolve. Destructive, therefore opt-in.
+        orphans = sorted(set(existing) - seen_keys)
+        stats["orphans_seen"] = len(orphans)
+        if orphans and not prune_orphans:
+            logger.warning(
+                f"{len(orphans)} indexed rows have no fingerprint file on disk "
+                f"and will keep returning from search_corpus (a get_fingerprint "
+                f"follow-up on them fails). Pass --prune-orphans to delete them.")
+        if orphans and prune_orphans:
+            stats["pruned"] = self._delete_keys(table, orphans)
+            logger.info(f"Pruned {stats['pruned']} orphaned rows.")
+
+        if stale_keys:
+            removed = self._delete_keys(table, stale_keys)
+            logger.info(f"Re-embedding {removed} changed fingerprints.")
+
         if not batch_meta:
-            logger.info("Nothing new to ingest.")
+            logger.info(
+                f"Nothing to embed (unchanged {stats['unchanged']}, "
+                f"pruned {stats['pruned']}).")
             return 0
 
         logger.info(f"Encoding {len(batch_texts)} fingerprints...")
@@ -333,8 +448,34 @@ class VectorStore:
         ]
 
         table.add(records)
-        logger.info(f"Ingested {len(records)} fingerprints.")
+        logger.info(
+            f"Ingested {len(records)} fingerprints "
+            f"(new {stats['added']}, re-embedded {stats['updated']}, "
+            f"unchanged {stats['unchanged']}, pruned {stats['pruned']}).")
         return len(records)
+
+    @staticmethod
+    def _delete_keys(table, keys: Sequence[str], chunk: int = 200) -> int:
+        """
+        Delete rows by ``paper_key``, in chunks.
+
+        One predicate per key would be thousands of round trips; one predicate
+        for all of them overflows LanceDB's filter parser on a full corpus.
+        Values go through `_sql_quote` for the same reason search filters do —
+        a `paper_key` is a DOI, and DOIs are allowed to contain quotes.
+        """
+        deleted = 0
+        for i in range(0, len(keys), chunk):
+            batch = keys[i:i + chunk]
+            predicate = "paper_key IN (%s)" % ", ".join(
+                _sql_quote(k) for k in batch)
+            try:
+                table.delete(predicate)
+                deleted += len(batch)
+            except Exception as exc:  # noqa: BLE001 - one bad chunk must not
+                logger.warning(  # abort an otherwise-good ingest
+                    f"could not delete {len(batch)} rows: {exc}")
+        return deleted
 
     def search(
         self,
@@ -357,9 +498,10 @@ class VectorStore:
 
         query_vec = encoder.encode(query, normalize_embeddings=True).tolist()
 
-        # Over-fetch when filtering so post-filter has headroom
-        any_filter = study_type is not None or study_category is not None
-        fetch_limit = top_k if not any_filter else top_k * 4
+        # No over-fetch: the filter is applied BEFORE the search (see the
+        # prefilter note below), so `limit` already means "this many rows that
+        # match the filter" rather than "this many rows, some of which may".
+        fetch_limit = top_k
 
         search_builder = (
             table.search(query_vec)
@@ -367,25 +509,36 @@ class VectorStore:
             .limit(fetch_limit)
         )
 
+        # ONE where() call, not two. LanceDB's builder assigns
+        # `self._where = where`, so a second call REPLACES the first rather
+        # than ANDing it: asking for study_type + study_category silently
+        # applied the category only, and a caller that thought it had
+        # constrained methodology got results from every study_type.
+        # Verified against lancedb 0.30.2.
+        clauses = []
         if study_type:
-            try:
-                search_builder = search_builder.where(
-                    f"study_type = '{study_type}'", prefilter=False
-                )
-            except TypeError:
-                search_builder = search_builder.where(
-                    f"study_type = '{study_type}'"
-                )
-
+            clauses.append(f"study_type = {_sql_quote(study_type)}")
         if study_category:
+            clauses.append(f"study_category = {_sql_quote(study_category)}")
+        if clauses:
+            predicate = " AND ".join(clauses)
+            # prefilter=True — filter first, THEN search the matching rows.
+            #
+            # Post-filtering (prefilter=False) runs the ANN search first and
+            # drops non-matching rows afterwards, so a filtered query only ever
+            # sees the `limit` globally-nearest rows. Any category rarer than
+            # ~1-in-limit is filtered to nothing, and the caller cannot tell
+            # that apart from "the corpus has no such papers". Measured on this
+            # corpus: `study_category='structural_biology'` (327 papers, 2.6%)
+            # returned 0 rows at limit=20 and 20 rows with prefilter on. The
+            # two categories that DID work — biochemistry and pathway_biology —
+            # are 90% of the corpus between them, which is why this survived.
+            # It mattered: molecular-biology-expert is told to prefer
+            # `experimental_structural`, i.e. exactly the starved case.
             try:
-                search_builder = search_builder.where(
-                    f"study_category = '{study_category}'", prefilter=False
-                )
-            except TypeError:
-                search_builder = search_builder.where(
-                    f"study_category = '{study_category}'"
-                )
+                search_builder = search_builder.where(predicate, prefilter=True)
+            except TypeError:      # older lancedb without the kwarg
+                search_builder = search_builder.where(predicate)
 
         results_arrow = search_builder.to_arrow()
 

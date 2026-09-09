@@ -130,6 +130,8 @@ section.block.tint{ background:var(--paper-raised); }
 .prose table th,.prose table td{ text-align:left; padding:6px 10px; border-bottom:1px solid var(--rule); }
 .prose table th{ font-family:var(--font-mono); font-size:10.5px; text-transform:uppercase; color:var(--ink-faint); }
 .prose code{ font-family:var(--font-mono); font-size:0.92em; background:var(--paper-sunken); padding:1px 5px; border-radius:3px; }
+.prose pre{ background:var(--paper-sunken); border:1px solid var(--rule); border-radius:6px; padding:12px 14px; overflow-x:auto; margin:12px 0; font-size:12.5px; line-height:1.5; }
+.prose pre code{ background:none; padding:0; font-size:inherit; }
 .prose blockquote{ border-left:3px solid var(--rule-strong); margin:0 0 14px; padding:2px 0 2px 14px; color:var(--ink-muted); }
 .prose-empty{ color:var(--ink-faint); font-style:italic; font-size:14px; }
 
@@ -245,6 +247,43 @@ button.chip.active{ background:var(--teal); border-color:var(--teal); color:#fff
 .designcard .check.partial{ color:var(--warn); }
 .designcard .check.partial::before{ content:'~'; font-weight:700; }
 .seqline{ font-family:var(--font-mono); font-size:10.5px; color:var(--ink-faint); word-break:break-all; margin-top:8px; line-height:1.5; }
+
+/* ---------- stage-report appendix ---------- */
+/* Every stage's markdown rendered whole, so one file is the complete run
+ * record. Collapsible, but OPEN by default: a collapsed section is a
+ * section a reader (or ctrl-F) does not know exists. */
+.docindex{ display:flex; flex-wrap:wrap; gap:6px; margin:0 0 24px; }
+.docchip{
+  font-family:var(--font-mono); font-size:11.5px; padding:5px 10px; border-radius:5px;
+  border:1px solid var(--rule-strong); background:var(--paper-raised); color:var(--ink-muted);
+  text-decoration:none; cursor:pointer;
+}
+.docchip:hover{ border-color:var(--teal); color:var(--ink); }
+.docchip.toggle{ margin-left:auto; }
+
+.stagedoc{
+  border:1px solid var(--rule); border-radius:10px; background:var(--paper-raised);
+  margin-bottom:12px; overflow:hidden; scroll-margin-top:14px;
+}
+section.block.tint .stagedoc{ background:var(--paper); }
+.stagedoc > summary{
+  display:flex; align-items:baseline; gap:12px; padding:13px 18px; cursor:pointer;
+  list-style:none; border-bottom:1px solid transparent;
+}
+.stagedoc > summary::-webkit-details-marker{ display:none; }
+.stagedoc[open] > summary{ border-bottom-color:var(--rule); }
+.stagedoc > summary:hover{ background:var(--paper-sunken); }
+.stagedoc > summary .num{ font-family:var(--font-mono); font-size:12px; color:var(--ink-faint); flex-shrink:0; }
+.stagedoc > summary .label{ font-family:var(--font-display); font-weight:600; font-size:15.5px; }
+.stagedoc > summary .file{ font-size:11.5px; color:var(--ink-faint); margin-left:auto; text-align:right; }
+.stagedoc > summary::after{
+  content:'\25BE'; color:var(--ink-faint); font-size:11px; flex-shrink:0; transition:transform .12s;
+}
+.stagedoc:not([open]) > summary::after{ transform:rotate(-90deg); }
+.stagedoc .docbody{ padding:20px 24px 24px; }
+.stagedoc .docbody .prose{ max-width:88ch; }
+.stagedoc .docbody .prose > h1:first-child{ margin-top:0; }
+.stagedoc .docbody .prose table{ display:block; overflow-x:auto; }
 
 footer.report{ padding:36px 48px 60px; font-size:12.5px; color:var(--ink-faint); max-width:80ch; }
 footer.report code{ font-family:var(--font-mono); background:var(--paper-sunken); padding:1px 5px; border-radius:3px; }

@@ -1,6 +1,10 @@
 ---
 name: orchestrator
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Sequence the full protein-protein interaction design pipeline across four expert
   skills: target selection (pathway-expert OR complex-expert, conditional), structural
   analysis (complex-structure-analysis), literature analysis (molecular-biology-expert), and
@@ -50,7 +54,7 @@ Before starting, verify tool availability:
 ## LittleProteinTiger Output Management
 
 LittleProteinTiger is the name of this design framework. All pipeline outputs are
-saved to a dedicated run folder under `C:\Users\micha\Documents\LittleProteinTiger\`.
+saved to a dedicated run folder under `outputs/`.
 
 **At the very start of the pipeline**, before Stage 0:
 
@@ -58,12 +62,12 @@ saved to a dedicated run folder under `C:\Users\micha\Documents\LittleProteinTig
    disease/complex name if Stage 0 is needed — update after Stage 0 resolves the target).
 2. Set the run folder path:
    ```
-   C:\Users\micha\Documents\LittleProteinTiger\{ProteinA}_{ProteinB}_{YYYY-MM-DD}\
+   outputs/{ProteinA}_{ProteinB}_{YYYY-MM-DD}/
    ```
    Use today's date in `YYYY-MM-DD` format.
 3. Create the folder using the filesystem tool (`create_directory`).
 4. Announce the path to the user:
-   > "Run folder: `C:\Users\micha\Documents\LittleProteinTiger\{ProteinA}_{ProteinB}_{YYYY-MM-DD}\`"
+   > "Run folder: `outputs/{ProteinA}_{ProteinB}_{YYYY-MM-DD}/`"
 
 **After each stage**, write the expert's full report to the run folder:
 

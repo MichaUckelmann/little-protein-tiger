@@ -1,6 +1,10 @@
 ---
 name: pathway-expert
 description: >
+  Invoke ONLY when the user explicitly asks for it by name or clearly
+  requests this specific workflow; do not trigger it from a general
+  question, which you can answer better from your own knowledge than from
+  this narrow corpus.
   Query the curated literature database to characterise pathway biology for a disease
   context, identify dysregulated nodes, and recommend the highest-priority druggable
   opportunity for therapeutic intervention. Default mode is to recommend a PPI target
@@ -44,7 +48,8 @@ target (PPI or direct-inhibition) and PDB ID(s) ready to pass downstream.
 
 Identify:
 - `disease_or_cancer` — e.g. "mesothelioma", "PDAC", "NSCLC", "HCC", "AML", "Alzheimer's", "rheumatoid arthritis"
-- `pathway_hint` — optional; e.g. "Hippo", "KRAS signaling", "cGAS-STING", "SCAP-SREBP"
+- `pathway_hint` — optional; a pathway name supplied by the caller. Use it only if
+  given; never invent one, and never carry an example from this prompt into a report.
 - `constraint` — optional; e.g. "focus on extracellular PPIs", "cyclic peptide accessible"
 - `disease_category` — classify the disease into one of the categories below and resolve the three
   query term variables used in Phase 2. If the disease spans multiple categories, pick the most
@@ -76,9 +81,11 @@ with the values resolved from the `disease_category` mapping in Phase 1 before i
 
 **Important on `top_k` sizing.** The corpus has thousands of fingerprints. With
 `top_k=5-8` you're sampling ~0.1% — a strong topical hit can easily fall outside
-the window if a few off-topic papers happen to rank above it. Use **`top_k=20-30`
+the window if a few off-topic papers happen to rank above it. Use **`top_k=20`
 on the first 1-2 broad queries** to get a real sense of coverage, then narrow
-down with smaller `top_k` for the follow-up queries. A pathway being "thin in
+down with smaller `top_k` for the follow-up queries. 20 is the ceiling —
+`search_corpus` clamps anything larger, so asking for 30 silently gets you 20.
+A pathway being "thin in
 the corpus" should be established by *more* search than usual, not less. Do
 not declare a corpus gap until you have run at least three queries with
 combined unique paper count ≥ 30 AND surveyed the graph tools (next section).
@@ -88,7 +95,7 @@ combined unique paper count ≥ 30 AND surveyed the graph tools (next section).
 search_corpus
   query="<pathway_hint OR disease> signaling dysregulation <disease_mechanism_term>"
   study_category="pathway_biology"
-  top_k=8
+  top_k=20
 ```
 
 **Query 2 — Genetic dependency / essentiality** (top_k=6):
@@ -227,21 +234,52 @@ This scans the **entire** fingerprint corpus, including papers not retrieved in 
 and returns PDB accessions from two sources: `suggested_pdb_structures` in pathway
 fingerprints and `pdb_accessions` from any paper mentioning the protein.
 
+The result is keyed **per protein** (`by_protein`), and each entry carries `title`,
+`method`, `resolution_A`, `protein_chain_count`, `entities[]` (with `description`,
+`organism_taxid`, `organism_name`) and a `query_named_in_metadata` flag. Read all of
+them — an accession alone tells you nothing about what the structure contains.
+
 When multiple structures are returned for a protein, select the best one using these
 criteria **in priority order**:
 
-1. **Complex present** — `protein_chain_count ≥ 2` and the `entities[].description`
+1. **The entry belongs to this node** — a PDB id may only be attached to the node
+   whose **own** protein key returned it in `by_protein`. Corpus `pdb_accessions`
+   include structures a paper merely *cites*, so an id returned under one protein is
+   frequently about something else: read `title` before accepting it, and prefer
+   entries flagged `query_named_in_metadata: true` (they are listed first). If the
+   title describes a different molecule or a different study, discard the entry. If a
+   protein's key returned nothing, that node has **no** suggested structure — never
+   borrow one from another node's list to fill the gap.
+2. **Complex present** — `protein_chain_count ≥ 2` and the `entities[].description`
    fields mention both the target protein AND its binding partner. A co-complex is
    far more useful than a monomer for interface-based design.
-2. **Method quality** — prefer `X-RAY DIFFRACTION` > `ELECTRON MICROSCOPY` > `NMR`
+3. **Source organism** — read `entities[].organism_taxid` / `organism_name` for every
+   entry you consider. Prefer a **human** structure (`organism_taxid = 9606`) whenever
+   one exists for the same interface. An **ortholog** structure (any other organism) is
+   a legitimate choice when no human structure of the complex has been solved — that is
+   often the case — but it must be *chosen knowingly and stated*, not picked up by
+   accident: name the organism in the report and flag the entry as an ortholog so the
+   downstream conservation check runs against the human protein. See "Stating the
+   organism" below.
+4. **Method quality** — prefer `X-RAY DIFFRACTION` > `ELECTRON MICROSCOPY` > `NMR`
    (NMR structures lack resolution values and are generally not suitable for interface
-   design; cryo-EM is acceptable above 4 Å).
-3. **Resolution** — for X-ray structures, lower `resolution_A` is better; prefer < 2.5 Å
-   when available. For cryo-EM, prefer < 4.0 Å.
-4. **Human organism** — prefer entries where `entities[].organism_taxid = 9606`.
+   design).
+5. **Resolution** — for X-ray structures, lower `resolution_A` is better; prefer < 2.5 Å
+   when available. For cryo-EM, prefer < 4.0 Å; a coarser map is usable only when
+   nothing better exists for that interface, and say so.
 
 If `metadata_available` is `false` in the tool response (cache not yet populated),
-use the PDB IDs as-is and note in the report that resolution/method data is unavailable.
+use the PDB IDs as-is and note in the report that resolution/method/organism data is
+unavailable — an unstated organism is itself a finding, not a blank to leave silent.
+
+**Stating the organism.** Every PDB id you cite anywhere in the report — node
+assessment, landscape, PRIMARY RECOMMENDATION — must carry its source organism, in the
+form `<PDB ID> (<organism>)`, adding `— ortholog` when it is not human. Where the
+recommended structure is an ortholog, say in one clause why no human structure was
+used (none solved / none in corpus) and which human protein it stands in for. The
+downstream stages run a deterministic conservation check on an ortholog epitope and
+can halt the run on it, so an unlabelled ortholog costs a campaign; a labelled one
+costs nothing.
 
 - Add any newly discovered PDB IDs to the relevant node before writing the report.
 - Use the selected ID verbatim in `Suggested PDB ID(s)` fields and in the
@@ -352,7 +390,8 @@ For each candidate target node — max 4 nodes total, 6 bullet lines per node:
 - Dysregulation: <one sentence — cite source_span + DOI>
 - Genetic dependency: <evidence, or omit if absent>
 - Prior therapeutic strategies: <prior targeting, or omit if absent>
-- Suggested PDB structures: <IDs, or omit if absent>
+- Suggested PDB structures: <IDs, each annotated `<ID> (<organism>)` and `— ortholog`
+  when not human; ONLY ids returned by a tool under THIS protein's own key; omit if absent>
 - Inferred PPI opportunity: <max 2 sentences: named partner, evidence, consequence of disruption — or "Insufficient evidence." if Phase 4a conditions not met>
 
 ### TARGET OPPORTUNITY LANDSCAPE
@@ -367,7 +406,7 @@ For each candidate:
   dependency result, pathway logic, prior drug program, or inferred interaction necessity>
 - **What makes it attractive**: <therapeutic rationale — pathway position, druggable interface, unmet need>
 - **Key uncertainty**: <what is not yet established — no therapeutic precedent, no structure, redundancy risk>
-- **Suggested PDB ID(s)**: <verbatim from fingerprint fields only; "Not found in corpus" if absent>
+- **Suggested PDB ID(s)**: <verbatim from fingerprint fields only, each with source organism and an "ortholog" marker where non-human; "Not found in corpus" if absent>
 
 Tier definitions for the header labels (PPI candidates ranked above direct-inhibition):
 - [VALIDATED]            — PPI; prior therapeutic targeting documented in corpus
@@ -393,8 +432,12 @@ structural tractability, and novelty value). If the user has provided a constrai
 
 - **Target complex**: <ProteinA / ProteinB>
 - **Evidence tier**: <[VALIDATED] / [BIOLOGICALLY JUSTIFIED] / [PATHWAY INFERRED]>
-- **Suggested PDB ID(s)**: <verbatim from corpus; "Not found in corpus" if absent —
+- **Suggested PDB ID(s)**: <verbatim from corpus, each with source organism and an
+  "ortholog" marker where non-human; "Not found in corpus" if absent —
   provide RCSB search terms and ask user to confirm before proceeding>
+- **Structure organism**: <organism of the recommended PDB, e.g. "Homo sapiens" or
+  `<organism> (ortholog of human <GENE>)`. If an ortholog, add one
+  clause on why no human structure was used and which site is expected to be conserved>
 - **Proposed next step**: Run complex-structure-analysis on PDB <ID>
   (only if PDB confirmed from corpus; otherwise await user input)
 
@@ -436,9 +479,10 @@ suggest the user run `python scripts/fetch_papers.py` with specific pathway keyw
 
 ### PIPELINE HANDOFF
 - pdb_id: <PDB accession from corpus (pdb_accessions or suggested_pdb_structures fields only), or NOT_FOUND>
+- structure_organism: <scientific name of the source organism of that PDB entry, from entities[].organism_name — append " (ortholog)" when it is not Homo sapiens, e.g. "Schizosaccharomyces pombe (ortholog)". Write UNKNOWN only if metadata_available was false.>
 - target_complex: <ProteinA / ProteinB — for PPI candidates. For DIRECT INHIBITION, the single protein name with annotation, e.g. "DPP4 (active site)">
 - design_intent: <disrupt | stabilize | inhibit_active_site — from Phase 4a reasoning for the PRIMARY RECOMMENDATION>
-- structure_query: <one sentence. For PPI: "Analyze PDB {pdb_id} at data/structures/{pdb_id}.cif. Target complex: {ProteinA} / {ProteinB}. Identify hotspot residues for {modality} design." For inhibit_active_site: "Analyze PDB {pdb_id} at data/structures/{pdb_id}.cif. Target protein: {ProteinName}. Identify catalytic pocket residues for {modality} active-site inhibition." DO NOT include chain letters (A/B/...) anywhere in this query — at this stage you have not inspected the mmCIF and any chain assignment you write will be a guess. Chain identity is resolved by the downstream structure-analysis stage, which reads the mmCIF header directly.>
+- structure_query: <one sentence. For PPI: "Analyze PDB {pdb_id} ({structure_organism}) at data/structures/{pdb_id}.cif. Target complex: {ProteinA} / {ProteinB}. Identify hotspot residues for binder design." For inhibit_active_site: "Analyze PDB {pdb_id} ({structure_organism}) at data/structures/{pdb_id}.cif. Target protein: {ProteinName}. Identify catalytic pocket residues for active-site inhibition." DO NOT name a modality (cyclic peptide / mini-protein / stapled peptide) anywhere in this query — modality is the operator's choice, resolved downstream, and asserting one here silently overrides it. DO NOT include chain letters (A/B/...) anywhere in this query — at this stage you have not inspected the mmCIF and any chain assignment you write will be a guess. Chain identity is resolved by the downstream structure-analysis stage, which reads the mmCIF header directly.>
 - choices_json: <compact JSON array — see format below>
 
 **IMPORTANT:** Write the `### PIPELINE HANDOFF` section as plain bullet lines exactly as shown above.
@@ -447,6 +491,7 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
 
 Rules for `### PIPELINE HANDOFF`:
 - `pdb_id` must come from `paper_metadata.pdb_accessions`, `pathway_context.target_nodes[].suggested_pdb_structures` in retrieved fingerprints, **or the `find_pdb_structures` tool result from Phase 3.6**. Write `NOT_FOUND` if nothing found — never guess.
+- `structure_organism` must be read off the chosen entry's `entities[].organism_name`, not recalled — it is the field the downstream stages use to decide whether to run the ortholog conservation check, and a wrong or omitted organism is how an ortholog reaches design unexamined.
 - `structure_query` is the verbatim query string passed to complex-structure-analysis by the programmatic orchestrator; make it self-contained (include the local file path `data/structures/{pdb_id}.cif`).
 - `choices_json` must be a single-line JSON array listing every candidate from TARGET OPPORTUNITY LANDSCAPE in the same order. Each element has exactly these keys:
   - `tier`: one of `"VALIDATED"`, `"BIOLOGICALLY_JUSTIFIED"`, `"PATHWAY_INFERRED"`, or `"DIRECT_INHIBITION"`
@@ -490,6 +535,83 @@ extracts the `PRIMARY RECOMMENDATION` block and passes it to Stage 1 automatical
   of 4-character accession codes is unreliable (e.g. confusing 4B7F with 4U6V). If no PDB
   is present in any fingerprint for the recommended complex, write `"Not found in corpus"`
   and provide the user with RCSB search terms to look it up manually.
+- **Never move a PDB id between nodes.** An id is only evidence for the protein whose
+  own `by_protein` key returned it. Two real failures from one run: an id listed under
+  a caspase node turned out to be a de novo binder-design entry that had matched a
+  three-letter gene symbol as a substring of an unrelated word; and a second id was
+  copied under three separate nodes, one of whose keys had returned nothing at all.
+  Both are avoided by reading `title` and staying inside the key.
+### Membrane receptors: which site a designed binder can actually reach
+
+A binder is a folded protein in solution. It can only engage surface that is
+solvent-exposed on ONE face of the membrane. This rules out large parts of a
+GPCR, and the constraint is chemical, not a limitation of the pipeline — so
+choose the site accordingly rather than proposing one that will be refused.
+
+**Reachable, and clinically validated:**
+
+- **Class B ECD** (GCGR, GLP1R, CALCRL, PTH1R, CRHR). These use a two-domain
+  mechanism: the peptide hormone's C-terminus binds a genuine extracellular
+  domain, its N-terminus then inserts into the helical bundle. The ECD contact
+  is a real protein-protein interface and is fully extracellular. Erenumab
+  blocks the CALCRL/RAMP1 receptor this way and is an approved migraine drug;
+  anti-GCGR antibodies are in trials for diabetes.
+- **Class C Venus flytrap** (mGluR, CaSR, GABA-B) — the orthosteric site is
+  entirely extracellular and large.
+- **Class F CRD** (Frizzled, SMO).
+- **N-terminus and extracellular loops of PEPTIDE-binding class A receptors**
+  (chemokine receptors, angiotensin, opioid peptide receptors). The ligand has a
+  large extracellular footprint, and antibodies against these surfaces work
+  (mogamulizumab/CCR4, leronlimab/CCR5).
+- **Receptor / accessory-protein interfaces** such as CALCRL-RAMP1, where the
+  interface itself sits outside the membrane.
+
+**Not reachable — do not propose these:**
+
+- **The orthosteric pocket of a receptor whose ligand is a lipid or a
+  lipophilic small molecule** (cannabinoid, S1P, LPA, prostaglandin, free fatty
+  acid). These pockets are inside the helical bundle and there is strong
+  structural evidence that the ligand enters LATERALLY, from within the
+  bilayer, through gaps between transmembrane helices — S1P1 is capped by its
+  own N-terminal helix, and CB1 has lipid-facing portals. Nothing arriving from
+  solution can occupy that site.
+- **Deep aminergic pockets** (adrenergic, muscarinic, dopaminergic). Reached
+  from the extracellular side, but far too enclosed for a 70-86 residue
+  mini-protein; these are small-molecule sites.
+- **Any transmembrane surface at all.** In an isolated structure a TM helix
+  looks like an attractive hydrophobic patch; in a cell it is buried in lipid.
+
+A practical test before proposing a membrane target: *would an antibody work
+here?* If the answer is no because the site is inside the bundle, a designed
+mini-protein will not work either.
+
+The pipeline enforces this deterministically further down — UniProt topology is
+mapped into author numbering and the trim drops the transmembrane span and the
+opposite face, and a hotspot annotated transmembrane fails the run outright. So
+a receptor whose only druggable site is intramembrane is not a target for this
+pipeline: say so and pick another node rather than spending stages on it.
+
+**When the best target has no experimental structure, an AlphaFold model is a
+legal answer.** Emit `pdb_id: AF-<UniProt accession>` (e.g. the accession you
+resolved for that protein) and the pipeline fetches the predicted model. Two
+conditions, both hard:
+
+1. **Only with `design_intent: inhibit_active_site`.** An AlphaFold model is a
+   single chain, so there is no partner in it to disrupt or stabilise. A run
+   that pairs `AF-` with `disrupt` or `stabilize` is refused before any spend.
+2. **Only when no experimental co-complex exists.** An experimental structure of
+   the real complex always wins; check with `search_rcsb_pdb` first and say in
+   the report that you looked.
+
+This matters most for the case that used to dead-end: a well-evidenced target
+with no PDB entry. Recommending a *downstream* complex instead is a real option,
+but it answers a different question than the user asked — if you do that, say so
+in one clause in PRIMARY RECOMMENDATION and keep the original target in the
+landscape at its own tier.
+
+- **Never report a PDB id without its source organism.** Whether the entry is human or
+  an ortholog changes what the downstream stages have to verify, and the organism is in
+  the tool payload — there is no reason to leave it out or to guess it.
 - Redundancy risks are easy to miss — always check `pathway_context.redundancy_risks`
   across ALL retrieved fingerprints, not just the top-scoring one.
 - **PPI is the strong default**: a [DIRECT INHIBITION] candidate is only correct

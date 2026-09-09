@@ -53,7 +53,10 @@ _BOOL_TRUE = {"true", "1", "yes"}
 DEFAULT_THRESHOLDS: dict[str, Any] = {
     "binder_rmsd_dock_max": 5.0,
     "epitope_recall_min": 0.5,
-    "hotspot_engagement_min": 1.0,     # all hotspots contacted
+    # Fraction of declared hotspots contacted; see config.yaml for the
+    # calibration behind 0.75 (1.0 rejects designs for hotspots RFD3
+    # itself missed — only 49% of backbones contact all 12 of a 12-set).
+    "hotspot_engagement_min": 0.75,
     "binder_rmsd_fold_max": 2.0,
     "binder_plddt_min": 0.75,
     # Deliberately OFF, even though EXCELLENT_IPSAE_MIN is now calibrated.

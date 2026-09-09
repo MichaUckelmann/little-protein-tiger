@@ -2,8 +2,12 @@
 """
 CLI entry point for the LittleProteinTiger programmatic design pipeline.
 
-Chains four stages automatically:
-  pathway-expert -> complex-structure-analysis -> molecular-biology-expert -> protein-design-script
+Chains the stages automatically, in PipelineRunner.STAGE_ORDER order:
+  pathway-expert -> molecular-biology-expert -> complex-structure-analysis
+    -> the design backend selected by design.backend / --design-engine
+       (foundry by default: bridges into the binder track's RFD3 ->
+       solubleMPNN -> RF3 stages; boltzgen: protein-design-script ->
+       design_runner -> ranking -> design-analyst)
 
 Each stage writes a report to the run directory and passes a machine-readable
 '### PIPELINE HANDOFF' block to the next stage.
@@ -44,10 +48,10 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 import yaml
-from dotenv import load_dotenv
+from src.env_config import load_env
 from loguru import logger
 
-load_dotenv(_ROOT / ".env")
+load_env(_ROOT / ".env")
 
 
 def _load_config() -> dict:
@@ -106,7 +110,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--start-from",
         choices=[
-            "pathway", "structure", "literature", "design",
+            # ppi-workflow stages, in PipelineRunner.STAGE_ORDER order
+            "pathway", "literature", "structure", "design",
+            "execution", "analysis", "summary",
             # binder-workflow stages (used with --workflow binder)
             "target_intel", "interface", "trim", "binder_spec",
             "pilot", "calibration", "production", "binder_scoring",
@@ -167,19 +173,49 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--modality",
+        choices=["mini_protein", "cyclic_peptide"],
+        default="mini_protein",
+        help=(
+            "What to design (default: mini_protein, 70-86 residues). "
+            "'cyclic_peptide' (12-15 residues) is OPT-IN: cyclic peptides need "
+            "specialised synthesis, cost substantially more, and have a thinner "
+            "experimental record than mini-protein binders. Choosing it also "
+            "selects --design-engine boltzgen, since RFD3/foundry has no "
+            "cyclic-peptide path. Whatever the LLM stages propose, this decides."
+        ),
+    )
+    p.add_argument(
+        "--pathway-mode",
+        choices=["standard", "wildcard"],
+        default="standard",
+        dest="pathway_mode",
+        help=(
+            "--workflow ppi only. 'standard' (default) runs pathway-expert, "
+            "which picks the best-evidenced target for the disease context. "
+            "'wildcard' runs wildcard-expert instead, which triages on graph "
+            "novelty + DepMap co-essentiality and deliberately favours "
+            "under-studied targets — use it when you want a candidate the "
+            "literature has NOT already converged on. Leaving this at "
+            "'standard' falls through to design.pathway.mode in config.yaml, "
+            "so a project can set its own default."),
+    )
+    p.add_argument(
         "--design-engine",
         choices=["boltzgen", "foundry"],
         default=None,
         dest="design_engine",
         help=(
             "--workflow ppi only (--workflow binder always runs foundry "
-            "regardless of this). 'boltzgen' (default) is today's PPI design/"
-            "execution/analysis path unchanged. 'foundry' hands the "
+            "regardless of this). 'foundry' (the default) hands the "
             "PPI-discovered target off to the same RFD3->solubleMPNN->RF3 "
             "stage machine --workflow binder uses, right after the PPI "
-            "structure stage — requires --project, since it enters multi-day "
-            "GPU stages. Default without this flag: design.backend in "
-            "config.yaml (itself 'boltzgen' unless changed)."
+            "structure stage — it requires --project, since it enters "
+            "multi-day GPU stages. 'boltzgen' selects the older PPI design/"
+            "execution/analysis path unchanged, and is selected automatically "
+            "by --modality cyclic_peptide, which RFD3 cannot build. Default "
+            "without this flag: design.backend in config.yaml (itself "
+            "'foundry' unless changed)."
         ),
     )
     p.add_argument(
@@ -353,10 +389,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-tokens",
         type=int,
-        default=100_000,
+        default=150_000,
         metavar="N",
         dest="max_tokens",
-        help="Abort guard: stage aborts if input token count exceeds this. Default: 100000.",
+        help="Abort guard: stage aborts if a single request's input token "
+             "count exceeds this. Default: 150000. This is a runaway guard, "
+             "not a budget — it costs nothing unless a stage actually uses "
+             "the headroom, and aborting is a total loss of whatever the "
+             "stage already spent (a structure stage on a 12-chain assembly "
+             "died at 101,959 against the old 100000 default, mid-report, "
+             "having billed $0.82 for no output).",
     )
     return p
 
@@ -388,7 +430,30 @@ def main() -> int:
     # the runner side, which is what actually matters for a library caller
     # that skips this CLI).
     design_engine = args.design_engine or (config.get("design") or {}).get(
-        "backend", "boltzgen")
+        "backend", "foundry")
+
+    # Cyclic peptides are a BoltzGen-only modality: RFD3/foundry has no cyclic
+    # path, and `binder_sizes.cyclic_peptide` (12-15 residues) fed to RFD3 asks
+    # for something it cannot build — quietly, not loudly. So opting into the
+    # modality selects the engine that can actually do it.
+    if args.modality == "cyclic_peptide":
+        if args.design_engine == "foundry":
+            parser.error(
+                "--modality cyclic_peptide cannot run on --design-engine "
+                "foundry: RFD3 has no cyclic-peptide path. Drop "
+                "--design-engine to let the modality pick boltzgen, or design "
+                "a mini_protein instead.")
+        if is_binder:
+            parser.error(
+                "--workflow binder always runs foundry, which cannot build "
+                "cyclic peptides. Use --workflow ppi for a cyclic-peptide "
+                "campaign.")
+        if design_engine != "boltzgen":
+            logger.info(
+                "--modality cyclic_peptide: using the boltzgen design engine "
+                "(foundry/RFD3 has no cyclic-peptide path)")
+        design_engine = "boltzgen"
+
     is_foundry_bridge = (not is_binder) and design_engine == "foundry"
 
     if is_binder:
@@ -443,10 +508,14 @@ def main() -> int:
             "(a path to a prior stage output file)."
         )
 
-    if is_binder and args.success_metric:
+    # A --workflow ppi run with design.backend: foundry bridges into the
+    # binder track, so these two reach the same stages a binder run does.
+    # Every other binder-track flag below is already passed unconditionally.
+    runs_foundry = is_binder or design_engine == "foundry"
+    if runs_foundry and args.success_metric:
         config.setdefault("design", {}).setdefault(
             "binder_ranking", {})["success_metric"] = args.success_metric
-    if is_binder and args.n_gpus:
+    if runs_foundry and args.n_gpus:
         config.setdefault("design", {}).setdefault(
             "cluster", {})["n_gpus"] = args.n_gpus
 
@@ -501,6 +570,8 @@ def main() -> int:
         escalate_to=(args.escalate_to or None),
         stop_after=args.stop_after,
         design_engine=design_engine,
+        modality=args.modality,
+        pathway_mode=args.pathway_mode,
     )
 
     logger.info(f"Query: {query[:120]}{'...' if len(query) > 120 else ''}")

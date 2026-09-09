@@ -159,6 +159,7 @@ def test_no_hotspots_flagged_without_a_restriction():
 # ----------------------------------------------------------------------
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_real_uniprot_topology_for_the_test_targets():
     from src.membrane_topology import fetch_topology
 

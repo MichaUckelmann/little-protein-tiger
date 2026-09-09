@@ -67,6 +67,28 @@ def search_fingerprints(keywords: list[str]) -> None:
         print()
 
 
+_USAGE = """usage: search_fingerprints.py KEYWORD [KEYWORD ...]
+
+Plain substring scan over data/fingerprints/*.json (protein names, title,
+context hook). This is NOT semantic search, and not word-aware: it matches
+literal substrings, so "FACT" also matches the word "fact" (2,432 hits, most
+of them prose) and "SRC" matches "resource". Prefer distinctive symbols.
+
+For a question rather than a keyword, use the semantic path instead:
+    python scripts/ask_corpus.py "how does FACT reposition H2A-H2B?"
+
+examples:
+    python scripts/search_fingerprints.py SPT16 SSRP1
+    python scripts/search_fingerprints.py YAP1 TEAD1
+"""
+
 if __name__ == "__main__":
-    terms = sys.argv[1:] if len(sys.argv) > 1 else ["LPAR1", "LPAR6"]
-    search_fingerprints(terms)
+    # No argparse here on purpose — every argv token is a search keyword. That
+    # means `--help` would otherwise be searched for and reported as "no papers
+    # found", and a bare invocation used to silently search a leftover pair of
+    # debug terms instead of saying what it wants.
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(_USAGE, end="")
+        sys.exit(0 if args else 2)
+    search_fingerprints(args)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,13 +19,16 @@ import time
 
 import anthropic
 import requests
-from dotenv import load_dotenv
 from loguru import logger
 
+from src import _tool_views as _tv
+
 _ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(_ROOT / ".env")
 
 sys.path.insert(0, str(_ROOT))
+
+from src.env_config import load_env  # noqa: E402
+load_env(_ROOT / ".env")
 
 
 from src._path_resolve import resolve as _resolve_path
@@ -98,6 +102,7 @@ _TOOL_DEFS: list[dict[str, Any]] = [
                     ),
                     "enum": [
                         "biochemistry", "pathway_biology", "structural_biology",
+                        "enzymology", "biocatalysis", "computational_chemistry",
                         "host_pathogen", "clinical", "review",
                     ],
                 },
@@ -823,6 +828,48 @@ def _filter_tools(defs: list[dict], skill_name: str) -> list[dict]:
     return defs
 
 
+# Taxa common enough in this corpus to be worth naming. Anything else is
+# reported as a bare NCBI id, which is still a usable signal: "not 9606".
+_TAXON_NAMES = {
+    9606: "Homo sapiens", 10090: "Mus musculus", 10116: "Rattus norvegicus",
+    7227: "Drosophila melanogaster", 6239: "Caenorhabditis elegans",
+    7955: "Danio rerio", 559292: "Saccharomyces cerevisiae",
+    284812: "Schizosaccharomyces pombe", 83333: "Escherichia coli",
+    3702: "Arabidopsis thaliana", 9986: "Oryctolagus cuniculus",
+    9913: "Bos taurus", 8355: "Xenopus laevis",
+}
+
+
+def _llm_fingerprint(fp: dict) -> dict:
+    """
+    The LLM-facing view of a curated fingerprint.
+
+    This used to strip `methodology` and `contradictions_and_negative_results`
+    as "fields never used by any skill" — which was exactly backwards.
+    `skills/molecular-biology-expert/SKILL.md` instructs the model to read both
+    by name (lines 154 and 160), so under the CLI transport it could never see
+    them and read their absence as "this paper reports no contradictions". The
+    MCP transport stripped nothing, so the same skill behaved differently on
+    the two transports. Measured over 300 real fingerprints, those two blocks
+    are 11.6% of the payload.
+
+    What actually is dead weight is `protein_identifiers` — 36.5%, the largest
+    block in the file, a machine sidecar read only by `src/_corpus_graph.py`
+    and named in no skill prompt. It is dropped, except for the one field in it
+    the model genuinely wants and has never been shown: the organism the
+    paper's proteins are native to. A worm paper otherwise renders as a list of
+    gene names with nothing marking it non-human.
+    """
+    out = dict(fp)
+    ids = out.pop("protein_identifiers", None) or {}
+    out.pop("curation_metadata", None)
+    taxon = ids.get("native_taxon_resolved") if isinstance(ids, dict) else None
+    if taxon:
+        name = _TAXON_NAMES.get(int(taxon))
+        out["native_organism"] = (f"{name} ({taxon})" if name else str(taxon))
+    return out
+
+
 def _find_pdb_structures(proteins: list[str], fingerprint_dir: Path) -> dict:
     """
     Scan all corpus fingerprints for PDB accessions associated with the given proteins.
@@ -838,10 +885,20 @@ def _find_pdb_structures(proteins: list[str], fingerprint_dir: Path) -> dict:
     import re as _re
 
     def _matches(stored: str, query: str) -> bool:
+        """
+        Whole-symbol match, not a bare substring.
+
+        `q in s` made every short gene symbol match inside an unrelated word:
+        BID hits "cannaBIDiol", SRC hits "reSouRCe", BAX and MDM2 likewise. That
+        is how a de novo binder-design paper was once reported as a caspase
+        structure. Symbols are matched on word boundaries, where the separators
+        are anything that is not alphanumeric — so "YAP1" still finds "YAP1/TAZ"
+        and "PD-1" still finds "PD-1 receptor", but not "cannabidiol".
+        """
         if len(query) < 3:
             return False
         s, q = stored.upper(), query.upper()
-        return q in s or s.startswith(q)
+        return re.search(rf"(?<![A-Z0-9]){re.escape(q)}(?![A-Z0-9])", s) is not None
 
     queries = [p.strip() for p in proteins if p.strip()]
     # {query → ordered list of PDB IDs}
@@ -917,11 +974,42 @@ def _find_pdb_structures(proteins: list[str], fingerprint_dir: Path) -> dict:
         return result
 
     all_ids = sorted({p for ids in by_protein.values() for p in ids})
+
+    def _named_in_metadata(entry: dict, query: str) -> bool:
+        """Does RCSB's own metadata actually name the protein we asked for?"""
+        blob = f"{entry.get('title', '')} {entry.get('entities', '')}".upper()
+        q = query.upper()
+        # "YAP1" should match an entity called "Transcriptional coactivator YAP1"
+        # and also the "YAP" of a YAP/TAZ construct.
+        return q in blob or (len(q) > 3 and q[:-1] in blob)
+
+    def _rank(entries: list[dict], query: str) -> list[dict]:
+        """Confirmed hits first, and say which is which.
+
+        A corpus paper's `pdb_accessions` now includes structures it merely
+        CITES, not only ones it deposited — higher recall, lower precision. For
+        "YAP1" that means 41 hits of which RCSB's metadata names YAP in exactly
+        1; the rest are methods references from papers that mention YAP1 in
+        passing. Unranked, a model sees "De novo designed TIM barrel" first and
+        has to reason its way past four irrelevant entries.
+        """
+        for e in entries:
+            e["query_named_in_metadata"] = _named_in_metadata(e, query)
+        return sorted(entries, key=lambda e: not e["query_named_in_metadata"])
+
     return {
-        "by_protein": {q: [_enrich(pid) for pid in ids] for q, ids in by_protein.items()},
+        "by_protein": {q: _rank([_enrich(pid) for pid in ids], q)
+                       for q, ids in by_protein.items()},
         "all_pdb_ids": all_ids,
         "total_found": len(all_ids),
         "metadata_available": bool(metadata_cache),
+        "note": (
+            "Entries where RCSB's own metadata names the queried protein are "
+            "listed FIRST and flagged query_named_in_metadata=true. The rest "
+            "come from papers that cite the structure without it being the "
+            "paper's subject — usable, but verify the entity descriptions "
+            "before designing against one."
+        ),
     }
 
 
@@ -953,6 +1041,46 @@ def _to_gemini_tools(defs: list[dict]) -> list[dict]:
 _GEMINI_GENERATE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
+# The key goes in the `x-goog-api-key` HEADER, never in the query string.
+# `requests` embeds the full URL in every exception it raises, so a key
+# passed as `params={"key": ...}` is printed verbatim by any connection
+# error, timeout or HTTP failure — to the terminal, into log files, and into
+# whatever a user pastes into a bug report. Observed: an SSL failure on this
+# call printed a live key in full.
+
+
+# Appended to EVERY skill's system prompt, both transports. Output goes to a
+# terminal, to a .md stage file, and (via src/report_common.markdown_html) into
+# a self-contained HTML report — none of which render LaTeX. Models reach for
+# `$K_d \approx 470\text{ nM}$` unprompted because that is the convention in
+# scientific writing they were trained on; the corpus itself is clean (1 of
+# 11,052 fingerprints contains LaTeX) and stores affinities as plain floats in
+# Molar. So this is purely an output-formatting instruction.
+_OUTPUT_FORMAT_RULE = """
+
+---
+## OUTPUT FORMATTING (applies to everything you write)
+
+Write plain text and plain Markdown. **Never use LaTeX or math-mode markup.**
+Your output is read in a terminal, saved as a Markdown file, and rendered into
+an HTML report — none of these render LaTeX, so `$K_d \\approx 470\\text{ nM}$`
+reaches the reader verbatim, as noise.
+
+- Quantities: `Kd ~ 470 nM`, `Ki = 2 nM`, `dG = -9.2 kcal/mol`, `1.5 uM`
+  (or `µM`), `2.5e-6 M`. Not `$K_d$`, not `\\text{}`, not `\\approx`.
+- Subscripts in prose: `Kd`, `Kd1`, `IC50`, `EC50` — not `K_d` or `K_{D1}`.
+- Ranges and comparisons: `10-50 nM`, `< 1 uM`, `>= 2-fold`.
+- Tables, bullets, bold and inline code are all fine and encouraged.
+"""
+
+
+class SkillRunnerError(RuntimeError):
+    """Misconfiguration caught before any API call — a missing key, say.
+
+    Distinct from `SkillRefusedError`: nothing was sent, nothing was billed,
+    and no model fallback can help. The message is meant to be read by a user
+    on a fresh clone, so it names the env var and the file to put it in.
+    """
 
 
 class SkillRefusedError(RuntimeError):
@@ -1039,10 +1167,35 @@ class SkillRunner:
         # Populated after run() completes — full conversation history for tracing.
         self._messages: list[dict] | None = None
 
+        self._require_api_key()
         self.system_prompt = self._load_system_prompt()
         logger.info(
             f"SkillRunner ready: skill={skill_name}, provider={provider}, model={model_id}"
             + (" [extended thinking]" if self.use_extended_thinking else "")
+        )
+
+    _PROVIDER_KEYS = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}
+
+    def _require_api_key(self) -> None:
+        """Fail early and legibly when the provider's key isn't configured.
+
+        Without this the missing key surfaces as the provider's own error at
+        the first LLM call — for Gemini, `403 Forbidden for url: ...?key=` with
+        an empty key, which names nothing about LPT or `.env`. Gemini is the
+        default provider for every stage, so this is the very first wall a
+        fresh clone hits, and on the binder track it lands only AFTER structure
+        download and interface analysis have already run.
+        """
+        var = self._PROVIDER_KEYS.get(self.provider)
+        if var is None or os.environ.get(var):
+            return          # local/Ollama needs no key
+        raise SkillRunnerError(
+            f"{var} is not set, but the {self.provider!r} provider needs it "
+            f"(skill={self.skill_name}, model={self.model_id}).\n"
+            f"Add it to .env at the project root:\n"
+            f"    {var}=...\n"
+            f"See .env.example for which key each provider and workflow needs. "
+            f"To use a different provider instead, pass --provider."
         )
 
     # ------------------------------------------------------------------
@@ -1069,7 +1222,7 @@ class SkillRunner:
                     )
             logger.info("Orchestrator mode: sub-skill SKILL.mds appended to system prompt")
 
-        return system
+        return system + _OUTPUT_FORMAT_RULE
 
     # ------------------------------------------------------------------
     # Tool execution
@@ -1090,7 +1243,18 @@ class SkillRunner:
     # every interface residue; on TREM2 and KRAS that grew the conversation
     # 47k -> 84k -> 134k tokens in three calls and blew the per-call input limit.
     # A result the model cannot read is worse than a truncated one it can.
-    MAX_TOOL_RESULT_CHARS = 60_000
+    #
+    # This is CHARS, not tokens, and the two are not related the way the old
+    # comment here assumed. Dense structured JSON tokenises at ~2.0-2.4 chars
+    # per token, not ~4 — measured on real payloads — so the old 60,000 was
+    # admitting 25-31k tokens where it read as if it admitted 15k.
+    #
+    # 90,000 chars is ~41k tokens at that ratio. It is deliberately above the
+    # largest real payload seen (5GRS chains A/I, now 55,719 chars once
+    # `_tool_views` drops the whitespace and the constant chain labels) so that
+    # a structure of that size is no longer truncated at all, while a genuinely
+    # runaway result still is.
+    MAX_TOOL_RESULT_CHARS = 90_000
 
     def _execute_tool(self, name: str, input_dict: dict) -> str:
         raw = self._execute_tool_inner(name, input_dict)
@@ -1133,12 +1297,8 @@ class SkillRunner:
                 fp = load_fingerprint(paper_key, self._fingerprint_dir)
                 if fp is None:
                     return json.dumps({"error": f"No fingerprint found for '{identifier}'"})
-                # Strip fields never used by any skill to reduce token cost.
-                # Skills that need methodology or contradictions can override this.
-                fp.pop("curation_metadata", None)
-                fp.pop("contradictions_and_negative_results", None)
-                fp.pop("methodology", None)
-                return json.dumps(fp, ensure_ascii=False, indent=2)
+                return json.dumps(_llm_fingerprint(fp), ensure_ascii=False,
+                                  indent=2)
 
             if name == "find_pdb_structures":
                 result = _find_pdb_structures(
@@ -1175,7 +1335,7 @@ class SkillRunner:
                         input_dict.get("periinterface_radius", 10.0)),
                     top_n=int(input_dict.get("top_n", 3)),
                 )
-                return json.dumps(result, indent=2)
+                return _tv.dumps(result)
 
             if name == "tool_analyze_interface":
                 from src.structure_tools import analyze_interface
@@ -1185,7 +1345,7 @@ class SkillRunner:
                     input_dict["chain_b"],
                     float(input_dict.get("cutoff", 4.5)),
                 )
-                return json.dumps(result, indent=2)
+                return _tv.dumps(_tv.llm_view_interface(result))
 
             if name == "tool_get_residue_contacts":
                 from src.structure_tools import get_residue_contacts
@@ -1196,7 +1356,7 @@ class SkillRunner:
                     input_dict["partner_chain"],
                     float(input_dict.get("cutoff", 4.5)),
                 )
-                return json.dumps(result, indent=2)
+                return _tv.dumps(result)
 
             if name == "tool_check_mutation_clash":
                 from src.structure_tools import check_mutation_clash
@@ -1210,7 +1370,7 @@ class SkillRunner:
                     aa,
                     input_dict["partner_chain"],
                 )
-                return json.dumps(result, indent=2)
+                return _tv.dumps(result)
 
             if name == "tool_get_sequence_map":
                 from src.structure_tools import get_sequence_map
@@ -1222,7 +1382,16 @@ class SkillRunner:
                 # Strip both for all other skills (molecular-biology-expert etc.).
                 if self.skill_name not in _NEEDS_INDEX_MAPS:
                     result = {"sequence": result["sequence"], "length": len(result["sequence"])}
-                return json.dumps(result, indent=2)
+                # `residues[]` is 81% of this payload and restates what
+                # `sequence` + the two maps already carry, with no Python
+                # consumer and no SKILL.md reference — and it stays anyway.
+                # Models have twice produced systematically wrong label_seq_ids
+                # by COUNTING rather than reading `auth_to_label` (23/23 on
+                # 5GRS, 10/10 on 5GN0); this list is the direct per-residue
+                # lookup that makes the correct answer easiest to reach, and
+                # dropping it plausibly makes that worse. Settle it with a
+                # measurement, not a byte count.
+                return _tv.dumps(_tv.llm_view_sequence_map(result))
 
             if name == "tool_score_surface_patch":
                 from src.structure_tools import score_surface_patch
@@ -1231,7 +1400,7 @@ class SkillRunner:
                     input_dict["chain"],
                     [int(r) for r in input_dict["residue_list"]],
                 )
-                return json.dumps(result, indent=2)
+                return _tv.dumps(result)
 
             if name == "write_file":
                 dest = Path(_resolve(input_dict["path"]))
@@ -1829,9 +1998,26 @@ class SkillRunner:
                 "generationConfig": {"maxOutputTokens": 24000},
             }
             for attempt in range(4):
-                resp = requests.post(
-                    url, params={"key": api_key}, json=payload, timeout=180
-                )
+                # The status-code retry below only helps once a RESPONSE
+                # exists. A dropped connection or a read timeout raises out of
+                # requests.post itself, and gemini is the default provider for
+                # every stage — so a blip that the Claude path shrugs off
+                # (anthropic retries APIConnectionError) used to abort a whole
+                # multi-hour run here. Same budget as the status retries.
+                try:
+                    resp = requests.post(
+                        url, headers={"x-goog-api-key": api_key},
+                        json=payload, timeout=180
+                    )
+                except (requests.ConnectionError, requests.Timeout) as exc:
+                    if attempt == 3:
+                        raise
+                    wait = 10 * (attempt + 1)
+                    logger.warning(
+                        f"[gemini] {type(exc).__name__} on call #{iteration + 1} "
+                        f"(attempt {attempt + 1}/4) — retrying in {wait}s")
+                    time.sleep(wait)
+                    continue
                 if resp.status_code not in (429, 500, 502, 503, 504) or attempt == 3:
                     break
                 if resp.status_code == 429:
@@ -1872,23 +2058,47 @@ class SkillRunner:
                     skill=self.skill_name, model=self.model_id,
                     category=candidate["finishReason"], iteration=iteration + 1)
 
-            parts: list[dict] = candidate["content"]["parts"]
+            # A truncated or empty candidate can carry `content` with no
+            # `parts` (a thinking model that hit maxOutputTokens before
+            # emitting one). Indexing straight in raised a bare KeyError
+            # outside the handled-refusal path, so the run died with a
+            # traceback instead of the truncation warning below.
+            parts: list[dict] = ((candidate.get("content") or {}).get("parts") or [])
 
             if candidate.get("finishReason") == "MAX_TOKENS":
                 logger.warning(
                     f"Gemini response truncated at maxOutputTokens on call #{iteration + 1} "
                     f"— '### PIPELINE HANDOFF' may be missing."
                 )
+            if not parts:
+                raise RuntimeError(
+                    f"Gemini returned no content on call #{iteration + 1} "
+                    f"(finishReason={candidate.get('finishReason')!r}). "
+                    f"If this is MAX_TOKENS, raise maxOutputTokens or shorten "
+                    f"the query; the model produced no usable output.")
 
             usage = body.get("usageMetadata", {})
             in_tok = usage.get("promptTokenCount", 0)
-            out_tok = usage.get("candidatesTokenCount", 0)
+            # Gemini reports reasoning tokens SEPARATELY in thoughtsTokenCount.
+            # They are billed at the output rate and are NOT included in
+            # candidatesTokenCount, so counting only the latter under-reported
+            # spend on every thinking-model call — and `--budget`, which is
+            # documented as a hard cap, under-enforced by the same margin.
+            thought_tok = usage.get("thoughtsTokenCount", 0) or 0
+            out_tok = (usage.get("candidatesTokenCount", 0) or 0) + thought_tok
+            # promptTokenCount INCLUDES cached tokens; surface the cached share
+            # so the ledger can price it at the cache-read rate rather than
+            # billing the whole prompt as fresh input.
+            cached_tok = usage.get("cachedContentTokenCount", 0) or 0
             self._total_input_tokens += in_tok
             self._total_output_tokens += out_tok
+            self._total_cache_read_tokens += cached_tok
             self._last_input_tokens = in_tok
             logger.info(
-                f"  tokens: {in_tok:,} in / {out_tok:,} out "
-                f"(run cumulative: {self._total_input_tokens:,} in / "
+                f"  tokens: {in_tok:,} in / {out_tok:,} out"
+                + (f" (incl. {thought_tok:,} reasoning)" if thought_tok else "")
+                + (f" / {cached_tok:,} cached" if cached_tok else "")
+                + f" (run cumulative: {self._total_input_tokens:,} in / "
                 f"{self._total_output_tokens:,} out)"
             )
 

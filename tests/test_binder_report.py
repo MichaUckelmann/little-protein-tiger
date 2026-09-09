@@ -20,6 +20,7 @@ import pytest
 import yaml
 
 from src import handoff
+from src.binder_ranking import DEFAULT_THRESHOLDS
 from src.binder_report import (
     ReportError,
     _extract_citation_section,
@@ -77,12 +78,18 @@ class TestRealKrasTrial:
         assert report["calibration"]["backbone_rate"]["n"] == 481
         assert report["metrics"]["n_total"] == 1924
         assert len(report["top_designs"]) == 5
-        # Every one of the top 5 must actually engage every hotspot handed
-        # to RFD3 — this is the report's whole "did it bind where asked"
-        # claim; if this regresses the report is silently lying.
+        # The top 5 must actually engage the hotspots handed to RFD3 — this is
+        # the report's whole "did it bind where asked" claim; if it regresses
+        # the report is silently lying. The bar is the configured gate, not
+        # 1.0: this campaign declared 15 hotspots (more than MAX_HOTSPOTS
+        # allows today) and RFD3 does not reach every one of a set that size,
+        # so rank 5 legitimately sits at 14/15.
+        bar = DEFAULT_THRESHOLDS["hotspot_engagement_min"]
         for d in report["top_designs"]:
-            assert d["hotspot_engagement"] == 1.0
+            assert d["hotspot_engagement"] >= bar
             assert d["iptm"] >= 0.7
+        # ...and the best of them should still reach all fifteen.
+        assert max(d["hotspot_engagement"] for d in report["top_designs"]) == 1.0
         assert report["site_narrative_html"]  # the model's own "why this site" prose
         assert "RAF1" in report["site_narrative_html"]
         assert report["hotspot_narrative_html"]
@@ -113,7 +120,12 @@ class TestRealKrasTrial:
         by_criterion = {r["criterion"]: r["pct"] for r in report["funnel"]["passing_alone"]}
         assert by_criterion["binder_rmsd_dock <= 5"] == pytest.approx(69.4, abs=0.1)
         assert by_criterion["no clash"] == pytest.approx(47.3, abs=0.1)
-        assert by_criterion["hotspot_engagement >= 1"] == pytest.approx(59.3, abs=0.1)
+        # Keyed off the configured gate so tuning the threshold does not look
+        # like a report regression. At the old 1.0 bar this read 59.3%; the
+        # gap to 90.1% is the population the all-or-nothing gate was discarding.
+        bar = DEFAULT_THRESHOLDS["hotspot_engagement_min"]
+        key = f"hotspot_engagement >= {bar:g}"
+        assert by_criterion[key] == pytest.approx(90.1, abs=0.1)
 
     def test_is_idempotent_and_deterministic_given_the_same_inputs(self, config, tmp_path):
         out1 = build_report(_KRAS_DIR, out_path=tmp_path / "a.html", cfg=config)

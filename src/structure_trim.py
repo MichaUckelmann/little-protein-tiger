@@ -69,6 +69,21 @@ MIN_DOMAIN_RESIDUES = 40
 # Requiring both halves of a split to clear MIN_DOMAIN_RESIDUES would make a
 # 36-residue TM/cytoplasmic tail unsheddable.
 MIN_SPLIT_TAIL = 15
+
+# A target smaller than this is not a designable surface — RFD3 needs something
+# to pack against, and the interface analysis downstream needs a fold, not a
+# fragment. Benchmarking the trim across 19 complexes produced a 364-residue
+# chain cropped to 19: every check passed, because the four hotspots it kept
+# were retained, but the result was not a target.
+MIN_TARGET_RESIDUES = 80
+
+# Newly exposed hydrophobic residues tolerated on the cut face. Zero is the
+# ideal — a fresh hydrophobic slab is what RFD3 preferentially binds, and it is
+# the documented failure mode for transmembrane helices — but a couple of edge
+# residues is normal and harmless as long as they are away from the epitope.
+MAX_EXPOSED_HYDROPHOBIC = 2
+EXPOSED_SASA_DELTA_A2 = 15.0     # below this a residue has not really been exposed
+EXPOSED_HOTSPOT_CLEARANCE_A = 10.0   # "not right at the hotspot site"
 # Segments shorter than this are noise, not structure: a two-residue island
 # contributes nothing a binder can engage but does cost RFD3 a chain break.
 MIN_SEGMENT = 6
@@ -115,7 +130,13 @@ class TrimResult:
     method: str
     hotspots_retained: list[dict]
     hotspots_lost: list[dict]
+    # NOTE the two bases. `interface_bsa_before_A2` is the whole interface
+    # (BOTH chains) — the conventional "how big is this interface" number.
+    # `interface_bsa_target_side_A2` counts only the chain being trimmed, and is
+    # the one comparable with `bsa_dropped_A2` / `bsa_retention`. Mixing them is
+    # what made the drop warning fire on every trim.
     interface_bsa_before_A2: float = 0.0
+    interface_bsa_target_side_A2: float = 0.0
     interface_bsa_after_A2: float = 0.0
     # Fraction of the interface area of the RETAINED residues that survives the
     # trim. Deliberately not "fraction of the whole native interface" — see
@@ -166,13 +187,16 @@ def chain_residues(path: Path, chain: str) -> list[dict]:
     if ch is None:
         raise TrimError(f"chain {chain!r} not found in {path}")
 
-    from src.structure_tools import _is_protein_residue
+    from src.structure_tools import is_chain_residue
 
     out: list[dict] = []
     for res in ch:
-        # gemmi.Residue has no is_amino_acid(); the tabulated-residue lookup in
-        # structure_tools is the project's existing test, reused here.
-        if not _is_protein_residue(res.name):
+        # Backbone-based, not name-based. gemmi's chemical-component table does
+        # not know every modification a depositor may make — 3KYS A344 is P1L,
+        # S-palmitoyl-cysteine, reported as kind=UNKNOWN — and skipping it here
+        # both drops the modification and splits the chain into an extra
+        # segment, which then costs a chain break downstream.
+        if not is_chain_residue(res):
             continue
         ca = res.find_atom("CA", "*")
         if ca is None:
@@ -268,8 +292,31 @@ def _nearest_observed(label: int, label_to_auth: dict[int, int],
     return None
 
 
+def _domain_from_span(index: int, beg: int, end: int, observed: set[int],
+                      source: str, label: str) -> "Domain | None":
+    """
+    A domain span, sized by the residues that are actually THERE.
+
+    `end - start + 1` is the wrong measure the moment author numbering has a
+    gap, and a fusion construct guarantees one: 5TGZ chain A is
+    CB1R-flavodoxin-CB1R and runs auth -2..1148, so two CATH spans that mapped
+    to non-existent endpoints (-2..2109, 333..2101) were sized 2112 and 1769 and
+    summed to a 3,881-residue "domain set" for a 439-residue chain. The budget
+    check then refused a target that fits comfortably.
+
+    Returns None when the span contains no observed residue at all, so a
+    mis-mapped annotation drops out instead of poisoning the sum.
+    """
+    n = sum(1 for a in observed if beg <= a <= end)
+    if n == 0:
+        return None
+    return Domain(index=index, start_auth=beg, end_auth=end, n_residues=n,
+                  source=source, label=label)
+
+
 def rcsb_domains(pdb_id: str, chain: str, auth_to_label: dict[int, int],
-                 timeout: float = 30.0) -> list[Domain]:
+                 timeout: float = 30.0,
+                 observed: set[int] | None = None) -> list[Domain]:
     """
     Domain spans from RCSB's CATH / SCOP2 / ECOD instance features.
 
@@ -320,14 +367,30 @@ def rcsb_domains(pdb_id: str, chain: str, auth_to_label: dict[int, int],
                         a_end = _nearest_observed(end, label_to_auth, -1)
                         if a_beg is None or a_end is None or a_beg > a_end:
                             continue
+                        # The label->auth map is built from the polymer entity,
+                        # which on a chimera spans the fusion partner too, so a
+                        # mapped endpoint can land on a residue the trim never
+                        # sees. Ground the span in the residue list the caller
+                        # actually works with, or drop it.
+                        if observed is not None and (
+                                a_beg not in observed or a_end not in observed):
+                            logger.debug(
+                                f"{pdb_id} chain {chain}: dropping {source} span "
+                                f"{a_beg}-{a_end} — endpoints are not observed "
+                                f"residues of this chain")
+                            continue
                         spans.append((a_beg, a_end, feat.get("name") or source))
         if spans:
             spans.sort()
+            obs = observed if observed is not None else set(label_to_auth.values())
             best = [
-                Domain(index=i, start_auth=b, end_auth=e, n_residues=e - b + 1,
-                       source=source.lower(), label=str(name))
-                for i, (b, e, name) in enumerate(spans)
+                d for d in (
+                    _domain_from_span(i, b, e, obs, source.lower(), str(name))
+                    for i, (b, e, name) in enumerate(spans))
+                if d is not None
             ]
+            if not best:
+                continue          # this source mapped to nothing real; try the next
             logger.info(
                 f"{pdb_id} chain {chain}: {len(best)} {source} domain(s) "
                 + ", ".join(f"{d.start_auth}-{d.end_auth}" for d in best)
@@ -341,6 +404,7 @@ def rcsb_domains(pdb_id: str, chain: str, auth_to_label: dict[int, int],
 # ----------------------------------------------------------------------
 
 def chainsaw_domains(path: Path, chain: str, chainsaw_cmd: Sequence[str] | None,
+                     observed: set[int] | None = None,
                      timeout: float = 300.0) -> list[Domain]:
     """
     Domain spans from Chainsaw, run as a subprocess in its own environment.
@@ -403,9 +467,12 @@ def chainsaw_domains(path: Path, chain: str, chainsaw_cmd: Sequence[str] | None,
         # connectivity filter later drops anything that is not actually joined.
         start = min(b[0] for b in bounds)
         end = max(b[1] for b in bounds)
-        domains.append(Domain(index=i, start_auth=start, end_auth=end,
-                              n_residues=end - start + 1, source="chainsaw",
-                              label=dom))
+        dom_obj = _domain_from_span(i, start, end, observed, "chainsaw", dom) \
+            if observed is not None else Domain(
+                index=i, start_auth=start, end_auth=end,
+                n_residues=end - start + 1, source="chainsaw", label=dom)
+        if dom_obj is not None:
+            domains.append(dom_obj)
     if domains:
         logger.info(f"Chainsaw: {len(domains)} domain(s) — {chopping}")
     return domains
@@ -493,16 +560,22 @@ def segment_domains(
     logged.
     """
     residues = residues or chain_residues(structure_path, chain)
+    # The residues the trim actually works with — the backbone-filtered
+    # list, which on a chimera is narrower than the polymer entity a domain
+    # annotation is expressed against.
+    observed_auth = {int(r["auth"]) for r in residues}
 
     if method in ("auto", "rcsb") and pdb_id and auth_to_label:
-        doms = rcsb_domains(pdb_id, chain, auth_to_label)
+        doms = rcsb_domains(pdb_id, chain, auth_to_label,
+                            observed=observed_auth)
         if doms:
             return doms, doms[0].source
         if method == "rcsb":
             raise TrimError(f"no RCSB domain annotation for {pdb_id} chain {chain}")
 
     if method in ("auto", "chainsaw"):
-        doms = chainsaw_domains(structure_path, chain, chainsaw_cmd)
+        doms = chainsaw_domains(structure_path, chain, chainsaw_cmd,
+                                observed=observed_auth)
         if doms:
             return doms, "chainsaw"
         if method == "chainsaw":
@@ -622,6 +695,24 @@ def plan_trim(
         d.n_designable = len(designable(
             r["auth"] for r in residues if d.contains(r["auth"])))
 
+    # A target that already fits is not trimmed. Domain selection would still
+    # drop the non-hotspot domains, which is how a 252-residue chain became 205
+    # and a 364-residue one became 19 — cropping that buys nothing, since the
+    # budget is what the GPU actually cares about and 200 residues is
+    # comfortable locally. Removing a second interface is a real reason to cut,
+    # but it is the operator's call, not a silent default.
+    all_designable = designable(r["auth"] for r in residues)
+    if len(all_designable) <= budget:
+        if len(all_designable) < MIN_TARGET_RESIDUES:
+            raise TrimError(
+                f"the target is {len(all_designable)} residues, below the "
+                f"{MIN_TARGET_RESIDUES}-residue floor — too small to design "
+                f"against. Pick a larger construct or a different interface.")
+        logger.info(
+            f"target is {len(all_designable)} residues, within the {budget} "
+            f"budget — keeping it whole, no trim")
+        return all_designable, warnings
+
     orphan = [h for h in hot if not any(d.contains(h) for d in domains)]
     if orphan:
         warnings.append(
@@ -739,6 +830,13 @@ def plan_trim(
             f"after boundary refinement the trim is {len(auths)} residues, over "
             f"the {budget} budget — the extra residues are hotspot shell or SSE "
             f"integrity and were not dropped")
+    if len(auths) < MIN_TARGET_RESIDUES:
+        raise TrimError(
+            f"the trim would leave {len(auths)} residues, below the "
+            f"{MIN_TARGET_RESIDUES}-residue floor — that is a fragment, not a "
+            f"target. The hotspot-carrying domain is too small to design "
+            f"against on its own; widen the interface selection or raise "
+            f"design.foundry.target_residue_budget so neighbouring domains fit.")
     return auths, warnings
 
 
@@ -921,9 +1019,10 @@ def write_trimmed(
     """
     import gemmi
 
-    from src.structure_tools import _is_protein_residue
+    from src.structure_tools import is_chain_residue, is_solvent_or_additive
 
     src = _model(structure_path)
+    dropped: dict[str, int] = {}
     wanted = {c: (None if v is None else set(int(x) for x in v))
               for c, v in keep.items()}
 
@@ -943,13 +1042,27 @@ def write_trimmed(
         for res in ch:
             if allowed is not None and int(res.seqid.num) not in allowed:
                 continue
-            if allowed is not None and not _is_protein_residue(res.name):
+            # Backbone-based, not name-based: a modified residue gemmi's table
+            # does not know (P1L, and anything else a depositor invents) is
+            # still chain, and deleting it opens a spurious segment break.
+            if allowed is not None and not is_chain_residue(res):
+                continue
+            # Applies to every kept chain, not just the trimmed one: waters and
+            # cryoprotectant have no business in the structure RFD3 conditions
+            # on or that the interface is measured from. is_solvent_or_additive
+            # checks the polypeptide first, so a modified residue is never hit.
+            if is_solvent_or_additive(res.name):
+                dropped[res.name] = dropped.get(res.name, 0) + 1
                 continue
             ch_out.add_residue(res)
         if len(ch_out):
             model_out.add_chain(ch_out)
     st.add_model(model_out)
     st.setup_entities()
+    if dropped:
+        logger.info(
+            f"dropped {sum(dropped.values())} solvent/additive residues "
+            f"({', '.join(f'{k}x{v}' for k, v in sorted(dropped.items()))})")
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.suffix.lower() == ".pdb":
@@ -975,7 +1088,7 @@ def build_contig(segments: Sequence[tuple[int, int]], chain: str,
 def _per_residue_bsa(structure_path: Path, target_chain: str,
                      partner_chain: str) -> tuple[dict[int, float], float]:
     """Per-residue buried surface for the target chain, and the interface total."""
-    from src.structure_tools import analyze_interface
+    from src.structure_tools import analyze_interface, is_solvent_or_additive
 
     try:
         res = analyze_interface(str(structure_path), target_chain, partner_chain)
@@ -989,6 +1102,14 @@ def _per_residue_bsa(structure_path: Path, target_chain: str,
         # bsa_per_residue covers BOTH chains; keep only the target's side, or the
         # partner's buried area would inflate every domain's score.
         if not isinstance(e, dict) or e.get("chain") != target_chain:
+            continue
+        # ...and only the POLYPEPTIDE's side. Ordered waters carry the target
+        # chain's id and their own numbering, so they landed in the per-residue
+        # total but could never be in `kept_set` — every interface water was
+        # counted as a residue the trim had removed. On 7CZD that was 20 waters
+        # worth 435 A^2, enough to open a spurious trim_gate on a trim that
+        # removed nothing at all.
+        if is_solvent_or_additive(str(e.get("residue") or "")):
             continue
         auth, bsa = e.get("resnum"), e.get("bsa_A2")
         if auth is None or bsa is None:
@@ -1012,6 +1133,8 @@ def trim_target(
     chainsaw_cmd: Sequence[str] | None = None,
     min_bsa_retention: float = 0.90,
     allowed_auth: set[int] | None = None,
+    max_exposed_hydrophobic: int | None = MAX_EXPOSED_HYDROPHOBIC,
+    exposed_hotspot_clearance_A: float = EXPOSED_HOTSPOT_CLEARANCE_A,
 ) -> TrimResult:
     """
     Crop `target_chain` to `budget` residues on domain boundaries.
@@ -1095,17 +1218,26 @@ def trim_target(
     # not the trim failing. What must not happen is the residues we kept losing
     # the contacts they had.
     bsa_after, retention, dropped_bsa = 0.0, 1.0, 0.0
+    target_side_before = 0.0
     per_after: dict[int, float] = {}
     if partner_chain and bsa_before > 0:
         per_after, bsa_after = _per_residue_bsa(cif_path, target_chain, partner_chain)
+        # Compare like with like. `bsa_before` is analyze_interface's
+        # bsa_total_A2, which covers BOTH chains, while `per_bsa` is filtered to
+        # the TARGET's side (see _per_residue_bsa). Subtracting one from the
+        # other reported roughly half the interface as "dropped" on every trim
+        # — including a no-op that removed a single cloning-artifact residue,
+        # which warned "removed 1138 A^2 (60%)" and opened a trim_gate
+        # checkpoint. Measured on 3KYS: total 3,401.7 vs target-side 1,652.1.
+        target_side_before = sum(per_bsa.values())
         kept_before = sum(v for a, v in per_bsa.items() if a in kept_set)
         kept_after = sum(v for a, v in per_after.items() if a in kept_set)
-        dropped_bsa = bsa_before - kept_before
+        dropped_bsa = max(0.0, target_side_before - kept_before)
         retention = kept_after / kept_before if kept_before > 0 else 1.0
-        if dropped_bsa > 0.05 * bsa_before:
+        if target_side_before > 0 and dropped_bsa > 0.05 * target_side_before:
             warnings.append(
                 f"the trim removed residues carrying {dropped_bsa:.0f} A^2 "
-                f"({dropped_bsa / bsa_before:.0%}) of the native "
+                f"({dropped_bsa / target_side_before:.0%}) of the native "
                 f"{target_chain}-{partner_chain} interface. That is expected when "
                 f"the target has more than one interface and you are designing "
                 f"against a single one — confirm it is the one you meant.")
@@ -1114,6 +1246,34 @@ def trim_target(
     # though it is still present, and nothing else here would notice.
     warnings += _hotspot_exposure_warnings(
         structure_path, cif_path, target_chain, retained)
+
+    # A cut that reveals hydrophobic core gives RFD3 an artificial site to bind
+    # that cannot work in solution. Zero is the ideal; a couple of edge residues
+    # away from the epitope is tolerable, one ON the epitope is not.
+    away, near = ([], []) if max_exposed_hydrophobic is None else _exposed_hydrophobic(
+        structure_path, cif_path, target_chain, retained,
+        clearance_A=exposed_hotspot_clearance_A)
+    if near:
+        raise TrimError(
+            f"the trim exposed hydrophobic residues at the epitope itself: "
+            f"{', '.join(f'{n}{a} +{d} A^2' for n, a, d, _ in near[:4])}. A fresh "
+            f"hydrophobic face within {exposed_hotspot_clearance_A:.0f} A of a "
+            f"hotspot competes with the site being designed for. Choose a cut "
+            f"that leaves the epitope's surroundings intact, or design against "
+            f"the untrimmed target.")
+    if max_exposed_hydrophobic is not None and len(away) > max_exposed_hydrophobic:
+        raise TrimError(
+            f"the trim newly exposed {len(away)} hydrophobic residues "
+            f"({', '.join(f'{n}{a}' for n, a, _, _ in away[:6])}), over the "
+            f"{max_exposed_hydrophobic} tolerated. That is buried core turned "
+            f"into an artificial binding surface, which RFD3 will preferentially "
+            f"target. Cut on a different boundary, or raise "
+            f"design.foundry.target_residue_budget so less has to come off.")
+    if away:
+        warnings.append(
+            f"the trim exposed {len(away)} hydrophobic residue(s) away from the "
+            f"epitope ({', '.join(f'{n}{a} +{d} A^2' for n, a, d, _ in away)}) — "
+            f"within tolerance, but they are new surface RFD3 can see")
 
     # A disulfide whose partner was cut leaves a free cysteine that will not
     # behave like the deposited structure. Surfaced, never auto-mutated.
@@ -1132,6 +1292,7 @@ def trim_target(
         hotspots_retained=list(retained),
         hotspots_lost=list(lost),
         interface_bsa_before_A2=round(bsa_before, 1),
+        interface_bsa_target_side_A2=round(target_side_before, 1),
         interface_bsa_after_A2=round(bsa_after, 1),
         bsa_retention=round(retention, 4),
         bsa_dropped_A2=round(dropped_bsa, 1),
@@ -1155,6 +1316,93 @@ def trim_target(
         f"trim [{method_used}]: {len(residues)} -> {len(keep)} residues, "
         f"{len(segments)} segment(s), BSA retention {retention:.1%}")
     return result
+
+
+_HYDROPHOBIC_AA = frozenset({"ALA", "VAL", "LEU", "ILE", "MET", "PHE", "TRP",
+                             "CYS", "TYR", "PRO"})
+
+
+def _exposed_hydrophobic(original: Path, trimmed: Path, chain: str,
+                         hotspots: Sequence[dict],
+                         clearance_A: float = EXPOSED_HOTSPOT_CLEARANCE_A
+                         ) -> tuple[list[tuple], list[tuple]]:
+    """Hydrophobic residues the CUT newly exposed, split by hotspot proximity.
+
+    Returns (away_from_epitope, near_epitope). Both SASAs are of the target
+    chain alone, so the partner cancels and what is left is what cutting
+    revealed. A fresh hydrophobic face is what RFD3 preferentially binds — the
+    same reason transmembrane helices are stripped before design — and one
+    sitting ON the epitope competes directly with the site being designed for.
+    """
+    def sasa(path: Path) -> dict[int, tuple[str, float]]:
+        """Per-residue SASA of the target chain's POLYPEPTIDE alone.
+
+        Amino acids only, and one chain only, in both files — otherwise this
+        measures the wrong thing twice over. Waters are stripped from the
+        trimmed structure but not the deposited one, so including them reports
+        desolvation as exposure: on 7CZD, a trim that removed nothing at all
+        showed Met18 gaining 71 A^2. Excluding the partner likewise stops the
+        interface itself reading as a fresh hydrophobic face.
+        """
+        import biotite.structure as struc
+        from biotite.structure.io.pdbx import CIFFile, get_structure
+        from biotite.structure.io.pdb import PDBFile
+
+        pth = Path(path)
+        if pth.suffix.lower() in (".pdb", ".ent"):
+            arr = PDBFile.read(str(pth)).get_structure(model=1)
+        else:
+            arr = get_structure(CIFFile.read(str(pth)), model=1)
+        arr = arr[struc.filter_amino_acids(arr) & (arr.chain_id == chain)]
+        arr = arr[~np.isnan(arr.coord).any(axis=1)]
+        if arr.array_length() == 0:
+            return {}
+        vals = struc.sasa(arr, vdw_radii="Single")
+        out: dict[int, list] = {}
+        for i in range(arr.array_length()):
+            if vals[i] != vals[i]:
+                continue
+            rid = int(arr.res_id[i])
+            out.setdefault(rid, [str(arr.res_name[i]).upper(), 0.0])
+            out[rid][1] += float(vals[i])
+        return {k: (v[0], v[1]) for k, v in out.items()}
+
+    try:
+        before, after = sasa(original), sasa(trimmed)
+    except Exception as exc:
+        logger.debug(f"hydrophobic exposure check unavailable: {exc}")
+        return [], []
+
+    hot = set(_hotspot_auths(hotspots))
+    try:
+        import gemmi
+        st = gemmi.read_structure(str(original))
+        cas = {int(r.seqid.num): r.find_atom("CA", "*")
+               for c in st[0] if c.name == chain for r in c
+               if r.find_atom("CA", "*") is not None}
+    except Exception:
+        cas = {}
+
+    away, near = [], []
+    for auth, (name, a_after) in after.items():
+        prev = before.get(auth)
+        if prev is None or name not in _HYDROPHOBIC_AA:
+            continue
+        delta = a_after - prev[1]
+        if delta < EXPOSED_SASA_DELTA_A2:
+            continue
+        d_hot = None
+        if auth in cas and hot:
+            ds = [cas[auth].pos.dist(cas[h].pos) for h in hot if h in cas]
+            d_hot = min(ds) if ds else None
+        rec = (name, auth, round(delta, 1), None if d_hot is None else round(d_hot, 1))
+        if auth in hot or (d_hot is not None and d_hot <= clearance_A):
+            near.append(rec)
+        else:
+            away.append(rec)
+    away.sort(key=lambda r: -r[2])
+    near.sort(key=lambda r: -r[2])
+    return away, near
 
 
 def _hotspot_exposure_warnings(original: Path, trimmed: Path, chain: str,
@@ -1267,6 +1515,7 @@ def _write_mapping(result: TrimResult, source: Path, pdb_id: str | None,
         ],
         "domains": [asdict(d) for d in result.domains],
         "bsa_before_A2": result.interface_bsa_before_A2,
+        "bsa_before_target_side_A2": result.interface_bsa_target_side_A2,
         "bsa_after_A2": result.interface_bsa_after_A2,
         # Over the KEPT residues only — see trim_target.
         "bsa_retention": result.bsa_retention,

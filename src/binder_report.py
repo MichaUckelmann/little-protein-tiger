@@ -43,20 +43,62 @@ from src.binder_ranking import (
     read_scores,
 )
 from src.report_common import (
+    escape_html,
     ReportError,
     as_float as _as_float,
+    display_root as _display_root,
     extract_citation_section as _extract_citation_section,
     histogram as _histogram,
     markdown_html as _markdown_html,
     read_json as _read_json,
     read_text as _read_text,
+    safe_json,
     section_before_handoff as _section_before_handoff,
+    stage_documents as _stage_documents,
 )
 
 _ROOT = Path(__file__).resolve().parent.parent
 _MOLSTAR_DIR = _ROOT / "assets" / "vendor" / "molstar"
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "report_templates" / "binder_report"
 _SHARED_DIR = Path(__file__).resolve().parent / "report_templates" / "_shared"
+
+# Every stage report the appendix renders whole, in run order. The 0* files
+# only exist for a PPI-bridged campaign (`_bridge_ppi_to_foundry` wrote the
+# binder track's own 20/21 from them) and are found by walking up from
+# `binder_dir`; the 2* files are the binder track's own. Missing entries are
+# skipped, so a campaign paused at calibration simply has no production or
+# scoring report to append.
+_APPENDIX_STAGES: list[tuple[str, str, str]] = [
+    ("00", "Pathway and target selection", "00_pathway.md"),
+    ("01", "Literature and tractability", "01_literature.md"),
+    ("02", "Structure and hotspots", "02_structure.md"),
+    ("20", "Target intel", "20_target_intel.md"),
+    ("21", "Interface analysis", "21_interface.md"),
+    ("22", "Target trim", "22_trim.md"),
+    ("23", "Binder spec", "23_binder_spec.md"),
+    ("24", "Pilot", "24_pilot.md"),
+    ("25", "Calibration", "25_calibration.md"),
+    ("26", "Production campaign", "26_production.md"),
+    ("27", "Scoring and ranking", "27_scoring.md"),
+    ("28", "Campaign summary", "28_summary.md"),
+]
+
+
+def _appendix(binder_dir: Path) -> list[dict]:
+    """Every stage report for this campaign, rendered whole.
+
+    `_find_up` for each file, not a fixed directory: a per-site trial's own
+    22..28 live in its site dir while 20/21 (and any PPI-track 0*) are shared
+    several levels up, and the search checks the start dir first, so a site
+    always gets its own file where it has one.
+    """
+    entries = []
+    for num, label, name in _APPENDIX_STAGES:
+        path = _find_up(binder_dir, name)
+        if path:
+            entries.append((num, label, path))
+    return _stage_documents(entries, rel_to=_display_root(binder_dir))
+
 
 
 def _find_up(start: Path, name: str, max_levels: int = 4) -> Path | None:
@@ -348,6 +390,7 @@ def _hero_and_rail(target_intel: dict, calibration: dict | None, source_label: s
             {"href": "#hotspots", "label": "02 · Hotspots"},
             {"href": "#confidence", "label": "03 · Confidence"},
             {"href": "#designs", "label": "04 · Top designs"},
+            {"href": "#appendix", "label": "05 · Full stage reports"},
             {"href": "#methods", "label": "Methods"},
         ],
         "stats": (
@@ -428,6 +471,13 @@ def build_report(binder_dir: Path, out_path: Path | None = None,
             calibration.get("bar_raised_to")
             or calibration.get("requested_bar")
             or excellence_bar)
+        # Same reasoning for the METRIC as for the bar, and the run already
+        # froze it: reading success_metric from today's config meant editing
+        # config.yaml silently relabelled the scatter axis of an old report,
+        # so the plot claimed a campaign was sized on a metric it never used.
+        # This is exactly the run-time-vs-config-time drift that
+        # `ppi_report._parse_filter_stats` exists to avoid.
+        success_metric = calibration.get("success_metric") or success_metric
 
     rows, source_label, top_rows, filter_stats = _resolve_designs(binder_dir, rcfg)
     # "production campaign" is the only fixed source_label string; every
@@ -485,6 +535,7 @@ def build_report(binder_dir: Path, out_path: Path | None = None,
         "funnel": {"passing_alone": passing_alone, "dropped_by": dropped_by},
         "top_designs": top_designs,
         "source_label": source_label,
+        "appendix": _appendix(binder_dir),
         "footer_html": _footer_html(binder_dir, source_label, generated_at),
     }
 
@@ -519,11 +570,9 @@ def _render(report_data: dict, structures: dict, title: str) -> str:
     molstar_js = (_MOLSTAR_DIR / "molstar.js").read_text(encoding="utf-8")
     molstar_css = (_MOLSTAR_DIR / "molstar.css").read_text(encoding="utf-8")
 
-    def safe_json(obj: Any) -> str:
-        return json.dumps(obj, ensure_ascii=False).replace("</script", "<\\/script").replace("<!--", "<\\!--")
-
     html = shell
-    html = html.replace("@@TITLE@@", title)
+    # LLM-derived target name going straight into <title>.
+    html = html.replace("@@TITLE@@", escape_html(title))
     html = html.replace("/*@@BASE_CSS@@*/", base_css)
     html = html.replace("/*@@MOLSTAR_CSS@@*/", molstar_css)
     html = html.replace("/*@@MOLSTAR_JS@@*/", molstar_js)

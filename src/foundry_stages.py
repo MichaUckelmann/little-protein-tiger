@@ -34,7 +34,12 @@ from src.foundry_runner import count_mpnn, count_rf3, prefilter_designs  # noqa:
 
 
 # Where the foundry checkpoint registry keeps its files.
-DEFAULT_CKPT_DIR = Path.home() / "pip_rcfoundry_ckpt"
+# foundry's own default location. Overridable because a beta tester's weights
+# are wherever their foundry install put them — often a shared lab volume, not
+# a home directory — and until this existed there was no way to say so.
+DEFAULT_CKPT_DIR = Path(
+    os.environ.get("LPT_FOUNDRY_CKPT_DIR")
+    or Path.home() / "pip_rcfoundry_ckpt")
 
 
 def resolve_checkpoint(value: str, ckpt_dir: Path = DEFAULT_CKPT_DIR) -> str:
