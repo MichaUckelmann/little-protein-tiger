@@ -172,9 +172,19 @@ from — the one artefact you cannot quietly correct after publishing.
 
 | Asset | Shape | For |
 |---|---|---|
-| `assets/lpt_carousel.pdf` | 9 slides, 1080x1350 | LinkedIn renders an uploaded PDF as a swipeable deck |
+| `assets/lpt_carousel.pdf` | 10 slides, 1080x1350 | LinkedIn renders an uploaded PDF as a swipeable deck |
 | `assets/lpt_hook.mp4` | 42 s, 1080x1350, silent | feed video; autoplay is muted, so every claim is on screen |
 | `assets/lpt_hook_poster.png` | 1080x1350 | upload as the video thumbnail — the first frame is a half-typed prompt |
+
+Slide 9 is the limitations note, and it is deliberately not phrased as "the
+pipeline is only as strong as its literature database". That claim is true of
+target discovery and prior art and false of everything else — structure
+selection, the trim, calibration, the gates and the ranking read no papers at
+all — so the sweeping version overstates one dependency while omitting the real
+one, which is that nothing in the deck has been tested at a bench. It also
+quotes the run against itself rather than describing it: the candidate the
+pathway stage marked "not found in corpus" is pulled out of the tier table, so
+the slide's evidence of candour is the run's own words.
 
 `render_hero.py` is the one that needed thought. It superposes the lead design's
 own refold onto **6E3Y**, the full-length CGRP receptor with its agonist and G

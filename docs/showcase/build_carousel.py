@@ -43,6 +43,7 @@ CHROME = next((c for c in ("google-chrome", "google-chrome-stable", "chromium")
                if shutil.which(c)), None)
 
 F = json.loads((HERE / "facts/pain_receptors.json").read_text(encoding="utf-8"))
+CORPUS = json.loads((HERE / "facts/corpus_explorer.json").read_text(encoding="utf-8"))
 CHECK = json.loads((HERE / "facts/hero_check.json").read_text(encoding="utf-8"))
 CAL = F["calibration"]
 
@@ -195,7 +196,7 @@ campaign from its own trial, and returned
 behind migraine. <strong>${F['spend_usd']:.2f}</strong> of model spend,
 {F['gpu_hours']['total']:.1f} GPU-hours, unattended.</p>
 <figure><img src="{img('hero_receptor')}" alt=""></figure>
-""", dark=True, page="1 / 9")
+""", dark=True, page="1 / 10")
 
 
 # ── 2. target selection ──────────────────────────────────────────────────────
@@ -218,7 +219,7 @@ an approved migraine antibody, so the mechanism is clinically de-risked before
 a single design exists.</p>
 <p class="wide muted" style="font-size:23px;margin-top:16px">{risk}</p></div>
 <div class="grow"></div>
-""", page="2 / 9")
+""", page="2 / 10")
 
 
 # ── 3. structure selection ───────────────────────────────────────────────────
@@ -246,7 +247,7 @@ fusion partner are what makes a cryo-EM structure solvable. They are also four
 extra chains a binder has to be designed around, and none of them exist on a
 real cell.</p>
 <div class="grow"></div>
-""", page="3 / 9")
+""", page="3 / 10")
 
 
 # ── 4. the epitope ───────────────────────────────────────────────────────────
@@ -270,7 +271,7 @@ residues were dropped from the target on both sides.</figcaption>
 <p class="wide muted" style="margin-top:24px;font-size:22px">
 Hotspots: {hot}. Priority: {', '.join(F['priority_residues'])} &mdash;
 literature-validated contacts on RAMP1.</p>
-""", page="4 / 9")
+""", page="4 / 10")
 
 
 # ── 5. the trial ─────────────────────────────────────────────────────────────
@@ -308,7 +309,7 @@ authorise a run that will not pay for itself.</p></div>
 pipeline made its own success criterion <strong>stricter</strong> than the one it
 was given &mdash; and still projected the campaign would finish inside budget.</p>
 <div class="grow"></div>
-""", page="5 / 9")
+""", page="5 / 10")
 
 
 # ── 6. the funnel ────────────────────────────────────────────────────────────
@@ -334,7 +335,7 @@ geometry gates &mdash; docking RMSD, epitope recall, hotspot engagement &mdash;
 are what separate a binder on the right site from a confident one on the wrong
 one.</p>
 <div class="grow"></div>
-""", page="6 / 9")
+""", page="6 / 10")
 
 
 # ── 7. the lead design ───────────────────────────────────────────────────────
@@ -358,7 +359,7 @@ itself &mdash; {cg['binder_atoms_in_contact']} binder atoms within
 {CHECK['cutoff_A']} &Aring;, closest approach {cg['min_distance_A']} &Aring;.
 The campaign designed against a peptide-free crystal form and never scored a
 single design against CGRP.</p></div>
-""", page="7 / 9")
+""", page="7 / 10")
 
 
 # ── 8. what it cost ──────────────────────────────────────────────────────────
@@ -386,11 +387,52 @@ stages cited were resolved and verified against the literature. The
 {checked - verified} that did not resolve is named in the run record, not
 quietly dropped.</p></div>
 <div class="grow"></div>
-""", page="8 / 9")
+""", page="8 / 10")
 
 
-# ── 9. terms ─────────────────────────────────────────────────────────────────
+# ── 9. limitations ───────────────────────────────────────────────────────────
 def s9() -> str:
+    """The honest coda, immediately before the ask.
+
+    Deliberately NOT phrased as "the pipeline is only as strong as its
+    literature database". That is true of target discovery and prior art and
+    false of everything else — structure selection, the trim, calibration,
+    the gates and the ranking read no papers at all — so the sweeping version
+    both overstates one dependency and quietly omits the real one, which is
+    that nothing here has been tested at a bench.
+    """
+    # The candidate the run itself could not find support for, quoted from the
+    # run rather than described.
+    unfound = next((gene for _t, gene, _w, _r, entry in F["tiers"]
+                    if "not found in corpus" in entry.lower()), None)
+    return slide(f"""
+<div class="eyebrow">What it does not do</div>
+<h2>Nothing in this deck has been near a bench.</h2>
+<p class="wide">Every figure here is computational: folding confidence,
+interface geometry, buried surface area. Designs like these need expression,
+purification and a binding assay before any of it is a result. The point of the
+gates, the trial and the ranking is to make that shortlist small and defensible
+&mdash; not to skip it.</p>
+<div class="rule"></div>
+<h2 style="font-size:44px;margin-top:0">And the corpus is one lab&rsquo;s reading list.</h2>
+<p class="wide">{n(CORPUS['indexed'])} papers indexed,
+{n(CORPUS['curated'])} curated &mdash; weighted heavily toward chromatin and
+chaperone biology, not pain. The run was candid about it: one of its three
+candidate targets{f' ({unfound})' if unfound else ''} is marked
+<em>&ldquo;not found in corpus&rdquo;</em> rather than handed invented support.
+Target discovery and prior art are only as good as what has been indexed.
+Structure selection, the trim, calibration and the gates read no papers at
+all.</p>
+<div class="box"><div class="h">Which is fixable</div>
+<p class="wide" style="font-size:26px">The corpus is built by a config-driven
+fetcher: swap the keyword sets, point it at your own field, rebuild the index.
+Every downstream stage carries on unchanged.</p></div>
+<div class="grow"></div>
+""", page="9 / 10")
+
+
+# ── 10. terms ────────────────────────────────────────────────────────────────
+def s10() -> str:
     return slide(f"""
 <div class="eyebrow">Little Protein Tiger</div>
 <h1>Free for any non&#8209;commercial use.</h1>
@@ -413,14 +455,14 @@ the run that produced it.</p>
 <p class="wide" style="font-family:var(--mono);font-size:31px;color:#63b98c;
    margin-top:22px">{SITE}</p>
 <div class="grow"></div>
-""", dark=True, page="9 / 9")
+""", dark=True, page="10 / 10")
 
 
 def main() -> int:
     if CHROME is None:
         raise SystemExit("no Chrome/Chromium on PATH — needed for print-to-PDF")
 
-    slides = [s1(), s2(), s3(), s4(), s5(), s6(), s7(), s8(), s9()]
+    slides = [s1(), s2(), s3(), s4(), s5(), s6(), s7(), s8(), s9(), s10()]
     html = (f'<meta charset="utf-8"><title>Little Protein Tiger</title>'
             f'<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
             f'family=Newsreader:opsz,wght@6..72,400;6..72,500&'
