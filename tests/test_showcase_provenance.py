@@ -137,6 +137,49 @@ def test_the_page_claims_provenance_it_can_support(builder, page, facts, keys):
     assert re.search(r"def extract\(", src), f"{builder} has no extract()"
 
 
+@pytest.mark.parametrize("builder,page,facts,keys", PAGES)
+def test_each_page_unfurls_with_its_own_card(builder, page, facts, keys):
+    """`og:image` must be this page's card, and that file must exist.
+
+    The card id is a bare string argument to `_common.head`, so copying a
+    builder's header call carries the wrong one silently — `build_pain.py`
+    passed "ppi" and the CGRP page unfurled, live, with the mesothelioma
+    campaign's card while its own `og_pain.png` was referenced by nothing.
+    Nothing in the page or the build output shows it; you only see it in a
+    Slack preview or by reading the served HTML.
+    """
+    html = _page(page)
+    m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+    assert m, f"{page} has no og:image — a pasted link renders no card"
+    asset = m.group(1).rsplit("/", 1)[-1]
+    assert (_SHOWCASE / "assets" / asset).is_file(), (
+        f"{page} points og:image at {asset}, which does not exist in assets/")
+
+    # Each showcase page must carry its own card, not a sibling's. index.html
+    # advertises the whole set and legitimately reuses one.
+    if page != "index.html":
+        assert asset != "og_ppi.png" or page == "ppi_discovery.html", (
+            f"{page} unfurls with {asset}, another page's card")
+
+
+def test_every_generated_card_is_referenced_by_some_page():
+    """A card nothing points at is a card that was silently replaced."""
+    cards = {p.name for p in (_SHOWCASE / "assets").glob("og_*.png")}
+    if not cards:
+        pytest.skip("no og cards in this checkout")
+    referenced = set()
+    for _b, page, _f, _k in PAGES:
+        path = _SHOWCASE / page
+        if path.is_file():
+            referenced |= {m.rsplit("/", 1)[-1] for m in re.findall(
+                r'content="(https://\S*?/assets/og_\w+\.png)"',
+                path.read_text(encoding="utf-8"))}
+    orphans = sorted(cards - referenced)
+    assert not orphans, (
+        f"generated but referenced by no page: {orphans} — either a page points "
+        f"at the wrong card, or these are stale")
+
+
 def test_handoff_blocks_are_read_with_the_pipelines_own_parser():
     """Builders that read stage reports must not re-implement `parse_handoff`.
 

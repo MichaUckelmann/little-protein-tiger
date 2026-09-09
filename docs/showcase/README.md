@@ -71,11 +71,22 @@ locally and commit when a run changes.
 
 **Pages cannot be enabled on a private repo without a paid plan**, so the
 workflow *skips* while the repo is private rather than failing — a red Actions
-tab on every docs push is how a real test failure gets scrolled past. On the
-first push after the repo goes public, `configure-pages` runs with
-`enablement: true` and creates the Pages site itself, so the
-Settings → Pages → Source: *GitHub Actions* toggle should not need to be
-remembered.
+tab on every docs push is how a real test failure gets scrolled past.
+
+`configure-pages` runs with `enablement: true`, but that does **not** save you
+the one-time setup: `GITHUB_TOKEN` is refused with *"Create Pages site failed.
+Error: Resource not accessible by integration"*, because creating a Pages site
+needs admin rights the Actions token never gets. Enable it once by hand
+(Settings → Pages → Source: *GitHub Actions*) or with an admin token:
+
+```bash
+gh api -X POST repos/MichaUckelmann/little-protein-tiger/pages -f build_type=workflow
+```
+
+Done for this repo on 2026-09-09; the site is
+<https://michauckelmann.github.io/little-protein-tiger/>. And going public does
+not retrigger a deploy — workflows fire on push — so the first one after a
+visibility flip needs a commit touching `docs/` or `gh workflow run Pages`.
 
 Note that the workflow uploads the WHOLE of `docs/`, not just this directory:
 the `.md` files ship too and are served as unrendered plain text (there is no

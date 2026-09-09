@@ -12,9 +12,18 @@
 # site failed ... Not Found" — and a permanently-red Actions tab is how a real
 # Tests failure gets scrolled past.
 #
-# `enablement: true` then creates the Pages site on the first public push, so
-# the Settings -> Pages -> Source: "GitHub Actions" toggle does not have to be
-# remembered by hand.
+# `enablement: true` is kept because it is harmless, but it CANNOT create the
+# site: GITHUB_TOKEN is refused with "Create Pages site failed. Error: Resource
+# not accessible by integration" — the create-a-Pages-site endpoint needs admin
+# rights the Actions token does not get. So Pages does have to be turned on once
+# by a human (Settings -> Pages -> Source: "GitHub Actions"), or once via the
+# API with an admin token:
+#
+#   gh api -X POST repos/<owner>/<repo>/pages -f build_type=workflow
+#
+# Done for this repo on 2026-09-09. Note also that going public does not
+# retrigger anything — workflows fire on push — so the first deploy after a
+# visibility flip needs a push touching docs/ or `gh workflow run Pages`.
 name: Pages
 
 on:

@@ -321,7 +321,7 @@ _HEAD = _mkhead(
     f"One general sentence about pain receptors, and {F['n_survivors']} gated binder designs "
     "against the CGRP receptor — the target erenumab already validates in the clinic. How it "
     "chose the target, the structure, the epitope, and the size of its own campaign.",
-    "pain_receptors.html", "ppi")
+    "pain_receptors.html", "pain")
 
 CITE = F["citations"]
 
