@@ -9,7 +9,7 @@
 
 An end-to-end pipeline for PPI drug target discovery. Covers automated paper discovery, Claude-powered structured extraction, a vector database for semantic search, and a suite of AI expert skills for pathway analysis, structural interface analysis, and binder design. Skills run either inside Claude Desktop (via MCP) or from the CLI using the Claude or Gemini API directly.
 
-**Current corpus state:** ~55,700 papers indexed · ~14,300 downloaded · ~11,000 curated fingerprints. The published archive (`scripts/fetch_corpus.py`) ships the curated fingerprints and the index; source documents are excluded.
+**Current corpus state:** ~57,900 papers indexed · ~14,700 downloaded · ~14,500 curated fingerprints. The published archive (`scripts/fetch_corpus.py`) ships the curated fingerprints and the index; source documents are excluded.
 
 ---
 
@@ -31,8 +31,8 @@ An end-to-end pipeline for PPI drug target discovery. Covers automated paper dis
 > seconds, plus a one-off ~1 MB structure download on the first run. No API
 > key, no GPU, no corpus.
 >
-> **Want the literature corpus?** `python scripts/fetch_corpus.py` — ~83 MB,
-> free, about a minute. 10,981 curated papers, ready to search. You only pay
+> **Want the literature corpus?** `python scripts/fetch_corpus.py` — ~106 MB,
+> free, about a minute. 14,517 curated papers, ready to search. You only pay
 > if you later extend it with your own search terms.
 >
 > **Want to see what it produces first?** Three illustrated walkthroughs built

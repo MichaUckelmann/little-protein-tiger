@@ -55,7 +55,7 @@ Ask, and wait for answers:
   | Track | What it does | Needs |
   |---|---|---|
   | `structure` | PDB/interface analysis, trimming, reports | Base install only |
-  | `literature` | Corpus search, discovery workflows | + `corpus` extra (~3 GB); the corpus itself is a free ~83 MB download |
+  | `literature` | Corpus search, discovery workflows | + `corpus` extra (~3 GB); the corpus itself is a free ~106 MB download |
   | `ppi` | Discovery → design | + BoltzGen *or* foundry |
   | `binder` | RFD3/MPNN/RF3 campaigns | + foundry, + a CUDA GPU, + ~120 GB disk |
 
@@ -158,7 +158,7 @@ no PubMed rate limits.
 python scripts/fetch_corpus.py
 ```
 
-~83 MB compressed, ~337 MB installed: **10,981 curated papers**, the vector
+~106 MB compressed, ~451 MB installed: **14,517 curated papers**, the vector
 index, and a database indexing all ~55,000 papers the maintainer's searches
 found. `search_corpus` works immediately afterwards.
 

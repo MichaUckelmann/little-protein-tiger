@@ -86,7 +86,7 @@ Both servers carry instructions telling the model **not to reach for them on
 its own**, and every `SKILL.md` frontmatter begins "Invoke ONLY when the user
 explicitly asks…".
 
-That is deliberate. The corpus is ~11,000 papers weighted toward chromatin,
+That is deliberate. The corpus is ~14,500 papers weighted toward chromatin,
 histone chaperones and structural biology. Claude's own knowledge spans all of
 biology. If a general question ("what does p53 do?") silently became a corpus
 search, you would get a **narrower and worse answer than the model would have

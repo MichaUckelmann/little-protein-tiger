@@ -19,7 +19,7 @@ the requirements differ sharply — check this table before installing anything.
 |---|---|---|---|---|
 | **A. Design from a named target** | "design binders against RING1B" → epitope, spec, campaign | Only past the spec stage | **No** | Gemini |
 | **B. Design from a broad prompt** | "inhibitors for pain receptors" → picks the target for you | Only past the spec stage | **Yes** | Gemini |
-| **C. Ask the literature** | conversational queries over ~11,000 curated papers | No | **Yes** | Gemini |
+| **C. Ask the literature** | conversational queries over ~14,500 curated papers | No | **Yes** | Gemini |
 
 Two things to know before you plan your testing:
 
@@ -104,7 +104,7 @@ run stops two seconds in.
 python scripts/fetch_corpus.py
 ```
 
-~83 MB compressed, ~355 MB installed: 11,000 curated paper fingerprints, the
+~106 MB compressed, ~451 MB installed: 14,517 curated paper fingerprints, the
 prebuilt vector index, and the paper database. You do **not** rebuild or
 re-ingest anything after this.
 

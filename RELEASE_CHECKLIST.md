@@ -19,7 +19,7 @@ this is done:
 ### Do this
 
 ```bash
-# 1. Build the archive (~83 MB from a 356 MB corpus). Refuses to run if the
+# 1. Build the archive (~106 MB from a 451 MB corpus). Refuses to run if the
 #    database contains absolute or home-directory paths.
 python scripts/package_corpus.py
 
@@ -28,7 +28,7 @@ python scripts/package_corpus.py
 gh release create v0.1.0 dist/lpt-corpus.tar.zst \
     --title "v0.1.0" \
     --notes "Initial release. Includes the curated literature corpus
-(10,981 papers) as lpt-corpus.tar.zst — source documents excluded."
+(14,517 papers) as lpt-corpus.tar.zst — source documents excluded."
 
 # 3. Verify from a clean checkout, NOT from this one.
 git clone https://github.com/MichaUckelmann/little-protein-tiger /tmp/verify

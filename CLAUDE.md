@@ -659,7 +659,7 @@ The same `SKILL.md` and the same tool surface run under two transports, and they
 need OPPOSITE defaults:
 
 - **MCP** (Claude Desktop / Code): must NOT auto-trigger. The model is in a
-  general conversation, and the corpus is ~11k papers weighted to chromatin /
+  general conversation, and the corpus is ~14.5k papers weighted to chromatin /
   chaperones — auto-searching it on a general question yields a narrower answer
   than the model's own knowledge, and makes the corpus's blind spots look like
   the field's. Both servers set FastMCP `instructions` saying so, no tool
