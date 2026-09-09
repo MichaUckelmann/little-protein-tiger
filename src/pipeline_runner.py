@@ -598,6 +598,20 @@ class PipelineRunner:
                 f"Unknown start_from: {start_from!r}. Must be one of {self.STAGE_ORDER}"
             )
 
+        # A structure switch has to survive a restart. `_select_designable_structure`
+        # only re-runs while start_idx <= 1, but the pathway report it overrode is
+        # still on disk recommending the rejected entry in its handoff block
+        # (`- pdb_id: 6E3Y`), and that is what a resume parses. So
+        # `--start-from structure` — the normal way to re-enter a run after
+        # editing a prompt or recovering from a stage failure — silently reverted
+        # to the entry the pipeline had already measured as the wrong one, and
+        # then analysed it. The decision is in the manifest; re-apply it rather
+        # than re-deriving (which would cost another RCSB round-trip) or trusting
+        # the stale file.
+        # `--pdb` always wins, on a resume exactly as on a fresh run.
+        if start_idx > 1 and result.pdb_id and not pdb_id:
+            self._reapply_recorded_structure_switch(result, handoff)
+
         try:
             # ── Stage 0: pathway-expert ──────────────────────────────────────
             if start_idx == 0:
@@ -630,21 +644,8 @@ class PipelineRunner:
                     result.target_complex or "", result.pdb_id,
                     operator_pinned=bool(pdb_id))
                 if better:
-                    # Rewrite the FREE-TEXT fields too. `structure_query` is
-                    # prose the pathway stage wrote naming the old entry, and it
-                    # flows into the literature prompt — leaving it stale made
-                    # the literature stage reason about, and cite, a structure
-                    # the pipeline was no longer using. Behaviour was correct
-                    # (the trim and the interface measurement both used the new
-                    # entry); the narrative in the artifacts and the report was
-                    # not, which is worse than useless to a reader.
                     stale = result.pdb_id
-                    for field in ("structure_query", "design_query"):
-                        text = handoff.get(field)
-                        if text and stale:
-                            handoff[field] = re.sub(
-                                re.escape(stale), better, text,
-                                flags=re.IGNORECASE)
+                    self._retarget_stale_structure(handoff, stale, better)
                     handoff["structure_query"] = (
                         (handoff.get("structure_query") or "").rstrip()
                         + f" (Structure switched from {stale} to {better} "
@@ -2339,6 +2340,81 @@ class PipelineRunner:
         names = [re.sub(r"\s*\([^)]*\)\s*$", "", n).strip()
                  for n in re.split(r"\s*/\s*", target_complex or "")]
         return [n for n in names if n]
+
+    #: Handoff fields that are INSTRUCTIONS to a later stage, as opposed to
+    #: claims about the evidence. Only these get a switched PDB id substituted
+    #: into them. The distinction matters: `go_rationale` saying "high-resolution
+    #: cryo-EM structure (PDB 6E3Y)" is a true statement about what the evidence
+    #: was, and rewriting it to name the replacement would corrupt the record —
+    #: worse, a sentence like "structure 6E3Y (doi:10.1038/s41586-018-0535-y)"
+    #: would end up pairing the new id with the old entry's paper. Rewrite what
+    #: the pipeline is being told to do; leave what it was told as true.
+    _STRUCTURE_INSTRUCTION_FIELDS = ("structure_query", "design_query",
+                                     "literature_query")
+
+    def _reapply_recorded_structure_switch(self, result: "PipelineResult",
+                                           handoff: dict) -> None:
+        """Restore a previous process's structure switch on resume.
+
+        Reads the `structure_switched` checkpoint and, if the handoff parsed off
+        disk still names the entry that was rejected, points this run back at
+        the one it actually designed against. Fails open: no project, no
+        checkpoint, or a value that does not match the recorded stale entry, and
+        nothing happens. The caller skips this entirely when the operator pinned
+        `--pdb`, which overrides the switch on a resume just as it does on a
+        fresh run.
+        """
+        if self._project is None or self._round_id is None:
+            return
+        try:
+            cp = self._project.checkpoint("structure_switched", self._round_id)
+        except Exception as exc:                      # a manifest read is not worth a crash
+            logger.warning(f"could not read structure_switched checkpoint: {exc}")
+            return
+        payload = (cp or {}).get("payload") or {}
+        stale, better = payload.get("from"), payload.get("to")
+        if not stale or not better:
+            return
+        if (result.pdb_id or "").upper() != stale.upper():
+            return                                    # already correct, or pinned elsewhere
+
+        logger.warning(
+            f"  ⚠ resumed handoff names {stale}, which this campaign replaced with "
+            f"{better} — restoring {better} from the manifest checkpoint. Pass "
+            f"--pdb {stale} if you really want the original.")
+        result.pdb_id = better
+        handoff["pdb_id"] = better
+        self._retarget_stale_structure(handoff, stale, better)
+        result.structure_switch = {"from": stale, "to": better,
+                                   "reason": payload.get("reason") or ""}
+
+    def _retarget_stale_structure(self, handoff: dict, stale: str,
+                                  better: str) -> None:
+        """Point a handoff's forward-looking instructions at the chosen entry.
+
+        `_select_designable_structure` can replace the entry the pathway stage
+        picked, and the free-text fields it wrote still name the old one. Left
+        alone, they flow into the next stage's prompt and it reasons about a
+        structure the pipeline is not using.
+
+        Applied to the LITERATURE handoff as well as the pathway one, because
+        the literature stage writes its own `design_query` after the switch has
+        already happened, from a pathway report that still recommends the old
+        entry eleven times over. On the CALCRL/RAMP1 run that produced a
+        `01_literature.md` naming 6E3Y four times while the structure stage
+        analysed 3N7S — and `_stage_design` passes `design_query` verbatim to
+        the design-script skill, so on the `--design-engine boltzgen` path the
+        designer was being handed the wrong entry, not merely a stale
+        narrative.
+        """
+        if not stale or not better or stale.upper() == better.upper():
+            return
+        pattern = re.compile(re.escape(stale), re.IGNORECASE)
+        for field in self._STRUCTURE_INSTRUCTION_FIELDS:
+            text = handoff.get(field)
+            if isinstance(text, str) and pattern.search(text):
+                handoff[field] = pattern.sub(better, text)
+                logger.info(f"retargeted {field}: {stale} -> {better}")
 
     def _note_structure_switch(self, result: "PipelineResult", stale: str,
                                better: str) -> None:
@@ -4553,6 +4629,21 @@ class PipelineRunner:
             "target_site_hint handoff field so the structure stage can focus on them. "
             "Use DepMap / cluster tools if the target is in a cancer or disease pathway."
         )
+        # The pathway report this stage reads as context still recommends the
+        # entry a switch replaced — `_note_structure_switch` appends the
+        # correction, but it lands after the body, and the body names the old
+        # one throughout. Say it in the instruction, where it cannot be missed.
+        switch = getattr(result, "structure_switch", None)
+        if switch:
+            why = switch.get("reason") or "a cleaner entry for this interface"
+            query += (
+                f"\n\nIMPORTANT — the structure choice is already settled and is "
+                f"not open: the pathway report you are given recommends PDB "
+                f"{switch['from']}, but the pipeline designs against PDB "
+                f"{switch['to']} ({why}). Refer to {switch['to']} in every "
+                f"handoff field. You may still cite findings that came from "
+                f"{switch['from']}, provided you attribute them to it.")
+
         logger.info("Stage 1: molecular-biology-expert")
         # Literature now runs BEFORE structure, so there is no structure report to
         # cross-reference. Pass the pathway report only — it has the disease/pathway
@@ -4560,6 +4651,10 @@ class PipelineRunner:
         pathway_ctx = [f for f in [result.stage_files.get("pathway")] if f and f.exists()]
         handoff = self._run_stage("molecular-biology-expert", query, pathway_ctx, output_file,
                                   stage="literature")
+        # Prompt guidance is best-effort; this is not. `design_query` is passed
+        # verbatim to the design-script skill by `_stage_design`.
+        if switch:
+            self._retarget_stale_structure(handoff, switch["from"], switch["to"])
         result.stages_completed.append("literature")
         result.stage_files["literature"] = output_file
         result.literature_handoff = handoff

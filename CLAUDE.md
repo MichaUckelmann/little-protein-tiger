@@ -219,8 +219,6 @@ of the PPI/binder-track unification" entry for the fuller list): no
 membrane-topology resolution for a PPI-bridged target (falls back to
 `_stage_trim`'s "extracellular" default rather than binder-target-intel's
 own UniProt-topology check); `--trial-sites` multi-epitope comparison isn't
-wired into the bridge (PPI's structure stage picks exactly one interface);
-`--trial-sites` multi-epitope comparison isn't
 wired into the bridge (PPI's structure stage picks exactly one interface).
 **The "no real GPU run has proven the bridge" gap is CLOSED** (2026-08-28):
 `projects/mesothelioma_showcase` went from the one-sentence query "Design cancer
@@ -848,6 +846,31 @@ deterministic steps now sit between the pathway stage and the structure stage:
   more scaffolding chains at no better resolution) and `--pdb` always wins.
   A switch rewrites the free-text `structure_query`/`design_query` too — leaving
   those stale made the literature stage cite a structure the run was not using.
+
+  **A switch has to outlive the process that made it, and it leaked two ways.**
+  Rewriting the *pathway* handoff is not enough: the LITERATURE stage runs after
+  the switch and writes its own `design_query`, from a pathway report whose body
+  still recommends the replaced entry (11 mentions on CALCRL/RAMP1 —
+  `_note_structure_switch`'s correction is appended, so it lands after all of
+  them). It duly emitted 6E3Y while the structure stage analysed 3N7S, and
+  `_stage_design` passes `design_query` VERBATIM to the design-script skill, so
+  on `--design-engine boltzgen` the designer was handed the wrong entry.
+  `_retarget_stale_structure` now runs on the literature handoff too. It rewrites
+  only `_STRUCTURE_INSTRUCTION_FIELDS` — the `*_query` fields that are
+  instructions to a later stage — and deliberately NOT `go_rationale` or
+  `target_site_hint`: "cryo-EM structure (PDB 6E3Y), doi:10.1038/s41586-018-0535-y"
+  is a true claim about the evidence, and substituting the id there would
+  attribute one entry's paper to another. Rewrite the orders, keep the record.
+
+  The second leak was worse and silent: `_select_designable_structure` only
+  re-runs while `start_idx <= 1`, but `00_pathway.md`'s handoff block still reads
+  `- pdb_id: 6E3Y`, and that is what a resume parses — so `--start-from structure`
+  (the ordinary way back in after a stage failure or a prompt edit) reverted to
+  the rejected entry and analysed it. `_reapply_recorded_structure_switch` reads
+  the decision back out of the `structure_switched` manifest checkpoint instead,
+  via the new `Project.checkpoint()` (`open_checkpoints` returns only PENDING
+  ones, which answers "what is this run waiting on", not "what did it already
+  decide"). `--pdb` still overrides it, on a resume exactly as on a fresh run.
 - **`_ppi_interface_options`** hands the structure stage MEASURED interfaces for
   the chosen entry instead of letting it guess from descriptions. Measured, the
   two interfaces in 6E3Y are the same size (R/P 3858 Å², R/E 3862 Å²), so the

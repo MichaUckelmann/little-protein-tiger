@@ -311,6 +311,22 @@ class Project:
                     c["resolution"] = resolution
         self._save()
 
+    def checkpoint(self, checkpoint_id: str,
+                   run_id: Optional[str | int] = None) -> Optional[dict]:
+        """One checkpoint by id, whatever its status.
+
+        `open_checkpoints` only returns pending ones, which is right for "what
+        is this run waiting on" and wrong for "what did this run already
+        decide". A resume needs the latter: a decision a previous process made
+        and recorded is the only account of it once that process is gone.
+        """
+        rid = round_run_id(run_id) if isinstance(run_id, int) else run_id
+        self._reload()
+        for c in reversed(self._manifest.get("checkpoints", [])):
+            if c.get("id") == checkpoint_id and (rid is None or c.get("run_id") == rid):
+                return c
+        return None
+
     def open_checkpoints(self, run_id: Optional[str | int] = None) -> list[dict]:
         rid = round_run_id(run_id) if isinstance(run_id, int) else run_id
         out = [c for c in self._manifest.get("checkpoints", []) if c.get("status") == "pending"]
