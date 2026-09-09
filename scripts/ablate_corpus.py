@@ -175,6 +175,18 @@ def genes(report: str) -> list[str]:
     return out
 
 
+def primary_pair(report: str) -> frozenset:
+    """The chosen target as an unordered pair of symbols.
+
+    A string comparison counted `KMT2A / MEN1` against `MEN1 / KMT2A` as a
+    changed choice. It is the same interaction named the other way round, and
+    reporting it as a difference inflates the headline — so the pair, not the
+    string, decides whether the answer moved.
+    """
+    return frozenset(g.strip().upper() for g in re.split(r"\s*/\s*", primary(report))
+                     if g.strip())
+
+
 def primary(report: str) -> str:
     m = re.search(r"- target_complex:\s*(.+)", report)
     return m.group(1).strip() if m else ""
@@ -286,6 +298,7 @@ def cell(slug: str, arm: str, query: str, config: dict, force: bool) -> dict:
         "usage": usage.as_dict(),
         "tiers": tiers(report), "genes": genes(report),
         "primary": primary(report),
+        "primary_pair": sorted(primary_pair(report)),
         **outcomes(report),
         **tool_calls(trace),
     }
@@ -328,7 +341,8 @@ def summarise() -> None:
             c = by.get(arm)
             if c is None or c.get("error") or not c.get("primary"):
                 return None
-            return live.get("primary") == c.get("primary")
+            # Unordered: see primary_pair().
+            return set(live.get("primary_pair") or []) == set(c.get("primary_pair") or [])
 
         same_b, same_d = same("blank"), same("decoy")
         mark = lambda v: {True: "same", False: "DIFF", None: "-"}[v]
@@ -364,11 +378,62 @@ def summarise() -> None:
                     "usd": {a: by[a].get("usd") for a in by},
                     "error": {a: by[a].get("error") for a in by
                               if by[a].get("error")}})
+    _publish_facts(out)
     total = sum(v or 0 for r in out for v in r["usd"].values())
     print(f"\n  spend so far: ${total:.2f}")
     (OUT / "results.json").write_text(json.dumps(out, indent=2) + "\n",
                                       encoding="utf-8")
     print(f"  wrote {(OUT / 'results.json').relative_to(_ROOT)}")
+
+
+# The one cell worth quoting at length. `live` proposed the FACT histone
+# chaperone as a fibrosis target and `blank` did not; the paper that made it
+# findable is titled for its chromatin mechanism and closes on IPF, so a
+# title-level index would never have surfaced it for this query. Its details are
+# published with the summary because the launch deck quotes them.
+FIBROSIS_CASE = {
+    "query_slug": "fibrosis",
+    "doi": "10.1038/s41467-021-21227-y",
+    "why_findable_only_by_full_text":
+        "The title is pure chromatin mechanism; the IPF relevance is in the "
+        "paper's own findings, which curation extracted with page spans.",
+}
+
+
+def _publish_facts(rows: list[dict]) -> None:
+    """Mirror the summary into docs/showcase/facts/, like every other figure.
+
+    The deck reads facts/, never outputs/ — the showcase builders' whole
+    arrangement is that a page's numbers come from a tracked snapshot, and an
+    experiment that feeds a slide has to publish on the same terms.
+    """
+    facts = pathlib.Path(_ROOT / "docs/showcase/facts/ablation.json")
+    case = dict(FIBROSIS_CASE)
+    fib = next((r for r in rows if r["slug"] == "fibrosis"), None)
+    if fib:
+        case["genes_live"] = fib["genes"].get("live")
+        case["genes_blank"] = fib["genes"].get("blank")
+        case["n_dois"] = fib["n_dois"]
+        case["coverage_pct"] = fib["coverage_pct"]
+    try:
+        import sqlite3
+        db = sqlite3.connect(f"file:{_ROOT / 'data/literature.db'}?mode=ro", uri=True)
+        row = db.execute("select title from papers where lower(doi)=?",
+                         (case["doi"],)).fetchone()
+        if row:
+            case["paper_title"] = row[0].rstrip(".")
+    except Exception:                                  # noqa: BLE001
+        pass
+    changed = [r for r in rows if r["primary_same_as_live"].get("blank") is False]
+    facts.write_text(json.dumps({
+        "n_queries": len(rows),
+        "n_top_pick_changed_without_corpus": len(changed),
+        "queries": [{k: r[k] for k in
+                     ("slug", "field", "coverage_pct", "primary",
+                      "n_dois", "primary_same_as_live")} for r in rows],
+        "fibrosis_case": case,
+    }, indent=2) + "\n", encoding="utf-8")
+    print(f"  wrote {facts.relative_to(_ROOT)}")
 
 
 def main() -> int:

@@ -35,7 +35,7 @@
       ]
     },
     "primary_same_as_live": {
-      "blank": false,
+      "blank": true,
       "decoy": false
     },
     "gene_overlap_with_live": {

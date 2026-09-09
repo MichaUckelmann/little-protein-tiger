@@ -172,11 +172,24 @@ from — the one artefact you cannot quietly correct after publishing.
 
 | Asset | Shape | For |
 |---|---|---|
-| `assets/lpt_carousel.pdf` | 10 slides, 1080x1350 | LinkedIn renders an uploaded PDF as a swipeable deck |
+| `assets/lpt_carousel.pdf` | 11 slides, 1080x1350 | LinkedIn renders an uploaded PDF as a swipeable deck |
 | `assets/lpt_hook.mp4` | 42 s, 1080x1350, silent | feed video; autoplay is muted, so every claim is on screen |
 | `assets/lpt_hook_poster.png` | 1080x1350 | upload as the video thumbnail — the first frame is a half-typed prompt |
 
-Slide 9 is the limitations note, and it is deliberately not phrased as "the
+Slide 9 reports the corpus ablation (`scripts/ablate_corpus.py`), which exists
+because a deck claiming "grounded in the literature" invites exactly one
+question — would the answer have differed without it — and nothing could answer
+it before. Same prompt, same tools, corpus blanked, six disease areas: 3 of 6
+target choices changed. The three that did not (menin/MLL, KRAS, the CGRP
+receptor) are each target classes with an approved drug, which is the finding —
+the corpus arbitrates contested choices and agrees where the field has settled.
+Note the comparison is on the unordered gene PAIR: a string comparison counted
+`KMT2A / MEN1` against `MEN1 / KMT2A` as a change and reported 4 of 6.
+
+Its numbers come from `facts/ablation.json`, published by `ablate_corpus.py
+--report` for the same reason every other figure comes from `facts/`.
+
+Slide 10 is the limitations note, and it is deliberately not phrased as "the
 pipeline is only as strong as its literature database". That claim is true of
 target discovery and prior art and false of everything else — structure
 selection, the trim, calibration, the gates and the ranking read no papers at
@@ -185,6 +198,13 @@ one, which is that nothing in the deck has been tested at a bench. It also
 quotes the run against itself rather than describing it: the candidate the
 pathway stage marked "not found in corpus" is pulled out of the tier table, so
 the slide's evidence of candour is the run's own words.
+
+The corpus is described with measured shares rather than a label, and the
+shares are qualified: they are computed over TITLES, and the ablation's best
+result came from a paper whose title is pure chromatin and whose findings
+carry the fibrosis relevance. So a title-keyword share understates what the
+corpus can answer, and the slide says so — the lopsidedness is partly an asset,
+not only a caveat.
 
 `render_hero.py` is the one that needed thought. It superposes the lead design's
 own refold onto **6E3Y**, the full-length CGRP receptor with its agonist and G

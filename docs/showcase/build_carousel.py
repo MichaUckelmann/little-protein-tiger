@@ -44,6 +44,7 @@ CHROME = next((c for c in ("google-chrome", "google-chrome-stable", "chromium")
 
 F = json.loads((HERE / "facts/pain_receptors.json").read_text(encoding="utf-8"))
 CORPUS = json.loads((HERE / "facts/corpus_explorer.json").read_text(encoding="utf-8"))
+ABL = json.loads((HERE / "facts/ablation.json").read_text(encoding="utf-8"))
 CHECK = json.loads((HERE / "facts/hero_check.json").read_text(encoding="utf-8"))
 CAL = F["calibration"]
 
@@ -127,7 +128,7 @@ th { font-family:var(--mono); font-size:15px; letter-spacing:.1em;
      padding:0 0 12px; font-weight:500; border-bottom:1px solid var(--rule) }
 td { padding:16px 0; border-bottom:1px solid var(--rule);
      font-variant-numeric:tabular-nums; vertical-align:top }
-td.n, th.n { text-align:right }
+td.n, th.n { text-align:right; padding-right:26px }
 .pill { font-family:var(--mono); font-size:14px; letter-spacing:.08em;
         padding:5px 11px; border-radius:3px; background:#E4F0E7; color:#1F6B41;
         white-space:nowrap }
@@ -196,7 +197,7 @@ campaign from its own trial, and returned
 behind migraine. <strong>${F['spend_usd']:.2f}</strong> of model spend,
 {F['gpu_hours']['total']:.1f} GPU-hours, unattended.</p>
 <figure><img src="{img('hero_receptor')}" alt=""></figure>
-""", dark=True, page="1 / 10")
+""", dark=True, page="1 / 11")
 
 
 # ── 2. target selection ──────────────────────────────────────────────────────
@@ -219,7 +220,7 @@ an approved migraine antibody, so the mechanism is clinically de-risked before
 a single design exists.</p>
 <p class="wide muted" style="font-size:23px;margin-top:16px">{risk}</p></div>
 <div class="grow"></div>
-""", page="2 / 10")
+""", page="2 / 11")
 
 
 # ── 3. structure selection ───────────────────────────────────────────────────
@@ -247,7 +248,7 @@ fusion partner are what makes a cryo-EM structure solvable. They are also four
 extra chains a binder has to be designed around, and none of them exist on a
 real cell.</p>
 <div class="grow"></div>
-""", page="3 / 10")
+""", page="3 / 11")
 
 
 # ── 4. the epitope ───────────────────────────────────────────────────────────
@@ -271,7 +272,7 @@ residues were dropped from the target on both sides.</figcaption>
 <p class="wide muted" style="margin-top:24px;font-size:22px">
 Hotspots: {hot}. Priority: {', '.join(F['priority_residues'])} &mdash;
 literature-validated contacts on RAMP1.</p>
-""", page="4 / 10")
+""", page="4 / 11")
 
 
 # ── 5. the trial ─────────────────────────────────────────────────────────────
@@ -309,7 +310,7 @@ authorise a run that will not pay for itself.</p></div>
 pipeline made its own success criterion <strong>stricter</strong> than the one it
 was given &mdash; and still projected the campaign would finish inside budget.</p>
 <div class="grow"></div>
-""", page="5 / 10")
+""", page="5 / 11")
 
 
 # ── 6. the funnel ────────────────────────────────────────────────────────────
@@ -335,7 +336,7 @@ geometry gates &mdash; docking RMSD, epitope recall, hotspot engagement &mdash;
 are what separate a binder on the right site from a confident one on the wrong
 one.</p>
 <div class="grow"></div>
-""", page="6 / 10")
+""", page="6 / 11")
 
 
 # ── 7. the lead design ───────────────────────────────────────────────────────
@@ -359,7 +360,7 @@ itself &mdash; {cg['binder_atoms_in_contact']} binder atoms within
 {CHECK['cutoff_A']} &Aring;, closest approach {cg['min_distance_A']} &Aring;.
 The campaign designed against a peptide-free crystal form and never scored a
 single design against CGRP.</p></div>
-""", page="7 / 10")
+""", page="7 / 11")
 
 
 # ── 8. what it cost ──────────────────────────────────────────────────────────
@@ -387,11 +388,55 @@ stages cited were resolved and verified against the literature. The
 {checked - verified} that did not resolve is named in the run record, not
 quietly dropped.</p></div>
 <div class="grow"></div>
-""", page="8 / 10")
+""", page="8 / 11")
 
 
-# ── 9. limitations ───────────────────────────────────────────────────────────
+# ── 9. does the corpus earn its place ────────────────────────────────────────
 def s9() -> str:
+    """The ablation, and the one cell worth quoting.
+
+    A launch deck asserting "grounded in the literature" invites exactly one
+    question — would the answer have been different without it — and until this
+    was run, neither the pipeline nor anyone reading it could say. So it was
+    measured: same prompt, same tools, corpus blanked, six disease areas.
+    """
+    a = ABL
+    case = a["fibrosis_case"]
+    rows = "".join(
+        f'<tr><td>{q["field"]}</td>'
+        f'<td class="n">{q["coverage_pct"]:.1f}%</td>'
+        f'<td>{q["primary"].get("live") or "-"}</td>'
+        f'<td>{q["primary"].get("blank") or "-"}</td></tr>'
+        for q in a["queries"])
+    return slide(f"""
+<div class="eyebrow">Does the corpus earn its place?</div>
+<h2>We blanked it and asked the same six questions again.</h2>
+<table>
+<tr><th>Disease area</th><th class="n">Corpus share</th>
+    <th>With corpus</th><th>Corpus blanked</th></tr>
+{rows}</table>
+<p class="wide" style="margin-top:22px;font-size:26px">
+<strong>{a['n_top_pick_changed_without_corpus']} of {a['n_queries']} target
+choices changed.</strong> The {a['n_queries'] - a['n_top_pick_changed_without_corpus']}
+that did not &mdash; menin/MLL, KRAS, the CGRP receptor &mdash; are each target
+classes that already have an approved drug. Where the field has settled, the
+corpus agrees; where several targets are defensible, it is what decides between
+them. Citations fall either way.</p>
+<div class="box"><div class="h">The one that makes the case</div>
+<p class="wide" style="font-size:24px">Pulmonary fibrosis is
+<strong>{case['coverage_pct']}%</strong> of the corpus by title keyword &mdash;
+the thinnest field tested. Blanked, the run returned the textbook answer
+({', '.join(case['genes_blank'][:4])}). With the corpus it added
+<strong>{'/'.join(case['genes_live'][-2:])}</strong>, the FACT histone
+chaperone, out of a paper titled for its chromatin mechanism whose own findings
+show FACT inhibition reducing fibrotic markers in human IPF fibroblasts. No
+keyword index returns that paper for this question.</p></div>
+<div class="grow"></div>
+""", page="9 / 11")
+
+
+# ── 10. limitations ──────────────────────────────────────────────────────────
+def s10() -> str:
     """The honest coda, immediately before the ask.
 
     Deliberately NOT "the pipeline is only as strong as its literature
@@ -428,34 +473,32 @@ not to skip it.</p>
 <div class="rule"></div>
 <h2 style="font-size:44px;margin-top:0">And the corpus has a shape.</h2>
 <p class="wide" style="font-size:25px">{n(CORPUS['indexed'])} papers indexed
-from tier-1 and tier-2 journals, {n(CORPUS['curated'])} of them curated into
-structured fingerprints &mdash; quantitative findings, interactions, and a
-source span for every claim &mdash; then embedded for retrieval. It spans
-molecular and cell biology, and it leans:</p>
+from tier-1 and tier-2 journals; {n(CORPUS['curated'])} curated into structured
+fingerprints, a source span on every claim, then embedded for retrieval. It
+spans molecular and cell biology, and it leans:</p>
 <div style="display:flex;gap:34px;align-items:flex-start;margin-top:10px">
   <table style="margin-top:14px;flex:1">{rows}
     <tr><td><em>{pain[0]}</em></td><td class="n"><em>{pain[2]:.0f}%</em></td></tr>
   </table>
-  <p class="wide" style="flex:1.25;font-size:24px;margin-top:22px">
-  Approximate shares of the curated set, by title. So the coverage here was real
-  but thin &mdash; and the run leaned on it anyway:
-  <strong>{verified} of the {checked} papers</strong> its three reasoning stages
-  cited are in the corpus, with fingerprints. The {checked - verified} that was
-  not is named in the run record
-  (<span style="font-family:var(--mono);font-size:20px">{unfound[0]}</span>) and
-  is malformed &mdash; the citation check caught it.</p>
+  <p class="wide" style="flex:1.2;font-size:23px;margin-top:20px">
+  Shares of the curated set <em>by title</em> &mdash; which understates reach:
+  the fibrosis result opposite came out of a paper whose title is pure
+  chromatin. Coverage here was thin and the run leaned on it anyway.
+  <strong>{verified} of the {checked} papers</strong> its reasoning stages cited
+  are in the corpus, with fingerprints; the {checked - verified} that is not is
+  malformed, and the citation check flagged it.</p>
 </div>
 <div class="box" style="margin-top:22px"><div class="h">Which is the fixable part</div>
-<p class="wide" style="font-size:25px">The corpus is built by a config-driven
-fetcher: swap the keyword sets, point it at your own field, rebuild the index.
-Every stage downstream carries on unchanged &mdash; structure selection, the
-trim, calibration and the gates read no papers at all.</p></div>
+<p class="wide" style="font-size:24px">Config-driven fetcher: swap the keyword
+sets, point it at your own field, rebuild the index. What that changes is target
+discovery and prior art &mdash; structure selection, the trim, calibration and
+the gates read no papers at all.</p></div>
 <div class="grow"></div>
-""", page="9 / 10")
+""", page="10 / 11")
 
 
-# ── 10. terms ────────────────────────────────────────────────────────────────
-def s10() -> str:
+# ── 11. terms ────────────────────────────────────────────────────────────────
+def s11() -> str:
     return slide(f"""
 <div class="eyebrow">Little Protein Tiger</div>
 <h1>Free for any non&#8209;commercial use.</h1>
@@ -478,14 +521,14 @@ the run that produced it.</p>
 <p class="wide" style="font-family:var(--mono);font-size:31px;color:#63b98c;
    margin-top:22px">{SITE}</p>
 <div class="grow"></div>
-""", dark=True, page="10 / 10")
+""", dark=True, page="11 / 11")
 
 
 def main() -> int:
     if CHROME is None:
         raise SystemExit("no Chrome/Chromium on PATH — needed for print-to-PDF")
 
-    slides = [s1(), s2(), s3(), s4(), s5(), s6(), s7(), s8(), s9(), s10()]
+    slides = [s1(), s2(), s3(), s4(), s5(), s6(), s7(), s8(), s9(), s10(), s11()]
     html = (f'<meta charset="utf-8"><title>Little Protein Tiger</title>'
             f'<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
             f'family=Newsreader:opsz,wght@6..72,400;6..72,500&'
