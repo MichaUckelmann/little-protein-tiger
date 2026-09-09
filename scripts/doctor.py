@@ -170,11 +170,28 @@ def _key_state(name: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _curation_provider() -> str:
+    """Which provider curation is CONFIGURED to use, not which one it once used.
+
+    This was hardcoded as "claude", and told every reader of `doctor.py` that
+    extending the corpus needs an Anthropic key. `curation.provider` has since
+    moved to gemini, so the advice was backwards for exactly the person most
+    likely to follow it — someone setting up for the first time and deciding
+    which keys to pay for.
+    """
+    import yaml
+    try:
+        cfg = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8")) or {}
+        return str((cfg.get("curation") or {}).get("provider") or "").lower()
+    except (OSError, yaml.YAMLError):
+        return ""
+
+
 def check_api_keys(rep: Report) -> None:
-    # Gemini is the default provider for every pipeline stage AND for
-    # `scripts/ask_corpus.py`. It is not the default for CURATION —
-    # `curation.provider` in config.yaml is still "claude" — so extending the
-    # corpus needs an Anthropic key even though querying it does not.
+    # Gemini is the default provider for every pipeline stage, for
+    # `scripts/ask_corpus.py`, and (since it moved off claude) for CURATION too.
+    # Read the config rather than restating it — see `_curation_provider`.
+    curation = _curation_provider()
     gem, gem_why = _key_state("GEMINI_API_KEY")
     ant, ant_why = _key_state("ANTHROPIC_API_KEY")
     rep.add("GEMINI_API_KEY", OK if gem else FAIL,
@@ -187,12 +204,21 @@ def check_api_keys(rep: Report) -> None:
                               "and as the refusal fallback",
             "" if ant else "Optional here. Add ANTHROPIC_API_KEY to .env to enable it.",
             tracks=("ppi", "binder"))
-    # Literature track: required, not optional.
+    # Literature track. Whether an Anthropic key is actually needed depends on
+    # what curation is configured to use, so say which and why.
+    if curation == "claude":
+        detail = (f"{ant_why} — needed to EXTEND the corpus")
+        hint = ("Optional for querying (ask_corpus.py defaults to gemini). "
+                "Needed to curate new papers: curation.provider in config.yaml "
+                "is 'claude'.")
+    else:
+        detail = (f"{ant_why} — not needed: curation runs on "
+                  f"{curation or 'the configured provider'}")
+        hint = (f"Optional. Querying and curation both run on "
+                f"{curation or 'the configured provider'}; an Anthropic key only "
+                f"adds --provider claude and the refusal fallback.")
     rep.add("ANTHROPIC_API_KEY", OK if ant else WARN,
-            "set" if ant else f"{ant_why} — needed to EXTEND the corpus",
-            "" if ant else "Optional for querying (ask_corpus.py defaults to "
-                           "gemini). Needed to curate new papers: "
-                           "curation.provider in config.yaml is 'claude'.",
+            "set" if ant else detail, "" if ant else hint,
             tracks=("literature",))
     email, email_why = _key_state("NCBI_EMAIL")
     rep.add("NCBI_EMAIL", OK if email else WARN,

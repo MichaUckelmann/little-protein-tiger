@@ -158,7 +158,13 @@ def install(archive: Path, force: bool) -> int:
                 if not str(target).startswith(str(_ROOT.resolve())):
                     print(f"  refusing unsafe archive member: {member.name}")
                     return 1
-            tf.extractall(_ROOT)
+            # filter="data" explicitly: Python 3.14 turns this on by default
+            # and warns loudly until then, and `pyproject.toml` already allows
+            # 3.14. It rejects absolute paths, links escaping the tree and
+            # special files — which is what the loop above checks for by hand,
+            # so making it explicit costs nothing and silences a warning a new
+            # user would otherwise hit on their very first command.
+            tf.extractall(_ROOT, filter="data")
 
             manifest = _ROOT / "MANIFEST.json"
             if manifest.is_file():
