@@ -1127,20 +1127,29 @@ def test_doctor_points_at_the_download_not_a_rebuild():
 # Release blocker: the corpus must be published before going public
 # ----------------------------------------------------------------------
 
-def test_the_release_blocker_is_documented_where_it_cannot_be_missed():
-    """Every setup path tells users to run fetch_corpus.py. Until a release
-    asset exists that command finds nothing, so the blocker must be visible in
-    the README's first screen — not only in a checklist file."""
+def test_the_readmes_first_screen_says_where_the_corpus_comes_from():
+    """`data/` is gitignored, so a clone has no corpus and every corpus tool
+    fails until `fetch_corpus.py` runs. A reader must learn that from the
+    README's opening, not by hitting the failure.
+
+    This test used to pin a "not yet released" banner to the first 800
+    characters, on the premise that the command found nothing until a release
+    asset existed. The asset exists now (v0.1.0), so the banner went; what
+    still has to be true is that the opening names the fetch step and points
+    at the release state somewhere.
+    """
     root = _repo_root()
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    head = readme[:2000]
+    assert "fetch_corpus.py" in head, (
+        "the README's opening must tell a reader how to get the corpus")
+    assert "RELEASE_CHECKLIST.md" in readme, (
+        "release state must be discoverable from the README")
 
     checklist = root / "RELEASE_CHECKLIST.md"
     assert checklist.is_file(), "RELEASE_CHECKLIST.md must exist while unreleased"
     body = checklist.read_text(encoding="utf-8")
     assert "package_corpus.py" in body and "fetch_corpus.py" in body
-
-    readme_head = (root / "README.md").read_text(encoding="utf-8")[:800]
-    assert "RELEASE_CHECKLIST.md" in readme_head, (
-        "the blocker must appear in the README's first screen")
 
 
 def test_the_asset_name_the_fetcher_looks_for_matches_what_packaging_writes():

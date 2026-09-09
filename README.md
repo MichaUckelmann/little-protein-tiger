@@ -1,125 +1,107 @@
-> ### ⚠️ Not yet public-ready
->
-> **The literature corpus has not been packaged and released yet.**
-> `scripts/fetch_corpus.py` — which the setup docs tell users to run — will
-> find nothing until it is. See **[RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)**
-> before flipping this repository to public.
-
 # Little Protein Tiger
 
-An end-to-end pipeline for PPI drug target discovery. Covers automated paper discovery, Claude-powered structured extraction, a vector database for semantic search, and a suite of AI expert skills for pathway analysis, structural interface analysis, and binder design. Skills run either inside Claude Desktop (via MCP) or from the CLI using the Claude or Gemini API directly.
+**Point it at a disease and it comes back with designed protein binders — or
+point it at a target you already have and skip to the design.** LPT reads the
+literature, picks a target and a structure, chooses the epitope, generates and
+folds candidate binders on a GPU, and gates them on measured geometry rather
+than model confidence alone.
 
-**Current corpus state:** ~57,900 papers indexed · ~14,700 downloaded · ~14,500 curated fingerprints. The published archive (`scripts/fetch_corpus.py`) ships the curated fingerprints and the index; source documents are excluded.
+It is two pipelines sharing one corpus: a literature ETL (search → download →
+LLM extraction → vector index + interaction graph) and a 16-stage resumable
+design orchestrator. Skills run from the CLI against the Gemini or Claude API,
+or conversationally inside Claude Desktop / Claude Code over MCP.
+
+**Corpus:** ~57,900 papers indexed · ~14,700 downloaded · **14,517 curated
+fingerprints**, shipped prebuilt with the vector index and interaction graph.
+
+> **Beta.** The corpus archive is published as
+> [v0.1.0](../../releases/tag/v0.1.0); `python scripts/fetch_corpus.py`
+> installs it. Remaining release state is tracked in
+> [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
+
+## What it produces
+
+A completed campaign leaves a self-contained `report.html` — site rationale in
+the model's own words, confidence distributions, the filter funnel, and an
+embedded Mol* viewer over the top designs' *actual* refolded structures, plus
+an appendix with every stage report in full. Alongside it:
+
+```
+projects/<name>/runs/round-1/
+  00_pathway.md  01_literature.md  02_structure.md   why this target, this structure, this epitope
+  binder/2*.md                                        trim, spec, calibration verdict, scoring
+  binder/scoring/{ranked.csv,top_k.fasta}             the designs themselves
+  binder/report.html                                  ← open this
+```
+
+Real numbers from a real unattended run (`projects/mesothelioma_showcase`): the
+one-sentence prompt *"Design cancer therapeutics to target key nodes in
+mesothelioma."* → YAP1/TEAD1 on 3KYS → 317 gated survivors of 1,352 refolds,
+best ipTM 0.937 / dock-RMSD 0.63 Å, for **$0.79 of API spend** and ~22 GPU-h.
+
+Three illustrated walkthroughs built from runs in this repository —
+a PD-L1 binder campaign, a corpus-explorer session, and the PPI discovery
+track — are in **[docs/showcase/](docs/showcase/)**. Open the `.html` files
+directly.
+
+## Start here
+
+| If you are… | Go to |
+|---|---|
+| **new, or beta testing** | **[docs/beta-testing.md](docs/beta-testing.md)** — clean machine to first design run and first literature query, with prompts to try and what each costs |
+| **using a coding agent to set up** | **[SETUP_AGENT.md](SETUP_AGENT.md)** — paste it into Claude Code; it interviews you, installs only what you need, verifies each step |
+| **just curious it works** | `python scripts/quickstart.py` — ~8 s, no API key, no GPU, no corpus |
+| **without a GPU** | Add `--stop-after spec`: both tracks' full reasoning path — target resolution, structure choice, epitope selection, trimming, spec generation — on an API key alone |
+| **on a Claude subscription** | Register the MCP servers and use the corpus conversationally, no API key — **[docs/mcp.md](docs/mcp.md)** |
+| **stuck** | `python scripts/doctor.py` — readiness per track, and the command that fixes each problem |
+
+## Contents
+
+- [Requirements](#requirements) · [Configuration](#configuration)
+- [Pipeline overview](#pipeline-overview) — the two tracks and what each stage does
+- [Usage](#usage) — [fetch](#1-fetch-papers) · [curate](#2-curate-papers) · [ingest](#3-ingest-vectors) · [ask the corpus](#4-ask-the-corpus-a-question) · [run a skill](#5-run-expert-skills-from-the-cli) · [corpus explorer](#6-corpus-explorer-conversational) · [PPI pipeline](#7-run-the-binder-design-pipeline-end-to-end) · [from a target name](#7b-run-the-binder-pipeline-from-a-target-name) · [on a cluster](#7c-scale-a-campaign-onto-a-slurm-cluster) · [PyMOL](#8-visualise-top-k-designs-in-pymol)
+- [Inspecting the database](#inspecting-the-database) · [MCP](#use-it-from-claude-desktop--claude-code) · [Project structure](#project-structure)
+- [Migrating to a new machine](#migrating-to-a-new-machine) · [Journal filtering](#journal-filtering--read-this-before-building-a-corpus)
+- [Responsible use](#responsible-use) · [Licence](#licence-and-third-party-tools) · [Further reading](#further-reading)
 
 ---
-
-
-> **New here / beta testing?** **[docs/beta-testing.md](docs/beta-testing.md)**
-> is the step-by-step path from a clean machine to your first design run and
-> your first literature query, with the prompts to try and what each one costs.
->
-> **Setting up with a coding agent?** Paste
-> **[SETUP_AGENT.md](SETUP_AGENT.md)** into Claude Code from a fresh clone and
-> it will interview you, install only the tracks you need, and verify each step.
->
-> **No GPU?** You can still run both design tracks' entire reasoning path —
-> target resolution, structure choice, epitope selection, trimming, spec
-> generation — with an API key alone. Add `--stop-after spec`, which halts
-> immediately before the first GPU stage.
->
-> **Just want to see it work?** `python scripts/quickstart.py` — about 7
-> seconds, plus a one-off ~1 MB structure download on the first run. No API
-> key, no GPU, no corpus.
->
-> **Want the literature corpus?** `python scripts/fetch_corpus.py` — ~106 MB,
-> free, about a minute. 14,517 curated papers, ready to search. You only pay
-> if you later extend it with your own search terms.
->
-> **Want to see what it produces first?** Three illustrated walkthroughs built
-> from real runs in this repository — a complete PD-L1 binder campaign, a
-> corpus-explorer session, and the PPI discovery track — live in
-> **[docs/showcase/](docs/showcase/)**. Open the `.html` files directly; they are
-> self-contained.
->
-> **Something not working?** `python scripts/doctor.py` reports readiness per
-> track and prints the command that fixes each problem.
->
-> **Have a Claude subscription?** Register the MCP servers and use the corpus
-> and structure tools conversationally, no API key — see
-> **[docs/mcp.md](docs/mcp.md)**.
 
 ## Requirements
 
-- Python 3.12–3.14 (`pyproject.toml` pins `>=3.12,<3.15`)
-- Virtual environment (`.venv` recommended)
+Python **3.12–3.14** (`pyproject.toml` pins `>=3.12,<3.15`). No compiler, no
+conda, no system packages — every base dependency ships prebuilt wheels.
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-source .venv/bin/activate     # Linux/macOS
+python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
 
-pip install -e ".[dev]"           # core + test tooling
-pip install -e ".[corpus,dev]"    # ALSO the corpus track (~3 GB: torch,
+pip install -e ".[dev]"           # base: structure + design tracks
+pip install -e ".[corpus,dev]"    # ALSO the literature track (~3 GB: torch,
                                   # lancedb, sentence-transformers)
 
-# Required by the ppi and binder tracks — without it, stage 0 dies
-# immediately with a bare FileNotFoundError. ~52 MB, public, no key.
-python scripts/fetch_reference_data.py
+cp .env.example .env              # then add your keys
+python scripts/fetch_reference_data.py    # ~52 MB, public, no key — required
+                                          # before any ppi/binder run
+python scripts/doctor.py                  # what this machine can run
 ```
 
-The `corpus` extra is what `search_corpus`, `ingest_vectors.py` and
-`ask_corpus.py` need; install it if you want the literature track, skip it if
-you only want structure/design work.
+Or `./scripts/setup.sh` (`--with-corpus` also installs the extra and fetches
+the corpus archive; `--check` re-runs the readiness report only) to do all of
+it in one step.
 
-Or run `scripts/setup.sh` to do all of the above in one step
-(`--with-corpus` adds the corpus extra and fetches the pre-built archive) —
-see [Bootstrap script](#bootstrap-script) below.
+**`GEMINI_API_KEY` is the only key you need** — it is the default provider for
+every pipeline stage, for curation, and for `ask_corpus.py`.
+`ANTHROPIC_API_KEY` is optional: `--provider claude`, and the automatic
+fallback when a safety classifier declines a stage. `.env.example` documents
+every other variable — NCBI and Semantic Scholar rate limits, the
+corporate-proxy CA settings, and the tool paths (`LPT_FOUNDRY_ROOT`,
+`LPT_FOUNDRY_CKPT_DIR`, `LPT_BOLTZGEN_EXECUTABLE`, `LPT_PYROSETTA_PYTHON`,
+`LPT_CLUSTER_PIPELINE_ROOT`, `LPT_CLUSTER_PROTENIX_REPO`,
+`LPT_CLUSTER_SUBMIT_INSTRUCTIONS`).
 
-Copy `.env.example` to `.env` and fill in your API keys:
-
-```bash
-cp .env.example .env
-```
-
-`.env` keys:
-| Key | Required for |
-|-----|---|
-| `GEMINI_API_KEY` | **The default provider for every pipeline stage** |
-| `ANTHROPIC_API_KEY` | Curation (`curation.provider` is `claude`), `--provider claude`, and the refusal fallback |
-| `NCBI_EMAIL` | Polite crawling (NCBI rate limits) |
-| `NCBI_API_KEY` | Higher NCBI rate limit (optional) |
-| `S2_API_KEY` | Higher Semantic Scholar rate limit (optional) |
-| `LPT_CA_BUNDLE` | CA bundle path, if a TLS-inspecting proxy breaks downloads |
-| `LPT_SSL_RELAX_STRICT` | `1` to clear one X.509 flag on Python 3.13+ behind such a proxy — keeps trust-chain, hostname and expiry checks |
-
-Tool paths (`LPT_FOUNDRY_ROOT`, `LPT_BOLTZGEN_EXECUTABLE`,
-`LPT_PYROSETTA_PYTHON`, `LPT_CLUSTER_PIPELINE_ROOT`) live in `.env` too — see
-`.env.example`, which documents every one.
-
----
-
-## Bootstrap script
-
-`scripts/setup.sh` automates the manual steps above for a fresh checkout, in
-this order: creates `.venv` if it doesn't exist, installs the project with dev
-extras (`pip install -e ".[dev]"`), copies `.env.example` to `.env` (without
-overwriting an existing one), fetches the reference data the ppi and binder
-tracks require, optionally fetches the pre-built corpus, refreshes the RCSB
-PDB metadata cache (a no-op on a fresh checkout, which has no fingerprints to
-derive PDB ids from — it says so rather than reporting success), and finally
-runs `scripts/doctor.py`, which probes each external GPU tool by running it
-rather than path-testing a config value.
-
-```bash
-./scripts/setup.sh                 # core tracks
-./scripts/setup.sh --with-corpus   # also install and fetch the corpus
-./scripts/setup.sh --check         # re-run the readiness report only
-```
-
-It's optional — everything it does is also documented step-by-step in this
-README — but it's the fastest way to get a new checkout usable. GPU tools
-still need manual installation per their own setup docs; the script only
-reports what it finds, it never fails because one is missing.
+**[docs/beta-testing.md](docs/beta-testing.md)** walks all of this
+step-by-step, including what to do when a step fails.
+**[docs/environment_setup.md](docs/environment_setup.md)** covers the external
+GPU tools and their licences.
 
 ---
 
@@ -144,7 +126,7 @@ quality:
   min_score_to_download: 0.0
 
 curation:
-  provider: "claude"           # "claude" | "gemini" | "local"
+  provider: "gemini"           # "claude" | "gemini" | "local"
   model: "claude-haiku-4-5"
 
 rate_limits:
@@ -169,7 +151,7 @@ biochemistry database, queryable by skills and humans:
 ```
 fetch_papers.py          Search + download XMLs/PDFs → literature.db
       ↓
-curate_papers.py         Claude extracts structured fingerprint JSONs
+curate_papers.py         the curator extracts structured fingerprint JSONs
       ↓
 ingest_vectors.py        Embed fingerprints into LanceDB vector store
       ↓
@@ -200,7 +182,7 @@ PipelineRunner.run(query="Design therapeutics for ...")
       trim → binder_spec → pilot → calibration → production
            → binder_scoring → binder_summary       (RFD3 → solubleMPNN → RF3)
   Requires `--project`: these are multi-day GPU campaigns and the manifest
-  is what makes them resumable. See "Two design workflows" below.
+  is what makes them resumable. See **[Usage](#usage)** below.
 
   boltzgen (`--design-engine boltzgen`; also selected automatically by
   `--modality cyclic_peptide`, which RFD3 cannot build):
@@ -212,32 +194,21 @@ PipelineRunner.run(query="Design therapeutics for ...")
   stage 6  design-analyst             → final candidate review + FASTA
 ```
 
-Stage 0 has two modes (`design.pathway.mode` in `config.yaml` or
-`--pathway-mode` CLI flag): `standard` runs `pathway-expert` (tier-ranked
-on validated drug targets — VT3989-style precedent) and `wildcard` runs
-`wildcard-expert` (graph-driven novelty triage using `interaction_hubs`,
-`novelty_signal`, and DepMap `get_genetic_codependency` / `find_cocorrelated_genes`
-to surface mechanistically connected but literature-under-explored
-candidates). Wildcard Phase 2.5 runs codep against the **top-3 hubs**
-rather than a single anchor (catches candidates that sit outside the
-named driver's module) and a per-candidate **candidate-edge DepMap
-sweep** for the top-2 picks — `find_cocorrelated_genes(candidate)`
-cross-referenced against `get_interactions_for(candidate)` — to surface
-the highest-yield finding: a novel pick strongly codependent (r ≥ 0.4)
-with a corpus hub the literature has not yet linked it to. The wildcard
-branch supports both disease-anchored and basic-biology contexts and
-emits forward-compatible `predicted_consequence` / `falsifying_readout`
-fields on each candidate so a future probe-mode design-analyst can use
-the designed binder as a research probe, not just a therapeutic.
+Stage 0 has two modes (`--pathway-mode`, or `design.pathway.mode` in
+`config.yaml`): `standard` runs `pathway-expert`, which ranks validated
+drug targets with clinical precedent; `wildcard` runs `wildcard-expert`,
+which triages on graph novelty and DepMap co-essentiality instead and
+deliberately favours targets the literature has not converged on. Use
+wildcard when you want a candidate nobody is already working on.
 
-Stages 0–3 and 6 are LLM-driven (skills); stages 4 and 5 are deterministic
-Python. The orchestrator handles `auth_seq_id ↔ label_seq_id` numbering,
-chain identity (resolved deterministically from the mmCIF in stage 2; no
-upstream skill emits chain letters), PDB-identity sanity checks (catches
-paper-level protein/PDB conflations in the corpus), modality reconciliation
-between mol-bio and structure stages, and BoltzGen's output renumbering
-quirks. See `src/pipeline_runner.py` for the full state machine and
-`diary.md` for the design notes and known failure modes.
+Stages 0-3 and 6 are LLM-driven skills; 4 and 5 are deterministic Python.
+The orchestrator owns everything that must not be left to a model:
+`auth_seq_id` / `label_seq_id` numbering, chain identity resolved from the
+mmCIF rather than emitted by a skill, PDB-identity sanity checks, modality
+reconciliation, and BoltzGen's output renumbering. `src/pipeline_runner.py`
+is the state machine; [CLAUDE.md](CLAUDE.md) documents the wildcard triage
+internals and every guard, with the incident each one was added after.
+
 
 End-to-end driver: `scripts/run_pipeline.py --workflow ppi --query "..."
 --project runname`. (`scripts/test_e2e.py` wraps the same runner with
@@ -325,16 +296,22 @@ python scripts/ingest_vectors.py
 python scripts/ingest_vectors.py --rebuild
 ```
 
-### 4. Interactive corpus search
+### 4. Ask the corpus a question
 
-Query the corpus in a conversational loop using Claude + semantic search.
+A conversational loop on **gemini-3.7-flash**, with the full corpus toolset —
+semantic search, the interaction graph, DepMap co-essentiality, clusters,
+quantitative evidence — so "what interacts with SPT16, and at what affinity?"
+comes back as a sourced table with DOIs.
 
 ```bash
-python scripts/ask_corpus.py
-
-# Options
+python scripts/ask_corpus.py "How does FACT reposition the H2A-H2B dimer?"
+python scripts/ask_corpus.py                          # start empty, then prompt
 python scripts/ask_corpus.py --provider claude --top-k 10
 ```
+
+The corpus is weighted to chromatin, histone chaperones and structural
+biology. A thin answer outside that is the corpus's coverage, not the field's —
+`docs/beta-testing.md` lists what it answers well and what it does not.
 
 ### 5. Run expert skills from the CLI
 
@@ -438,7 +415,7 @@ Beyond `search_corpus` and `get_fingerprint`, it has access to a set of corpus-a
 - **`interaction_hubs(top_n, min_mentions)`** — highest-degree nodes after filtering single-paper edges. Caveat surfaced in every response: hub rank reflects literature attention, not biological importance.
 - **`export_subgraph(seeds, output_path, depth)`** — writes a Cytoscape.js JSON neighbourhood (`.cyjs`) to disk for visual exploration. Each seed expands to all matching nodes (seed `'TEAD'` pulls in TEAD1/2/3/4). The graph goes to disk, not into the conversation.
 
-The graph tools are gated to `corpus-explorer` and `pathway-expert` only; design and structure-analysis skills don't see them. All five tools live in `src/_corpus_graph.py`.
+The graph tools are gated to the four skills that reason over the corpus — `corpus-explorer`, `pathway-expert`, `molecular-biology-expert`, `wildcard-expert` (`skill_runner._GRAPH_TOOL_SKILLS`); design and structure-analysis skills do not see them. All five tools live in `src/_corpus_graph.py`.
 
 **One-shot usage:**
 
@@ -685,100 +662,39 @@ Only three stages call an LLM. Everything else is deterministic Python, which is
 why a full run costs cents rather than dollars.
 
 **Calibration, not guesswork.** A production campaign is a multi-day, ~100 GB
-commitment. The calibration stage refolds ~300 backbones × 4 sequences, measures
-how many designs clear the success bar, and extrapolates with a Wilson interval
-(a rule-of-three bound when there are no hits). It reports the required scale as a
-*range* and sizes cost against the pessimistic end. Backbones, not refolds, are the
-sampling unit — the sequences sharing one RFD3 backbone are correlated.
+commitment, so the pipeline never scales straight to it: a ~300-backbone trial
+*measures* the rate of designs clearing the bar, then extrapolates with a Wilson
+interval and reports a SCALE_UP / SCALE_UP_PARTIAL / ITERATE / STOP verdict.
+That verdict is always a pause point.
 
-Campaigns are **sized on iPTM and ranked on ipSAE**. Per 1000 backbones the
-reference campaigns produced 13.2 / 2.0 designs at `iPTM > 0.7` versus 2.5 / 0.1
-at `ipsae_min > 0.5`; the latter is too rare for a trial-sized sample to measure,
-so every verdict would be "enlarge the sample". Both are computed on every design
-and `ipsae_min` carries the heaviest ranking weight. The geometric gates are never
-optional — of designs with `iPTM > 0.7`, only 45 % (8TAC) and 8 % (CD79b) are
-actually docked on target.
+```bash
+# Compare candidate epitopes instead of arguing about them — one trial each,
+# winner picked on measured yield.
+python scripts/run_pipeline.py --workflow binder --target CD79B \
+  --project cd79b --trial-sites 3 --stop-after trial
 
-A 300-backbone trial is often too small: at the 8TAC rate it gave a usable rate
-estimate in 0/10 random seeds, and 1000 backbones in 8/10. `--escalate-to 1000`
-(on by default) re-runs a trial that came back unmeasurable.
+# A cheap smoke test: 8 designs, ~4 minutes of GPU.
+python scripts/run_pipeline.py --workflow binder --target KRAS \
+  --project kras_smoke --trial-backbones 8 --stop-after trial
+```
 
-**Adaptive bar.** `design.binder_ranking.adaptive_bar` (on by default) raises the
-sizing bar for a target that turns out unusually good, instead of sizing every
-campaign to the same fixed default. It walks the same bar ladder `suggested_bar`
-is drawn from — strictest first — and takes the strictest rung that both has
-enough hits for a real Wilson estimate and still fits the budget at its
-pessimistic bound; on real KRAS/RAF1 data it raised the iptm bar from 0.7 to
-0.85 while staying comfortably SCALE_UP. It only ever raises the bar, never
-lowers it below what was requested, and it reuses the same interval math the
-base bar is already sized with rather than a hand-tuned multiplier table.
+**Budget.** `--budget 5.00` is a hard cap on API spend, cumulative across
+rounds; a stage whose projected cost would breach it pauses with a resumable
+checkpoint rather than overrunning. GPU-hours and disk are governed separately
+(`design.foundry.max_local_hours`, `disk_budget_gb`).
 
-**Comparing epitopes.** `--trial-sites N` runs a separate trial per candidate site
-the target-intel stage proposes and picks the winner on measured yield rather than
-argument — reasoning cannot settle which of two defensible epitopes is more
-designable, but a few hundred backbones can.
+**Reports.** Every trial and every scored campaign writes a self-contained
+illustrated `report.html` — site rationale, confidence distributions, an
+embedded Mol* viewer over the top designs' actual refolds, and an appendix
+carrying every stage report in full. No LLM, no GPU; regenerate any time with
+`scripts/generate_binder_report.py`.
 
-**Membrane proteins.** Topology comes from UniProt and is mapped into the
-structure's author numbering. Design defaults to the extracellular side, and
-transmembrane residues are excluded whichever side you pick: in an isolated
-structure a TM helix is an exposed hydrophobic slab that preferentially attracts
-binders which cannot work in a cell, where that surface is buried in lipid.
-
-**Rosetta.** `design.binder_ranking.rosetta` scores gate survivors only (capped at
-300) and contributes to the final composite, never to the gate — Rosetta cannot
-tell a real complex from a confidently wrong one, so a mis-docked binder still
-returns a well-defined, meaningless ddG.
-
-**Refusals.** The interface (and sometimes target_intel) stage is routinely
-declined by Claude's safety classifier with category `bio` — this is exactly why
-`--provider`/`--model` defaults to **gemini** (`gemini-3.7-flash`) for every
-pipeline stage now, not claude. `models.claude.refusal_fallbacks` is a chain and
-crosses providers on the FIRST refusal — Gemini goes first, not another Claude
-model: measured across three separate refusals on one target, `claude-opus-5`
-refused right after `claude-sonnet-5` every single time (same category), which
-is pure wasted spend, not a second chance. `models.gemini.refusal_fallbacks`
-covers the (rarer) case Gemini itself declines, falling through to Claude.
-
-**Correctness guards.** Two checks run after every interface-stage call, since
-a wrong answer here wastes days of GPU time downstream, not just tokens:
-`_verify_hotspot_grounding` confirms each hotspot's stated residue actually
-exists at that position in the real structure (catches literature/textbook
-numbering reported for the wrong deposited structure); `_verify_target_chain_assignment`
-confirms `target_chain` is genuinely the target protein by aligning its modelled
-sequence against UniProt, not the partner (catches a target/partner swap, which
-grounding cannot — the residues are real, just on the wrong molecule). Both were
-written after live trials hit each failure mode for real.
-
-**Scoring.** Ported from the reference campaign scorers and validated **row-for-row
-against two complete campaigns** (CD79b: 28,420 refolds; 8TAC: 32,000 — zero
-differences across 25 columns), plus a fresh ipSAE implementation checked against
-[DunbrackLab/IPSAE](https://github.com/DunbrackLab/IPSAE). Note that RF3 templating
-cannot convey a docked pose, so iPTM and ipSAE are confidence in *whatever*
-interface the model chose: `binder_rmsd_dock` and `epitope_recall` are what
-actually separate on-target designs.
-
-**Reports.** Every trial and every scored campaign gets an illustrated,
-self-contained `report.html` — structure/site selection rationale, hotspot
-rationale, confidence-metric charts, and an interactive [Mol*](https://molstar.org)
-viewer over the top-ranked designs' actual refolded structures, so a human can
-visually confirm a design landed on the intended epitope rather than trusting
-ipTM alone. It is generated automatically as a side effect (never a gate — a
-report bug cannot fail a campaign) and can be regenerated any time with
-`scripts/generate_binder_report.py --project <slug> --round round-1 [--site <id>]`.
-No LLM and no GPU: it reads the same structured files the pipeline already
-writes and renders the target-intel/interface stages' own markdown prose
-verbatim for the narrative sections, rather than inventing new copy.
-
-**Budget.** `--budget 5.00` is a hard cap on API spend, cumulative across rounds.
-A stage whose projected cost would exceed it pauses with a resumable checkpoint
-instead of starting. It governs API cost only — GPU time is limited separately by
-the disk budget in `design.foundry`.
-
-**Optional tools.** `design.trim.chainsaw_cmd` and `design.trim.foldseek_bin` improve
-domain segmentation and add a post-trim fold check. Both are optional: without them
-trimming falls back to RCSB CATH/SCOP2/ECOD annotations and a contact-graph
-partition. Foldseek is a structural *search* tool and cannot parse domains — it is
-not the domain parser here.
+> **Why these defaults are what they are** — the sizing metric, the adaptive
+> bar, the geometric gates, membrane-topology handling, the chain-assignment
+> guards, safety-classifier refusal fallbacks, and the row-for-row scorer
+> validation are all documented with their measurements in
+> [CLAUDE.md](CLAUDE.md) ("Non-obvious facts the binder track depends on").
+> Read that before changing a threshold.
 
 ### 7c. Scale a campaign onto a SLURM cluster
 
@@ -840,31 +756,13 @@ python scripts/resume_cluster_calibration.py --project kras \
     --site raf1_rbd --n-batches 591 --n-gpus 6
 ```
 
-**Refold backend.** `design.cluster.refold_backend` defaults to `protenix`, which
-co-folds the target de novo from sequence — unlike RF3, it has no template
-support at all, so `design.cluster.use_msa: true` (also the default) is not an
-accuracy nice-to-have: an un-MSA'd target refolds ~11 Å wrong on the reference
-campaign (vs. RF3's 0.4 Å with a template), which lands straight in
-`binder_rmsd_bb`. The MSA itself is fetched locally and for free via a separate
-Protenix checkout's own hosted MMseqs2 search (`design.cluster.protenix_repo`,
-subprocessed like every other foreign-venv tool in this codebase — PyRosetta,
-BoltzGen, foundry) and cached forever by sequence hash, not searched on the
-cluster.
+> **Cluster mechanics worth knowing before you stage one** — the refold
+> backend and its MSA source, why `NB` is designs *per GPU array task* rather
+> than a campaign total (a misreading of which once undercounted a campaign by
+> 6x), the per-design output layout, and the GPU hardware faults that occur at
+> this scale and look like bugs: [CLAUDE.md](CLAUDE.md), "Non-obvious facts the
+> cluster compute path depends on".
 
-**`NB` is per GPU, not a total.** `design.cluster.n_gpus` × the sizing math's
-own batch count both matter: the cluster pipeline's own `n_batches` knob runs
-independently on every one of the `n_gpus` array tasks, so a campaign sized for
-2,000 backbones on 6 GPUs actually produces designs from all 6 × that count.
-`src/cluster_runner.plan_campaign` accounts for this; see CLAUDE.md's cluster
-section for the full story (this was wrong once, silently, against a real
-campaign).
-
-**Hardware faults are a real operational fact at this scale.** A single GPU
-array task or refold shard can die to a node-level CUDA ECC error uncorrelated
-with anything in the staged inputs. `scripts/campaign_status.py`-style progress
-checks won't distinguish "still running" from "one shard failed and the rest
-finished a day ago" — check the SLURM logs under the campaign's `logs/` for
-`CUDA error` when a run looks stalled.
 
 ### 8. Visualise top-K designs in PyMOL
 
@@ -911,80 +809,29 @@ Pre-made selections: `hotspots`, `binder_interface`, `target_chain`,
 
 ---
 
-## Database queries
+## Inspecting the database
 
-Quick inspection commands using Python's sqlite3:
+`data/literature.db` is plain SQLite if you want to look at corpus state
+directly — see **[docs/database.md](docs/database.md)** for ready-made
+queries. For "is my corpus healthy", `python scripts/doctor.py` answers
+that without any SQL.
 
-```python
-import sqlite3
-conn = sqlite3.connect('data/literature.db')
+## Use it from Claude Desktop / Claude Code
 
-# --- Status summary ---
-for r in conn.execute("SELECT download_status, COUNT(*) FROM papers GROUP BY download_status"):
-    print(r)
-
-for r in conn.execute("SELECT curation_status, COUNT(*) FROM papers GROUP BY curation_status"):
-    print(r)
-
-# --- Total counts ---
-conn.execute("SELECT COUNT(*) FROM papers").fetchone()
-conn.execute("SELECT COUNT(*) FROM papers WHERE download_status = 'downloaded'").fetchone()
-conn.execute("SELECT COUNT(*) FROM papers WHERE curation_status = 'completed'").fetchone()
-
-# --- Downloaded but not yet curated (ready to process) ---
-conn.execute("""
-    SELECT COUNT(*) FROM papers
-    WHERE download_status = 'downloaded' AND curation_status != 'completed'
-""").fetchone()
-
-# --- Papers by source ---
-for r in conn.execute("SELECT source, COUNT(*) FROM papers GROUP BY source"):
-    print(r)
-
-# --- Recent papers ---
-for r in conn.execute("""
-    SELECT title, journal, year, curation_status
-    FROM papers ORDER BY year DESC LIMIT 10
-"""):
-    print(r)
-
-# --- Browse fingerprints by keyword ---
-for r in conn.execute("""
-    SELECT title, fingerprint_path FROM papers
-    WHERE curation_status = 'completed' AND title LIKE '%SYS1%'
-"""):
-    print(r)
-
-# --- Curation failures ---
-for r in conn.execute("""
-    SELECT paper_key, curation_error FROM papers
-    WHERE curation_status = 'failed'
-"""):
-    print(r)
-```
-
-Or use the sqlite3 CLI directly:
+Two MCP servers expose **23 tools** — 15 over the corpus (semantic search,
+fingerprints, the interaction graph, clusters, DepMap co-essentiality, PDB
+discovery) and 8 structure calculations that need no corpus and no API key.
+Driven by your Claude subscription rather than an API key, this is the
+cheapest way to use LPT and often the better one for exploratory work.
 
 ```bash
-sqlite3 data/literature.db "SELECT curation_status, COUNT(*) FROM papers GROUP BY curation_status"
+python scripts/setup_mcp_json.py     # writes .mcp.json for this checkout
 ```
 
----
-
-## MCP server (Claude Desktop integration)
-
-The MCP servers expose 23 tools (15 literature-db + 8 structure-tools) — see **[docs/mcp.md](docs/mcp.md)** for the full list, setup and the subscription-driven workflow. The two used most often:
-
-| Tool | Description |
-|------|-------------|
-| `search_corpus` | Semantic search over curated fingerprints |
-| `get_fingerprint` | Retrieve full fingerprint JSON by DOI or paper key |
-
-The server is launched via `scripts/launch_mcp.py`, which auto-detects the venv and sets all data paths relative to the project root. Registration lives in `%APPDATA%\Claude\claude_desktop_config.json` (Windows), `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `~/.config/Claude/claude_desktop_config.json` (Linux). Restart Claude Desktop after any config change.
-
-To debug connection issues, check `data/mcp_server.log`. Known fix for sentence_transformers import hang on Windows: `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, and `TOKENIZERS_PARALLELISM=false` — these are set automatically by the launcher.
-
----
+Claude Code picks it up from the project root. Claude Desktop needs the
+printed block copied into its config and **a restart**. Full setup, the
+complete tool list, and troubleshooting:
+**[docs/mcp.md](docs/mcp.md)**.
 
 ## Project structure
 
@@ -1059,151 +906,42 @@ little_protein_tiger/
 
 ## Migrating to a new machine
 
-### What to transfer
+`data/` and `.mcp.json` are gitignored, so a fresh clone has neither the
+corpus nor its MCP registration. The short version: clone, install, run
+`python scripts/fetch_corpus.py`, run `python scripts/setup_mcp_json.py`,
+then `python scripts/doctor.py` to confirm.
 
-| Item | Size | Notes |
-|------|------|-------|
-| Git repo | small | `git clone` or copy |
-| `data/literature.db` | ~15 MB | full paper catalog |
-| `data/fingerprints/` | ~10 MB | curated JSON fingerprints |
-| `data/vectors/` | ~10 MB | LanceDB semantic index |
-| `data/pdfs/` | ~11 GB | only needed for re-curation |
-| `.env` | — | recreate manually (never committed) |
-
-If the new machine is **query/MCP use only**, skip `data/pdfs/` — the MCP server only needs the fingerprints and vectors.
-
-### Steps
-
-**1. Clone the repo and install dependencies**
-```bash
-git clone <repo> little_protein_tiger
-cd little_protein_tiger
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-source .venv/bin/activate     # Linux/macOS
-pip install -e ".[corpus,dev]"    # drop `corpus,` if you don't want the
-                                  # literature track
-python scripts/fetch_reference_data.py   # required by ppi/binder
-```
-
-**2. Copy data directories**
-
-Transfer `data/literature.db`, `data/fingerprints/`, and `data/vectors/` to the same paths on the new machine. Optionally add `data/pdfs/` if you want curation capability.
-
-**3. Recreate `.env`**
-
-Copy `.env.example` to `.env` and fill in your API keys. If you use the
-binder/design track, also fill in the `LPT_BOLTZGEN_EXECUTABLE` /
-`LPT_PYROSETTA_PYTHON` / `LPT_FOUNDRY_ROOT` / `LPT_CLUSTER_*` vars for
-wherever those tools live on the new machine — see
-[Environment setup](docs/environment_setup.md). `config.yaml` itself needs
-no path edits; it never carries machine-specific values.
-
-**4. Regenerate the MCP configs**
-
-`.mcp.json` holds absolute, machine-specific paths, so it is not tracked in
-git — a fresh clone has none. Generate one for this checkout:
-
-```bash
-python scripts/setup_mcp_json.py     # backs up any existing file to .mcp.json.bak
-```
-
-That writes both servers with the current venv's Python. The launchers
-(`scripts/launch_mcp.py`, `scripts/launch_structure_tools.py`) derive every
-data path from their own location; what is machine-specific is the absolute
-`command` and `args`, which is exactly what the generator fills in. To write
-it by hand instead:
-
-```json
-{
-  "mcpServers": {
-    "literature-db": {
-      "command": "/path/to/little_protein_tiger/.venv/Scripts/python.exe",
-      "args": ["/path/to/little_protein_tiger/scripts/launch_mcp.py"]
-    },
-    "structure-tools": {
-      "command": "/path/to/little_protein_tiger/.venv/Scripts/python.exe",
-      "args": ["/path/to/little_protein_tiger/scripts/launch_structure_tools.py"]
-    }
-  }
-}
-```
-
-In **`%APPDATA%\Claude\claude_desktop_config.json`** (Claude Desktop, Windows), **`~/Library/Application Support/Claude/claude_desktop_config.json`** (macOS) or **`~/.config/Claude/claude_desktop_config.json`** (Linux):
-```json
-"literature-db": {
-  "command": "/path/to/little_protein_tiger/.venv/Scripts/python.exe",
-  "args": ["/path/to/little_protein_tiger/scripts/launch_mcp.py"]
-},
-"structure-tools": {
-  "command": "/path/to/little_protein_tiger/.venv/Scripts/python.exe",
-  "args": ["/path/to/little_protein_tiger/scripts/launch_structure_tools.py"]
-}
-```
-
-Register both, or the 8 structure tools listed above are silently missing.
-
-> Use absolute paths for both `command` and `args`. Claude Desktop does not reliably honour `cwd` on Windows — relative paths resolve to `C:\Windows\System32`. Point `command` directly at the venv Python so the launcher's re-exec logic is a no-op.
-
-**5. Handle the embedding model cache**
-
-`scripts/launch_mcp.py` sets `HF_HUB_OFFLINE=1` itself (it is not in
-`.mcp.json`, so there is nothing there to edit), meaning the server needs
-`NeuML/pubmedbert-base-embeddings` already in the HuggingFace cache. Two
-options:
-- **Copy the cache**: transfer `~/.cache/huggingface/` from the old machine
-- **Warm it once**, which is what `doctor.py` recommends too:
-  ```bash
-  python -c "from sentence_transformers import SentenceTransformer as S; S('NeuML/pubmedbert-base-embeddings')"
-  ```
-
-**6. Verify**
-
-```bash
-python scripts/doctor.py --track literature
-```
-
-Restart Claude Desktop after updating its config.
-
----
-
-## Workflow after adding new search terms
-
-```bash
-# 1. Run the new searches
-python scripts/fetch_papers.py --config config_search_expansion.yaml
-
-# 2. Curate the new downloads
-python scripts/curate_papers.py --limit 100
-
-# 3. Refresh the vector index
-python scripts/ingest_vectors.py
-
-# 4. Restart Claude Desktop to pick up new fingerprints via MCP
-```
+Full walkthrough, including the GPU tools and what is safe to copy versus
+re-fetch: **[docs/migration.md](docs/migration.md)**.
 
 ## Journal filtering — read this before building a corpus
 
-**By default LPT downloads only papers from journals on a curated tier list.**
-On the shipped corpus that gate passes **32% of indexed papers** and blocks the
-other 68% — *PLoS One*, *bioRxiv*, *Scientific Reports* and *IJMS* are the
-largest exclusions. This is a deliberate quality judgement, and it shapes the
-corpus, the vector search, the interaction graph, and every target a discovery
-workflow proposes.
-
-The tier lists live in `src/ranking.py` (`_TIER1_JOURNALS`, `_TIER2_JOURNALS`)
-and reflect a **molecular / structural / chemical biology** focus. If your field
-sits elsewhere you will want to extend them via `quality.tier1_extra` /
-`tier2_extra`, or switch the gate off:
+`fetch_papers.py` only downloads papers from a tier-1/tier-2 journal list.
+Search indexes every hit; the gate decides what gets fetched and curated. A
+journal spelled a way the list does not contain is a **silent** 100%
+exclusion, not a warning — so if you are building your own corpus in a field
+this list was not written for, read
+**[docs/journal-filtering.md](docs/journal-filtering.md)** first. It has the
+measured pass rates, the full excluded list, and how to widen or disable the
+gate.
 
 ```yaml
 # config.yaml
 quality:
-  require_tiered_journal: false   # ~3.1x more downloads, matching cost + disk
+  require_tiered_journal: true    # the default
+  tier2_extra: []                 # add journals here rather than disabling
 ```
 
-**→ [docs/journal-filtering.md](docs/journal-filtering.md)** — the tier lists,
-what is excluded and why, the scoring ladder, known gaps, and how to extend it.
+### After adding new search terms
+
+```bash
+python scripts/fetch_papers.py --config config_my_topic.yaml   # 1. search + download
+python scripts/curate_papers.py --limit 200                    # 2. curate (self-runs 3-4)
+```
+
+Curation self-runs identifier normalisation, the graph rebuild and vector
+ingest, so `search_corpus` sees new papers with no further step. Restart
+Claude Desktop if you are using MCP.
 
 ## Responsible use
 
@@ -1232,7 +970,7 @@ redistribute keep their own licences, reproduced in
 
 | Tool | Needed for | Licence — check before commercial use |
 |---|---|---|
-| [RFdiffusion3 / solubleMPNN / RF3 (foundry)](https://github.com/RosettaCommons/foundry) | `--workflow binder`, and `--workflow ppi` by default | **BSD 3-Clause** (repository, verified 2026-08-27). Model weights install separately via `foundry install` — confirm their terms yourself |
+| [RFdiffusion3 / solubleMPNN / RF3 (foundry)](https://github.com/RosettaCommons/foundry) | `--workflow binder`, and `--workflow ppi` by default | **BSD 3-Clause** (repository, verified 2026-08-27). Model weights are a separate download through foundry's own checkpoint registry (`~/pip_rcfoundry_ckpt` by default; point LPT elsewhere with `LPT_FOUNDRY_CKPT_DIR`) — confirm their terms yourself |
 | [BoltzGen](https://github.com/HannesStark/boltzgen) | `--workflow ppi --design-engine boltzgen`; also `--modality cyclic_peptide` | **MIT** (repository, verified 2026-08-27). Model weights download separately — confirm their terms yourself |
 | PyRosetta (**optional**) | hotspot SASA, Rosetta composite terms — see below | **free for academic / non-commercial only**; commercial licence via `license@uw.edu` — see [docs/pyrosetta_setup.md](docs/pyrosetta_setup.md) |
 | Protenix | cluster refold backend (optional) | see upstream repository |
@@ -1270,3 +1008,22 @@ Python dependencies are MIT/BSD/Apache, with one to be aware of: **PyMuPDF is
 AGPL-3.0-or-later**. It is imported at runtime by `src/text_extractor.py` for
 PDF parsing and is not linked into anything distributed here, but if you
 redistribute a derivative that bundles it, read its terms.
+
+---
+
+## Further reading
+
+| Doc | For |
+|---|---|
+| **[docs/beta-testing.md](docs/beta-testing.md)** | Clean machine → first design run → first literature query. Start here. |
+| **[SETUP_AGENT.md](SETUP_AGENT.md)** | Setup script for a coding agent to execute |
+| [docs/environment_setup.md](docs/environment_setup.md) | Env vars, and the external GPU tools (foundry, BoltzGen, PyRosetta) |
+| [docs/mcp.md](docs/mcp.md) | Claude Desktop / Claude Code registration, the 23-tool menu |
+| [docs/migration.md](docs/migration.md) | Moving an install to another machine |
+| [docs/database.md](docs/database.md) | SQL for inspecting corpus state |
+| [docs/journal-filtering.md](docs/journal-filtering.md) | The tier gate — read before building your own corpus |
+| [docs/pyrosetta_setup.md](docs/pyrosetta_setup.md) | PyRosetta's Python-ABI trap, and its licence |
+| [docs/responsible-use.md](docs/responsible-use.md) | Scope and limits |
+| [docs/showcase/](docs/showcase/) | Illustrated walkthroughs of real runs |
+| [CLAUDE.md](CLAUDE.md) | Architecture, and every non-obvious fact with the measurement behind it. Read before changing a threshold. |
+| [diary.md](diary.md) | Development log — what was tried, what failed, why |
