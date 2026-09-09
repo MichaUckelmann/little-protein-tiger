@@ -62,9 +62,9 @@ W, H, FPS = 1080, 1350, 30
 #   HOLD       a completed section, the beat before the cut. This is the one
 #              that was too short; everything a viewer has to actually take in
 #              is on screen for the whole of it.
-TYPE_STEP, BUILD, HOLD = 3, 30, 72
-COUNTER = 12           # one tick of the hit-rate counter spinning up
-TURN_HOLD = 54         # the last turntable frame, held to read its caption
+TYPE_STEP, BUILD, HOLD = 4, 38, 90
+COUNTER = 15           # one tick of the hit-rate counter spinning up
+TURN_HOLD = 72         # the last turntable frame, held to read its caption
 WORKERS = 4
 SITE = "michauckelmann.github.io/little-protein-tiger"
 
@@ -219,18 +219,42 @@ def n(v: float, d: int = 0) -> str:
 
 
 # ── scenes ───────────────────────────────────────────────────────────────────
+def scene_title() -> list[tuple[str, int]]:
+    """The title card, and the video's thumbnail.
+
+    It names the gap rather than the parts: RFdiffusion-class backbone
+    generation is commoditised, and what is actually unsolved is deciding WHAT
+    to bind — which target, which structure of it, which face of that
+    structure. That is the work the four reasoning stages do, so it is what the
+    first frame should claim.
+
+    Held longer than a section beat: it is the frame a scroller decides on, and
+    the frame LinkedIn shows before the video plays.
+    """
+    return [(page(
+        f'<div class="eyebrow">Little Protein Tiger</div>'
+        f'<h1>Diffusion models can design a binder.<br>'
+        f'<span class="muted">Deciding what to bind is the hard part.</span></h1>'
+        f'<div class="rule" style="margin-top:52px"></div>'
+        f'<p>One sentence in. Target, structure, epitope, budget and '
+        f'{n(F["n_survivors"])} candidates out.</p>'
+        f'<figure style="margin-top:20px"><img src="{img("hero_receptor")}" alt="">'
+        f'</figure>', dark=True), HOLD + 30)]
+
+
+
 def scene_typing() -> list[tuple[str, int]]:
     q = F["query"]
     out = []
     for i in range(0, len(q) + 1, 3):
         out.append((page(
             f'<div class="eyebrow">Little Protein Tiger</div>'
-            f'<h1>One sentence in.</h1>'
+            f'<h1>This was the entire brief.</h1>'
             f'<div class="term">&gt; {q[:i]}<span class="caret"></span></div>'
             f'<div class="grow"></div>', dark=True), TYPE_STEP))
     out.append((page(
         f'<div class="eyebrow">Little Protein Tiger</div>'
-        f'<h1>One sentence in.</h1>'
+        f'<h1>This was the entire brief.</h1>'
         f'<div class="term">&gt; {q}</div>'
         f'<p class="muted" style="margin-top:44px">No target named. No structure '
         f'given. No epitope chosen.</p>'
@@ -425,8 +449,8 @@ def main() -> int:
                          "`render_hero.py --turntable` first")
 
     stills: list[tuple[str, int]] = []
-    for scene in (scene_typing, scene_targets, scene_structure, scene_epitope,
-                  scene_trial, scene_funnel, scene_design):
+    for scene in (scene_title, scene_typing, scene_targets, scene_structure,
+                  scene_epitope, scene_trial, scene_funnel, scene_design):
         stills += scene()
     caption = (f'<p class="muted" style="font-size:27px">Superposed onto '
                f'{CHECK["pdb_id"]}, the receptor with CGRP bound &mdash; '
@@ -435,7 +459,6 @@ def main() -> int:
                f'saw it.</p>')
     plate_idx = len(stills)
     stills.append((plate(caption), 0))            # composited, not held directly
-    end_idx = len(stills)
     stills += scene_end()
 
     print(f"  {len(stills)} stills, {len(turns)} turntable frames")
@@ -471,7 +494,7 @@ def main() -> int:
             if hold:
                 emit(Image.open(tmp / f"s{i:04d}.png").convert("RGB"), hold)
 
-        shutil.copy(tmp / f"s{end_idx:04d}.png", POSTER)
+        shutil.copy(tmp / "s0000.png", POSTER)
         subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(FPS),
              "-i", str(frames / "%05d.png"), "-c:v", "libx264",
