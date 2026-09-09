@@ -1,5 +1,388 @@
 [
   {
+    "slug": "chromatin",
+    "field": "chromatin and epigenetics",
+    "coverage_pct": 15.8,
+    "primary": {
+      "live": "KMT2A / MEN1",
+      "blank": "MEN1 / KMT2A",
+      "decoy": "RBBP4 / PRDM3"
+    },
+    "genes": {
+      "live": [
+        "KMT2A",
+        "MEN1",
+        "KAT6A",
+        "ENL (MLLT1)",
+        "BRD4",
+        "NSUN1"
+      ],
+      "blank": [
+        "MEN1",
+        "KMT2A",
+        "BRD4",
+        "Histone H4 (diacetylated tail)",
+        "EED",
+        "EZH2"
+      ],
+      "decoy": [
+        "RBBP4",
+        "PRDM3",
+        "ATRX",
+        "Histone H3",
+        "SPT16",
+        "SSRP1"
+      ]
+    },
+    "primary_same_as_live": {
+      "blank": false,
+      "decoy": false
+    },
+    "gene_overlap_with_live": {
+      "blank": 0.33,
+      "decoy": 0.0
+    },
+    "n_dois": {
+      "live": 8,
+      "blank": 0,
+      "decoy": 5
+    },
+    "tier_labels": {
+      "live": [
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED",
+        "BIOLOGICALLY JUSTIFIED"
+      ],
+      "blank": [
+        "VALIDATED",
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED"
+      ],
+      "decoy": [
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED",
+        "PATHWAY INFERRED"
+      ]
+    },
+    "offtopic_leak": {
+      "live": 23,
+      "blank": 24,
+      "decoy": 46
+    },
+    "flags_corpus_gap": {
+      "live": 0,
+      "blank": 3,
+      "decoy": 0
+    },
+    "n_corpus_calls": {
+      "live": 13,
+      "blank": 10,
+      "decoy": 11
+    },
+    "first_corpus_call_at": {
+      "live": 1,
+      "blank": 1,
+      "decoy": 1
+    },
+    "n_tool_calls": {
+      "live": 17,
+      "blank": 12,
+      "decoy": 12
+    },
+    "usd": {
+      "live": 0.3512,
+      "blank": 0.1351,
+      "decoy": 0.2685
+    },
+    "error": {}
+  },
+  {
+    "slug": "cancer",
+    "field": "cancer biology",
+    "coverage_pct": 9.1,
+    "primary": {
+      "live": "KRAS / RAF1",
+      "blank": "KRAS / RAF1",
+      "decoy": "KRAS / RAF1"
+    },
+    "genes": {
+      "live": [
+        "KRAS",
+        "RAF1",
+        "LIF",
+        "LIFR",
+        "PIK3CA"
+      ],
+      "blank": [
+        "KRAS",
+        "RAF1",
+        "PIK3CA",
+        "KRAS (Switch-I",
+        "II Surface & Pocket)"
+      ],
+      "decoy": [
+        "KRAS",
+        "RAF1",
+        "SHOC2",
+        "KRAS (active site",
+        "Switch-II pocket)"
+      ]
+    },
+    "primary_same_as_live": {
+      "blank": true,
+      "decoy": true
+    },
+    "gene_overlap_with_live": {
+      "blank": 0.43,
+      "decoy": 0.25
+    },
+    "n_dois": {
+      "live": 10,
+      "blank": 4,
+      "decoy": 2
+    },
+    "tier_labels": {
+      "live": [
+        "VALIDATED",
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED"
+      ],
+      "blank": [
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED",
+        "DIRECT INHIBITION"
+      ],
+      "decoy": [
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED",
+        "DIRECT INHIBITION"
+      ]
+    },
+    "offtopic_leak": {
+      "live": 0,
+      "blank": 0,
+      "decoy": 6
+    },
+    "flags_corpus_gap": {
+      "live": 0,
+      "blank": 0,
+      "decoy": 0
+    },
+    "n_corpus_calls": {
+      "live": 12,
+      "blank": 11,
+      "decoy": 11
+    },
+    "first_corpus_call_at": {
+      "live": 1,
+      "blank": 1,
+      "decoy": 1
+    },
+    "n_tool_calls": {
+      "live": 14,
+      "blank": 12,
+      "decoy": 16
+    },
+    "usd": {
+      "live": 0.2915,
+      "blank": 0.1041,
+      "decoy": 0.4487
+    },
+    "error": {}
+  },
+  {
+    "slug": "immunology",
+    "field": "immunology",
+    "coverage_pct": 6.9,
+    "primary": {
+      "live": "PD-1 / PD-L1",
+      "blank": "CD47 / SIRPA",
+      "decoy": "TIGIT / PVR"
+    },
+    "genes": {
+      "live": [
+        "PD-1",
+        "PD-L1",
+        "CTLA-4",
+        "CD80",
+        "TIGIT",
+        "PVR"
+      ],
+      "blank": [
+        "CD47",
+        "SIRPA",
+        "TIGIT",
+        "PVR",
+        "PD-L1",
+        "PD-1 (CD274",
+        "PDCD1)"
+      ],
+      "decoy": [
+        "TIGIT",
+        "PVR",
+        "PD-1",
+        "PD-L1",
+        "CTLA-4",
+        "CD80"
+      ]
+    },
+    "primary_same_as_live": {
+      "blank": false,
+      "decoy": false
+    },
+    "gene_overlap_with_live": {
+      "blank": 0.3,
+      "decoy": 1.0
+    },
+    "n_dois": {
+      "live": 12,
+      "blank": 3,
+      "decoy": 3
+    },
+    "tier_labels": {
+      "live": [
+        "VALIDATED",
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED"
+      ],
+      "blank": [
+        "BIOLOGICALLY JUSTIFIED",
+        "BIOLOGICALLY JUSTIFIED",
+        "VALIDATED"
+      ],
+      "decoy": [
+        "VALIDATED",
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED"
+      ]
+    },
+    "offtopic_leak": {
+      "live": 0,
+      "blank": 0,
+      "decoy": 1
+    },
+    "flags_corpus_gap": {
+      "live": 1,
+      "blank": 0,
+      "decoy": 0
+    },
+    "n_corpus_calls": {
+      "live": 12,
+      "blank": 5,
+      "decoy": 10
+    },
+    "first_corpus_call_at": {
+      "live": 1,
+      "blank": 1,
+      "decoy": 1
+    },
+    "n_tool_calls": {
+      "live": 14,
+      "blank": 8,
+      "decoy": 13
+    },
+    "usd": {
+      "live": 0.2472,
+      "blank": 0.124,
+      "decoy": 0.3011
+    },
+    "error": {}
+  },
+  {
+    "slug": "cardiac",
+    "field": "cardiac",
+    "coverage_pct": 2.3,
+    "primary": {
+      "live": "SAV1 / MST2",
+      "blank": "PPP3CA / NFATC1",
+      "decoy": "CALCRL / RAMP1"
+    },
+    "genes": {
+      "live": [
+        "SAV1",
+        "MST2",
+        "PLN",
+        "SERCA2a",
+        "PRKAR1A",
+        "PRKACA"
+      ],
+      "blank": [
+        "PPP3CA",
+        "NFATC1",
+        "PLN",
+        "ATP2A2 (SERCA2a)"
+      ],
+      "decoy": [
+        "CALCRL",
+        "RAMP1",
+        "PLN",
+        "ATP2A2",
+        "SMURF1",
+        "TGFBR1"
+      ]
+    },
+    "primary_same_as_live": {
+      "blank": false,
+      "decoy": false
+    },
+    "gene_overlap_with_live": {
+      "blank": 0.11,
+      "decoy": 0.09
+    },
+    "n_dois": {
+      "live": 5,
+      "blank": 0,
+      "decoy": 4
+    },
+    "tier_labels": {
+      "live": [
+        "VALIDATED",
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED"
+      ],
+      "blank": [
+        "PATHWAY INFERRED",
+        "PATHWAY INFERRED"
+      ],
+      "decoy": [
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED",
+        "PATHWAY INFERRED"
+      ]
+    },
+    "offtopic_leak": {
+      "live": 2,
+      "blank": 0,
+      "decoy": 2
+    },
+    "flags_corpus_gap": {
+      "live": 0,
+      "blank": 1,
+      "decoy": 0
+    },
+    "n_corpus_calls": {
+      "live": 14,
+      "blank": 11,
+      "decoy": 10
+    },
+    "first_corpus_call_at": {
+      "live": 1,
+      "blank": 1,
+      "decoy": 1
+    },
+    "n_tool_calls": {
+      "live": 18,
+      "blank": 15,
+      "decoy": 12
+    },
+    "usd": {
+      "live": 0.434,
+      "blank": 0.1028,
+      "decoy": 0.3831
+    },
+    "error": {}
+  },
+  {
     "slug": "pain",
     "field": "neuroscience and pain",
     "coverage_pct": 3.9,
@@ -90,6 +473,105 @@
       "live": 0.5741,
       "blank": 0.1132,
       "decoy": 0.2388
-    }
+    },
+    "error": {}
+  },
+  {
+    "slug": "fibrosis",
+    "field": "fibrosis",
+    "coverage_pct": 0.2,
+    "primary": {
+      "live": "TLR4 / LY96",
+      "blank": "ITGAV / ITGB3",
+      "decoy": "ITGAV / ITGB3"
+    },
+    "genes": {
+      "live": [
+        "TLR4",
+        "LY96",
+        "YAP1",
+        "TEAD4",
+        "SUPT16H",
+        "SSRP1"
+      ],
+      "blank": [
+        "ITGAV",
+        "ITGB3",
+        "SMAD3",
+        "SMAD4",
+        "TGFBR1",
+        "TGFBR2"
+      ],
+      "decoy": [
+        "ITGAV",
+        "ITGB3 (Integrin alpha-V",
+        "beta-3 Ectodomain)",
+        "TGFBR1",
+        "TGFBR2 (Receptor Ectodomain Assembly)",
+        "SMAD3",
+        "SBD (SMAD3 MH2 Protein-Protein Interface)"
+      ]
+    },
+    "primary_same_as_live": {
+      "blank": false,
+      "decoy": false
+    },
+    "gene_overlap_with_live": {
+      "blank": 0.0,
+      "decoy": 0.0
+    },
+    "n_dois": {
+      "live": 5,
+      "blank": 1,
+      "decoy": 3
+    },
+    "tier_labels": {
+      "live": [
+        "VALIDATED",
+        "VALIDATED",
+        "VALIDATED"
+      ],
+      "blank": [
+        "BIOLOGICALLY JUSTIFIED",
+        "BIOLOGICALLY JUSTIFIED",
+        "PATHWAY INFERRED"
+      ],
+      "decoy": [
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED",
+        "PATHWAY INFERRED"
+      ]
+    },
+    "offtopic_leak": {
+      "live": 11,
+      "blank": 0,
+      "decoy": 0
+    },
+    "flags_corpus_gap": {
+      "live": 0,
+      "blank": 0,
+      "decoy": 0
+    },
+    "n_corpus_calls": {
+      "live": 10,
+      "blank": 11,
+      "decoy": 10
+    },
+    "first_corpus_call_at": {
+      "live": 1,
+      "blank": 1,
+      "decoy": 1
+    },
+    "n_tool_calls": {
+      "live": 11,
+      "blank": 14,
+      "decoy": 12
+    },
+    "usd": {
+      "live": 0.175,
+      "blank": 0.1364,
+      "decoy": 0.3595
+    },
+    "error": {}
   }
 ]

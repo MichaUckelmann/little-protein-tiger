@@ -112,10 +112,15 @@ def coverage() -> dict[str, float]:
 def make_runner(config: dict):
     from src.skill_runner import SkillRunner
     models = config.get("models", {}).get("gemini", {})
+    # Above the 100k default. The decoy arm returns the SAME cached payload for
+    # every search_corpus call, so a model that searches repeatedly accumulates
+    # one blob several times over and hits the ceiling — cardiac/decoy died on
+    # call #4 at 102,768 tokens. Raising the cap cannot change a run that never
+    # approached it, so the cells already collected stay comparable.
     return SkillRunner(
         skill_name=SKILL, provider="gemini",
         model_id=models.get("default") or "gemini-3.7-flash",
-        config=config)
+        config=config, max_input_tokens=200_000)
 
 
 def patch(runner, arm: str, decoy_cache: dict) -> None:
@@ -319,17 +324,29 @@ def summarise() -> None:
         live = by.get("live", {})
         jb = jac(live.get("genes", []), by.get("blank", {}).get("genes", []))
         jd = jac(live.get("genes", []), by.get("decoy", {}).get("genes", []))
-        same_b = (live.get("primary") == by.get("blank", {}).get("primary")
-                  if "blank" in by else None)
-        same_d = (live.get("primary") == by.get("decoy", {}).get("primary")
-                  if "decoy" in by else None)
+        def same(arm):
+            c = by.get(arm)
+            if c is None or c.get("error") or not c.get("primary"):
+                return None
+            return live.get("primary") == c.get("primary")
+
+        same_b, same_d = same("blank"), same("decoy")
         mark = lambda v: {True: "same", False: "DIFF", None: "-"}[v]
-        d = lambda a: by.get(a, {}).get("n_dois")
-        lk = lambda a: by.get(a, {}).get("offtopic_leak")
+        def d(a):
+            c = by.get(a)
+            if c is None:
+                return "-"
+            return "ERR" if c.get("error") else c.get("n_dois")
+
+        def lk(a):
+            c = by.get(a)
+            if c is None:
+                return "-"
+            return "ERR" if c.get("error") else c.get("offtopic_leak")
         print(f"  {slug:11s} {cov.get(label, float('nan')):5.1f}  "
               f"{(live.get('primary') or '-')[:24]:24s} "
               f"b:{mark(same_b)} d:{mark(same_d)}   "
-              f"{d('live')} / {d('blank')} / {d('decoy'):<10}  "
+              f"{d('live')} / {d('blank')} / {str(d('decoy')):<10}  "
               f"{lk('live')}/{lk('blank')}/{lk('decoy')}")
         out.append({"slug": slug, "field": label, "coverage_pct": cov.get(label),
                     "primary": {a: by[a].get("primary") for a in by},
@@ -344,7 +361,9 @@ def summarise() -> None:
                     "first_corpus_call_at": {
                         a: by[a].get("first_corpus_call_at") for a in by},
                     "n_tool_calls": {a: by[a].get("n_tool_calls") for a in by},
-                    "usd": {a: by[a].get("usd") for a in by}})
+                    "usd": {a: by[a].get("usd") for a in by},
+                    "error": {a: by[a].get("error") for a in by
+                              if by[a].get("error")}})
     total = sum(v or 0 for r in out for v in r["usd"].values())
     print(f"\n  spend so far: ${total:.2f}")
     (OUT / "results.json").write_text(json.dumps(out, indent=2) + "\n",
