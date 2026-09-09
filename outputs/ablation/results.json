@@ -1,0 +1,95 @@
+[
+  {
+    "slug": "pain",
+    "field": "neuroscience and pain",
+    "coverage_pct": 3.9,
+    "primary": {
+      "live": "CALCRL / RAMP1",
+      "blank": "CALCRL / RAMP1",
+      "decoy": "CALCRL / RAMP1"
+    },
+    "genes": {
+      "live": [
+        "CALCRL",
+        "RAMP1",
+        "NTRK1",
+        "NGF",
+        "AP2A2",
+        "Kcnt1"
+      ],
+      "blank": [
+        "CALCRL",
+        "RAMP1",
+        "SCN9A",
+        "SCN1B",
+        "TRPV1",
+        "Subunit interface"
+      ],
+      "decoy": [
+        "CALCRL",
+        "RAMP1",
+        "TRPV1",
+        "DkTx"
+      ]
+    },
+    "primary_same_as_live": {
+      "blank": true,
+      "decoy": true
+    },
+    "gene_overlap_with_live": {
+      "blank": 0.2,
+      "decoy": 0.25
+    },
+    "n_dois": {
+      "live": 10,
+      "blank": 3,
+      "decoy": 2
+    },
+    "tier_labels": {
+      "live": [
+        "VALIDATED",
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED"
+      ],
+      "blank": [
+        "VALIDATED",
+        "BIOLOGICALLY JUSTIFIED",
+        "PATHWAY INFERRED"
+      ],
+      "decoy": [
+        "VALIDATED",
+        "VALIDATED"
+      ]
+    },
+    "offtopic_leak": {
+      "live": 0,
+      "blank": 0,
+      "decoy": 0
+    },
+    "flags_corpus_gap": {
+      "live": 2,
+      "blank": 0,
+      "decoy": 0
+    },
+    "n_corpus_calls": {
+      "live": 13,
+      "blank": 12,
+      "decoy": 9
+    },
+    "first_corpus_call_at": {
+      "live": 1,
+      "blank": 1,
+      "decoy": 1
+    },
+    "n_tool_calls": {
+      "live": 15,
+      "blank": 14,
+      "decoy": 11
+    },
+    "usd": {
+      "live": 0.5741,
+      "blank": 0.1132,
+      "decoy": 0.2388
+    }
+  }
+]

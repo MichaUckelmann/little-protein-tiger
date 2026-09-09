@@ -106,6 +106,16 @@
       3.7
     ],
     [
+      "virology",
+      384,
+      2.6
+    ],
+    [
+      "cardiac",
+      338,
+      2.3
+    ],
+    [
       "protein design and folding",
       288,
       2.0
@@ -114,6 +124,21 @@
       "cell cycle and DNA repair",
       222,
       1.5
+    ],
+    [
+      "antibacterial",
+      68,
+      0.5
+    ],
+    [
+      "kidney",
+      57,
+      0.4
+    ],
+    [
+      "fibrosis",
+      30,
+      0.2
     ]
   ],
   "curated": 14517,

@@ -147,6 +147,13 @@ FIELD_TERMS = [
     ("structural biology", ("cryo-EM", "crystal structure", "structural basis", "X-ray", "NMR")),
     ("protein design and folding", ("protein design", "de novo", "folding", "AlphaFold", "binder")),
     ("cell cycle and DNA repair", ("cell cycle", "mitosis", "DNA repair", "replication fork", "checkpoint")),
+    # The thin end, measured so it can be named rather than guessed at. These
+    # are the fields `scripts/ablate_corpus.py` uses as its low-coverage arm.
+    ("cardiac", ("cardiac", "cardiomyo", "heart failure")),
+    ("virology", ("virus", "viral", "SARS-CoV")),
+    ("antibacterial", ("antibiotic", "antimicrobial", "bacterial resistance")),
+    ("kidney", ("kidney", "renal", "nephro")),
+    ("fibrosis", ("fibrosis", "fibrotic", "myofibroblast")),
 ]
 
 

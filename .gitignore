@@ -56,3 +56,8 @@ web/
 #   .fontcache.css inlined woff2 payloads, 1.6 MB (build_video.py, re-fetched)
 docs/showcase/assets/turntable/
 docs/showcase/assets/.fontcache.css
+
+# Corpus-ablation experiment output: model reports, traces and per-cell metadata.
+# Regenerable with `python scripts/ablate_corpus.py`; results.json is the summary
+# worth keeping, so it is force-added when a matrix is worth recording.
+outputs/ablation/
