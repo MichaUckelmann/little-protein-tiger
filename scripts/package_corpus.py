@@ -82,6 +82,68 @@ def corpus_stats() -> dict:
     return stats
 
 
+# Credential shapes that must never leave this machine inside a release.
+# `curation_error` is the dangerous column: it stores the exception text of a
+# failed call, and `requests` embeds the full request URL in what it raises —
+# so a Gemini key passed as a query parameter (which is how this repo used to
+# send it) was persisted verbatim into the shipped database. Found in a real
+# archive AFTER it had already been published; the paths-only check below
+# reported it clean.
+_SECRET_PATTERNS = (
+    ("Google/Gemini API key", r"AIzaSy[0-9A-Za-z_-]{20,}"),
+    ("Anthropic API key",     r"sk-ant-[0-9A-Za-z_-]{20,}"),
+    ("OpenAI API key",        r"sk-[0-9A-Za-z]{32,}"),
+    ("GitHub token",          r"gh[pousr]_[0-9A-Za-z]{20,}"),
+    ("key= in a URL",         r"[?&]key=[0-9A-Za-z_-]{20,}"),
+    ("bearer token",          r"[Bb]earer\s+[0-9A-Za-z._-]{20,}"),
+)
+
+
+def _verify_no_secrets() -> list[str]:
+    """Scan every TEXT column of every table for credential shapes.
+
+    Deliberately over-broad: it walks all text columns rather than a list of
+    the ones known to be risky today, because the column that leaked was not
+    one anybody would have listed in advance.
+    """
+    import re
+
+    problems: list[str] = []
+    db = _ROOT / "data" / "literature.db"
+    if not db.is_file():
+        return []
+    conn = sqlite3.connect(db)
+    conn.text_factory = lambda b: b.decode("utf-8", "replace")
+    compiled = [(label, re.compile(pat)) for label, pat in _SECRET_PATTERNS]
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")]
+        for table in tables:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+            for col in cols:
+                try:
+                    rows = conn.execute(
+                        f'SELECT "{col}" FROM "{table}" '
+                        f'WHERE "{col}" IS NOT NULL').fetchall()
+                except sqlite3.Error:
+                    continue
+                for (value,) in rows:
+                    if not isinstance(value, str):
+                        continue
+                    for label, rx in compiled:
+                        if rx.search(value):
+                            problems.append(
+                                f"{table}.{col} contains what looks like a "
+                                f"{label} — refusing to ship it")
+                            break
+                    else:
+                        continue
+                    break        # one report per column is enough
+    finally:
+        conn.close()
+    return problems
+
+
 def _verify_no_personal_data() -> list[str]:
     """The DB stores paths. Refuse to ship absolute or personal ones."""
     problems: list[str] = []
@@ -134,6 +196,14 @@ def check() -> int:
         print("\n  Refusing to package: the database would leak local paths.")
         return 1
     print("  [ok  ] no absolute or personal paths in the database")
+
+    secrets = _verify_no_secrets()
+    if secrets:
+        for p in secrets:
+            print(f"  [FAIL] {p}")
+        print("\n  Refusing to package: the database would leak a credential.")
+        return 1
+    print("  [ok  ] no credential-shaped strings in the database")
 
     if missing:
         print(f"\n  Cannot package — missing: {', '.join(missing)}")

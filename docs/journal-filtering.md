@@ -24,7 +24,9 @@ widen the filter later and re-run `fetch_papers.py` without re-searching.
 
 ## What it does today
 
-Measured against the shipped corpus (55,688 indexed papers):
+Measured against the corpus as it stood on 2026-08-21 (55,688 indexed
+papers; the index has since grown to ~57,900, but the *ratio* below is what
+matters and it has not been re-measured):
 
 | | Papers | Share |
 |---|---|---|
@@ -130,7 +132,8 @@ quality:
   min_score_to_download: 0.5   # raise to keep the queue selective
 ```
 
-Expect roughly **3.6× more downloads**, with a corresponding rise in curation
+Expect roughly **3.1x more downloads** (the gate passes 32%, so 1/0.32),
+with a corresponding rise in curation
 cost and disk. See `docs/environment_setup.md` for install and disk numbers, and
 `README.md` for corpus build costs.
 

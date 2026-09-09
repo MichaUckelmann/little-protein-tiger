@@ -66,10 +66,10 @@ Ask, and wait for answers:
   `>=3.12,<3.15`).
 - **API keys.** `GEMINI_API_KEY` is the default provider for every pipeline
   stage. `ANTHROPIC_API_KEY` is optional for the pipeline (used by
-  `--provider claude` and as the refusal fallback) but **required by
-  curation** (`curation.provider` in config.yaml is still `"claude"`), so a
-  user who wants to EXTEND the corpus needs it. Querying the corpus does not:
-  `scripts/ask_corpus.py` defaults to gemini like everything else. Neither key
+  `--provider claude` and as the refusal fallback). It is **not** needed to
+  curate or to query the corpus: `curation.provider` is `gemini`
+  (`gemini-3.1-flash-lite`) and `scripts/ask_corpus.py` defaults to gemini
+  too, so a Gemini key alone covers every track. Neither key
   is needed for the `structure` track.
 - **Do you already have foundry / PyRosetta / BoltzGen anywhere?** Before
   proposing an install, search: `find ~ -maxdepth 4 -name "foundry" -o -maxdepth 4 -name "*rcfoundry*" 2>/dev/null`,
@@ -159,7 +159,7 @@ python scripts/fetch_corpus.py
 ```
 
 ~106 MB compressed, ~451 MB installed: **14,517 curated papers**, the vector
-index, and a database indexing all ~55,000 papers the maintainer's searches
+index, and a database indexing all ~57,900 papers the maintainer's searches
 found. `search_corpus` works immediately afterwards.
 
 Source documents (PDFs/XMLs) are deliberately excluded — they are ~95% of the
