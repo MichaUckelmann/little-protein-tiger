@@ -173,7 +173,7 @@ from — the one artefact you cannot quietly correct after publishing.
 | Asset | Shape | For |
 |---|---|---|
 | `assets/lpt_carousel.pdf` | 9 slides, 1080x1350 | LinkedIn renders an uploaded PDF as a swipeable deck |
-| `assets/lpt_hook.mp4` | 31 s, 1080x1350, silent | feed video; autoplay is muted, so every claim is on screen |
+| `assets/lpt_hook.mp4` | 42 s, 1080x1350, silent | feed video; autoplay is muted, so every claim is on screen |
 | `assets/lpt_hook_poster.png` | 1080x1350 | upload as the video thumbnail — the first frame is a half-typed prompt |
 
 `render_hero.py` is the one that needed thought. It superposes the lead design's
@@ -206,6 +206,13 @@ Three traps these two scripts encode:
   stills re-fetches from Google, and one slow response ships a run of frames in
   Georgia while its neighbours are in Newsreader — visible only in the finished
   video, after everything has been rendered.
+
+Pacing lives in three named constants at the top of `build_video.py`, not
+scattered through the scenes. `HOLD` is the beat a completed section gets before
+the cut and is the one worth tuning: the first cut ran every beat at about 1.5 s,
+which is long enough to see a slide and not long enough to read one. `BUILD` is
+shorter on purpose — an intermediate reveal only has to register the thing being
+added, since what is already on screen stays there.
 
 `build_video.py` splits the work three ways: Chrome renders the typography (so
 the video shares its type scale and layout primitives with the pages instead of

@@ -49,6 +49,22 @@ POSTER = ASSETS / "lpt_hook_poster.png"
 FONT_CACHE = ASSETS / ".fontcache.css"
 
 W, H, FPS = 1080, 1350, 30
+
+# Pacing, in frames at FPS. Named rather than sprinkled through the scenes: the
+# first cut ran every beat at roughly a second and a half, which is enough to
+# see a slide and not enough to read one — a viewer who is still parsing the
+# Wilson interval when the funnel arrives has learnt nothing from either.
+#
+#   TYPE_STEP  one still of the prompt being typed (3 characters)
+#   BUILD      an intermediate reveal, where what is already on screen STAYS
+#              and something is added to it — so it needs long enough to notice
+#              the addition, not long enough to read the whole frame again
+#   HOLD       a completed section, the beat before the cut. This is the one
+#              that was too short; everything a viewer has to actually take in
+#              is on screen for the whole of it.
+TYPE_STEP, BUILD, HOLD = 3, 30, 72
+COUNTER = 12           # one tick of the hit-rate counter spinning up
+TURN_HOLD = 54         # the last turntable frame, held to read its caption
 WORKERS = 4
 SITE = "michauckelmann.github.io/little-protein-tiger"
 
@@ -211,14 +227,14 @@ def scene_typing() -> list[tuple[str, int]]:
             f'<div class="eyebrow">Little Protein Tiger</div>'
             f'<h1>One sentence in.</h1>'
             f'<div class="term">&gt; {q[:i]}<span class="caret"></span></div>'
-            f'<div class="grow"></div>', dark=True), 3))
+            f'<div class="grow"></div>', dark=True), TYPE_STEP))
     out.append((page(
         f'<div class="eyebrow">Little Protein Tiger</div>'
         f'<h1>One sentence in.</h1>'
         f'<div class="term">&gt; {q}</div>'
         f'<p class="muted" style="margin-top:44px">No target named. No structure '
         f'given. No epitope chosen.</p>'
-        f'<div class="grow"></div>', dark=True), 34))
+        f'<div class="grow"></div>', dark=True), HOLD))
     return out
 
 
@@ -234,14 +250,14 @@ def scene_targets() -> list[tuple[str, int]]:
         out.append((page(
             f'<div class="eyebrow">It picked the target itself</div>'
             f'<h2>Three candidates, ranked by evidence.</h2>{shown}'
-            f'<div class="grow"></div>'), 22))
+            f'<div class="grow"></div>'), BUILD))
     picked = rows[0].replace('class="row"', 'class="row pick"') + "".join(rows[1:])
     out.append((page(
         f'<div class="eyebrow">It picked the target itself</div>'
         f'<h2>Three candidates, ranked by evidence.</h2>{picked}'
         f'<p style="margin-top:40px">CALCRL / RAMP1 &mdash; the CGRP receptor. '
         f'The target class of an approved migraine antibody.</p>'
-        f'<div class="grow"></div>'), 40))
+        f'<div class="grow"></div>'), HOLD))
     return out
 
 
@@ -262,12 +278,12 @@ def scene_structure() -> list[tuple[str, int]]:
     return [
         (page(head + block(sw["from"], a, "what the papers cite", False)
               + block(sw["to"], b, "&nbsp;", False).replace(sw["to"], "&mdash;")
-              + '<div class="grow"></div>'), 34),
+              + '<div class="grow"></div>'), BUILD + 16),
         (page(head + block(sw["from"], a, "what the papers cite", False)
               + block(sw["to"], b, "what it designed on instead", True)
               + f'<div class="card"><p style="font-size:30px">'
               f'{angstrom(sw["reason"])}</p></div>'
-              + '<div class="grow"></div>'), 52),
+              + '<div class="grow"></div>'), HOLD),
     ]
 
 
@@ -276,14 +292,14 @@ def scene_epitope() -> list[tuple[str, int]]:
             '<h2>On a membrane receptor, most of the surface is useless.</h2>')
     fig = f'<figure><img src="{img("hero_apo")}" alt=""></figure>'
     return [
-        (page(head + fig), 34),
+        (page(head + fig), BUILD + 16),
         (page(head + fig + f'<div class="stats">'
               f'<div><div class="n">{len(F["hotspots"])}</div>'
               f'<div class="k">hotspots</div></div>'
               f'<div><div class="n">{F["trim_residues"]}</div>'
               f'<div class="k">residues kept</div></div>'
               f'<div><div class="n sm">dropped</div>'
-              f'<div class="k">transmembrane face</div></div></div>'), 52),
+              f'<div class="k">transmembrane face</div></div></div>'), HOLD),
     ]
 
 
@@ -298,7 +314,7 @@ def scene_trial() -> list[tuple[str, int]]:
         out.append((page(head + f'<div class="big" style="margin-top:56px">'
                          f'{pt * frac:.1f}%</div>'
                          f'<p class="muted" style="margin-top:24px">of backbones '
-                         f'cleared the bar</p><div class="grow"></div>'), 12))
+                         f'cleared the bar</p><div class="grow"></div>'), COUNTER))
     tail = (f'<div class="big" style="margin-top:56px">{pt:.1f}%</div>'
             f'<p class="muted" style="margin-top:24px">{b["k"]} of {n(b["n"])} '
             f'backbones cleared the bar</p>'
@@ -309,13 +325,13 @@ def scene_trial() -> list[tuple[str, int]]:
             f'<p class="muted" style="font-size:26px;margin-top:30px">'
             f'95% Wilson interval {lo:.1f}&ndash;{hi:.1f}%. The campaign is sized '
             f'on the pessimistic end.</p>')
-    out.append((page(head + tail + '<div class="grow"></div>'), 30))
+    out.append((page(head + tail + '<div class="grow"></div>'), BUILD + 12))
     out.append((page(head + tail
                      + f'<div class="stamp">{CAL["verdict"].replace("_", " ")}</div>'
                      + f'<p style="margin-top:26px;font-size:30px">and it raised '
                      f'its own success bar from {CAL["requested_bar"]} to '
                      f'{CAL["bar_raised_to"]}</p>'
-                     + '<div class="grow"></div>'), 46))
+                     + '<div class="grow"></div>'), HOLD))
     return out
 
 
@@ -328,7 +344,7 @@ def scene_funnel() -> list[tuple[str, int]]:
              f'<div><div class="n">{n(F["n_scored"])}</div><div class="k">refolds</div></div>'
              f'<div><div class="n">{n(F["n_survivors"])}</div><div class="k">survivors</div></div>'
              f'</div>')
-    out = [(page(head + stats + '<div class="grow"></div>'), 34)]
+    out = [(page(head + stats + '<div class="grow"></div>'), BUILD + 16)]
     for k in (3, 6, 8):
         bars = "".join(
             f'<div class="glab"><span>{g[0]}</span>'
@@ -337,7 +353,7 @@ def scene_funnel() -> list[tuple[str, int]]:
             f'<b>{n(g[1])}</b></div>' for g in gates[:k])
         out.append((page(head + stats
                          + f'<div style="margin-top:34px">{bars}</div>'
-                         + '<div class="grow"></div>'), 26 if k < 8 else 46))
+                         + '<div class="grow"></div>'), BUILD if k < 8 else HOLD))
     return out
 
 
@@ -352,7 +368,7 @@ def scene_design() -> list[tuple[str, int]]:
               f'<div><div class="n">{d["iptm"]:.3f}</div><div class="k">interface ipTM</div></div>'
               f'<div><div class="n">{d["dock"]:.2f} &Aring;</div><div class="k">dock RMSD</div></div>'
               f'<div><div class="n">{d["engagement"] * 100:.0f}%</div>'
-              f'<div class="k">hotspots engaged</div></div></div>'), 50),
+              f'<div class="k">hotspots engaged</div></div></div>'), HOLD),
     ]
 
 
@@ -375,7 +391,7 @@ def scene_end() -> list[tuple[str, int]]:
         f'<div class="rule"></div>'
         f'<p style="font-family:var(--mono);font-size:33px;'
         f'color:var(--dark-accent)">{SITE}</p>'
-        f'<div class="grow"></div>', dark=True), 66)]
+        f'<div class="grow"></div>', dark=True), HOLD + 42)]   # the CTA: long enough to read a URL and keep it
 
 
 # ── rendering ────────────────────────────────────────────────────────────────
@@ -450,7 +466,7 @@ def main() -> int:
                                   PLATE_BOX[1] + (bh - tf.height) // 2), tf)
                     emit(im, 1)
                     if j == len(turns) - 1:
-                        emit(im, 40)          # hold the last turn to read the caption
+                        emit(im, TURN_HOLD)   # hold the last turn to read the caption
                 continue
             if hold:
                 emit(Image.open(tmp / f"s{i:04d}.png").convert("RGB"), hold)
