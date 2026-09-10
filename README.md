@@ -41,10 +41,11 @@ best ipTM 0.937 / dock-RMSD 0.63 Å, for **$0.79 of API spend** and ~22 GPU-h.
 
 Four illustrated walkthroughs built from runs in this repository — two PPI
 discovery campaigns (CGRP receptor, YAP1/TEAD1), a PD-L1 binder campaign and a
-corpus-explorer session — are in **[docs/showcase/](docs/showcase/)**. Open the
-`.html` files directly. Every figure on them is extracted from a run directory
-at build time and committed beside the page, so the numbers can be audited
-rather than taken on trust.
+corpus-explorer session — are published at
+**[michauckelmann.github.io/little-protein-tiger](https://michauckelmann.github.io/little-protein-tiger/showcase/)**.
+Their source is [`docs/showcase/`](docs/showcase/): every figure is extracted
+from a run directory at build time and committed beside the page, so the
+numbers can be audited rather than taken on trust.
 
 ## Start here
 
@@ -1110,6 +1111,6 @@ redistribute a derivative that bundles it, read its terms.
 | [docs/pyrosetta_setup.md](docs/pyrosetta_setup.md) | PyRosetta's Python-ABI trap, and its licence |
 | [docs/licensing.md](docs/licensing.md) | Code, corpus and third-party terms — and what the corpus archive actually contains |
 | [docs/responsible-use.md](docs/responsible-use.md) | Scope and limits |
-| [docs/showcase/](docs/showcase/) | Illustrated walkthroughs of real runs |
+| [the showcase site](https://michauckelmann.github.io/little-protein-tiger/showcase/) | Illustrated walkthroughs of real runs — source in [docs/showcase/](docs/showcase/) |
 | [CLAUDE.md](CLAUDE.md) | Architecture, and every non-obvious fact with the measurement behind it. Read before changing a threshold. |
 | [diary.md](diary.md) | Development log — what was tried, what failed, why |
