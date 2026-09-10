@@ -149,16 +149,63 @@ def test_stage_zero_writes_the_artifact_the_stage_machine_resumes_from(ingested)
         assert loaded[key] == str(intel[key]), key
 
 
-def test_the_interface_prompt_names_the_file_for_a_local_structure(ingested):
-    """A local id cannot be looked up, so the prompt has to carry the path.
+class _PromptCaptured(Exception):
+    """Carries the query the interface stage would have sent, and stops there."""
 
-    Given only an unresolvable id and no path, the interface skill's documented
-    failure is to decide no structure exists and ask for one.
+    def __init__(self, query: str):
+        super().__init__("captured")
+        self.query = query
+
+
+def _interface_prompt(runner, intel, dirs, monkeypatch) -> str:
+    """The prompt `_stage_binder_interface` builds, without calling a model."""
+    def capture(_skill, query, _files, _out, **_kw):
+        raise _PromptCaptured(query)
+
+    monkeypatch.setattr(runner, "_run_stage", capture)
+    with pytest.raises(_PromptCaptured) as exc:
+        runner._stage_binder_interface(
+            intel, dirs, PipelineResult(run_dir=dirs["binder"].parent))
+    return exc.value.query
+
+
+def test_the_interface_prompt_names_the_file_for_a_local_structure(
+        ingested, monkeypatch):
+    """A local id cannot be looked up, so the prompt has to carry the PATH.
+
+    Given only an unresolvable accession and no path, this skill's documented
+    failure is to decide no structure exists and ask for one — which is how the
+    PD-L1/7CZD run wasted two stages. Asserted on the built string rather than
+    on the source, because a reflection check passes with the branch inverted.
     """
-    runner, pdb_id, _dirs, _run = ingested
-    import inspect
-    src = inspect.getsource(runner._stage_binder_interface)
-    assert "_local_structure_stem" in src and "_binder_structure_path" in src
+    runner, pdb_id, dirs, _run = ingested
+    intel = _intel(ingested)
+    prompt = _interface_prompt(runner, intel, dirs, monkeypatch)
+    expected = str(runner._binder_structure_path(pdb_id))
+    assert expected in prompt, prompt[:200]
+    assert f"PDB {pdb_id} (already downloaded" not in prompt
+
+
+def test_a_real_accession_is_still_described_as_a_pdb_entry(
+        ingested, monkeypatch):
+    """The local branch must not swallow the normal one: a genuine entry is
+    downloaded to a known directory and the skill looks it up by id."""
+    runner, _pdb, dirs, _run = ingested
+    intel = dict(_intel(ingested), pdb_id="7CZD")
+    prompt = _interface_prompt(runner, intel, dirs, monkeypatch)
+    assert "PDB 7CZD (already downloaded to data/structures/)" in prompt
+
+
+def test_the_measured_interface_area_reaches_the_report(ingested):
+    """`analyze_interface` returns `interface.bsa_total_A2`, nested; there is no
+    flat `bsa_total`. Reading the flat key reported "0 A^2 buried" for a
+    2,449 A^2 interface, and `.get`'s default made it silent."""
+    import re
+
+    intel = _intel(ingested)
+    m = re.search(r"([\d,]+) A\^2 buried", intel["interface_rationale"])
+    assert m, intel["interface_rationale"]
+    assert int(m.group(1).replace(",", "")) > 2000
 
 
 def test_the_track_enters_the_binder_machine_at_interface(tmp_path, monkeypatch):
