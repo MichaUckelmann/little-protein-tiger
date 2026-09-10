@@ -127,18 +127,57 @@ because the corrections point in the same direction:
    article is *free to read* in PMC. It does not mean it carries a CC licence
    or may be redistributed. The OA Subset is a specific, separately identified
    collection; the rest of PMC — publisher deposits, the author-manuscript
-   collection — is readable but not redistributable. LPT records no per-paper
-   licence field, so the shipped database **cannot** tell you which papers are
-   in the OA Subset.
+   collection — is readable but not redistributable.
 
-Neither point affects what actually ships, because what ships is derived
-fingerprints and bibliographic facts, with abstracts removed. It does mean the
-archive should not be described as "open access papers" — it is a derived index
-over a reading list, and the papers themselves are not in it.
+The archive should therefore not be described as "open access papers" — it is a
+derived index over a reading list, and the papers themselves are not in it.
 
-If you need per-paper licence provenance — for a redistributable dataset, or a
-publication that asserts one — it would have to be added: PMC's OA web service
-returns the licence for a given PMCID, and that call is not currently made.
+### Per-paper licences, measured
+
+`scripts/audit_paper_licences.py` resolves a licence for every curated paper
+from Europe PMC (by PMCID, falling back to DOI) and caches it in
+`data/paper_licences.json`. Measured 2026-09-10 over all 14,517:
+
+| Licence | Papers | Share |
+|---|---|---|
+| `cc by` | 5,708 | 39.3% |
+| *none recorded* | 5,684 | 39.2% |
+| `cc by-nc-nd` | 1,501 | 10.3% |
+| `cc by-nc` | 1,028 | 7.1% |
+| `cc by-nc-sa` | 546 | 3.8% |
+| `cc0` | 45 | 0.3% |
+| `cc by-nd` | 5 | <0.1% |
+
+Grouped by what they permit: **7,327 (50.5%) allow derivative works, 1,506
+(10.4%) forbid them** (`-nd`), and **5,684 (39.2%) record no licence at all** —
+which is not permission. A paper with no CC licence in Europe PMC is normally a
+publisher deposit that is free to read and not licensed for reuse. Spot-checked
+against live records; the classifications reproduce.
+
+The ND set is concentrated in the journals a chromatin/structural corpus would
+be expected to draw on — Nat Commun (215), Cell Rep (199), Stem Cell Reports
+(123), iScience (105), Nature (94).
+
+### What that means for the release, and what it does not
+
+**Whether a fingerprint is a derivative work of its paper is the unresolved
+question, and it is a legal one.** The argument above — that fingerprints are
+model-written structured claims and normalised numbers, facts rather than
+expression, with `source_span` a pointer and not a quotation — is the reason
+this project believes no ND term is engaged. That argument is unchanged by the
+audit. What has changed is that it can now be weighed against a count instead
+of an assumption, which is the honest position to argue from.
+
+If a maintainer or an institution decides the risk is not worth carrying, the
+audit makes the remedy mechanical rather than a guess:
+
+- excluding the ND papers' fingerprints leaves **13,011 of 14,517 (90%)**;
+- excluding ND *and* unlicensed leaves **7,327 (50%)**.
+
+`scripts/audit_paper_licences.py --nd-only` prints the exact set, and exits
+non-zero when any ND paper is present, so it can gate a release.
+
+**This is not legal advice** — see the note at the end of this file.
 
 ## Third-party tools
 
