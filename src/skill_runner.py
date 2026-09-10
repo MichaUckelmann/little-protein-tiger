@@ -1023,6 +1023,30 @@ def _to_claude_tools(defs: list[dict]) -> list[dict]:
     return tools
 
 
+# OpenAI's Responses API. Like Gemini this goes through `requests` rather than a
+# vendor SDK: the wire format is a single JSON POST, `requests` is already a
+# direct dependency, and the retry/refusal/accounting logic here is shared with
+# the Gemini path anyway. The key goes in the Authorization HEADER for the same
+# reason Gemini's does — see the note above `_GEMINI_GENERATE_URL`.
+_OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+
+
+def _to_openai_tools(defs: list[dict]) -> list[dict]:
+    """`_TOOL_DEFS` -> Responses-API tool schema.
+
+    FLAT (`{type, name, description, parameters}`), not the Chat-Completions
+    nesting under a `"function"` key — the Responses API rejects the latter.
+
+    Deliberately no `"strict": true`: `_TOOL_DEFS` schemas do not set
+    `additionalProperties: false` and do not list every property in `required`,
+    which strict structured calling requires. Turning it on without rewriting
+    all 24 schemas makes every tool call fail.
+    """
+    return [{"type": "function", "name": d["name"],
+             "description": d["description"], "parameters": d["parameters"]}
+            for d in defs]
+
+
 def _to_gemini_tools(defs: list[dict]) -> list[dict]:
     return [
         {
@@ -1174,7 +1198,12 @@ class SkillRunner:
             + (" [extended thinking]" if self.use_extended_thinking else "")
         )
 
-    _PROVIDER_KEYS = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}
+    # `_require_api_key` treats an UNKNOWN provider as keyless ("local/Ollama
+    # needs none") and returns silently, so a provider missing from this map
+    # surfaces its missing key as a raw 401 in the middle of a run instead of
+    # a pre-flight error.
+    _PROVIDER_KEYS = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY",
+                      "openai": "OPENAI_API_KEY"}
 
     def _require_api_key(self) -> None:
         """Fail early and legibly when the provider's key isn't configured.
@@ -1571,7 +1600,23 @@ class SkillRunner:
             else:
                 messages = [{"role": "user", "content": user_content}]
             result = self._run_claude(messages)
+        elif self.provider == "openai":
+            # Responses-API `input` items. A user turn is the same
+            # {role, content} shape Claude uses, which is why `_render_trace`
+            # renders it without a new branch; assistant turns are the raw
+            # output items, which carry `type` and no `role`.
+            if is_continuation:
+                messages = list(self._messages)  # type: ignore[arg-type]
+                messages.append({"role": "user", "content": user_content})
+            else:
+                messages = [{"role": "user", "content": user_content}]
+            result = self._run_openai(messages)
         else:
+            # NOTE: this stays the `else` rather than becoming an explicit
+            # `== "gemini"` on purpose — `curation.provider` also allows
+            # "local" (Ollama), which speaks the Gemini-compatible shape. But
+            # it is why an unrecognised provider silently POSTed to Gemini
+            # before the branch above existed.
             if is_continuation:
                 messages = list(self._messages)  # type: ignore[arg-type]
                 messages.append({"role": "user", "parts": [{"text": user_content}]})
@@ -1667,6 +1712,44 @@ class SkillRunner:
 
         for msg in self._messages:
             role = msg.get("role", "")
+
+            # ----------------------------------------------------------
+            # OpenAI Responses format — items carry `type` and NO `role`,
+            # except user turns, which are {role, content:str} and are handled
+            # by the Claude branch below. Checked first so a typed item can
+            # never fall through to a role test it does not have.
+            # ----------------------------------------------------------
+            item_type = msg.get("type", "")
+            if not role and item_type:
+                if item_type == "reasoning":
+                    summary = " ".join(
+                        part.get("text", "")
+                        for part in (msg.get("summary") or [])).strip()
+                    lines += ["### Reasoning", "",
+                              summary or "_(opaque — no summary returned)_", ""]
+                elif item_type == "message":
+                    assistant_turn += 1
+                    text = "".join(
+                        c.get("text", "") for c in (msg.get("content") or [])
+                        if c.get("type") == "output_text")
+                    lines += [f"## Turn {assistant_turn} — Assistant", "",
+                              text, "", "---", ""]
+                elif item_type == "function_call":
+                    args = msg.get("arguments") or ""
+                    try:
+                        args = json.dumps(json.loads(args), indent=2)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    lines += [f"### Tool Call — `{msg.get('name', '?')}`", "",
+                              "```json", args, "```", ""]
+                elif item_type == "function_call_output":
+                    out = msg.get("output", "")
+                    try:
+                        out = json.dumps(json.loads(out), indent=2)[:4000]
+                    except (json.JSONDecodeError, TypeError):
+                        out = str(out)[:4000]
+                    lines += ["### Tool Result", "", "```json", out, "```", ""]
+                continue
 
             # ----------------------------------------------------------
             # Claude format
@@ -1801,10 +1884,21 @@ class SkillRunner:
     def _count_assistant_turns(self) -> int:
         if not self._messages:
             return 0
-        return sum(
-            1 for m in self._messages
-            if m.get("role") in ("assistant", "model")
-        )
+        # OpenAI Responses items carry `type` and no `role`, so counting roles
+        # alone reported "Total LLM calls: 0" for a run that made fifteen. One
+        # CALL appends its whole output list at once, so a turn is a `message`
+        # or a contiguous group of `function_call`s — counting every
+        # function_call item would multiply a turn that requested three tools.
+        turns = sum(1 for m in self._messages
+                    if m.get("role") in ("assistant", "model")
+                    or m.get("type") == "message")
+        prev_was_call = False
+        for m in self._messages:
+            is_call = m.get("type") == "function_call"
+            if is_call and not prev_was_call:
+                turns += 1
+            prev_was_call = is_call
+        return turns
 
     # ------------------------------------------------------------------
     # Claude agentic loop
@@ -1983,6 +2077,187 @@ class SkillRunner:
     # Gemini agentic loop
     # ------------------------------------------------------------------
 
+    _OPENAI_RETRY_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
+
+    def _run_openai(self, messages: list[dict]) -> str:
+        """The agentic loop against OpenAI's Responses API.
+
+        Modelled on `_run_gemini` — same retry budget, same refusal contract,
+        same per-call input ceiling — with three things specific to this API,
+        each verified against a live call rather than taken from docs:
+
+        1. **Every output item is replayed verbatim, `reasoning` included.**
+           Echoing a `function_call` back without the `reasoning` item that
+           preceded it is a 400. This is the same requirement as Claude's
+           "thinking blocks must carry their `signature`", and on a reasoning
+           model dropping them would degrade multi-turn tool use rather than
+           erroring, so the whole `output` list goes back untouched.
+        2. **`input_tokens` INCLUDES the cached and cache-written share**, the
+           Gemini convention rather than Anthropic's. Measured: a repeated
+           4,635-token prefix reported input_tokens=4635 with
+           cache_write=4632 on the first call and cached=4632 on the second,
+           the total unchanged. `token_budget.Usage.input_tokens` wants the
+           UNCACHED share, so both are subtracted.
+        3. **`output_tokens` already includes `reasoning_tokens`** — adding
+           them again double-bills a thinking model.
+        """
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        tools = _to_openai_tools(_filter_tools(_TOOL_DEFS, self.skill_name))
+
+        for iteration in range(self.max_iter):
+            logger.info(f"[openai] call #{iteration + 1} — items={len(messages)}")
+            payload: dict[str, Any] = {
+                "model": self.model_id,
+                "instructions": self.system_prompt,
+                "input": messages,
+                "max_output_tokens": 24000,
+            }
+            if tools:
+                payload["tools"] = tools
+
+            for attempt in range(4):
+                try:
+                    resp = requests.post(
+                        _OPENAI_RESPONSES_URL,
+                        headers={"Authorization": f"Bearer {api_key}",
+                                 "Content-Type": "application/json"},
+                        json=payload, timeout=180)
+                except (requests.ConnectionError, requests.Timeout) as exc:
+                    if attempt == 3:
+                        raise
+                    wait = 10 * (attempt + 1)
+                    logger.warning(
+                        f"[openai] {type(exc).__name__} on call "
+                        f"#{iteration + 1} (attempt {attempt + 1}/4) — "
+                        f"retrying in {wait}s")
+                    time.sleep(wait)
+                    continue
+                if resp.status_code not in self._OPENAI_RETRY_STATUS or attempt == 3:
+                    break
+                retry_after = (resp.headers.get("Retry-After")
+                               or resp.headers.get("retry-after"))
+                if resp.status_code == 429:
+                    wait = (int(retry_after)
+                            if retry_after and retry_after.isdigit()
+                            else 30 * (attempt + 1))
+                else:
+                    wait = 10 * (attempt + 1)
+                logger.warning(
+                    f"[openai] transient {resp.status_code} on call "
+                    f"#{iteration + 1} (attempt {attempt + 1}/4) — "
+                    f"retrying in {wait}s")
+                time.sleep(wait)
+            resp.raise_for_status()
+            body = resp.json()
+
+            if body.get("error"):
+                raise RuntimeError(
+                    f"OpenAI returned an error on call #{iteration + 1}: "
+                    f"{body['error']}")
+
+            out_items: list[dict] = body.get("output") or []
+            reason = (body.get("incomplete_details") or {}).get("reason")
+            # A declined request is a `refusal` content part, or an
+            # `incomplete_details.reason` of content_filter. Both must raise
+            # the SAME error Claude's stop_reason and Gemini's blockReason do,
+            # or `_resolve_stage`'s refusal-fallback chain cannot fire and the
+            # stage writes a 0-byte report that fails three stages later.
+            refusals = [c.get("refusal") for o in out_items
+                        if o.get("type") == "message"
+                        for c in (o.get("content") or [])
+                        if c.get("type") == "refusal"]
+            if reason == "content_filter" or refusals:
+                raise SkillRefusedError(
+                    skill=self.skill_name, model=self.model_id,
+                    category=reason or "refusal", iteration=iteration + 1)
+            if reason:
+                logger.warning(
+                    f"OpenAI response incomplete on call #{iteration + 1} "
+                    f"(reason={reason!r}) — '### PIPELINE HANDOFF' may be "
+                    f"missing.")
+            if not out_items:
+                raise RuntimeError(
+                    f"OpenAI returned no output on call #{iteration + 1} "
+                    f"(status={body.get('status')!r}).")
+
+            usage = body.get("usage") or {}
+            detail = usage.get("input_tokens_details") or {}
+            request_tok = usage.get("input_tokens", 0) or 0
+            cached_tok = detail.get("cached_tokens", 0) or 0
+            cache_write_tok = detail.get("cache_write_tokens", 0) or 0
+            uncached_tok = max(request_tok - cached_tok - cache_write_tok, 0)
+            out_tok = usage.get("output_tokens", 0) or 0
+            reasoning_tok = (usage.get("output_tokens_details") or {}).get(
+                "reasoning_tokens", 0) or 0
+            self._total_input_tokens += uncached_tok
+            self._total_output_tokens += out_tok
+            self._total_cache_creation_tokens += cache_write_tok
+            self._total_cache_read_tokens += cached_tok
+            # The CEILING is about how big one request was, so it reads the
+            # whole prompt; the LEDGER is about what was billable, so it reads
+            # the buckets. Conflating them is why the two differ here.
+            self._last_input_tokens = request_tok
+            logger.info(
+                f"  tokens: {request_tok:,} in / {out_tok:,} out"
+                + (f" (incl. {reasoning_tok:,} reasoning)" if reasoning_tok else "")
+                + (f" / {cached_tok:,} cached" if cached_tok else "")
+                + (f" / {cache_write_tok:,} cache-write" if cache_write_tok else "")
+                + f" (run cumulative: {self._total_input_tokens:,} uncached in / "
+                f"{self._total_output_tokens:,} out)")
+
+            if request_tok > self.max_input_tokens:
+                raise RuntimeError(
+                    f"Input token limit exceeded on call #{iteration + 1}: "
+                    f"{request_tok:,} tokens in one request "
+                    f"(limit: {self.max_input_tokens:,}). "
+                    f"Run total so far: {self._total_input_tokens:,} in / "
+                    f"{self._total_output_tokens:,} out. "
+                    f"Reduce top_k, use a shorter query, or raise --max-tokens.")
+
+            # Verbatim, reasoning items included — see the docstring.
+            messages.extend(out_items)
+
+            calls = [o for o in out_items if o.get("type") == "function_call"]
+            if not calls:
+                logger.info(
+                    f"Run complete — total tokens: {self._total_input_tokens:,} "
+                    f"in / {self._total_output_tokens:,} out across "
+                    f"{iteration + 1} LLM calls")
+                self._messages = messages
+                return "\n".join(
+                    c.get("text", "") for o in out_items
+                    if o.get("type") == "message"
+                    for c in (o.get("content") or [])
+                    if c.get("type") == "output_text")
+
+            for call in calls:
+                name = call.get("name", "")
+                raw = call.get("arguments") or "{}"
+                try:
+                    args = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    # Feed the parse failure back as the tool result rather
+                    # than aborting: the model can correct itself, and a
+                    # malformed argument blob is not a pipeline fault.
+                    logger.warning(f"  → {name}: unparseable arguments: {exc}")
+                    messages.append({
+                        "type": "function_call_output",
+                        "call_id": call.get("call_id"),
+                        "output": json.dumps(
+                            {"error": f"arguments were not valid JSON: {exc}"}),
+                    })
+                    continue
+                logger.info(f"  → {name}({list(args.keys())})")
+                messages.append({
+                    "type": "function_call_output",
+                    "call_id": call.get("call_id"),
+                    "output": self._execute_tool(name, args),
+                })
+
+        raise RuntimeError(
+            f"Max iterations ({self.max_iter}) exceeded for skill "
+            f"'{self.skill_name}'")
+
     def _run_gemini(self, messages: list[dict]) -> str:
         api_key = os.environ.get("GEMINI_API_KEY", "")
         url = _GEMINI_GENERATE_URL.format(model=self.model_id)
@@ -2090,7 +2365,15 @@ class SkillRunner:
             # so the ledger can price it at the cache-read rate rather than
             # billing the whole prompt as fresh input.
             cached_tok = usage.get("cachedContentTokenCount", 0) or 0
-            self._total_input_tokens += in_tok
+            # ...and SUBTRACT it, which the previous revision did not.
+            # `token_budget.Usage.input_tokens` is documented as the UNCACHED
+            # share (`price()` adds the three input buckets), so adding the
+            # full promptTokenCount here and the cached share again as
+            # cache_read billed every cached token at 1.0x + 0.1x instead of
+            # 0.1x. It over-reported spend, so `--budget` was conservative
+            # rather than permissive — wrong either way, and gemini is the
+            # default provider for every stage.
+            self._total_input_tokens += max(in_tok - cached_tok, 0)
             self._total_output_tokens += out_tok
             self._total_cache_read_tokens += cached_tok
             self._last_input_tokens = in_tok

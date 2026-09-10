@@ -394,7 +394,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--provider",
-        choices=["claude", "gemini"],
+        choices=["claude", "gemini", "openai"],
         default="gemini",
         help="LLM provider. Default: gemini (gemini-3.7-flash) — cheaper "
              "and does not hit the 'bio'-category safety refusals "

@@ -212,16 +212,24 @@ class BudgetExceeded(RuntimeError):
     """Raised by `TokenLedger.preflight` / `check_cap` when the cap would be passed."""
 
     def __init__(self, *, spent_usd: float, projected_usd: float,
-                 cap_usd: float, stage: str):
+                 cap_usd: float, stage: str, reason: str | None = None):
         self.spent_usd = spent_usd
         self.projected_usd = projected_usd
         self.cap_usd = cap_usd
         self.stage = stage
+        self.reason = reason
         super().__init__(
-            f"API budget exceeded before stage {stage!r}: "
-            f"${spent_usd:.4f} spent + ${projected_usd:.4f} projected "
-            f"> ${cap_usd:.2f} cap"
-        )
+            reason if reason is None else
+            f"cannot enforce --budget before stage {stage!r}: {reason}")
+        if reason is None:
+            # Rebuild with the numeric message; a `reason` replaces it because
+            # "$0.0000 projected > $5.00 cap" reads as a bug rather than as the
+            # unpriced-model refusal it actually is.
+            RuntimeError.__init__(
+                self,
+                f"API budget exceeded before stage {stage!r}: "
+                f"${spent_usd:.4f} spent + ${projected_usd:.4f} projected "
+                f"> ${cap_usd:.2f} cap")
 
 
 def _now() -> str:
@@ -326,6 +334,21 @@ class TokenLedger:
         """
         if self.cap_usd is None:
             return
+        # An unpriced model prices at $0.00, so every cap check below passes
+        # no matter what the run actually costs: `--budget 5` on a model with
+        # no rate table enforced nothing at all, and only a "has_unpriced"
+        # advisory in the summary hinted at it. A cap the caller ASKED FOR must
+        # not be silently unenforceable, so this refuses to start instead.
+        # No cap set (`--budget` omitted) is unaffected — the return above.
+        if rates_for(model) is None:
+            raise BudgetExceeded(
+                spent_usd=self.spent_usd, projected_usd=float("nan"),
+                cap_usd=self.cap_usd, stage=stage,
+                reason=(f"model {model!r} has no entry in config.yaml "
+                        f"models.pricing, so its spend would count as $0.00 "
+                        f"and the ${self.cap_usd:.2f} cap could never fire. "
+                        f"Add a rate for it, or drop --budget to run "
+                        f"unmetered."))
         projected = price(model, estimated)
         if self.spent_usd + projected <= self.cap_usd:
             return

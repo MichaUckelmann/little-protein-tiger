@@ -606,6 +606,50 @@ Celery writers); a rollup is mirrored into `manifest.json["budget"]` once per st
 replayed **with their `signature`**, or the next turn is rejected with
 `messages.N.content.0.thinking.signature: Field required`.
 
+## Three providers, one loop
+
+`claude`, `gemini` and `openai` all run the same agentic loop, refusal
+contract and four-bucket ledger. `_run_openai` speaks the **Responses API**
+(`/v1/responses`) through `requests`, not a vendor SDK — the wire format is one
+JSON POST and `requests` is already a direct dependency. Facts established
+against live calls, not docs:
+
+- **`run()`'s provider branch was `if claude: ... else: gemini`.** Any
+  unrecognised provider silently sent Gemini-shaped messages to Gemini's
+  endpoint. It is a three-way branch now; the trailing `else` stays because
+  `curation.provider` also allows `"local"` (Ollama), which speaks the
+  Gemini-compatible shape.
+- **Every output item is replayed verbatim, `reasoning` included.** Echoing a
+  `function_call` back without the `reasoning` item that preceded it is a 400.
+  Same class of rule as Claude's "thinking blocks must carry their
+  `signature`", and on a reasoning model dropping them degrades multi-turn
+  tool use rather than erroring.
+- **`input_tokens` INCLUDES the cached and cache-written share** — the Gemini
+  convention, not Anthropic's. Measured: a repeated 4,635-token prefix
+  reported `input_tokens=4635` with `cache_write=4632`, then `cached=4632`,
+  the total unchanged. `Usage.input_tokens` is the UNCACHED share, so both are
+  subtracted. **The Gemini path had this wrong** and billed every cached token
+  at 1.0x + 0.1x instead of 0.1x — an over-report, so `--budget` was
+  conservative rather than permissive, but wrong either way and gemini is the
+  default provider.
+- **`output_tokens` already contains `reasoning_tokens`.** Adding them again
+  double-bills a thinking model, which is the opposite of the Gemini bug
+  (`thoughtsTokenCount` there is separate and must be added).
+- **The input CEILING reads the whole request; the LEDGER reads the buckets.**
+  A 4,635-token request that is 99% cached is still a 4,635-token request.
+- **Tools use the FLAT Responses shape** (`{type, name, description,
+  parameters}`), not Chat-Completions' nesting under `"function"`, and
+  deliberately without `strict: true` — `_TOOL_DEFS` schemas omit
+  `additionalProperties: false` and do not list every property in `required`,
+  so strict mode rejects all 24.
+- **A cap now refuses an unpriced model.** `price()` returns $0.00 for a model
+  with no rate entry, so `--budget 5` on one enforced nothing at all and only
+  a "has_unpriced" advisory hinted at it. `TokenLedger.preflight` raises
+  instead. Omitting `--budget` still runs unmetered — the refusal is about an
+  unenforceable cap, not about unpriced models. **The `gpt-5.6-*` rates in
+  config.yaml are PLACEHOLDERS**; replace them with your account's before
+  relying on a budget.
+
 ## One agentic loop, not one per entry point
 
 `scripts/ask_corpus.py` is a thin front-end over `SkillRunner` running the

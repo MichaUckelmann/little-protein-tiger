@@ -122,3 +122,29 @@ def test_check_cap_fires_after_an_overshooting_stage(tmp_path):
 def test_invalid_mode_rejected(tmp_path):
     with pytest.raises(ValueError):
         TokenLedger(tmp_path / "l.jsonl", mode="soft")
+
+
+def test_a_cap_refuses_to_run_an_unpriced_model(tmp_path):
+    """`--budget` must not be silently unenforceable.
+
+    An unpriced model prices at $0.00, so every cap comparison passed no
+    matter the real spend: `--budget 5` on a model with no rate table enforced
+    nothing, and only a "has_unpriced" advisory in the summary hinted at it.
+    A cap the caller explicitly ASKED FOR now fails loudly instead.
+    """
+    from src.token_budget import BudgetExceeded, TokenLedger, Usage
+
+    ledger = TokenLedger(tmp_path / "ledger.jsonl", cap_usd=5.00)
+    with pytest.raises(BudgetExceeded, match="models.pricing"):
+        ledger.preflight(stage="pathway", model="model-from-the-future",
+                         estimated=Usage(input_tokens=1_000_000))
+
+
+def test_no_cap_still_runs_an_unpriced_model(tmp_path):
+    """The refusal is about an unenforceable CAP, not about unpriced models —
+    running unmetered is a legitimate choice and stays available."""
+    from src.token_budget import TokenLedger, Usage
+
+    ledger = TokenLedger(tmp_path / "ledger.jsonl", cap_usd=None)
+    ledger.preflight(stage="pathway", model="model-from-the-future",
+                     estimated=Usage(input_tokens=1_000_000))

@@ -61,6 +61,7 @@ from src.token_budget import BudgetExceeded, TokenLedger, Usage, load_pricing
 _DEFAULT_MODELS = {
     "claude": "claude-sonnet-5",
     "gemini": "gemini-3.7-flash",
+    "openai": "gpt-5.6-terra",
 }
 
 # Haiku cannot do extended thinking; stages that ask for it get upgraded here.
@@ -83,7 +84,12 @@ _REFUSAL_FALLBACK_MODELS = ["gemini:gemini-3.7-flash", "claude-opus-5",
 
 # Model-id prefix -> provider, for refusal_fallbacks entries written WITHOUT an
 # explicit "provider:model" prefix.
-_MODEL_ID_PROVIDERS = (("claude-", "claude"), ("gemini-", "gemini"))
+# `gpt-` matters as much as the other two: a bare `gpt-5.6-terra` in a
+# refusal chain would otherwise inherit the CURRENT provider and get POSTed to
+# whichever endpoint that is, which is the 404-kills-the-run failure documented
+# below.
+_MODEL_ID_PROVIDERS = (("claude-", "claude"), ("gemini-", "gemini"),
+                       ("gpt-", "openai"))
 
 
 def _split_fallback(fallback: str, current_provider: str) -> tuple[str, str]:
@@ -120,6 +126,7 @@ _DEFAULT_STAGE_MODELS = {
         "binder_summary": "claude-haiku-4-5",
     },
     "gemini": {},
+    "openai": {},
 }
 
 # Maps stage name → skill name (inverse of tasks.py _SKILL_TO_STAGE)

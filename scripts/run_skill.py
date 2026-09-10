@@ -43,6 +43,7 @@ from src.skill_runner import SkillRunner
 _DEFAULT_MODELS = {
     "claude": "claude-sonnet-5",
     "gemini": "gemini-3.7-flash",
+    "openai": "gpt-5.6-terra",
 }
 
 
@@ -87,7 +88,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        choices=["claude", "gemini"],
+        choices=["claude", "gemini", "openai"],
         default="gemini",
         help="LLM provider (default: gemini — gemini-3.7-flash, cheaper "
              "and less prone to safety-classifier refusals on these "
@@ -99,7 +100,7 @@ def main() -> None:
         metavar="MODEL_ID",
         help=(
             f"Override model ID "
-            f"(defaults: claude={_DEFAULT_MODELS['claude']}, gemini={_DEFAULT_MODELS['gemini']})"
+            f"(defaults: " + ", ".join(f"{k}={v}" for k, v in _DEFAULT_MODELS.items()) + ")"
         ),
     )
     parser.add_argument(

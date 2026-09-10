@@ -43,7 +43,8 @@ SKILL = "corpus-explorer"
 
 # `--model` used to take a Claude model id (`--model claude-sonnet-5`), so a
 # bare model id still has to mean something sensible rather than erroring.
-_PROVIDER_OF_MODEL_PREFIX = {"claude": "claude", "gemini": "gemini"}
+_PROVIDER_OF_MODEL_PREFIX = {"claude": "claude", "gemini": "gemini",
+                            "gpt": "openai"}
 
 
 def _provider_for(model_id: str) -> str | None:
@@ -72,7 +73,7 @@ def main() -> None:
         help="Optional first question. Without it, the agent starts empty and "
              "prompts for one. Either way it stays interactive afterwards.")
     parser.add_argument(
-        "--provider", choices=["claude", "gemini"], default="gemini",
+        "--provider", choices=["claude", "gemini", "openai"], default="gemini",
         help=f"LLM provider (default: gemini — {_DEFAULT_MODELS['gemini']}, "
              f"~4x cheaper on input and the default for every other entry "
              f"point; claude uses {_DEFAULT_MODELS['claude']})")

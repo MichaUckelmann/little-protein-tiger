@@ -35,7 +35,7 @@ def _dummy_api_keys() -> None:
     differently depending on whether the developer's `.env` happens to be
     populated.
     """
-    for var in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY"):
+    for var in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         os.environ.setdefault(var, "test-placeholder-not-a-real-key")
 
 

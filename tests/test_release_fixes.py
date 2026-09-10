@@ -56,12 +56,12 @@ def test_the_shipped_fallback_chains_all_resolve_to_a_real_provider(config):
     """Guards the config itself: every entry in every chain must land on a
     provider that `SkillRunner` can actually dispatch to."""
     models_cfg = config.get("models") or {}
-    for provider in ("claude", "gemini"):
+    for provider in ("claude", "gemini", "openai"):
         chain = (models_cfg.get(provider) or {}).get("refusal_fallbacks") or []
         assert chain, f"{provider} has no refusal_fallbacks"
         for entry in chain:
             resolved, model = _split_fallback(entry, provider)
-            assert resolved in ("claude", "gemini", "local"), (
+            assert resolved in ("claude", "gemini", "openai", "local"), (
                 f"{provider} chain entry {entry!r} -> unknown provider "
                 f"{resolved!r}")
             # The specific incident: a claude-* id resolving to gemini.

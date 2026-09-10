@@ -157,6 +157,7 @@ def _module_available(name: str) -> bool:
 _PLACEHOLDERS = {
     "GEMINI_API_KEY": ("", "..."),
     "ANTHROPIC_API_KEY": ("", "...", "sk-ant-..."),
+    "OPENAI_API_KEY": ("", "...", "sk-..."),
     "NCBI_EMAIL": ("", "you@example.com"),
 }
 

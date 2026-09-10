@@ -140,6 +140,16 @@ models:
     # `--provider claude` path).
     refusal_fallbacks: ["claude-opus-5", "claude-haiku-4-5"]
 
+  openai:
+    # Responses API (`/v1/responses`), reached with `requests` like gemini —
+    # no vendor SDK. "terra" is the general model; "luna" is the sibling and
+    # is selectable per stage or with --model-id.
+    default: "gpt-5.6-terra"
+    # No same-family rung first: crossing providers immediately on a refusal
+    # is cheaper than walking models that share a classifier verdict, which is
+    # the lesson the claude chain above encodes.
+    refusal_fallbacks: ["gemini:gemini-3.7-flash", "claude-opus-5"]
+
   # USD per 1M tokens.  Cache multipliers apply to the INPUT rate:
   # cache writes bill at ~1.25x (5-minute TTL; use 2.0 for a 1h TTL) and cache
   # reads at ~0.10x.  The API reports uncached input, cache-write and cache-read
@@ -154,6 +164,15 @@ models:
     # Retired name, kept so ledger lines written before the GA rename
     # still price rather than logging as unpriced.
     gemini-3.1-flash-lite-preview: {input: 0.25, output: 1.50}
+    # ── OpenAI ────────────────────────────────────────────────────────────
+    # PLACEHOLDERS — replace with the rates on your account before relying on
+    # --budget for an openai run. They are not guesses at the real price; they
+    # exist so `rates_for()` resolves and the budget cap is ENFORCED rather
+    # than silently bypassed (an unpriced model prices at $0.00, so a cap
+    # never fires — see token_budget.price). `budget_requires_pricing` in the
+    # design block below turns the bypass into a hard error instead.
+    gpt-5.6-terra:      {input: 1.25, output: 10.00}
+    gpt-5.6-luna:       {input: 1.25, output: 10.00}
 
 curation:
   # gemini, like every other LLM stage in this repo. It was "claude" long
