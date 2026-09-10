@@ -2,9 +2,9 @@
 """Build the launch hook video: assets/lpt_hook.mp4 (1080x1350, 30 fps, silent).
 
 LinkedIn autoplays feed video muted, so this carries no audio and every claim is
-on screen. It runs about 27 seconds: the prompt being typed, then one beat per
-decision the pipeline made on its own, ending on the lead design turning on the
-full-length receptor.
+on screen. It runs about a minute: the prompt being typed, then one beat per
+decision the pipeline made on its own, the lead design turning on the
+full-length receptor, and what the whole campaign cost.
 
     .venv/bin/python docs/showcase/build_video.py
 
@@ -63,7 +63,13 @@ W, H, FPS = 1080, 1350, 30
 #              that was too short; everything a viewer has to actually take in
 #              is on screen for the whole of it.
 TYPE_STEP, BUILD, HOLD = 4, 38, 90
-COUNTER = 15           # one tick of the hit-rate counter spinning up
+#   BUILD_FAST one of a RUN of reveals — the funnel's gates arriving one after
+#              another, the hit-rate counter spinning up. Each frame adds a bar
+#              or a digit to something the viewer has already parsed, so a full
+#              BUILD each is time spent watching, not reading. Only the HOLD at
+#              the end of such a run is read.
+BUILD_FAST = 26
+COUNTER = 9            # one tick of the hit-rate counter spinning up
 TURN_HOLD = 72         # the last turntable frame, held to read its caption
 WORKERS = 4
 SITE = "michauckelmann.github.io/little-protein-tiger"
@@ -82,6 +88,8 @@ GOOGLE_FONTS = ("https://fonts.googleapis.com/css2"
 
 F = json.loads((HERE / "facts/pain_receptors.json").read_text(encoding="utf-8"))
 CHECK = json.loads((HERE / "facts/hero_check.json").read_text(encoding="utf-8"))
+CORPUS = json.loads((HERE / "facts/corpus_explorer.json").read_text(encoding="utf-8"))
+ABL = json.loads((HERE / "facts/ablation.json").read_text(encoding="utf-8"))
 CAL = F["calibration"]
 
 
@@ -281,6 +289,12 @@ def scene_targets() -> list[tuple[str, int]]:
         f'<h2>Three candidates, ranked by evidence.</h2>{picked}'
         f'<p style="margin-top:40px">CALCRL / RAMP1 &mdash; the CGRP receptor. '
         f'The target class of an approved migraine antibody.</p>'
+        f'<p class="muted" style="font-size:28px;margin-top:26px">Its own '
+        f'knowledge proposes; {n(CORPUS["curated"])} curated papers test it '
+        f'&mdash; evidence to cite, or a reason to change course. Blank the '
+        f'corpus and the target changed on '
+        f'{ABL["n_top_pick_changed_without_corpus"]} of '
+        f'{ABL["n_queries"]} queries.</p>'
         f'<div class="grow"></div>'), HOLD))
     return out
 
@@ -313,7 +327,8 @@ def scene_structure() -> list[tuple[str, int]]:
 
 def scene_epitope() -> list[tuple[str, int]]:
     head = ('<div class="eyebrow">Where a drug can actually reach</div>'
-            '<h2>On a membrane receptor, most of the surface is useless.</h2>')
+            '<h2>For a membrane receptor, transmembrane parts are '
+            'excluded.</h2>')
     fig = f'<figure><img src="{img("hero_apo")}" alt=""></figure>'
     return [
         (page(head + fig), BUILD + 16),
@@ -349,7 +364,7 @@ def scene_trial() -> list[tuple[str, int]]:
             f'<p class="muted" style="font-size:26px;margin-top:30px">'
             f'95% Wilson interval {lo:.1f}&ndash;{hi:.1f}%. The campaign is sized '
             f'on the pessimistic end.</p>')
-    out.append((page(head + tail + '<div class="grow"></div>'), BUILD + 12))
+    out.append((page(head + tail + '<div class="grow"></div>'), BUILD_FAST + 12))
     out.append((page(head + tail
                      + f'<div class="stamp">{CAL["verdict"].replace("_", " ")}</div>'
                      + f'<p style="margin-top:26px;font-size:30px">and it raised '
@@ -368,7 +383,7 @@ def scene_funnel() -> list[tuple[str, int]]:
              f'<div><div class="n">{n(F["n_scored"])}</div><div class="k">refolds</div></div>'
              f'<div><div class="n">{n(F["n_survivors"])}</div><div class="k">survivors</div></div>'
              f'</div>')
-    out = [(page(head + stats + '<div class="grow"></div>'), BUILD + 16)]
+    out = [(page(head + stats + '<div class="grow"></div>'), BUILD_FAST + 16)]
     for k in (3, 6, 8):
         bars = "".join(
             f'<div class="glab"><span>{g[0]}</span>'
@@ -377,7 +392,8 @@ def scene_funnel() -> list[tuple[str, int]]:
             f'<b>{n(g[1])}</b></div>' for g in gates[:k])
         out.append((page(head + stats
                          + f'<div style="margin-top:34px">{bars}</div>'
-                         + '<div class="grow"></div>'), BUILD if k < 8 else HOLD))
+                         + '<div class="grow"></div>'),
+                    BUILD_FAST if k < 8 else HOLD))
     return out
 
 
@@ -403,6 +419,40 @@ def plate(caption: str) -> str:
         f'<h2 style="font-size:60px">It lands on the agonist’s own site.</h2>'
         f'<div class="hole"></div>'
         f'<div class="plate-cap">{caption}</div>', dark=True)
+
+
+def scene_cost() -> list[tuple[str, int]]:
+    """What the whole campaign cost, and whose model ran it.
+
+    After the result, not before it: the numbers only mean something once a
+    viewer has seen what they bought. Both figures are this run's own —
+    `spend_usd` is the four-bucket ledger's total across the reasoning stages,
+    `gpu_hours` the sum over pilot, calibration and production, all on one
+    card — and the provider line is a property of the runner today, not a
+    roadmap: one agentic loop with three providers behind it.
+    """
+    g = F["gpu_hours"]
+    head = ('<div class="eyebrow">What the whole campaign cost</div>'
+            '<h2>Half a dollar of reasoning. One GPU for a working day.</h2>')
+    stats = (f'<div class="stats">'
+             f'<div><div class="n">${F["spend_usd"]:.2f}</div>'
+             f'<div class="k">total API spend</div></div>'
+             f'<div><div class="n">{g["total"]:.1f}</div>'
+             f'<div class="k">GPU-hours</div></div>'
+             f'<div><div class="n">{len(F["llm_stages"])}</div>'
+             f'<div class="k">reasoning stages</div></div></div>'
+             f'<p class="muted" style="font-size:27px;margin-top:26px">'
+             f'{g["pilot"]:.1f} h pilot, {g["calibration"]:.1f} h calibration, '
+             f'{g["production"]:.1f} h production &mdash; one workstation card, '
+             f'no cluster.</p>')
+    tail = (f'<div class="rule" style="margin-top:44px"></div>'
+            f'<h2 style="font-size:52px;margin-top:0">And no model is '
+            f'built in.</h2>'
+            f'<p style="margin-top:28px">Claude, Gemini and GPT each drive the '
+            f'same loop, the same tools and the same cost ledger. Which one '
+            f'runs is the operator&rsquo;s call.</p>')
+    return [(page(head + stats + '<div class="grow"></div>'), BUILD_FAST + 16),
+            (page(head + stats + tail + '<div class="grow"></div>'), HOLD)]
 
 
 def scene_end() -> list[tuple[str, int]]:
@@ -459,6 +509,7 @@ def main() -> int:
                f'saw it.</p>')
     plate_idx = len(stills)
     stills.append((plate(caption), 0))            # composited, not held directly
+    stills += scene_cost()
     stills += scene_end()
 
     print(f"  {len(stills)} stills, {len(turns)} turntable frames")

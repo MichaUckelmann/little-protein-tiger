@@ -160,21 +160,41 @@ box afterwards rather than framed by hand.
 
 ## Launch material
 
-Two assets for announcing the project, built from the same `facts/` snapshots as
-the pages so a launch post cannot quote a number the showcases have moved on
+Assets for announcing the project, built from the same `facts/` snapshots as the
+pages so a launch post cannot quote a number the showcases have moved on
 from — the one artefact you cannot quietly correct after publishing.
 
 ```bash
 .venv/bin/python docs/showcase/render_hero.py --turntable   # -> hero_*.webp + turntable/
 .venv/bin/python docs/showcase/build_carousel.py            # -> assets/lpt_carousel.pdf
+.venv/bin/python docs/showcase/build_carousel_pdl1.py       # -> assets/lpt_carousel_pdl1.pdf
 .venv/bin/python docs/showcase/build_video.py               # -> assets/lpt_hook.mp4
 ```
 
 | Asset | Shape | For |
 |---|---|---|
 | `assets/lpt_carousel.pdf` | 11 slides, 1080x1350 | LinkedIn renders an uploaded PDF as a swipeable deck |
-| `assets/lpt_hook.mp4` | 42 s, 1080x1350, silent | feed video; autoplay is muted, so every claim is on screen |
+| `assets/lpt_carousel_pdl1.pdf` | 11 slides, 1080x1350 | the same, for the target-already-named entry point |
+| `assets/lpt_hook.mp4` | 57 s, 1080x1350, silent | feed video; autoplay is muted, so every claim is on screen |
 | `assets/lpt_hook_poster.png` | 1080x1350 | upload as the video thumbnail — the first frame is a half-typed prompt |
+
+**Two decks, two entry points.** `build_carousel.py` opens on one sentence about
+a disease and sells the four reasoning stages that decide what to bind;
+`build_carousel_pdl1.py` (PD-L1, `--workflow binder`) opens on a target the
+reader already has and sells everything downstream of that — nine solved
+structures ranked on their measured interfaces, the chain-identity guard, the
+epitope, the trial, the gates, and a hand-made 4ZQK superposition as the one
+piece of independent evidence. Most people arriving at this repo already know
+their target, so the second deck is the one that answers their question. It
+imports the stylesheet, `slide()` and the number formatting from the first
+rather than copying them: two decks posted a week apart that share a palette but
+drift in type scale read as two projects.
+
+Its headline figures are the run's own, at the `hotspot_engagement >= 1`
+threshold in force in August 2026, because the twenty designs it shows came out
+of that gate. `config.yaml` sets 0.75 today, so slide 10 states the re-gate
+(715 -> 752 survivors, same twenty designs, one adjacent swap) rather than
+mixing the two.
 
 Slide 9 reports the corpus ablation (`scripts/ablate_corpus.py`), which exists
 because a deck claiming "grounded in the literature" invites exactly one

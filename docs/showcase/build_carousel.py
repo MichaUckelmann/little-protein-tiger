@@ -42,6 +42,14 @@ PAGE_W_IN, PAGE_H_IN = 11.25, 14.0625
 CHROME = next((c for c in ("google-chrome", "google-chrome-stable", "chromium")
                if shutil.which(c)), None)
 
+#: Module-level so `build_carousel_pdl1.py` renders in the same faces. A second
+#: deck that inlines its own link drifts the moment this one gains a weight.
+GOOGLE_FONTS_LINK = (
+    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
+    'family=Newsreader:opsz,wght@6..72,400;6..72,500&'
+    'family=IBM+Plex+Sans:wght@400;500;600;700&'
+    'family=IBM+Plex+Mono:wght@400;500&display=swap">')
+
 F = json.loads((HERE / "facts/pain_receptors.json").read_text(encoding="utf-8"))
 CORPUS = json.loads((HERE / "facts/corpus_explorer.json").read_text(encoding="utf-8"))
 ABL = json.loads((HERE / "facts/ablation.json").read_text(encoding="utf-8"))
@@ -472,10 +480,10 @@ trial and the ranking exist to make that shortlist small and defensible &mdash;
 not to skip it.</p>
 <div class="rule"></div>
 <h2 style="font-size:44px;margin-top:0">And the corpus has a shape.</h2>
-<p class="wide" style="font-size:25px">{n(CORPUS['indexed'])} papers indexed
-from tier-1 and tier-2 journals; {n(CORPUS['curated'])} curated into structured
-fingerprints, a source span on every claim, then embedded for retrieval. It
-spans molecular and cell biology, and it leans:</p>
+<p class="wide" style="font-size:25px">{n(CORPUS['curated'])} papers from
+tier-1 and tier-2 journals, curated into structured fingerprints with a source
+span on every claim, then embedded for retrieval. It spans molecular and cell
+biology, and it leans:</p>
 <div style="display:flex;gap:34px;align-items:flex-start;margin-top:10px">
   <table style="margin-top:14px;flex:1">{rows}
     <tr><td><em>{pain[0]}</em></td><td class="n"><em>{pain[2]:.0f}%</em></td></tr>
@@ -530,10 +538,7 @@ def main() -> int:
 
     slides = [s1(), s2(), s3(), s4(), s5(), s6(), s7(), s8(), s9(), s10(), s11()]
     html = (f'<meta charset="utf-8"><title>Little Protein Tiger</title>'
-            f'<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
-            f'family=Newsreader:opsz,wght@6..72,400;6..72,500&'
-            f'family=IBM+Plex+Sans:wght@400;500;600;700&'
-            f'family=IBM+Plex+Mono:wght@400;500&display=swap">'
+            f'{GOOGLE_FONTS_LINK}'
             f"<style>{CSS}</style>" + "".join(slides))
 
     with tempfile.TemporaryDirectory() as td:
