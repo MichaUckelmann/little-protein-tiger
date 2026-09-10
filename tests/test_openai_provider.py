@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import json
+import types
 
 import pytest
 
@@ -29,6 +30,19 @@ from src.skill_runner import (
 def _runner(**kw) -> SkillRunner:
     return SkillRunner(skill_name="design-analyst", provider="openai",
                        model_id="gpt-5.6-terra", config={}, **kw)
+
+
+
+def _patch_post(monkeypatch, fn):
+    """Intercept the POOLED session's post, not `requests.post`.
+
+    The REST providers share a `requests.Session` so an agentic loop pays one
+    TLS handshake instead of one per tool round trip. That moved the seam:
+    patching `requests.post` intercepts nothing now, and a test doing so would
+    make a real network call rather than fail loudly.
+    """
+    monkeypatch.setattr("src.skill_runner._http",
+                        lambda: types.SimpleNamespace(post=fn))
 
 
 def _response(*, output, usage=None, **extra) -> dict:
@@ -90,7 +104,7 @@ def test_run_dispatches_to_openai_and_not_the_gemini_fallthrough(monkeypatch):
             "type": "message",
             "content": [{"type": "output_text", "text": "done"}]}]))
 
-    monkeypatch.setattr("src.skill_runner.requests.post", fake_post)
+    _patch_post(monkeypatch, fake_post)
     assert r.run("hello") == "done"
     assert "api.openai.com" in seen["url"]
     # Responses items, not Gemini `parts`.
@@ -111,7 +125,7 @@ def test_the_api_key_is_a_header_never_a_query_string(monkeypatch):
             "type": "message",
             "content": [{"type": "output_text", "text": "x"}]}]))
 
-    monkeypatch.setattr("src.skill_runner.requests.post", fake_post)
+    _patch_post(monkeypatch, fake_post)
     r.run("hi")
     assert "sk-secret-value" not in seen["url"]
     assert seen["headers"]["Authorization"] == "Bearer sk-secret-value"
@@ -131,8 +145,7 @@ def test_a_declined_request_raises_the_shared_refusal_error(
     raise, or the cross-provider fallback chain cannot fire and the stage
     writes a 0-byte report that fails three stages later."""
     r = _runner()
-    monkeypatch.setattr("src.skill_runner.requests.post",
-                        lambda url, **kw: _Resp(body))
+    _patch_post(monkeypatch, lambda url, **kw: _Resp(body))
     with pytest.raises(SkillRefusedError) as exc:
         r.run("something")
     assert exc.value.category == category
@@ -146,8 +159,7 @@ def test_an_incomplete_response_warns_rather_than_refusing(monkeypatch, caplog):
     body = _response(output=[{"type": "message", "content": [
         {"type": "output_text", "text": "partial"}]}],
         incomplete_details={"reason": "max_output_tokens"})
-    monkeypatch.setattr("src.skill_runner.requests.post",
-                        lambda url, **kw: _Resp(body))
+    _patch_post(monkeypatch, lambda url, **kw: _Resp(body))
     assert r.run("x") == "partial"
 
 
@@ -167,8 +179,7 @@ def test_cached_tokens_are_not_billed_as_fresh_input(monkeypatch):
                "input_tokens_details": {"cached_tokens": 4000,
                                         "cache_write_tokens": 600},
                "output_tokens_details": {"reasoning_tokens": 12}})
-    monkeypatch.setattr("src.skill_runner.requests.post",
-                        lambda url, **kw: _Resp(body))
+    _patch_post(monkeypatch, lambda url, **kw: _Resp(body))
     r.run("x")
     u = r.usage()
     assert u.input_tokens == 4635 - 4000 - 600
@@ -191,8 +202,7 @@ def test_the_input_ceiling_measures_the_whole_request(monkeypatch):
                "input_tokens_details": {"cached_tokens": 4630,
                                         "cache_write_tokens": 0},
                "output_tokens_details": {}})
-    monkeypatch.setattr("src.skill_runner.requests.post",
-                        lambda url, **kw: _Resp(body))
+    _patch_post(monkeypatch, lambda url, **kw: _Resp(body))
     with pytest.raises(RuntimeError, match="Input token limit exceeded"):
         r.run("x")
 
@@ -216,7 +226,7 @@ def test_every_output_item_is_replayed_including_reasoning(monkeypatch):
         return _Resp(_response(output=[{"type": "message", "content": [
             {"type": "output_text", "text": "final"}]}]))
 
-    monkeypatch.setattr("src.skill_runner.requests.post", fake_post)
+    _patch_post(monkeypatch, fake_post)
     monkeypatch.setattr(r, "_execute_tool", lambda n, a: json.dumps({"ok": True}))
     assert r.run("go") == "final"
     second = calls[1]
@@ -241,7 +251,7 @@ def test_unparseable_tool_arguments_are_fed_back_not_raised(monkeypatch):
         return _Resp(_response(output=[{"type": "message", "content": [
             {"type": "output_text", "text": "recovered"}]}]))
 
-    monkeypatch.setattr("src.skill_runner.requests.post", fake_post)
+    _patch_post(monkeypatch, fake_post)
     assert r.run("go") == "recovered"
     fed_back = [m for m in seen[1] if m.get("type") == "function_call_output"]
     assert "not valid JSON" in fed_back[0]["output"]
@@ -264,7 +274,7 @@ def test_the_trace_counts_turns_not_items(monkeypatch, tmp_path):
         return _Resp(_response(output=[{"type": "message", "content": [
             {"type": "output_text", "text": "done"}]}]))
 
-    monkeypatch.setattr("src.skill_runner.requests.post", fake_post)
+    _patch_post(monkeypatch, fake_post)
     monkeypatch.setattr(r, "_execute_tool", lambda n, a: "{}")
     r.run("go", trace_path=tmp_path / "t")
     assert r._count_assistant_turns() == 2      # one tool turn, one final

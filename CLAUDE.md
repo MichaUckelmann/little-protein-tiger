@@ -686,6 +686,35 @@ against live calls, not docs:
   deliberately without `strict: true` — `_TOOL_DEFS` schemas omit
   `additionalProperties: false` and do not list every property in `required`,
   so strict mode rejects all 24.
+- **Both REST providers share one pooled `requests.Session` (`_http()`).**
+  `requests.post` opens a fresh connection and completes a full TLS handshake
+  per call, and an agentic stage makes one call per tool round trip — measured
+  on the real OpenAI path, repeat calls went from **1,974 ms to 1,034 ms**, so
+  a 15-call interface stage was paying ~14 s in handshakes. Module-level
+  because nothing drives `SkillRunner` from threads (`binder_metrics`
+  parallelises with separate PROCESSES) and the session is never mutated after
+  creation — per-request headers carry the key, which is the part of
+  `requests.Session` that is not thread-safe.
+  **This moved the test seam**: patching `requests.post` now intercepts
+  nothing and would let a test make a real call, so tests patch
+  `src.skill_runner._http`. (Measure on an AUTHENTICATED call: a 401 probe
+  shows no difference at all and reads as "pooling does not help".)
+- **`tests/test_provider_contracts.py` is what stands in for an SDK.** The one
+  thing a vendor SDK genuinely buys is tracking the API and failing loudly on
+  a renamed field; hand-rolled REST reading raw JSON keys fails SILENTLY — a
+  token bucket reads 0, a refusal goes undetected, or a tool loop never
+  terminates, none of which raise. So the fields the loops depend on are
+  asserted against one cheap live call per provider, marked `network` and
+  deselected by default (`-m network` to run). It includes a canary that a
+  `function_call` replayed WITHOUT its `reasoning` item is still a 400.
+- **TLS to two of three providers is intercepted on the reference
+  workstation.** `api.anthropic.com` and
+  `generativelanguage.googleapis.com` present Fortinet-signed certificates;
+  `api.openai.com` currently does not. The appliance therefore sees those API
+  keys in plaintext headers. This is an accepted org decision here (Fortinet
+  is the operator's security vendor), and it is noted only because it is
+  **independent of REST vs SDK** — an SDK sends the same header over the same
+  intercepted connection — so it is not a reason to change transport.
 - **A cap now refuses an unpriced model.** `price()` returns $0.00 for a model
   with no rate entry, so `--budget 5` on one enforced nothing at all and only
   a "has_unpriced" advisory hinted at it. `TokenLedger.preflight` raises

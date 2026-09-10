@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import types
+
 import pytest
 import yaml
 
@@ -744,7 +746,7 @@ def test_gemini_prompt_level_block_is_a_refusal_not_a_crash(monkeypatch):
     import sys
     sys.path.insert(0, str(_ROOT))
     from src.skill_runner import SkillRefusedError, SkillRunner
-    import requests as _requests
+    import types
 
     class FakeResp:
         status_code = 200
@@ -757,7 +759,12 @@ def test_gemini_prompt_level_block_is_a_refusal_not_a_crash(monkeypatch):
     r.model_id = "gemini-3.7-flash"
     r.system_prompt = "x"
     r.max_iter = 3
-    monkeypatch.setattr(_requests, "post", lambda *a, **k: FakeResp())
+    # The REST providers share a pooled `requests.Session`, so the seam is
+    # `_http()` — patching `requests.post` would intercept nothing and let
+    # this test make a real call.
+    monkeypatch.setattr("src.skill_runner._http",
+                        lambda: types.SimpleNamespace(
+                            post=lambda *a, **k: FakeResp()))
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     with pytest.raises(SkillRefusedError, match="SAFETY"):
         r._run_gemini([{"role": "user", "parts": [{"text": "q"}]}])
@@ -772,7 +779,7 @@ def test_gemini_per_candidate_safety_stop_is_a_refusal_not_a_crash(monkeypatch):
     import sys
     sys.path.insert(0, str(_ROOT))
     from src.skill_runner import SkillRefusedError, SkillRunner
-    import requests as _requests
+    import types
 
     class FakeResp:
         status_code = 200
@@ -785,7 +792,12 @@ def test_gemini_per_candidate_safety_stop_is_a_refusal_not_a_crash(monkeypatch):
     r.model_id = "gemini-3.7-flash"
     r.system_prompt = "x"
     r.max_iter = 3
-    monkeypatch.setattr(_requests, "post", lambda *a, **k: FakeResp())
+    # The REST providers share a pooled `requests.Session`, so the seam is
+    # `_http()` — patching `requests.post` would intercept nothing and let
+    # this test make a real call.
+    monkeypatch.setattr("src.skill_runner._http",
+                        lambda: types.SimpleNamespace(
+                            post=lambda *a, **k: FakeResp()))
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     with pytest.raises(SkillRefusedError, match="PROHIBITED_CONTENT"):
         r._run_gemini([{"role": "user", "parts": [{"text": "q"}]}])

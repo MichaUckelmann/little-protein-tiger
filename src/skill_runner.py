@@ -1031,6 +1031,32 @@ def _to_claude_tools(defs: list[dict]) -> list[dict]:
 _OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 
+# One pooled connection for every REST provider call in the process.
+#
+# `requests.post` opens a fresh TCP connection and completes a full TLS
+# handshake per call. An agentic stage makes one call per tool round trip — 15
+# on a real interface stage — so the old code paid 15 handshakes to talk to the
+# same host, and a four-stage pipeline paid them again per stage. A Session
+# keeps the connection alive across the whole loop.
+#
+# Module-level rather than per-runner so a multi-stage run reuses one
+# connection throughout. Safe here because nothing drives SkillRunner from
+# threads (only `binder_metrics` parallelises, and it uses separate
+# PROCESSES); the session is also never mutated after creation — per-request
+# headers carry the provider's key — which is the part of `requests.Session`
+# that is not thread-safe. Revisit if a runner is ever put behind a thread
+# pool.
+_HTTP: "requests.Session | None" = None
+
+
+def _http() -> "requests.Session":
+    """The shared session, created on first use."""
+    global _HTTP
+    if _HTTP is None:
+        _HTTP = requests.Session()
+    return _HTTP
+
+
 def _to_openai_tools(defs: list[dict]) -> list[dict]:
     """`_TOOL_DEFS` -> Responses-API tool schema.
 
@@ -2117,7 +2143,7 @@ class SkillRunner:
 
             for attempt in range(4):
                 try:
-                    resp = requests.post(
+                    resp = _http().post(
                         _OPENAI_RESPONSES_URL,
                         headers={"Authorization": f"Bearer {api_key}",
                                  "Content-Type": "application/json"},
@@ -2280,7 +2306,7 @@ class SkillRunner:
                 # (anthropic retries APIConnectionError) used to abort a whole
                 # multi-hour run here. Same budget as the status retries.
                 try:
-                    resp = requests.post(
+                    resp = _http().post(
                         url, headers={"x-goog-api-key": api_key},
                         json=payload, timeout=180
                     )

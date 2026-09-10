@@ -91,7 +91,7 @@ packages = ["src", "scripts"]
 [tool.pytest.ini_options]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "network: hits a live external API (RCSB / UniProt). Deselected by default; run with '-m network'",
+    "network: hits a live external API (RCSB / UniProt / an LLM provider). Deselected by default; run with '-m network'",
 ]
 # The chain-assignment and hotspot-grounding guards are ABOUT real structures,
 # so a handful of tests genuinely reach RCSB/UniProt. They stay in the suite but
