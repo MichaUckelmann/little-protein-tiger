@@ -336,6 +336,7 @@ class PipelineRunner:
         workflow: str = "ppi",
         uniprot: str | None = None,
         chains: str | None = None,
+        hotspots: str | None = None,
         budget_usd: float | None = None,
         budget_mode: str = "hard",
         detach: bool = False,
@@ -379,6 +380,10 @@ class PipelineRunner:
         # `chains` overrides the measured target/partner choice.
         self._uniprot = (uniprot or "").strip()
         self._chains = (chains or "").strip()
+        # Operator-specified epitope. When set, the interface stage does not
+        # call a model at all — `--modality`'s posture ("stages propose, the
+        # operator decides"), taken to its conclusion.
+        self._hotspots = (hotspots or "").strip()
         self.max_iter = max_iter
         self.max_tokens = max_tokens
         # Per-stage overrides: {stage_name: model_id}. Empty = uniform default.
@@ -1330,6 +1335,11 @@ class PipelineRunner:
             "binder_length_min": size.get("min", 70),
             "binder_length_max": size.get("max", 86),
             "interface_rationale": note,
+            # Without this the interface stage falls back to its generic
+            # "select model-ready hotspots for a ..." sentence and the
+            # operator's brief never reaches the stage that chooses the
+            # epitope — the one stage on this track where it matters.
+            "structure_query": query.strip(),
             "go_recommendation": "GO",
         }
         result.pdb_id = pdb_id
@@ -1386,6 +1396,176 @@ class PipelineRunner:
             "grounding is unaffected — it reads residue names straight from "
             "the coordinates.")
 
+    # Interface-facing sidechain heavy atoms per residue type. Lifted verbatim
+    # from the table `complex-structure-analysis` applies in Phase 3
+    # (skills/complex-structure-analysis/SKILL.md), so an operator-specified
+    # hotspot and a model-chosen one describe the same geometry the same way.
+    # GLY and ALA legitimately have no sidechain to reach with, and fall back
+    # to CA/CB below.
+    _RFD3_SIDECHAIN_ATOMS = {
+        "ILE": ("CD1", "CG2"), "LEU": ("CD1", "CD2"), "VAL": ("CG1", "CG2"),
+        "PHE": ("CD2", "CZ"), "TYR": ("CD2", "OH"), "TRP": ("CD2", "NE1"),
+        "MET": ("CG", "SD"), "ARG": ("CZ", "NH1"), "LYS": ("NZ", "CE"),
+        "ASP": ("CG", "OD1"), "GLU": ("CD", "OE1"),
+        "ASN": ("CG", "OD1"), "GLN": ("CD", "OE1"), "HIS": ("CD2", "NE2"),
+        "SER": ("CB", "OG"), "THR": ("CB", "OG1"), "CYS": ("CB", "SG"),
+        "PRO": ("CB", "CG"), "ALA": ("CB",), "GLY": ("CA",),
+    }
+
+    @staticmethod
+    def parse_hotspot_spec(spec: str) -> dict[str, list[int]]:
+        """`"B74,B83,B84"` or `"74,83,84"` -> {chain: [auth_seq_id, ...]}.
+
+        Same syntax `scripts/check_input_pdb.py --hotspots` already accepts. A
+        bare number inherits whichever chain the caller resolves as the target,
+        so `--hotspots 74,83,84` reads naturally when there is only one.
+        """
+        out: dict[str, list[int]] = {}
+        for raw in (spec or "").replace(" ", "").split(","):
+            if not raw:
+                continue
+            chain, num = ("", raw) if raw[0].isdigit() or raw[0] == "-" else (raw[0], raw[1:])
+            try:
+                resnum = int(num)
+            except ValueError:
+                raise PipelineBlockedError(
+                    f"--hotspots entry {raw!r} is not <chain><number> or "
+                    f"<number> (e.g. B83, or 83 for the target chain)") from None
+            out.setdefault(chain, []).append(resnum)
+        if not out:
+            raise PipelineBlockedError("--hotspots was empty")
+        return out
+
+    def _resolve_hotspot_override(self, spec: str, pdb_id: str,
+                                  target_chain: str) -> list[dict]:
+        """Turn an operator's residue numbers into fully-formed hotspot dicts.
+
+        The operator supplies `auth_seq_id` and nothing else. Everything a
+        downstream consumer needs is LOOKED UP from the structure, never taken
+        on trust:
+
+        * `residue` — read from the coordinates. A user-typed name would
+          either fail `_verify_hotspot_grounding` or, worse, make it
+          tautological: grounding exists to prove the residue at auth 83 in
+          THIS file is the one intended, and it can only do that if the name
+          came from the file.
+        * `rfd3_atoms` — the type's interface-facing pair, intersected with the
+          atoms actually present on that residue. `validate_spec` checks every
+          named atom exists, and it runs after the trim; catching it here
+          instead means the operator hears about it before a multi-day
+          campaign is staged rather than after.
+        * `label_seq_id` — left `**UNVERIFIED**` in the markdown so
+          `_correct_label_seq_ids` fills it from gemmi, which is the mechanism
+          this repo already trusts for the model's own tables. Never derived
+          by counting.
+        """
+        import gemmi
+        from src.foundry_spec import MAX_HOTSPOTS
+        from src.structure_tools import is_chain_residue
+
+        wanted = self.parse_hotspot_spec(spec)
+        # A bare number means the target chain.
+        if "" in wanted:
+            wanted.setdefault(target_chain, []).extend(wanted.pop(""))
+        foreign = [c for c in wanted if c != target_chain]
+        if foreign:
+            raise PipelineBlockedError(
+                f"--hotspots names chain(s) {foreign} but the target chain is "
+                f"{target_chain!r}. Hotspots are the epitope ON the target; "
+                f"to design against a different chain pass --chains.")
+
+        path = self._binder_structure_path(pdb_id)
+        st = gemmi.read_structure(str(path))
+        st.setup_entities()
+        chain = next((c for c in st[0] if c.name == target_chain), None)
+        if chain is None:
+            raise PipelineBlockedError(
+                f"chain {target_chain!r} is not in {path.name} "
+                f"(chains: {sorted(c.name for c in st[0])})")
+        by_auth = {r.seqid.num: r for r in chain if is_chain_residue(r)}
+
+        residues: list[dict] = []
+        for auth in wanted[target_chain]:
+            res = by_auth.get(auth)
+            if res is None:
+                raise PipelineBlockedError(
+                    f"--hotspots names {target_chain}{auth}, which is not a "
+                    f"residue of chain {target_chain} in {path.name}. Author "
+                    f"numbering in a crystal structure often differs from the "
+                    f"canonical isoform's — check the file, not UniProt.")
+            present = {a.name for a in res}
+            picked = [a for a in self._RFD3_SIDECHAIN_ATOMS.get(res.name, ())
+                      if a in present]
+            if not picked:
+                for fallback in ("CB", "CA"):
+                    if fallback in present:
+                        picked = [fallback]
+                        break
+            if not picked:
+                raise PipelineBlockedError(
+                    f"{res.name}{auth} in {path.name} carries none of the "
+                    f"atoms RFD3 could use as a hotspot (present: "
+                    f"{sorted(present)}). Pick another residue.")
+            residues.append({"residue": res.name, "auth_seq_id": auth,
+                             "label_seq_id": "**UNVERIFIED**",
+                             "rfd3_atoms": ",".join(picked)})
+
+        if len(residues) > MAX_HOTSPOTS:
+            # A warning is right when a SKILL overshoots the cap (the builder
+            # cannot know which to drop). An operator can, so this is an
+            # error: more hotspots is not stricter, and RFD3's hit rate on a
+            # large set falls as the set grows, which weakens the engagement
+            # gate rather than tightening it.
+            raise PipelineBlockedError(
+                f"--hotspots names {len(residues)} residues; the cap is "
+                f"{MAX_HOTSPOTS} ({', '.join(r['residue'] + str(r['auth_seq_id']) for r in residues)}). "
+                f"Keep the compact hydrophobic cluster and drop rim/polar "
+                f"positions — a bigger set lowers RFD3's hit rate and weakens "
+                f"the hotspot-engagement gate.")
+        return residues
+
+    def _write_override_interface_report(
+        self, out: Path, intel: dict[str, str], residues: list[dict],
+        query: str,
+    ) -> None:
+        """A `21_interface.md` in the shape the LLM stage would have written.
+
+        Deliberately the DISRUPT four-column form verbatim, because two
+        separate regexes must match it: `_correct_label_seq_ids`
+        (`| RES | auth | label |`, three-letter name) and
+        `handoff.parse_hotspot_residues`. Writing the artifact rather than
+        short-circuiting past it is what keeps `--start-from trim` resumable
+        and keeps every guard on the override's path.
+        """
+        target_chain = intel.get("target_chain", "")
+        table = "\n".join(
+            f"| {r['residue']} | {r['auth_seq_id']} | {r['label_seq_id']} | "
+            f"{r['rfd3_atoms']} |" for r in residues)
+        picks = "\n".join(
+            f"    {target_chain}{r['auth_seq_id']}: {r['rfd3_atoms']}"
+            for r in residues)
+        body = (
+            f"**The epitope was specified by the operator, not chosen by a "
+            f"model.** `--hotspots` was given, so the "
+            f"`complex-structure-analysis` stage was not called and no LLM "
+            f"selected these residues. Residue names and sidechain atoms were "
+            f"read from the structure; the numbers are the operator's.\n\n"
+            f"Objective as stated: {query}\n\n"
+            f"### MODEL-READY HOTSPOTS [{intel.get('design_intent', 'disrupt').upper()}]\n\n"
+            f"Target chain {target_chain} — Region 1: operator-specified — "
+            f"selected {len(residues)} of {len(residues)} residues:\n\n"
+            f"| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |\n"
+            f"|---|---|---|---|\n{table}\n\n"
+            f"#### RFD3 select_hotspots\n\nselect_hotspots:\n{picks}\n")
+        self._write_binder_report(
+            out, "Interface analysis (operator-specified hotspots)", body,
+            {"pdb_id": intel.get("pdb_id", ""),
+             "target_chain": target_chain,
+             "partner_chain": intel.get("partner_chain", ""),
+             "design_intent": intel.get("design_intent", "disrupt"),
+             "modality": intel.get("modality", "mini_protein"),
+             "hotspot_source": "operator"})
+
     def _stage_binder_interface(self, intel: dict[str, str], dirs: dict[str, Path],
                                 result: PipelineResult) -> tuple[dict[str, str], str]:
         """Reuse complex-structure-analysis to pick model-ready hotspots."""
@@ -1425,8 +1605,24 @@ class PipelineRunner:
             f"with the structure tools — do not search for a different "
             f"structure or ask for one. Goal: {goal}")
         out = dirs["binder"] / self._BINDER_STAGE_FILES["interface"]
-        handoff = self._run_stage("complex-structure-analysis", q, [], out,
-                                  stage="interface")
+        if self._hotspots:
+            # The operator named the epitope, so there is nothing for a model
+            # to choose. Write the artifact the stage would have written and
+            # fall through to EVERY guard below unchanged: grounding matters
+            # more here, not less, because the commonest way this goes wrong
+            # is canonical-isoform numbering pasted against a construct-
+            # numbered crystal, and grounding is exactly what catches it.
+            residues = self._resolve_hotspot_override(
+                self._hotspots, pdb, intel.get("target_chain", "") or "A")
+            self._write_override_interface_report(out, intel, residues, goal)
+            logger.info(
+                f"interface: {len(residues)} operator-specified hotspots "
+                f"({', '.join(r['residue'] + str(r['auth_seq_id']) for r in residues)})"
+                f" — no LLM call")
+            handoff = self._parse_handoff(out.read_text(encoding="utf-8"))
+        else:
+            handoff = self._run_stage("complex-structure-analysis", q, [], out,
+                                      stage="interface")
         text = out.read_text(encoding="utf-8")
         # Same skill, same table, same failure — and until now only the PPI
         # track corrected it. label_seq_id is a lookup in a file already on
@@ -6561,6 +6757,7 @@ class PipelineRunner:
         )
         seen: set[tuple[str, int]] = set()
         substitutions = 0
+        filled = 0
         rows_seen = 0
         offsets: list[int] = []
         unavailable: list[int] = []
@@ -6574,7 +6771,7 @@ class PipelineRunner:
             bg_index = {}
 
         def _row_sub(match: re.Match) -> str:
-            nonlocal substitutions, rows_seen
+            nonlocal substitutions, filled, rows_seen
             rows_seen += 1
             prefix = match.group(1)
             expected_name = match.group(2)
@@ -6625,11 +6822,17 @@ class PipelineRunner:
                         substitutions += 1
                     return f"{prefix} {_LABEL_SEQ_UNAVAILABLE} |"
                 if llm_label != bg:
-                    substitutions += 1
+                    if llm_label is None:
+                        filled += 1
+                    else:
+                        substitutions += 1
                 return f"{prefix} {bg} |"
 
             if llm_label != true_label:
-                substitutions += 1
+                if llm_label is None:
+                    filled += 1
+                else:
+                    substitutions += 1
                 if llm_label is not None:
                     offsets.append(true_label - llm_label)
                     warnings.append(
@@ -6745,13 +6948,21 @@ class PipelineRunner:
             new_text,
         )
 
-        if substitutions:
+        # Two different things, and conflating them cost a reader real time:
+        # a residue whose cell was `**UNVERIFIED**` being FILLED is the skill
+        # (or the --hotspots writer) behaving exactly as instructed, while a
+        # stated number being CORRECTED means something derived a label_seq_id
+        # by counting. Only the second is a red flag.
+        if filled:
             logger.info(
-                f"  label_seq_id corrections: {substitutions} residue(s) had "
-                f"LLM-provided label_seq disagreeing with gemmi; rewritten "
-                f"from CIF ground truth (this prevents BoltzGen from "
-                f"constraining the wrong residues)"
-            )
+                f"  label_seq_id: {filled} residue(s) were UNVERIFIED and were "
+                f"filled from the CIF's own auth->label map — expected")
+        if substitutions:
+            logger.warning(
+                f"  label_seq_id corrections: {substitutions} residue(s) "
+                f"STATED a label_seq that disagrees with gemmi; rewritten from "
+                f"CIF ground truth. A stated-but-wrong label_seq means "
+                f"something counted instead of looking it up.")
 
         return new_text, warnings
 

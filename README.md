@@ -670,6 +670,24 @@ python scripts/run_pipeline.py --workflow structure --structure my.cif \
     --project mine --chains B,A
 ```
 
+**Name the epitope yourself with `--hotspots`.** By default the interface
+stage picks the hotspots; `--hotspots B74,B83,B84` (or `74,83,84` for the
+target chain) uses exactly those residues and makes **no LLM call** for that
+stage:
+
+```bash
+python scripts/run_pipeline.py --workflow binder --target RING1B \
+    --hotspots B50,B52,B54 --project ring1b
+```
+
+You supply only the numbers — in the structure file's author numbering, which
+often differs from the canonical isoform's. Residue names, RFD3 sidechain atoms
+and `label_seq_id`s are read from the structure, and every guard still runs, so
+a number that is not in the chain is refused before anything is staged. At most
+12 residues, and they should be one compact patch: a set spread across two
+faces will fail the trim, correctly. Supported on the `binder` and `structure`
+tracks.
+
 **Pass `--uniprot` if you know the accession.** Three checks are keyed to
 identity rather than geometry, and all three fail open without one:
 `_verify_target_chain_assignment` (the guard that caught a campaign designed

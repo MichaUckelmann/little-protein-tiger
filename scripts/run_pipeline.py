@@ -175,6 +175,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "without the target-intel LLM stage."),
     )
     p.add_argument(
+        "--hotspots",
+        metavar="LIST", default=None,
+        help=(
+            "Name the epitope yourself instead of letting a model choose it: "
+            "--hotspots B74,B83,B84 (or 74,83,84 for the target chain). "
+            "Binder and structure workflows. The interface stage makes NO LLM "
+            "call when this is set; residue names and sidechain atoms are read "
+            "from the structure, and every grounding/chain/trim guard still "
+            "runs. Author numbering, as in the structure file — which often "
+            "differs from the canonical isoform's."),
+    )
+    p.add_argument(
         "--uniprot",
         metavar="ACC", default=None,
         help=(
@@ -491,6 +503,13 @@ def main() -> int:
 
     is_foundry_bridge = (not is_binder) and design_engine == "foundry"
 
+    if args.hotspots and args.workflow == "ppi":
+        parser.error(
+            "--hotspots is supported on --workflow binder and --workflow "
+            "structure. The ppi track picks its hotspots in the structure "
+            "stage, before the foundry hand-off, and that path is not wired "
+            "for an override yet.")
+
     if is_structure:
         if not args.project:
             parser.error(
@@ -616,6 +635,7 @@ def main() -> int:
         workflow=args.workflow,
         uniprot=args.uniprot,
         chains=args.chains,
+        hotspots=args.hotspots,
         budget_usd=args.budget,
         budget_mode=args.budget_mode,
         detach=args.detach,

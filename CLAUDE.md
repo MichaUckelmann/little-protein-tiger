@@ -233,6 +233,50 @@ kept 86%. BoltzGen's own `design_metrics`/
 `design_ranking` path is untouched and stays fully live as a deliberate
 escape hatch, not oversight.
 
+## The operator can name the epitope
+
+`--hotspots B74,B83,B84` (or bare `74,83,84` for the target chain) makes the
+`interface` stage **make no LLM call at all** and use exactly those residues.
+Same posture as `--modality`: stages propose, the operator decides. Binder and
+structure tracks only — the PPI track picks hotspots inside `_stage_structure`,
+before the foundry hand-off, and the CLI refuses the flag there rather than
+accepting it and running a campaign against a model-chosen epitope while the
+operator believes otherwise.
+
+- **The operator supplies ONLY the numbers.** `residue`, `rfd3_atoms` and
+  `label_seq_id` are all read from the structure. A user-typed residue name
+  would make `_verify_hotspot_grounding` tautological — grounding exists to
+  prove the residue at auth 83 in THIS file is the intended one, and it can
+  only do that when the name came from the file rather than from the same
+  person who typed the number. The commonest real mistake is canonical-isoform
+  numbering pasted against a construct-numbered crystal, and grounding is
+  precisely what catches it.
+- **It writes a real `21_interface.md` and falls through to every existing
+  guard**, rather than short-circuiting past them: `_correct_label_seq_ids`,
+  grounding, chain assignment, partner-chain, ortholog conservation, then the
+  trim's own hotspot-retention and exposed-hydrophobic checks. Writing the
+  artifact is also what keeps `--start-from trim` resumable, since that branch
+  re-parses the file off disk.
+- **The table is the DISRUPT four-column form verbatim**, because two separate
+  regexes must match it — `_correct_label_seq_ids` (`| RES | auth | label |`,
+  three-letter name) and `handoff.parse_hotspot_residues`.
+- **Over the cap is an ERROR here, not a warning.** `build_rfd3_spec` only
+  warns when a skill overshoots `MAX_HOTSPOTS`, because the builder has no
+  per-residue ddG/BSA and cannot choose which to drop. An operator can, and
+  more hotspots is not stricter — RFD3's hit rate on a large set falls as the
+  set grows, which weakens the engagement gate rather than tightening it.
+- **`label_seq_id` is written as `**UNVERIFIED**` and filled by
+  `_correct_label_seq_ids`** from gemmi's own auth→label map. That resolution
+  path already existed for the skill's tables; reusing it is why nothing new
+  derives a label_seq_id by counting. Its summary log used to call every
+  filled cell "LLM-provided label_seq disagreeing with gemmi", which
+  misdescribed correct skill behaviour as a red flag — a FILLED
+  `**UNVERIFIED**` cell and a STATED-but-wrong number are now counted and
+  logged separately, and only the second warns.
+- **Scoring needs no change.** `hotspot_engagement` is a fraction of whatever
+  the spec declared, re-derived at scoring time from the RFD3 design sidecar,
+  so an explicit set becomes the denominator automatically.
+
 ## A third entry point: structure-first
 
 `--workflow structure` (`_stage_structure_intel`) exists because the other two
