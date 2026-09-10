@@ -95,14 +95,19 @@ Audited against the shipped database, not assumed:
 | | Count | What it is |
 |---|---|---|
 | Papers indexed | 57,907 | bibliographic metadata: title, authors, journal, year, DOI/PMCID/PMID |
-| Papers curated | 14,517 | fingerprint JSONs — the corpus proper |
+| **Fingerprints shipped** | **7,072** | the corpus proper — only papers whose licence permits redistributing a derivative |
+| Fingerprints withheld | 7,445 | curated in the maintainer's working corpus, but the paper's licence forbids redistributing a derivative or records none. The row is kept and reads `curation_status='licence_withheld'`, so you can see which papers they are and why |
 | Source documents (PDF/XML) | **0** | deliberately excluded; ~95% of the corpus on disk, and nothing downstream reads them |
 
-**Fingerprints are derived work, not excerpts.** Each is structured, model-written
-output: paraphrased claims, method lists, normalised numeric values (Kd in
-Molar, NCBI taxon ids). The `source_span` field is a *pointer* — `"Section:
-Clinical course, Para 1"` — not a quotation. No verbatim passage of any paper is
-reproduced.
+**A fingerprint is treated as a derivative work of its paper, and is published
+only when that paper's licence permits redistributing derivatives.** Each one
+is structured, model-written output — paraphrased claims, method lists,
+normalised numeric values (Kd in Molar, NCBI taxon ids) — and the `source_span`
+field is a *pointer* (`"Section: Clinical course, Para 1"`) rather than a
+quotation, so no verbatim passage of any paper is reproduced. None of that is
+offered as a reason the licence does not apply: the licence is applied, and the
+release is filtered accordingly. See
+[Per-paper licences](#per-paper-licences-measured) for the counts.
 
 **Bibliographic metadata is fact, not expression**, and is not what copyright
 protects.
@@ -158,21 +163,22 @@ The ND set is concentrated in the journals a chromatin/structural corpus would
 be expected to draw on — Nat Commun (215), Cell Rep (199), Stem Cell Reports
 (123), iScience (105), Nature (94).
 
-### What that means for the release, and what it does not
+### What ships, and what does not
 
-**Whether a fingerprint is a derivative work of its paper is the unresolved
-question, and it is a legal one.** The argument above — that fingerprints are
-model-written structured claims and normalised numbers, facts rather than
-expression, with `source_span` a pointer and not a quotation — is the reason
-this project believes no ND term is engaged. That argument is unchanged by the
-audit. What has changed is that it can now be weighed against a count instead
-of an assumption, which is the honest position to argue from.
+**Only fingerprints of papers whose licence permits redistributing a derivative
+work are published.** As of 2026-09-10 that is **7,072 of the 14,517 curated
+papers**, and the asset went from 105 MB to 50 MB. A No-Derivatives term
+(`cc by-nc-nd`, `cc by-nd`) excludes a paper's fingerprint, and so does no
+recorded licence — that is the absence of permission, not permission.
 
-**The project has taken the conservative route.** As of 2026-09-10 the
-published archive ships a fingerprint only when the paper's licence
-affirmatively permits derivative works. That is **7,072 fingerprints of
-14,514**, and the asset went from 105 MB to 50 MB. The decision was to be
-safe rather than to rely on the argument above being correct.
+Every count here is reproducible from the archive you downloaded:
+
+```sql
+SELECT curation_status, COUNT(*) FROM papers
+ WHERE curation_status IN ('completed','licence_withheld') GROUP BY 1;
+-- completed         7072     fingerprint shipped
+-- licence_withheld  7445     withheld, and papers.licence says why
+```
 
 Filtering the JSONs alone would not have been enough, because three other
 shipped artifacts are derived from fingerprint text:

@@ -28,15 +28,13 @@ verdict from `NO_DERIVATIVES` so a report can distinguish "we know this is
 forbidden" from "we do not know", which are different problems: the first needs
 a policy, the second needs a lookup.
 
-## What this module does not decide
+## The project's position
 
-Whether a fingerprint is legally a "derivative work" of its paper is a question
-for a lawyer, not for this file. `docs/licensing.md` argues it is not — a
-fingerprint is model-written structured claims and normalised numbers, facts
-rather than expression, with `source_span` a pointer and not a quotation. This
-module exists so a maintainer can act conservatively *regardless* of how that
-argument resolves, and so the conservative choice is the default rather than
-something you have to remember.
+A fingerprint is TREATED as a derivative work of its paper. This module exists
+so that treating it that way is automatic: the published archive carries a
+fingerprint only where the paper's licence permits redistributing derivatives,
+and the conservative choice is the default rather than something a maintainer
+has to remember. See `docs/licensing.md`.
 """
 
 from __future__ import annotations

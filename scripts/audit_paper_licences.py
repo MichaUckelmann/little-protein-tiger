@@ -34,16 +34,13 @@ i.e. all rights reserved. The report counts those separately from the
 ND set and does not fold them into either "clear" or "blocked", because they
 need a human decision, not a default.
 
-## What this script does NOT decide
+## What it is for
 
-Whether a fingerprint is a "derivative work" of the paper it was extracted
-from is a legal question this script takes no position on. `docs/licensing.md`
-argues it is not — fingerprints are model-written structured claims and
-normalised numbers, facts rather than expression, with `source_span` a pointer
-and not a quotation. That argument may well be right. But it is an argument,
-and the point of this audit is to let someone weigh it against a real count
-instead of an assumption. Findings are data; the decision is the maintainer's
-and their institution's.
+A fingerprint is treated as a derivative work of its paper, so the published
+archive carries one only where the paper's licence permits redistributing
+derivatives. This script is what resolves that licence and writes it into
+`papers.licence`, which is where `fetch_papers.py`, `curate_papers.py` and
+`package_corpus.py` all read it from. See `docs/licensing.md`.
 """
 from __future__ import annotations
 
@@ -221,9 +218,10 @@ def report(rows: list[dict], cache: dict[str, dict], nd_only: bool) -> int:
         out = _ROOT / "data" / "nd_papers.json"
         out.write_text(json.dumps(nd, indent=1), encoding="utf-8")
         print(f"\n  full list -> {out.relative_to(_ROOT)}")
-        print("\n  Whether a fingerprint is a DERIVATIVE of its paper is a legal\n"
-              "  question this script does not answer — see docs/licensing.md,\n"
-              "  which argues it is not. This is the count to weigh that against.")
+        print("\n  Fingerprints of these papers are NOT published: a fingerprint\n"
+              "  is treated as a derivative work, and the release carries one\n"
+              "  only where the licence permits redistributing derivatives.\n"
+              "  See docs/licensing.md.")
     return 1 if nd else 0
 
 
