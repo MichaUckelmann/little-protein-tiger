@@ -53,7 +53,12 @@ DEFAULT_OUT = _ROOT / "dist" / "lpt-corpus.tar.zst"
 
 
 def _human(n: int) -> str:
-    return f"{n/2**30:.2f} GB" if n >= 2**30 else f"{n/2**20:.0f} MB"
+    # DECIMAL MB, not MiB. This divided by 2**20 and wrote "MB", so a
+    # 104,535,812-byte asset printed as "100 MB" while every document said
+    # ~105 MB and GitHub's own release page said 104 MB — three figures for one
+    # file, and `SETUP_AGENT.md` tells the reader to trust this tool over its
+    # own prose. Decimal is what GitHub, the docs and `ls -l` agree on.
+    return f"{n/1e9:.2f} GB" if n >= 1e9 else f"{n/1e6:.0f} MB"
 
 
 def _size(path: Path) -> int:

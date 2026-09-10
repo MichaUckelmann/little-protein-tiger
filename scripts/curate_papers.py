@@ -341,7 +341,7 @@ def main():
                 file_path.unlink()
                 stats["bytes_reclaimed"] += size
                 stats["discarded"] += 1
-                logger.debug(f"  Discarded source document ({size/2**20:.1f} MB)")
+                logger.debug(f"  Discarded source document ({size/1e6:.1f} MB)")
             except OSError as exc:
                 logger.warning(f"  Could not discard {file_path.name}: {exc}")
 
@@ -355,8 +355,8 @@ def main():
     print(f"  Tokens  : {stats['tokens']:,}")
     if stats["discarded"]:
         reclaimed = stats["bytes_reclaimed"]
-        human = (f"{reclaimed/2**30:.2f} GB" if reclaimed >= 2**30
-                 else f"{reclaimed/2**20:.0f} MB")
+        human = (f"{reclaimed/1e9:.2f} GB" if reclaimed >= 1e9
+                 else f"{reclaimed/1e6:.0f} MB")
         print(f"  Discarded: {stats['discarded']} source document(s), "
               f"{human} reclaimed")
 

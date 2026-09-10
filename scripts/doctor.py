@@ -285,7 +285,7 @@ def check_corpus(rep: Report) -> None:
                 "(~105 MB, free — the curated corpus ships pre-built)",
                 tracks=("literature",))
     else:
-        rep.add("Corpus database", OK, f"{db.stat().st_size/2**20:.0f} MB",
+        rep.add("Corpus database", OK, f"{db.stat().st_size/1e6:.0f} MB",
                 tracks=("literature",))
 
     rep.add("Fingerprints", OK if n_fp else FAIL,
