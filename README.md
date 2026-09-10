@@ -101,6 +101,7 @@ numbers can be audited rather than taken on trust.
 
 ## Contents
 
+- [Built on](#built-on) — the design engines, data sources and libraries LPT stands on
 - [Requirements](#requirements) · [Configuration](#configuration)
 - [Pipeline overview](#pipeline-overview) — the two tracks and what each stage does
 - [Usage](#usage) — [fetch](#1-fetch-papers) · [curate](#2-curate-papers) · [ingest](#3-ingest-vectors) · [ask the corpus](#4-ask-the-corpus-a-question) · [run a skill](#5-run-expert-skills-from-the-cli) · [corpus explorer](#6-corpus-explorer-conversational) · [PPI pipeline](#7-run-the-binder-design-pipeline-end-to-end) · [from a target name](#7b-run-the-binder-pipeline-from-a-target-name) · [on a cluster](#7c-scale-a-campaign-onto-a-slurm-cluster) · [PyMOL](#8-visualise-top-k-designs-in-pymol)
@@ -109,6 +110,70 @@ numbers can be audited rather than taken on trust.
 - [Responsible use](#responsible-use) · [Licence](#licence-and-third-party-tools) — noncommercial; see [docs/licensing.md](docs/licensing.md) · [Further reading](#further-reading)
 
 ---
+
+## Built on
+
+**LPT is an orchestrator. It does not generate a backbone, design a sequence,
+or fold anything itself** — it decides *what* to design and *whether the result
+is any good*, and hands the actual structural work to other people's models.
+Nearly everything below is someone else's research, and the parts that matter
+most are the two design engines.
+
+### The engines that do the design
+
+| Project | What LPT uses it for |
+|---|---|
+| **[foundry](https://github.com/RosettaCommons/foundry)** — RFdiffusion3, MPNN, RF3 (Institute for Protein Design, UW) | **The core of both design tracks.** RFD3 generates binder backbones against the chosen epitope, MPNN designs their sequences, RF3 refolds every candidate complex — and RF3's own confidence output is what every gate and ranking metric in LPT is computed from. `--workflow binder`, and `--workflow ppi` by default. |
+| **[BoltzGen](https://github.com/HannesStark/boltzgen)** (Hannes Stärk *et al.*) | The alternative design backend, and the **only** path for cyclic peptides — RFD3 has none. `--design-engine boltzgen`, selected automatically by `--modality cyclic_peptide`. |
+| **[ProteinMPNN](https://github.com/dauparas/ProteinMPNN)** / **[LigandMPNN](https://github.com/dauparas/LigandMPNN)** (Justas Dauparas *et al.*) | The sequence-design family foundry's `mpnn` stage runs; LPT drives it with the `solublempnn` checkpoint. |
+| **[PyRosetta](https://www.pyrosetta.org)** (RosettaCommons) — *optional* | Relax + InterfaceAnalyzer on gate survivors, and per-design hotspot SASA. Used only *after* designs exist; both tracks run end-to-end without it. |
+| **[Protenix](https://github.com/bytedance/Protenix)** (ByteDance) — *optional* | Refold backend on the SLURM cluster path, in place of local RF3. |
+| **[ipSAE](https://github.com/DunbrackLab/IPSAE)** (Dunbrack lab) | The interface-confidence metric that carries the heaviest weight in LPT's ranking composite. Reimplemented in `src/binder_metrics.py` and validated against that reference implementation. |
+| **[Mol\*](https://molstar.org)** ([source](https://github.com/molstar/molstar)) | The structure viewer embedded in every generated `report.html`. Vendored so a report needs no network. |
+| **[ChimeraX](https://www.cgl.ucsf.edu/chimerax/)** · **[PyMOL](https://pymol.org)** — *optional* | Figure rendering for the showcase pages; `scripts/pymol_show_topk.py` for inspecting top-K designs. |
+
+### Public data LPT reads
+
+None of this is redistributed here — every one is fetched from its own source
+at run time or by `scripts/fetch_reference_data.py`. Please cite them in any
+work that uses their data.
+
+| Source | Used for |
+|---|---|
+| **[RCSB PDB](https://www.rcsb.org)** | Every structure, plus the search API, entity metadata and SIFTS accession mapping that the chain-assignment guards check against |
+| **[UniProt](https://www.uniprot.org)** | Target resolution, canonical sequences for the identity checks, and the membrane topology that decides which surface a binder can reach |
+| **[AlphaFold DB](https://alphafold.ebi.ac.uk)** (EMBL-EBI / DeepMind) | Predicted monomers, addressed as `AF-<accession>` when a target has no experimental entry |
+| **[HGNC](https://www.genenames.org)** | The approved-symbol authority behind `src/identifier_normalizer.py` |
+| **[DepMap](https://depmap.org/portal/)** (Broad Institute) | CRISPR gene-effect data behind the co-essentiality edges and the wildcard track's novelty triage |
+| **[Europe PMC](https://europepmc.org)** · **[PMC Open Access](https://www.ncbi.nlm.nih.gov/pmc/tools/openftlist/)** · **NCBI E-utilities** · **Semantic Scholar** · **bioRxiv/medRxiv** | Literature search, full-text retrieval, and the per-paper licence lookup the corpus gate depends on |
+
+### Python libraries doing the heavy lifting
+
+[**gemmi**](https://github.com/project-gemmi/gemmi) reads and writes every
+structure and owns the auth↔label numbering map the hotspot tables are
+grounded in · [**biotite**](https://github.com/biotite-dev/biotite) reads the
+refolds and trimmed models whose per-residue pLDDT and contacts the gates are
+measured from · [**BioPython**](https://github.com/biopython/biopython) for
+Shrake-Rupley SASA and the BLOSUM62 alignments the chain-identity and ortholog
+checks rest on · [**LanceDB**](https://github.com/lancedb/lancedb) for the
+vector index · [**sentence-transformers**](https://github.com/UKPLab/sentence-transformers)
+with [**PubMedBERT embeddings**](https://huggingface.co/NeuML/pubmedbert-base-embeddings)
+(NeuML) for semantic corpus search ·
+[**NetworkX**](https://github.com/networkx/networkx) for the interaction graph
+· [**PyMuPDF**](https://github.com/pymupdf/PyMuPDF) for PDF text extraction ·
+[**FastMCP**](https://github.com/jlowin/fastmcp) for both MCP servers · NumPy,
+SciPy, PyArrow, pydantic and loguru throughout.
+
+The LLM stages run against Anthropic's Claude, Google's Gemini or OpenAI's
+Responses API, and curation can run locally through
+[**Ollama**](https://github.com/ollama/ollama).
+
+**Terms.** Every project above is governed by its own licence, not LPT's —
+several are free for academic use and restricted commercially.
+[Licence and third-party tools](#licence-and-third-party-tools) has the table
+to check before commercial use, and
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) reproduces the licences
+of the few third-party files this repository actually ships.
 
 ## Requirements
 
