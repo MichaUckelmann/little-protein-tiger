@@ -105,6 +105,15 @@ def check_interpreter(rep: Report) -> None:
     # re-signed by TLS-inspecting corporate proxies that 3.12 accepts — and no
     # CA bundle fixes that. Worth flagging before a download fails confusingly.
     newer = ok and (v.major, v.minor) > (3, 12)
+    # ...but not if the operator has already applied the fix. Nagging about a
+    # setting that is set means the track can never report clean, and the last
+    # thing `SETUP_AGENT.md` Phase 9 shows the user is this row.
+    if newer and os.environ.get("LPT_SSL_RELAX_STRICT", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        rep.add("Python", OK,
+                f"{v.major}.{v.minor}.{v.micro}  (LPT_SSL_RELAX_STRICT set)",
+                tracks=TRACKS)
+        return
     rep.add("Python", FAIL if not ok else (WARN if newer else OK),
             f"{v.major}.{v.minor}.{v.micro}"
             + ("" if sys.prefix != sys.base_prefix else "  (not in a venv)"),
@@ -154,21 +163,10 @@ def _module_available(name: str) -> bool:
 # forgetting to edit it leaves every one of these non-empty, so a bare
 # `bool(os.environ.get(...))` reported a fully-unconfigured checkout as green
 # and the user found out several stages later from a provider-side 403.
-_PLACEHOLDERS = {
-    "GEMINI_API_KEY": ("", "..."),
-    "ANTHROPIC_API_KEY": ("", "...", "sk-ant-..."),
-    "OPENAI_API_KEY": ("", "...", "sk-..."),
-    "NCBI_EMAIL": ("", "you@example.com"),
-}
-
-
-def _key_state(name: str) -> tuple[bool, str]:
-    """(usable, why-not) for one env var, placeholders counted as unset."""
-    raw = (os.environ.get(name) or "").strip()
-    if raw in _PLACEHOLDERS.get(name, ("",)):
-        return False, ("still the .env.example placeholder" if raw
-                       else "not set")
-    return True, ""
+# The list moved to `src.env_config` so `skill_runner`'s own preflight uses the
+# same one — it used to accept the placeholder and fail at the first API call.
+from src.env_config import PLACEHOLDERS as _PLACEHOLDERS  # noqa: E402,F401
+from src.env_config import key_is_usable as _key_state    # noqa: E402
 
 
 def _curation_provider() -> str:
@@ -198,7 +196,31 @@ def check_api_keys(rep: Report) -> None:
     rep.add("GEMINI_API_KEY", OK if gem else FAIL,
             "set" if gem else f"{gem_why} — the default provider for every stage",
             "" if gem else "Add a real GEMINI_API_KEY to .env (see .env.example).",
-            tracks=("literature", "ppi", "binder"))
+            tracks=("ppi", "binder"))
+    # Literature is a WARN, not a FAIL, and deliberately differs from the two
+    # design tracks: `search_corpus` runs entirely locally against the
+    # downloaded index, so the MCP route README advertises to Claude
+    # subscription users needs NO key at all. Reporting the track NOT READY on
+    # this row alone told a user their corpus was broken while it was serving
+    # real results — and SETUP_AGENT.md Phase 9 only suggests next commands for
+    # tracks that read READY.
+    rep.add("GEMINI_API_KEY", OK if gem else WARN,
+            "set" if gem else f"{gem_why} — needed for the CLI "
+                              "(ask_corpus.py, curation); the MCP route needs none",
+            "" if gem else ("Add a real GEMINI_API_KEY to .env for the CLI. "
+                            "search_corpus over MCP works without it."),
+            tracks=("literature",))
+    # The STRUCTURE track needs it too, and this row was missing: `--workflow
+    # structure` picks the epitope with an LLM at its `interface` stage, so a
+    # keyless run died there having already downloaded and analysed the
+    # structure. It is a WARN rather than a FAIL because `--hotspots` makes
+    # that stage deterministic and the track genuinely keyless.
+    rep.add("GEMINI_API_KEY", OK if gem else WARN,
+            "set" if gem else f"{gem_why} — needed unless you pass --hotspots",
+            "" if gem else ("Add a real GEMINI_API_KEY to .env, or name the "
+                            "epitope yourself with --hotspots B56,B66 and the "
+                            "interface stage makes no model call."),
+            tracks=("structure",))
     # Design tracks: a nice-to-have (refusal fallback, --provider claude).
     rep.add("ANTHROPIC_API_KEY", OK if ant else WARN,
             "set" if ant else f"{ant_why} — needed for --provider claude "
@@ -260,7 +282,7 @@ def check_corpus(rep: Report) -> None:
     if not db.is_file():
         rep.add("Corpus database", FAIL, "data/literature.db absent",
                 "python scripts/fetch_corpus.py   "
-                "(~83 MB, free — the curated corpus ships pre-built)",
+                "(~105 MB, free — the curated corpus ships pre-built)",
                 tracks=("literature",))
     else:
         rep.add("Corpus database", OK, f"{db.stat().st_size/2**20:.0f} MB",
@@ -287,9 +309,13 @@ def check_embedding_cache(rep: Report) -> None:
     rep.add("Embedding model cached", OK if hits else WARN,
             "NeuML/pubmedbert-base-embeddings" if hits
             else "not in the HuggingFace cache",
-            "" if hits else
-            'python -c "from sentence_transformers import SentenceTransformer as S; '
-            'S(\'NeuML/pubmedbert-base-embeddings\')"',
+            # NOT a bare `python -c`: that skips `env_config.load_env()`, so
+            # neither LPT_CA_BUNDLE nor LPT_SSL_RELAX_STRICT applies and the
+            # download fails verification behind a TLS-inspecting proxy —
+            # measured at 73 s to fail versus 13 s for the script. This string
+            # matters because SETUP_AGENT.md Phase 5 tells an agent to trust
+            # doctor's remediation over its own judgement.
+            "" if hits else "python scripts/warm_embedding_cache.py",
             tracks=("literature",))
 
 

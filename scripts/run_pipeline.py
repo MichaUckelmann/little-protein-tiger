@@ -759,6 +759,14 @@ def main() -> int:
             print("    (UNDERESTIMATE — a model used has no price table entry)")
     print("=" * 60)
 
+    # A run that produced nothing must not exit 0. The banner above says
+    # "PIPELINE COMPLETE" whatever happened — it means "the orchestrator
+    # finished", not "you have a result" — and a wrapper script, a CI step, or
+    # anyone reading `tail` cannot tell the difference from the exit code
+    # alone. NO_GO is a legitimate scientific outcome and still an unsuccessful
+    # RUN, so both it and a recorded error are non-zero.
+    if result.error or result.go_recommendation == "NO_GO":
+        return 1
     return 0
 
 

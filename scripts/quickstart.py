@@ -28,6 +28,21 @@ from src.env_config import load_env  # noqa: E402
 
 load_env(_ROOT / ".env")
 
+# This script's whole job is to be the moment someone sees LPT work, and it
+# opened with a dozen `DEBUG ... Chain 'B' not found in structure` lines from
+# the candidate-table scan plus biotite's own mmCIF attribute warnings — all
+# benign, all reading as errors, all ABOVE the banner saying the tool works.
+# Both trial personas flagged it, in both rounds. WARNING+ here; the pipeline
+# entry points keep their own levels.
+import warnings                                             # noqa: E402
+
+from loguru import logger                                   # noqa: E402
+
+logger.remove()
+logger.add(sys.stderr, level="WARNING",
+           format="<level>{level: <7}</level> | {message}")
+warnings.filterwarnings("ignore", category=UserWarning, module="biotite.*")
+
 # TEAD1/YAP1 — a real, well-characterised protein-protein interface, small
 # enough to analyse in seconds and a genuine drug-discovery target.
 DEMO_PDB = "3KYS"
@@ -73,13 +88,28 @@ def fetch_structure(pdb_id: str) -> Path:
 
 
 def analyse(path: Path, chain_a: str, chain_b: str) -> dict:
-    from src.structure_tools import analyze_interface
+    """The first thing a new user sees, so it must not show them a water.
+
+    `analyze_interface` reports every residue carrying the chain's id, ordered
+    waters and crystallisation additives included. On 6VJJ — the entry this
+    script's own --pdb example uses — HOH368 ranked FOURTH most-contacted, with
+    a ddG estimate beside it, and inflated the interface-residue count. A
+    structural biologist reads that as the tool not knowing what a residue is.
+    The design path already refuses solvent everywhere (see CLAUDE.md's
+    "Solvent never reaches the design or the interface maths"); this display
+    path did not.
+    """
+    from src.structure_tools import analyze_interface, is_solvent_or_additive
+
+    def protein_only(residues):
+        return [r for r in residues
+                if not is_solvent_or_additive(str(r.get("residue") or ""))]
 
     res = analyze_interface(str(path), chain_a, chain_b)
     iface = res.get("interface") or {}
     bsa = iface.get("bsa_total_A2") or 0.0
-    res_a = res.get("chain_a_interface_residues") or []
-    res_b = res.get("chain_b_interface_residues") or []
+    res_a = protein_only(res.get("chain_a_interface_residues") or [])
+    res_b = protein_only(res.get("chain_b_interface_residues") or [])
     hbonds = sum(1 for r in res_a for c in (r.get("contacts") or [])
                  if c.get("interaction") == "h_bond")
 

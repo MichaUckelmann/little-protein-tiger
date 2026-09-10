@@ -34,7 +34,7 @@ load_env(ROOT / ".env")
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from src.skill_runner import SkillRunner  # noqa: E402
+from src.skill_runner import SkillRunner, SkillRunnerError  # noqa: E402
 # Imported, not restated: the per-provider default model belongs in one place,
 # and run_skill.py is where every other CLI entry point reads it from.
 from scripts.run_skill import _DEFAULT_MODELS  # noqa: E402
@@ -106,14 +106,20 @@ def main() -> None:
     if args.top_k:
         config.setdefault("vector_store", {})["top_k_default"] = args.top_k
 
-    runner = SkillRunner(
-        skill_name=SKILL,
-        config=config,
-        provider=provider,
-        model_id=args.model_id or _DEFAULT_MODELS[provider],
-        max_iter=args.max_iter,
-        max_input_tokens=args.max_tokens,
-    )
+    # A missing or placeholder key is the commonest first-run failure here, and
+    # a traceback is the wrong way to tell someone to edit `.env`. The message
+    # SkillRunner raises already names the variable, its state and doctor.py.
+    try:
+        runner = SkillRunner(
+            skill_name=SKILL,
+            config=config,
+            provider=provider,
+            model_id=args.model_id or _DEFAULT_MODELS[provider],
+            max_iter=args.max_iter,
+            max_input_tokens=args.max_tokens,
+        )
+    except SkillRunnerError as exc:
+        raise SystemExit(str(exc))
 
     print(f"Corpus explorer ready — {runner.provider} / {runner.model_id}")
     print("Ask a question, or press Enter / type 'quit' to exit.\n")

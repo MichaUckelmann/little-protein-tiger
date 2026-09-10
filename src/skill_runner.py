@@ -27,7 +27,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(_ROOT))
 
-from src.env_config import load_env  # noqa: E402
+from src.env_config import key_is_usable, load_env  # noqa: E402
 load_env(_ROOT / ".env")
 
 
@@ -1242,14 +1242,24 @@ class SkillRunner:
         download and interface analysis have already run.
         """
         var = self._PROVIDER_KEYS.get(self.provider)
-        if var is None or os.environ.get(var):
+        if var is None:
             return          # local/Ollama needs no key
+        # `os.environ.get(var)` alone is not enough: `.env.example` ships
+        # `GEMINI_API_KEY=...` as documentation of the key's shape, so a `.env`
+        # copied and not edited passes a truthiness test and fails at the first
+        # call with the provider's own `400 Bad Request` — which names neither
+        # the key nor `.env`. Seen on a fresh clone: `ask_corpus.py` printed
+        # "Corpus explorer ready", made a real network call, returned a bare
+        # 400 and exited 0.
+        usable, why = key_is_usable(var)
+        if usable:
+            return
         raise SkillRunnerError(
-            f"{var} is not set, but the {self.provider!r} provider needs it "
+            f"{var} is {why}, but the {self.provider!r} provider needs it "
             f"(skill={self.skill_name}, model={self.model_id}).\n"
             f"Add it to .env at the project root:\n"
-            f"    {var}=...\n"
-            f"See .env.example for which key each provider and workflow needs. "
+            f"    {var}=<your key>\n"
+            f"`python scripts/doctor.py` reports every key's state. "
             f"To use a different provider instead, pass --provider."
         )
 

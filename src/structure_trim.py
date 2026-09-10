@@ -1188,10 +1188,29 @@ def trim_target(
         auth_to_label=auth_to_label, method=method, chainsaw_cmd=chainsaw_cmd,
         residues=residues)
 
+    # Measure the BEFORE interface on a solvent-stripped copy, because the
+    # AFTER one is measured on `write_trimmed`'s output, which always strips
+    # solvent. Both sides filtered waters out of the per-residue LIST already
+    # (see `_per_residue_bsa`), but an ordered water still occupies interface
+    # space and changes the SASA of the protein residues around it — so the two
+    # numbers were not comparable and `retention` drifted in whichever
+    # direction that structure's waters happened to push it. Measured on a
+    # no-op trim: 7CZD (162 solvent entries on chain B) scored 105.2%, and 6VJJ
+    # (92 on chain A) scored 84.4% and was REFUSED for "damaging the epitope"
+    # while the log line above it said "keeping it whole, no trim".
     per_bsa, bsa_before = ({}, 0.0)
     if partner_chain:
-        per_bsa, bsa_before = _per_residue_bsa(
-            structure_path, target_chain, partner_chain)
+        # A temp file, not `out_dir`: the trim directory is read by hand and by
+        # `_TrimFromDisk`, and a second .cif beside `trimmed.cif` invites
+        # someone to feed the wrong one to RFD3.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as _td:
+            desolvated = write_trimmed(
+                structure_path, Path(_td) / "desolvated.cif",
+                {target_chain: None, partner_chain: None})
+            per_bsa, bsa_before = _per_residue_bsa(
+                desolvated, target_chain, partner_chain)
 
     sse = sse_by_residue(structure_path, target_chain)
     keep, warnings = plan_trim(residues, domains, hotspots, budget,
@@ -1307,6 +1326,14 @@ def trim_target(
             f"{[h.get('auth_seq_id') for h in result.hotspots_lost]} — "
             f"the RFD3 spec would point at residues that are no longer there")
     if partner_chain and bsa_before > 0 and retention < min_bsa_retention:
+        if len(keep) == len(residues):
+            # Nothing was cut, so nothing can have been damaged by cutting.
+            # Refusing here once cost a run on 6VJJ and blamed the epitope.
+            raise TrimError(
+                f"the trim removed no residues ({len(keep)} of {len(residues)} "
+                f"kept) yet interface retention came out at {retention:.1%} — "
+                f"that is a measurement fault in the trim, not a property of "
+                f"this target. Report it rather than re-picking the epitope.")
         raise TrimError(
             f"the residues kept by the trim retained only {retention:.1%} of the "
             f"interface area they had before it, below the "

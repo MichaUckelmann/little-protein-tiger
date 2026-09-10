@@ -160,6 +160,30 @@ def relax_x509_strict() -> bool:
     return True
 
 
+#: Values `.env.example` ships as prompts, which are NOT keys. `.env.example`
+#: cannot ship empty values for these — the file doubles as documentation of
+#: each key's shape — so a `.env` copied and not edited has every one of them
+#: set to something truthy. Anything that tests a key with a bare
+#: `os.environ.get(var)` therefore reports "configured" for a file nobody
+#: touched, and the failure resurfaces phases later as the provider's own
+#: opaque HTTP error. `scripts/doctor.py` had this right and everything else
+#: had it wrong; it lives here so there is one list.
+PLACEHOLDERS: dict[str, tuple[str, ...]] = {
+    "GEMINI_API_KEY": ("", "..."),
+    "ANTHROPIC_API_KEY": ("", "...", "sk-ant-..."),
+    "OPENAI_API_KEY": ("", "...", "sk-..."),
+    "NCBI_EMAIL": ("", "you@example.com"),
+}
+
+
+def key_is_usable(name: str) -> tuple[bool, str]:
+    """(usable, why-not) for one env var, placeholders counted as unset."""
+    raw = (os.environ.get(name) or "").strip()
+    if raw in PLACEHOLDERS.get(name, ("",)):
+        return False, ("still the .env.example placeholder" if raw else "not set")
+    return True, ""
+
+
 def load_env(dotenv_path: Path | None = None) -> None:
     """Load `.env` and reconcile the CA-bundle vars.
 

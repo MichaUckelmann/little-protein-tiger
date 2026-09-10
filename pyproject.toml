@@ -48,7 +48,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Semantic corpus search. Split out because sentence-transformers pulls torch
-# and the full NVIDIA CUDA stack — 283 wheels, ~3 GB downloaded, ~5.7 GB
+# and the full NVIDIA CUDA stack — ~50 distributions, ~3 GB downloaded, ~5.8 GB
 # installed — on every machine, including laptops that will never touch a GPU.
 # Everything except `search_corpus` and the literature-db MCP server runs
 # without it: structure tools, both design tracks, and both report generators.

@@ -1,14 +1,16 @@
-# ⚠️ BEFORE MAKING THIS REPOSITORY PUBLIC
+# Release checklist
 
-**Status: NOT READY TO GO PUBLIC.** One blocking item, listed first, and one
-open decision below it.
+**Status: PUBLIC, and the corpus asset is published and fetchable
+anonymously.** Nothing here blocks; what remains is one open decision and the
+maintenance notes below.
 
 ---
 
-## ✅ RESOLVED — the corpus is published
+## ✅ RESOLVED — the corpus is published and verified anonymously
 
-`v0.1.0` carries `lpt-corpus.tar.zst` (111,434,853 bytes), and
-`scripts/fetch_corpus.py` finds it. Rebuild and replace with:
+`v0.1.0` carries `lpt-corpus.tar.zst` (104,660,581 bytes), `scripts/fetch_corpus.py`
+finds it, and a fresh-clone trial on 2026-09-10 downloaded it with no token
+configured and a sha256 matching the release notes. Rebuild and replace with:
 
 ```bash
 python scripts/package_corpus.py            # -> dist/lpt-corpus.tar.zst
@@ -19,28 +21,36 @@ The asset name must start with `lpt-corpus` — that is the prefix
 `fetch_corpus.py` looks for. When you replace it, update the sha256 in the
 release notes; it is quoted there for verification.
 
-## 🟡 The published asset predates the abstract strip
+## ✅ RESOLVED — the published asset carries no abstracts
 
-The live asset was built before `package_corpus.py` learned to blank
-`papers.abstract`, so it carries **11,818 publisher-supplied abstracts** in
-`data/literature.db`. Nothing reads them (see `_STRIPPED_COLUMNS` and
-`docs/licensing.md`), and no third party has downloaded it — the repo is still
-private — so replacing it costs nothing now and is awkward later.
+The live asset was rebuilt after `package_corpus.py` learned to blank
+`papers.abstract`. Verified against the installed database from a fresh
+anonymous download, 2026-09-10:
 
-**Rebuild and re-upload before flipping visibility.** This is the same class of
-problem as the API key found in `curation_error`, caught at the same stage, and
-it is only free while the repo is private.
+```
+non-empty abstracts: 0        papers: 57,907        curated: 14,517
+```
 
-## 🔴 Verify the asset resolves anonymously — only possible after going public
+Note the WORKING copy in `data/literature.db` still holds all 11,818 — the
+strip happens at packaging time, into a temporary copy, so re-running
+`package_corpus.py` is always safe and never mutates the local corpus.
+
+## ✅ RESOLVED — the asset resolves anonymously
 
 ```bash
 git clone https://github.com/MichaUckelmann/little-protein-tiger /tmp/verify
 cd /tmp/verify && python scripts/fetch_corpus.py --check
 ```
 
-A GitHub release asset on a **private** repo is not anonymously downloadable,
+Done 2026-09-10 from a fresh clone with no token configured: the asset was
+found, downloaded, and its sha256 matched the release notes. This mattered
+because a release asset on a **private** repo is not anonymously downloadable
 and that 404 is indistinguishable from "no asset published yet" — which is
-exactly what a beta tester would report. Run this immediately after the flip.
+exactly what a beta tester would have reported.
+
+**Re-run it after any `gh release upload --clobber`.** Packaging now also drops
+maintainer scratch directories (`data/fingerprints/_*`), which the published
+v0.1.0 asset still contains — harmless, but a rebuild will remove them.
 
 ---
 

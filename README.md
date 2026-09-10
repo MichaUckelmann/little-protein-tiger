@@ -11,8 +11,8 @@ LLM extraction → vector index + interaction graph) and a 16-stage resumable
 design orchestrator. Skills run from the CLI against the Gemini, Claude or
 OpenAI API, or conversationally inside Claude Desktop / Claude Code over MCP.
 
-**Corpus:** **14,517 curated fingerprints**, shipped prebuilt with the vector
-index and interaction graph.
+**Corpus:** **14,517 curated papers**, shipped prebuilt with the vector index
+and interaction graph.
 
 > **Beta.** The corpus archive is published as
 > [v0.1.0](../../releases/tag/v0.1.0); `python scripts/fetch_corpus.py`

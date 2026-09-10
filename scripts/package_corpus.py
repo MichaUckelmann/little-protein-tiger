@@ -88,6 +88,22 @@ def corpus_stats() -> dict:
     return stats
 
 
+#: Directories the maintainer's own experiments leave inside `data/`, which
+#: `tf.add` would otherwise recurse into: `data/fingerprints/_gemma_compare`
+#: and `_provider_compare` are model-comparison scratch from
+#: `scripts/bench_models.py` and shipped inside the published v0.1.0 asset.
+#: Nothing downstream reads them — `corpus_stats` and the vector ingest both
+#: glob `*.json` at the top level — so they were pure noise in a 100 MB
+#: download. Leading-underscore is the convention those scripts already use.
+def _shippable(info: "tarfile.TarInfo") -> "tarfile.TarInfo | None":
+    """Drop maintainer scratch from the archive. Returning None omits it."""
+    if any(part.startswith("_") for part in Path(info.name).parts[:-1]):
+        return None
+    if Path(info.name).name.startswith("_") and info.isdir():
+        return None
+    return info
+
+
 # Credential shapes that must never leave this machine inside a release.
 # `curation_error` is the dangerous column: it stores the exception text of a
 # failed call, and `requests` embeds the full request URL in what it raises —
@@ -302,7 +318,7 @@ def package(out: Path, level: int = 10) -> int:
                     tf.add(clean_db, arcname=rel)
                     continue
                 print(f"  + {rel}")
-                tf.add(_ROOT / rel, arcname=rel)
+                tf.add(_ROOT / rel, arcname=rel, filter=_shippable)
 
         raw = tar_path.stat().st_size
         # zstd -10 is a good size/time trade here; the archive is written once

@@ -3305,7 +3305,15 @@ class PipelineRunner:
         hs = json.loads(hotspots_json)
         kept = {a for lo, hi in trim.kept_segments for a in range(lo, hi + 1)}
         hotspots = [h for h in hs["residues"] if int(h["auth_seq_id"]) in kept]
-        name = f"{(intel.get('target_gene') or 'target').lower()}_binder_001"
+        # Slugified, because the structure-first and local-file tracks compose
+        # a synthetic `target_gene` like "3KYS chain A" or "my_own_structure
+        # chain A" — which produced `spec/3kys chain a_binder_001.json`, a
+        # filename with SPACES in it. That file is the one artifact an operator
+        # carries to a GPU box, `23_binder_spec.md` records its path unquoted,
+        # and the binder track's compute model is a generated bash driver.
+        raw = (intel.get("target_gene") or "target").lower()
+        name = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "target"
+        name = f"{name}_binder_001"
         # RFD3 reads the target from a PDB; the trim writes both formats.
         pdb_input = Path(str(trim.trimmed_path)).with_suffix(".pdb")
         spec = build_rfd3_spec(
@@ -4684,6 +4692,23 @@ class PipelineRunner:
                     if t.get("calibration") is not None:
                         self._generate_binder_report(t["dirs"]["binder"])
                 if self._stop_after in ("trial", "spec"):
+                    # A stop-after is a SUCCESS only if a site got that far.
+                    # This returned unconditionally, so a run whose every site
+                    # failed — the commonest cause being a `--hotspots` residue
+                    # that is not in the chain — printed "PIPELINE COMPLETE",
+                    # reported GO/NO-GO INCOMPLETE, wrote no spec, and exited
+                    # 0. Anything reading the exit code, or reading the tail of
+                    # the log, saw a clean run.
+                    if not any(t.get("error") is None for t in trials):
+                        result.go_recommendation = "NO_GO"
+                        errs = "; ".join(
+                            str(t.get("error"))[:80] for t in trials
+                            if t.get("error"))
+                        result.go_rationale = (
+                            f"every site trial failed before "
+                            f"{self._stop_after}: {errs}")
+                        result.error = result.go_rationale
+                        return result
                     logger.info("stopping after the design trial, as requested")
                     return result
                 ok = [t for t in trials if t.get("calibration") is not None]

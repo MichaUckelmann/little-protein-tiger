@@ -48,10 +48,41 @@ except ModuleNotFoundError as exc:
                                # its thread pool; importing from inside run_in_executor causes
                                # an OpenMP/MKL deadlock with the asyncio event loop.
 logger.info("sentence_transformers imported. Starting MCP server.")
+
+
+def _curated_papers(default: int = 14_500) -> int:
+    """How many curated papers the corpus on THIS machine actually holds.
+
+    Read, not hardcoded. The `instructions` string below is what a model reads
+    when deciding whether this corpus is worth consulting at all, and it said
+    "~11,000" against a shipped corpus of 14,517 — under-reporting by 24% to
+    the one consumer whose job is to judge relevance. A literal will rot again
+    the next time the corpus grows; `docs/journal-filtering.md` gets this right
+    by dating its snapshot, and this gets it right by not having one.
+    """
+    try:
+        import sqlite3
+
+        db = Path(__file__).resolve().parents[1] / "data" / "literature.db"
+        if not db.is_file():
+            return default
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM papers "
+                "WHERE curation_status='completed'").fetchone()[0]) or default
+    except Exception:                                        # noqa: BLE001
+        # An unreadable corpus is not a reason to fail server startup; the
+        # tools themselves report that far more legibly.
+        return default
+
+
+_CURATED_PAPERS = _curated_papers()
+
 mcp = FastMCP(
     "literature-db",
     instructions=(
-        "Tools over Little Protein Tiger's LOCAL curated corpus: ~11,000 "
+        f"Tools over Little Protein Tiger's LOCAL curated corpus: "
+        f"~{_CURATED_PAPERS:,} "
         "papers, heavily weighted toward chromatin, histone chaperones and "
         "structural/chemical biology, filtered to tier 1-2 journals.\n\n"
         "DO NOT reach for these tools on your own. Use them only when the "

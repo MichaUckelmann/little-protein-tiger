@@ -25,6 +25,7 @@ overwritten.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import sys
@@ -67,7 +68,20 @@ def build_mcp_json() -> dict:
 
 
 def main() -> int:
+    # There was no argparse at all, so `--help` fell through to the write —
+    # probing for a dry-run flag performed the side effect it was probing for.
+    ap = argparse.ArgumentParser(
+        description="Write .mcp.json for this checkout's venv and launchers.")
+    ap.add_argument("--dry-run", "--print", dest="dry_run", action="store_true",
+                    help="print the config and write nothing")
+    args = ap.parse_args()
+
     new_config = build_mcp_json()
+
+    if args.dry_run:
+        print(json.dumps(new_config, indent=2))
+        print(f"\n(dry run — {MCP_JSON} not written)")
+        return 0
 
     if MCP_JSON.exists():
         shutil.copy2(MCP_JSON, BACKUP)

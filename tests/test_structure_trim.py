@@ -429,3 +429,69 @@ def test_the_exposure_guard_fires_on_a_cut_that_opens_the_epitope(tmp_path, tead
         trim_target(_3KYS, target_chain="A", partner_chain="B",
                     hotspots=tead_hotspots, budget=150, out_dir=tmp_path,
                     pdb_id="3KYS", binder_min=70, binder_max=86)
+
+
+# ── a no-op trim must retain 100% by construction ────────────────────────────
+#
+# `write_trimmed` always strips solvent, so the AFTER interface was measured on
+# a desolvated structure while the BEFORE one was measured with every ordered
+# water still in place. Both sides already filtered waters out of the per-
+# residue LIST, but a water at the interface still occupies space and changes
+# the SASA of the protein residues around it — so `retention` drifted in
+# whichever direction that structure's waters pushed it, and the direction was
+# not always benign:
+#
+#     7CZD  162 solvent entries on chain B  ->  105.2%   (passed, wrongly)
+#     6VJJ   92 solvent entries on chain A  ->   84.4%   (REFUSED, wrongly)
+#
+# 6VJJ is the entry `quickstart.py` itself suggests, and the refusal said
+# "cutting has damaged the epitope itself" one line after the planner logged
+# "keeping it whole, no trim".
+
+_WATER_RICH = [
+    ("7CZD", "B", "A", [56, 66, 115]),
+    ("6VJJ", "A", "B", [38, 40, 41]),
+    ("3KYS", "A", "B", [276, 314, 318, 322]),
+]
+
+
+@pytest.mark.parametrize("pdb,target,partner,hot", _WATER_RICH)
+def test_a_trim_that_removes_nothing_retains_everything(pdb, target, partner,
+                                                        hot, tmp_path):
+    """Not "close to 100%" — exactly 100%. Anything else is a metric fault."""
+    from src.structure_trim import trim_target
+
+    path = _ROOT / "data" / "structures" / f"{pdb}_ba1.cif"
+    if not path.is_file():
+        path = _ROOT / "data" / "structures" / f"{pdb}.cif"
+    if not path.is_file():
+        pytest.skip(f"{pdb} not in this checkout")
+
+    hotspots = [{"residue": "UNK", "auth_seq_id": h, "label_seq_id": 0,
+                 "rfd3_atoms": "CA"} for h in hot]
+    res = trim_target(path, target_chain=target, partner_chain=partner,
+                      hotspots=hotspots, budget=220, out_dir=tmp_path,
+                      pdb_id=pdb, max_exposed_hydrophobic=None)
+
+    assert res.n_residues_after == res.n_residues_before, "expected a no-op trim"
+    assert res.bsa_retention == pytest.approx(1.0, abs=0.005), (
+        f"{pdb}: nothing was removed but retention is {res.bsa_retention:.1%} "
+        f"— the before/after interface is being measured on different bases")
+    assert res.bsa_dropped_A2 == pytest.approx(0.0, abs=1.0)
+
+
+def test_the_trim_leaves_only_its_own_outputs_in_the_run_directory(tmp_path):
+    """The desolvated copy used for the BEFORE measurement is an intermediate.
+    Left in `out_dir` it sits beside `trimmed.cif` inviting someone to hand the
+    wrong file to RFD3."""
+    from src.structure_trim import trim_target
+
+    if not _3KYS.is_file():
+        pytest.skip("3KYS not in this checkout")
+    trim_target(_3KYS, target_chain="A", partner_chain="B",
+                hotspots=[{"residue": "UNK", "auth_seq_id": 276,
+                           "label_seq_id": 0, "rfd3_atoms": "CA"}],
+                budget=220, out_dir=tmp_path, pdb_id="3KYS",
+                max_exposed_hydrophobic=None)
+    cifs = sorted(p.name for p in tmp_path.glob("*.cif"))
+    assert cifs == ["trimmed.cif"], cifs
