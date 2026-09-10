@@ -1266,7 +1266,20 @@ class PipelineRunner:
         nothing has looked at the structure yet, so `interface` still runs and
         the epitope is still chosen by a model reading the real coordinates.
         """
-        path = self._ensure_structure(pdb_id)
+        self._ensure_structure(pdb_id)
+        # Biological assembly 1, NOT the ASU `_ensure_structure` returns.
+        # Every stage after this one — `_correct_label_seq_ids`,
+        # `_verify_hotspot_grounding`, the trim, the RFD3 spec — addresses the
+        # structure through `_binder_structure_path`, which prefers the
+        # assembly. Measuring the chain pair on the ASU meant a crystal with
+        # more copies in the asymmetric unit than in the assembly picked a
+        # chain the rest of the run cannot see: on 8ZNL the ASU has A-H and the
+        # assembly only A/B, so the largest measured interface was C/D and the
+        # run died in `_correct_label_seq_ids` with "cannot build the
+        # auth->label map for chain D" — after the LLM stage had been paid for.
+        # Found by `scripts/bench_models.py`, which ran this track on four
+        # structures and had both models fail identically on that one.
+        path = self._binder_structure_path(pdb_id)
         found = self._structure_chains(path)
         designable = [c for c in found if c[1] >= self._MIN_DESIGNABLE_CHAIN]
         if not designable:

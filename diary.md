@@ -3992,3 +3992,88 @@ JavaScript alike.
   was scoped and deferred — the numbering transfer is now safe via
   `uniprot_to_auth`, but the conformational mismatch risk is real and better
   structure SELECTION may remove the need.
+
+## 2026-09-10 — gemini-3.8-flash benchmarked against 3.7: not switching the default
+
+3.8-flash shipped at the same per-token price as 3.7, so the switch question is
+entirely "how many tokens does it spend on our work, and is the work as good".
+`scripts/bench_models.py` answers both on the production code path — 14 cells,
+$2.5 of API spend, no GPU.
+
+Two suites, chosen because their output is objectively checkable rather than
+gradeable:
+
+- **interface** — `--workflow structure`'s single LLM stage
+  (`complex-structure-analysis`) on 7CZD, 8ZNL, 3KYS and 6E3Y. Stage 0 of that
+  track is deterministic, so the model's whole contribution is the epitope, and
+  every claim it makes about the epitope is checkable against coordinates: does
+  the residue NAME at each auth_seq_id match the file, do the stated
+  `rfd3_atoms` exist on that residue, is the label_seq_id the one gemmi
+  computes, did it keep the chain assignment that was measured for it. Headline
+  metric is blunter: would `_stage_binder_interface` have let the campaign
+  proceed. The four structures are the ones this repo has documented failures
+  on, not a random sample.
+- **pathway** — `pathway-expert` on three of `ablate_corpus.py`'s queries
+  (chromatin 15.8% of the curated corpus, pain 3.9%, fibrosis 0.2%). Checkable:
+  the pipeline's own `_verify_citations` says whether each cited DOI is in the
+  fingerprint store, `identifier_normalizer` says whether each named gene
+  resolves, and the handoff either carries the fields the next stage parses or
+  does not.
+
+**Result — quality is indistinguishable.** 7/7 cells production-accepted on
+both. Same target chain on all four structures (B, B, A, R). Zero misnamed
+hotspots, zero nonexistent atoms, zero hallucinated citations, on either model.
+Same primary target on all three pathway queries (MEN1/KMT2A, CALCRL/RAMP1,
+TLR4/LY96), differing only in whether it was written in approved symbols
+(3.7: `MEN1 / KMT2A`, `SCN9A`) or protein/legacy names (3.8: `Menin / MLL1`,
+`Nav1.7`) — all of which resolve through the alias tiers, so cosmetic. The one
+edge to 3.7 is label_seq_id: 10 rows disagreeing with gemmi on 6E3Y against
+3.8's 18, and that column is overwritten unconditionally anyway.
+
+**Result — cost is a wash and wall clock is not.** Aggregate 1.10x on cost, but
+3.8 was CHEAPER on 4 of 7 cells and the aggregate is carried by one cell
+(8ZNL, 1.93x); n=1 per cell and a repeat of the same cell moved 16%, so 1.10x
+is not resolvable. What is resolvable: **1.80x wall clock, slower on 7 of 7**,
+and the token pattern behind it — 0.82x input, 1.65x output. 3.8 spends its
+extra budget on its own reasoning rather than on retrieval, which for this
+pipeline is the wrong direction: the corpus is the part that is ours.
+
+**Decision: `models.gemini.default` stays `gemini-3.7-flash`.** Nothing here
+argues for paying ~1.8x the wall clock of every LLM stage for output that
+scores the same. 3.8 is priced in `config.yaml` so `--model-id
+gemini-3.8-flash` works and a `--budget` cap enforces against it (an unpriced
+model prices at $0.00 and silently disables the cap).
+
+### The benchmark found a real bug in the structure-first track
+
+Both models failed identically on 8ZNL with `cannot build the auth->label map
+for chain D`. Not a model problem: `_stage_structure_intel` measured the chain
+pair on `_ensure_structure`'s return value, the **ASU**, while everything after
+it — `_correct_label_seq_ids`, `_verify_hotspot_grounding`, the trim, the RFD3
+spec — addresses the structure through `_binder_structure_path`, which prefers
+**biological assembly 1**. 8ZNL's ASU carries chains A–H and its assembly only
+A/B, so the largest measured interface was C/D and the run died one paid-for
+LLM stage later. Any multi-copy ASU hits it. Stage 0 now measures on the
+assembly too; after the fix both models were accepted on 8ZNL, which is how the
+cell became informative at all.
+
+### Two scorers were wrong before the table was
+
+Worth recording because it is the failure mode a benchmark is most exposed to —
+a confident table that nothing about it looks wrong:
+
+- `atom_errors` first compared each hotspot's `rfd3_atoms` against
+  `_RFD3_SIDECHAIN_ATOMS`, the two atoms per residue the skill is asked to
+  PREFER. It is not restricted to them, so a real `HIS69: ND1,NE2` scored as an
+  error. The rule has to be the one `validate_spec` applies: does the atom
+  exist on that residue in that file.
+- `tier_genes` split headings on `/` without stripping parentheticals, so
+  `MLL1 (MEN1/KMT2A)` became the fragments `MLL1 (MEN1` and `KMT2A)`, neither
+  of which resolves — and 3.8 scored "5 of 8 genes unresolvable" for its choice
+  of punctuation. Fixing it took that to 0 of 6, i.e. the whole apparent
+  difference was this parser.
+
+Hence `--rescore`, which re-derives every artifact-based metric from the
+reports on disk without making an API call, and `raw_interface.md`, the
+pre-correction interface report kept per cell so the next scorer fix is a
+rescore rather than another $2. `tests/test_model_bench.py` pins both rules.

@@ -723,6 +723,30 @@ against live calls, not docs:
   config.yaml are PLACEHOLDERS**; replace them with your account's before
   relying on a budget.
 
+## Changing the default model is a measurement, not a version bump
+
+`scripts/bench_models.py` compares two models on the PRODUCTION code path and
+scores them only on things that are objectively checkable: for the `interface`
+stage, whether each hotspot's residue NAME matches the structure at that
+auth_seq_id, whether the stated `rfd3_atoms` exist on that residue, whether the
+label_seq_id is gemmi's, whether the measured chain assignment survived, and
+whether `_stage_binder_interface` would have let the campaign proceed; for
+`pathway`, the pipeline's own `_verify_citations` DOI-in-corpus rate,
+`identifier_normalizer` resolvability, and handoff completeness. 14 cells,
+~$2.5, no GPU. `--rescore` re-derives every artifact-based metric from the
+reports on disk without an API call, because two of those scorers were wrong
+before the table was (see diary 2026-09-10) — a scorer that flags valid output
+compresses exactly the difference it is meant to measure.
+
+Verdict on gemini-3.8-flash (2026-09-10): **not switched.** Quality
+indistinguishable (7/7 accepted both, zero misnamed hotspots, zero
+hallucinated citations, same primary target on every query), cost a wash
+(1.10x aggregate but cheaper on 4 of 7 cells, and a repeat of one cell moved
+16% — n=1 cannot resolve it), and 1.80x wall clock, slower on 7 of 7. Its
+token pattern is 0.82x input / 1.65x output: more of its own reasoning, less
+retrieval, which for this pipeline is the wrong direction. It is priced in
+config.yaml so `--model-id gemini-3.8-flash` and a `--budget` cap both work.
+
 ## One agentic loop, not one per entry point
 
 `scripts/ask_corpus.py` is a thin front-end over `SkillRunner` running the

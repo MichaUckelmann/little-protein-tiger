@@ -160,6 +160,14 @@ models:
     claude-haiku-4-5:   {input: 1.00,  output: 5.00}
     claude-fable-5:     {input: 10.00, output: 50.00}
     gemini-3.7-flash:              {input: 0.75, output: 3.75}   # intro rate; DOUBLES to 1.50/7.50 in January 2027
+    # Same per-token rate as 3.7 (confirmed on the account, 2026-09-10),
+    # so a switch is decided on TOKENS SPENT and output quality, not on
+    # price — which is what `scripts/bench_models.py` measures. It needs
+    # its own entry regardless: `rates_for` prefix-matches, and
+    # "gemini-3.8-flash" does not start with "gemini-3.7-flash", so
+    # without this line every 3.8 call prices at $0.00 and a --budget cap
+    # silently stops enforcing.
+    gemini-3.8-flash:              {input: 0.75, output: 3.75}   # intro rate; DOUBLES with 3.7's in January 2027
     gemini-3.1-flash-lite:         {input: 0.25, output: 1.50}
     # Retired name, kept so ledger lines written before the GA rename
     # still price rather than logging as unpriced.

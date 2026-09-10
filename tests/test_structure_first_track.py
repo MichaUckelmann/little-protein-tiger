@@ -245,3 +245,48 @@ def test_workflow_choice_is_accepted_by_the_cli_and_the_runner():
     assert "structure" in action.choices
     with pytest.raises(ValueError, match="structure"):
         PipelineRunner(config={}, provider="gemini", workflow="nonsense")
+
+
+def test_the_chain_pair_is_measured_on_the_file_the_rest_of_the_run_uses(tmp_path):
+    """Stage 0 must not pick a chain the downstream stages cannot see.
+
+    `_ensure_structure` returns the ASU and separately downloads biological
+    assembly 1; everything after stage 0 — `_correct_label_seq_ids`,
+    `_verify_hotspot_grounding`, the trim, the RFD3 spec — addresses the
+    structure through `_binder_structure_path`, which prefers the assembly.
+    Measuring the interface on the ASU therefore picked a chain out of a
+    different file: 8ZNL's ASU carries chains A-H and its assembly only A/B, so
+    the largest measured interface was C/D and the run died in
+    `_correct_label_seq_ids` with "cannot build the auth->label map for chain
+    D" — one paid-for LLM stage too late to be cheap.
+
+    Deterministic: stage 0 makes no model call.
+    """
+    import gemmi
+    import yaml
+
+    asu = _STRUCTURES / "8ZNL.cif"
+    ba1 = _STRUCTURES / "8ZNL_ba1.cif"
+    if not (asu.is_file() and ba1.is_file()):
+        pytest.skip("8ZNL not in this checkout")
+
+    def chains_of(path):
+        st = gemmi.read_structure(str(path))
+        st.setup_entities()
+        return {ch.name for ch in st[0]}
+
+    if chains_of(asu) <= chains_of(ba1):
+        pytest.skip("8ZNL's ASU no longer has chains the assembly lacks")
+
+    config = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    runner = PipelineRunner(config=config, provider="gemini", workflow="structure")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    dirs = runner._binder_dirs(run_dir)
+    intel = runner._stage_structure_intel(
+        "8ZNL", "Disrupt the interface.", dirs, PipelineResult(run_dir=run_dir))
+
+    assembly = chains_of(ba1)
+    assert intel["target_chain"] in assembly
+    if intel["partner_chain"]:
+        assert intel["partner_chain"] in assembly
