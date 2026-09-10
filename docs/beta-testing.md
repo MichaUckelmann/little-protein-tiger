@@ -4,6 +4,16 @@ Everything from a clean machine to your first results, in order. Roughly
 **20 minutes of setup**, then a first design run that costs about **$1 of API
 credit** and needs no GPU.
 
+> **⚠️ That $1 is a measurement, not a guarantee.** Every reasoning stage is a
+> paid API call on your own key, and what it costs depends on which provider
+> and model you point at it, what the provider charges this month, and how much
+> work you ask for — extending the corpus with your own search terms is a
+> different order of spend from designing one binder. **Always pass
+> `--budget <USD>`**; it is a hard cap and the run pauses rather than
+> overrunning. Set a spend limit in your provider's console as well, since that
+> is the only limit that covers everything you do outside LPT. The GPU stages
+> cost nothing in API terms.
+
 If you are pointing a coding agent (Claude Code, Cursor, Codex) at this repo
 to do the setup for you, give it **[`SETUP_AGENT.md`](../SETUP_AGENT.md)**
 instead — same steps, written to be executed rather than read.

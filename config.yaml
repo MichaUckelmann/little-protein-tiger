@@ -173,14 +173,19 @@ models:
     # still price rather than logging as unpriced.
     gemini-3.1-flash-lite-preview: {input: 0.25, output: 1.50}
     # ── OpenAI ────────────────────────────────────────────────────────────
-    # PLACEHOLDERS — replace with the rates on your account before relying on
-    # --budget for an openai run. They are not guesses at the real price; they
-    # exist so `rates_for()` resolves and the budget cap is ENFORCED rather
-    # than silently bypassed (an unpriced model prices at $0.00, so a cap
-    # never fires — see token_budget.price). `budget_requires_pricing` in the
-    # design block below turns the bypass into a hard error instead.
-    gpt-5.6-terra:      {input: 1.25, output: 10.00}
-    gpt-5.6-luna:       {input: 1.25, output: 10.00}
+    # terra is the account's real rate, confirmed 2026-09-10. luna is still a
+    # PLACEHOLDER — not a guess at the real price, but a value that lets
+    # `rates_for()` resolve so a --budget cap is ENFORCED rather than silently
+    # bypassed (an unpriced model prices at $0.00, so a cap never fires — see
+    # token_budget.price). `budget_requires_pricing` in the design block below
+    # turns that bypass into a hard error instead. Check luna against your own
+    # account before trusting a cap on it.
+    #
+    # Note terra is ~2.7x gemini-3.7-flash on input and ~3.2x on output, so an
+    # --provider openai run costs several times what the same run costs on the
+    # default provider. Nothing in the pipeline changes; the bill does.
+    gpt-5.6-terra:      {input: 2.00, output: 12.00}   # real, 2026-09-10
+    gpt-5.6-luna:       {input: 1.25, output: 10.00}   # PLACEHOLDER
 
 curation:
   # gemini, like every other LLM stage in this repo. It was "claude" long

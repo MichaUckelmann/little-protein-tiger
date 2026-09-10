@@ -32,6 +32,15 @@ and installing everything by default wastes gigabytes and hours.
    is free — the corpus ships pre-built. Only *extending* it with new search
    terms costs API spend. If that comes up, state the estimate and wait for a
    yes.
+
+   When you suggest a first real run in Phase 9, **tell the user it costs money
+   and show them `--budget`.** The measured figures in this repo are $0.54-$2.12
+   per design campaign, but they are measurements on one provider at one
+   month's prices: `--provider openai` is several times dearer per token, an
+   intro rate can expire, and a corpus extension is a different order of spend
+   entirely. Recommend `--budget <USD>` on every metered command you hand over,
+   and say that a provider-side spend limit is the only cap that covers what
+   the user does outside LPT.
 3. **Do not modify** `config.yaml`, `CLAUDE.md`, `.mcp.json` (except by running
    `scripts/setup_mcp_json.py`), or anything under `src/`. If setup seems to
    need a source change, stop and tell the user why.

@@ -39,6 +39,23 @@ one-sentence prompt *"Design cancer therapeutics to target key nodes in
 mesothelioma."* → YAP1/TEAD1 on 3KYS → 317 gated survivors of 1,352 refolds,
 best ipTM 0.937 / dock-RMSD 0.63 Å, for **$0.79 of API spend** and ~22 GPU-h.
 
+> ### ⚠️ LLM API calls cost money — watch your own spending
+>
+> Every reasoning stage is a paid API call on **your** key. The runs quoted in
+> this README came to **$0.54–$2.12** each, and the ones on the default
+> provider are at the low end — but those are *our* measurements, on *our*
+> models, at *today's* prices. **Any of that can change under you:** a
+> different provider (`--provider openai` is ~3× the default on tokens), a
+> different model, an intro rate expiring, a stage that retries, or a corpus
+> extension that curates thousands of papers instead of designing one binder.
+>
+> **Pass `--budget <USD>`.** It is a hard cap, enforced before each stage, and
+> a run that would breach it pauses with a resumable checkpoint instead of
+> overrunning. Without it a run is unmetered. Costs are tracked per stage in an
+> append-only ledger at your project root — read it, and set your own limits
+> in your provider's console too. Nothing here can spend money on the GPU
+> stages; those are free once the tools are installed.
+
 Four illustrated walkthroughs built from runs in this repository — two PPI
 discovery campaigns (CGRP receptor, YAP1/TEAD1), a PD-L1 binder campaign and a
 corpus-explorer session — are published at
@@ -97,9 +114,11 @@ every pipeline stage, for curation, and for `ask_corpus.py`.
 interchangeable. `--provider claude` or `--provider openai` runs every stage on
 that provider instead; beyond that, `ANTHROPIC_API_KEY` is also what Gemini
 falls back to when a safety classifier declines a stage, so a run with only
-`GEMINI_API_KEY` has no fallback left. If you use `--provider openai`, replace
-the placeholder `gpt-5.6-*` rates in `config.yaml` with your account's before
-trusting `--budget`.
+`GEMINI_API_KEY` has no fallback left. `--provider openai` is also **several
+times more expensive per token** than the default: `gpt-5.6-terra` is
+$2.00/$12.00 per million input/output tokens against gemini-3.7-flash's
+$0.75/$3.75. `gpt-5.6-luna`'s entry in `config.yaml` is still a placeholder —
+check it against your own account before trusting `--budget` on it.
 
 `.env.example` documents every other variable — NCBI and Semantic Scholar rate
 limits, the corporate-proxy CA settings, and the tool paths (`LPT_FOUNDRY_ROOT`,
@@ -759,6 +778,14 @@ python scripts/run_pipeline.py --workflow binder --target KRAS \
 rounds; a stage whose projected cost would breach it pauses with a resumable
 checkpoint rather than overrunning. GPU-hours and disk are governed separately
 (`design.foundry.max_local_hours`, `disk_budget_gb`).
+
+Two things the cap cannot do for you. It prices from the table in
+`config.yaml`, so **a model with no entry there would price at $0.00 and make
+the cap unenforceable** — `TokenLedger.preflight` refuses to run rather than
+pretend, but that means checking your own model is listed at a rate you
+recognise. And it caps *this* run: it knows nothing about what you spent
+yesterday, or in another project, or outside LPT. Your provider's own spend
+limit is the only backstop that covers all of it.
 
 **Reports.** Every trial and every scored campaign writes a self-contained
 illustrated `report.html` — site rationale, confidence distributions, an

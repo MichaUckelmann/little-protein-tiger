@@ -725,9 +725,14 @@ against live calls, not docs:
   with no rate entry, so `--budget 5` on one enforced nothing at all and only
   a "has_unpriced" advisory hinted at it. `TokenLedger.preflight` raises
   instead. Omitting `--budget` still runs unmetered — the refusal is about an
-  unenforceable cap, not about unpriced models. **The `gpt-5.6-*` rates in
-  config.yaml are PLACEHOLDERS**; replace them with your account's before
-  relying on a budget.
+  unenforceable cap, not about unpriced models. `gpt-5.6-terra` is priced at the
+  account's real $2.00/$12.00 per Mtok (2026-09-10) — ~2.7x/3.2x
+  gemini-3.7-flash, so an `--provider openai` run costs several times the
+  default's. **`gpt-5.6-luna` is still a PLACEHOLDER**; replace it with your
+  account's before relying on a budget for it. Note the built-in `_PRICES`
+  fallback in `token_budget.py` carries no OpenAI entry at all — every
+  metering path calls `load_pricing(config)` first, and `preflight`'s refusal
+  covers the case where one does not.
 
 ## Changing the default model is a measurement, not a version bump
 
