@@ -156,11 +156,40 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--workflow",
-        choices=["ppi", "binder"],
+        choices=["ppi", "binder", "structure"],
         default="ppi",
         help="Workflow track. 'ppi' (default) = literature-driven binder design; "
              "'binder' = target-name-first binder design on the local GPU "
-             "(skips discovery, runs foundry, requires --project).",
+             "(skips discovery, runs foundry, requires --project); "
+             "'structure' = you already have the structure — skips discovery "
+             "AND target selection, measures the interface, and starts at "
+             "hotspot analysis (requires --project and --structure/--pdb).",
+    )
+    p.add_argument(
+        "--structure",
+        metavar="FILE", default=None,
+        help=(
+            "Structure workflow: a local .cif/.pdb to design against. Copied "
+            "into data/structures/ as LOCAL-<name>.cif and addressed by that "
+            "id thereafter. Use --pdb instead to start from an RCSB entry "
+            "without the target-intel LLM stage."),
+    )
+    p.add_argument(
+        "--uniprot",
+        metavar="ACC", default=None,
+        help=(
+            "Structure workflow: UniProt accession for the target chain. "
+            "Optional but recommended — without it the chain-assignment, "
+            "organism and membrane-topology checks all fail open, and "
+            "transmembrane residues are NOT stripped from the design target."),
+    )
+    p.add_argument(
+        "--chains",
+        metavar="TARGET[,PARTNER]", default=None,
+        help=(
+            "Structure workflow: name the chains instead of taking the "
+            "largest measured interface. One chain selects single-target "
+            "mode (design_intent: inhibit_active_site)."),
     )
     p.add_argument(
         "--target",
@@ -408,9 +437,15 @@ def main() -> int:
     args = parser.parse_args()
 
     is_binder = args.workflow == "binder"
+    is_structure = args.workflow == "structure"
 
-    if not args.query and not (is_binder and args.target):
+    if not args.query and not (is_binder and args.target) and not is_structure:
         parser.error("--query is required (or --target, for --workflow binder).")
+    if is_structure and not args.query:
+        # The objective is optional here — the structure IS the brief — but the
+        # interface stage still reads it, so give it something true.
+        args.query = (f"Design a binder against the supplied structure "
+                      f"{Path(args.structure).name if args.structure else args.pdb}.")
 
     try:
         # For the binder track the target IS the objective when no query is
@@ -455,6 +490,25 @@ def main() -> int:
         design_engine = "boltzgen"
 
     is_foundry_bridge = (not is_binder) and design_engine == "foundry"
+
+    if is_structure:
+        if not args.project:
+            parser.error(
+                "--workflow structure requires --project: it enters the same "
+                "foundry stage machine as --workflow binder, and a multi-day "
+                "GPU campaign needs the manifest to be resumable.")
+        if not args.structure and not args.pdb:
+            parser.error(
+                "--workflow structure needs --structure <file> or --pdb <ID> "
+                "— it does not search for a target, so one must be given.")
+        if args.structure and args.pdb:
+            parser.error("--structure and --pdb are mutually exclusive.")
+        if args.start_from in ("pathway", "structure", "literature", "design"):
+            args.start_from = "interface"
+        if args.start_from not in _BINDER_STAGES:
+            parser.error(
+                f"--start-from {args.start_from!r} is not a binder stage; "
+                f"choose one of {', '.join(_BINDER_STAGES)}.")
 
     if is_binder:
         if not args.project:
@@ -534,7 +588,8 @@ def main() -> int:
     if args.project:
         from src.project import Project
         project = Project.create(args.project, query=query, workflow=args.workflow)
-        _first_stage = "target_intel" if args.workflow == "binder" else "pathway"
+        _first_stage = ("target_intel"
+                        if args.workflow in ("binder", "structure") else "pathway")
         if args.start_from == _first_stage or project.latest_round() is None:
             rnd = project.new_round(note=query[:80])
         else:
@@ -559,6 +614,8 @@ def main() -> int:
         project=project,
         round_id=round_id,
         workflow=args.workflow,
+        uniprot=args.uniprot,
+        chains=args.chains,
         budget_usd=args.budget,
         budget_mode=args.budget_mode,
         detach=args.detach,
@@ -617,11 +674,19 @@ def main() -> int:
         print("=" * 60)
         return 0
 
+    pdb_arg = args.pdb
+    if args.structure:
+        try:
+            pdb_arg = runner.ingest_local_structure(Path(args.structure))
+        except PipelineBlockedError as exc:
+            logger.error(str(exc))
+            return 1
+
     try:
         result = runner.run(
             query=query,
             start_from=args.start_from,
-            pdb_id=args.pdb,
+            pdb_id=pdb_arg,
             context_file=args.context,
             target=args.target,
         )

@@ -279,6 +279,9 @@ class PipelineResult:
 # PipelineRunner
 # ---------------------------------------------------------------------------
 
+_LOCAL_PREFIX = "LOCAL-"
+
+
 class PipelineRunner:
     """
     Run the full LittleProteinTiger design pipeline as a sequence of SkillRunner calls.
@@ -324,6 +327,8 @@ class PipelineRunner:
         project: "Project | None" = None,
         round_id: str | None = None,
         workflow: str = "ppi",
+        uniprot: str | None = None,
+        chains: str | None = None,
         budget_usd: float | None = None,
         budget_mode: str = "hard",
         detach: bool = False,
@@ -354,12 +359,19 @@ class PipelineRunner:
         # into the project manifest. None => legacy outputs/<slug>_<date>/ layout.
         self._project = project
         self._round_id = round_id
-        # "ppi" (default binder/inhibitor track) | "binder" (target-name-first).
-        if workflow not in {"ppi", "binder"}:
+        # "ppi" (literature-driven) | "binder" (target-name-first) |
+        # "structure" (the operator already has the structure).
+        if workflow not in {"ppi", "binder", "structure"}:
             raise ValueError(
-                f"Invalid workflow={workflow!r}; expected 'ppi' or 'binder'."
+                f"Invalid workflow={workflow!r}; expected 'ppi', 'binder' "
+                f"or 'structure'."
             )
         self._workflow = workflow
+        # Structure-first track only. `uniprot` is optional and re-arms the
+        # three identity-keyed guards (see `_structure_first_caveats`);
+        # `chains` overrides the measured target/partner choice.
+        self._uniprot = (uniprot or "").strip()
+        self._chains = (chains or "").strip()
         self.max_iter = max_iter
         self.max_tokens = max_tokens
         # Per-stage overrides: {stage_name: model_id}. Empty = uniform default.
@@ -539,6 +551,29 @@ class PipelineRunner:
         self._init_ledger(run_dir)
 
         result = PipelineResult(run_dir=run_dir, pdb_id=pdb_id, target_complex=target_complex)
+
+        # ── Structure-first track: the operator already has the structure ────
+        # Neither discovery question applies. There is no target to find and no
+        # entry to choose, so stage 0 is deterministic — chains enumerated,
+        # the interface MEASURED — and the track joins the binder stage machine
+        # at `interface`, one stage in, where a model reads the real
+        # coordinates and picks the epitope. Everything from `trim` onward is
+        # the same code a --workflow binder campaign runs.
+        if self._workflow == "structure":
+            if start_from in ("pathway", "structure", "literature", "design",
+                              "target_intel"):
+                start_from = "interface"
+            dirs = self._binder_dirs(run_dir)
+            if start_from == "interface":
+                self._stage_structure_intel(
+                    pdb_id or "", query, dirs, result,
+                    uniprot=self._uniprot, chains=self._chains)
+            return self._run_binder_track(
+                query, run_dir, result,
+                start_from=start_from, context_file=context_file,
+                auto_mode=auto_mode, target=target,
+                attach=not self._detach, n_batches=self._n_batches,
+            )
 
         # ── Binder workflow: target-name-first track ─────────────────────────
         # Skips pathway/literature discovery entirely: the target is already
@@ -1126,6 +1161,224 @@ class PipelineRunner:
                 f"{limit}. Raise --trial-sites to compare more.")
         return unique[:limit]
 
+    # Chains smaller than this are ligands, tags and crystallisation peptides,
+    # not things to design a binder against or from.
+    _MIN_DESIGNABLE_CHAIN = 25
+    # Pairwise interface analysis is O(n^2) in chains; a cryo-EM assembly can
+    # carry a dozen. The largest few are where a real interface lives.
+    _MAX_CHAINS_CONSIDERED = 6
+
+    def _structure_chains(self, path: Path) -> list[tuple[str, int]]:
+        """(chain id, residue count), largest first, backbone-defined.
+
+        Membership is decided by BACKBONE, not residue name — the same rule
+        `structure_tools.is_chain_residue` applies, and for the same reason:
+        gemmi's component table does not know every modification a depositor
+        may make, and filtering on the name silently deletes residues that
+        carry a full N/CA/C (3KYS A344, S-palmitoyl-cysteine).
+        """
+        import gemmi
+        from src.structure_tools import is_chain_residue
+
+        st = gemmi.read_structure(str(path))
+        st.setup_entities()
+        out = [(ch.name, sum(1 for r in ch if is_chain_residue(r)))
+               for ch in st[0]]
+        return sorted([c for c in out if c[1] > 0], key=lambda c: -c[1])
+
+    def _largest_interface(self, path: Path,
+                           chains: list[tuple[str, int]]) -> tuple[str, str, float] | None:
+        """The chain pair burying the most surface, measured. None if none touch.
+
+        Contacts first, BSA second. Counting heavy-atom pairs inside 4.5 A with
+        a KD-tree is cheap and rules out the chains that merely sit near each
+        other in the asymmetric unit; SASA is then computed once, for the
+        winner, because it is the expensive half.
+        """
+        import gemmi
+        import numpy as np
+        from scipy.spatial import cKDTree
+        from src.structure_tools import analyze_interface, is_chain_residue
+
+        st = gemmi.read_structure(str(path))
+        st.setup_entities()
+        coords = {}
+        for ch in st[0]:
+            pts = [[a.pos.x, a.pos.y, a.pos.z] for r in ch if is_chain_residue(r)
+                   for a in r if a.element != gemmi.Element("H")]
+            if pts:
+                coords[ch.name] = np.asarray(pts)
+
+        ranked = []
+        ids = [c for c, _n in chains]
+        for i, a in enumerate(ids):
+            for b in ids[i + 1:]:
+                if a not in coords or b not in coords:
+                    continue
+                n = sum(len(x) for x in
+                        cKDTree(coords[a]).query_ball_tree(cKDTree(coords[b]), 4.5))
+                if n:
+                    ranked.append((n, a, b))
+        if not ranked:
+            return None
+        ranked.sort(reverse=True)
+        _n, a, b = ranked[0]
+        try:
+            # `bsa_total_A2`, nested under "interface" — the flat `bsa_total`
+            # this first read does not exist, and `.get` returned 0 silently,
+            # so the report said "0 A^2 buried" for a 2,449 A^2 interface.
+            iface = analyze_interface(str(path), a, b)["interface"]
+            bsa = float(iface.get("bsa_total_A2") or 0.0)
+        except Exception as exc:                       # noqa: BLE001
+            logger.debug(f"BSA unavailable for {a}/{b}: {exc}")
+            bsa = 0.0
+        return a, b, bsa
+
+    def _stage_structure_intel(
+        self, pdb_id: str, query: str, dirs: dict[str, Path],
+        result: PipelineResult, *, uniprot: str = "", chains: str = "",
+    ) -> dict[str, str]:
+        """Stage 0 for the structure-first track. Deterministic — no LLM call.
+
+        The binder track's own stage 0 is name-first: it resolves a gene to
+        UniProt and has a model choose among RCSB entries. When the operator
+        already has the structure, that entire question is answered, and the
+        only things left to decide are which chain is the target and which
+        interface to aim at — both of which can be MEASURED.
+
+        Same manoeuvre as `_bridge_ppi_to_foundry`: compose the handoff
+        `_run_binder_track` would have got from `binder-target-intel`, write it
+        to the artifact path the stage machine reads, and enter one stage
+        later. The difference is where it enters — the bridge starts at `trim`
+        because PPI's structure stage already picked hotspots, while here
+        nothing has looked at the structure yet, so `interface` still runs and
+        the epitope is still chosen by a model reading the real coordinates.
+        """
+        path = self._ensure_structure(pdb_id)
+        found = self._structure_chains(path)
+        designable = [c for c in found if c[1] >= self._MIN_DESIGNABLE_CHAIN]
+        if not designable:
+            raise PipelineBlockedError(
+                f"{pdb_id} has no chain of at least {self._MIN_DESIGNABLE_CHAIN} "
+                f"residues (found: {found or 'none'}). There is nothing here to "
+                f"design a binder against.")
+
+        note = ""
+        if chains:
+            wanted = [c.strip() for c in chains.split(",") if c.strip()]
+            known = {c for c, _n in found}
+            missing = [c for c in wanted if c not in known]
+            if missing:
+                raise PipelineBlockedError(
+                    f"--chains named {missing} which are not in {pdb_id} "
+                    f"(chains present: {sorted(known)})")
+            target_chain = wanted[0]
+            partner_chain = wanted[1] if len(wanted) > 1 else ""
+            note = "Chains were named by the operator."
+        elif len(designable) == 1:
+            target_chain, partner_chain = designable[0][0], ""
+            note = (f"Only one designable chain ({target_chain}, "
+                    f"{designable[0][1]} residues).")
+        else:
+            pair = self._largest_interface(
+                path, designable[:self._MAX_CHAINS_CONSIDERED])
+            if pair is None:
+                target_chain, partner_chain = designable[0][0], ""
+                note = ("No two chains touch, so this was treated as a single "
+                        "target with no partner interface.")
+            else:
+                a, b, bsa = pair
+                size = dict(found)
+                # Which of a touching pair is "the target" is the OPERATOR's
+                # call, not a fact about the structure: either chain is a
+                # legitimate thing to design against. Defaulting to the larger
+                # one picks the substantial surface over the peptide or
+                # nanobody that is usually the other half, and `--chains`
+                # overrides it. Stated in the report either way, because a
+                # silent default here is a whole campaign aimed at the wrong
+                # molecule.
+                target_chain, partner_chain = (
+                    (a, b) if size.get(a, 0) >= size.get(b, 0) else (b, a))
+                note = (f"Largest measured interface: chains {a}/{b}, "
+                        f"{bsa:,.0f} A^2 buried. Chain {target_chain} was taken "
+                        f"as the target because it is the larger of the two; "
+                        f"pass --chains {partner_chain},{target_chain} to swap "
+                        f"them.")
+
+        design_intent = "disrupt" if partner_chain else "inhibit_active_site"
+        modality = self._resolve_modality(None, source="the structure-first track")
+        sizes = (self._binder_cfg().get("constraints") or {}).get("binder_sizes") or {}
+        size = sizes.get(modality) or sizes.get("mini_protein") or {}
+        label = self._local_structure_stem(pdb_id) or pdb_id.upper()
+
+        handoff = {
+            "pdb_id": pdb_id,
+            "target_gene": f"{label} chain {target_chain}",
+            "target_uniprot": (uniprot or "").upper(),
+            "partner_name": f"{label} chain {partner_chain}" if partner_chain else "",
+            "target_chain": target_chain,
+            "partner_chain": partner_chain,
+            "design_intent": design_intent,
+            "modality": modality,
+            "binder_length_min": size.get("min", 70),
+            "binder_length_max": size.get("max", 86),
+            "interface_rationale": note,
+            "go_recommendation": "GO",
+        }
+        result.pdb_id = pdb_id
+        result.target_complex = (
+            f"{handoff['target_gene']} / {handoff['partner_name']}"
+            if partner_chain else handoff["target_gene"])
+
+        chain_table = "\n".join(
+            f"- chain {c}: {n} residues"
+            + ("  <- target" if c == target_chain else
+               "  <- partner" if c == partner_chain else "")
+            for c, n in found)
+        out = dirs["binder"] / self._BINDER_STAGE_FILES["target_intel"]
+        self._write_binder_report(
+            out, "Target intelligence (structure-first, deterministic)",
+            f"{query}\n\n**Structure:** `{pdb_id}` ({path.name}).\n\n"
+            f"{chain_table}\n\n{note}\n\n"
+            + self._structure_first_caveats(uniprot),
+            handoff)
+        result.stage_files["target_intel"] = out
+        result.stages_completed.append("target_intel")
+        return handoff
+
+    @staticmethod
+    def _structure_first_caveats(uniprot: str) -> str:
+        """Say plainly which guards a structure with no accession loses.
+
+        Three of the pipeline's checks are keyed to IDENTITY rather than
+        geometry, and all three fail open — quietly — when there is no UniProt
+        accession to resolve. Failing open is right (an operator's own file is
+        often a construct or a prediction that no database describes), but
+        going quiet about it is not: one of the three is the guard that caught
+        a full multi-hour campaign running against an anti-PD-L1 nanobody
+        instead of PD-L1.
+        """
+        if uniprot:
+            return (f"Identity checks are ACTIVE: chain assignment, organism "
+                    f"and membrane topology all resolve against {uniprot}.")
+        return (
+            "**No UniProt accession was given, so three checks are inactive "
+            "for this run:**\n\n"
+            "- `_verify_target_chain_assignment` — cannot tell a target/partner "
+            "swap from a correct assignment, because it compares the chain's "
+            "modelled sequence against UniProt's. This is the guard that caught "
+            "a campaign designed against an anti-PD-L1 nanobody's CDR loop "
+            "instead of PD-L1.\n"
+            "- `_check_structure_organism` — cannot warn that the structure is "
+            "an ortholog rather than the human protein.\n"
+            "- membrane topology — **transmembrane residues will NOT be "
+            "stripped**. On a receptor that matters: in an isolated structure a "
+            "TM helix is an exposed hydrophobic slab, and RFD3 preferentially "
+            "binds it, producing designs that cannot work in a cell.\n\n"
+            "Pass `--uniprot <ACC>` to switch all three back on. Hotspot "
+            "grounding is unaffected — it reads residue names straight from "
+            "the coordinates.")
+
     def _stage_binder_interface(self, intel: dict[str, str], dirs: dict[str, Path],
                                 result: PipelineResult) -> tuple[dict[str, str], str]:
         """Reuse complex-structure-analysis to pick model-ready hotspots."""
@@ -1149,8 +1402,16 @@ class PipelineRunner:
             f"select model-ready hotspots for a "
             f"{intel.get('modality', 'mini_protein')} binder "
             f"({intel.get('design_intent', 'disrupt')} mode).")
+        # A local structure has no accession to look up, so the FILE is named.
+        # Left as "PDB LOCAL-MY_TARGET" the skill has an id it cannot resolve
+        # against RCSB and no path to open — the same shape of failure as the
+        # PD-L1 case below, where a stage given only a description concluded no
+        # structure existed and asked for one.
+        where = (f"the local file {self._binder_structure_path(pdb)}"
+                 if self._local_structure_stem(pdb)
+                 else f"PDB {pdb} (already downloaded to data/structures/)")
         q = (
-            f"Structure: PDB {pdb} (already downloaded to data/structures/), "
+            f"Structure: {where}, "
             f"{intel.get('target_gene')} = chain {intel.get('target_chain', '?')}, "
             f"{intel.get('partner_name', 'partner')} = chain "
             f"{intel.get('partner_chain', '?')}. Analyse this interface directly "
@@ -5891,6 +6152,54 @@ class PipelineRunner:
         return 0
 
     @staticmethod
+    def _local_structure_stem(pdb_id: str) -> str:
+        """The stem behind a `LOCAL-<stem>` pseudo-id, or "".
+
+        Same trick as `AF-<accession>`: a real PDB accession is four
+        characters, so a prefixed id cannot collide with one, and every lookup
+        that wants RCSB metadata for it (entry_metadata, uniprot_to_auth,
+        BA1 download) already fails open. That is what lets an operator's own
+        file travel through a stage machine built around accessions.
+        """
+        raw = (pdb_id or "").strip().upper()
+        return raw[len(_LOCAL_PREFIX):] if raw.startswith(_LOCAL_PREFIX) else ""
+
+    def ingest_local_structure(self, path: Path) -> str:
+        """Copy an operator's structure into `data/structures/` and name it.
+
+        Returns the `LOCAL-<stem>` pseudo-id every later stage addresses it by.
+        A `.pdb` is converted to mmCIF on the way in, because the whole
+        pipeline builds paths as `<structures_dir>/<ID>.cif` and reads them
+        with gemmi.
+        """
+        import gemmi
+
+        src = Path(path).expanduser().resolve()
+        if not src.is_file():
+            raise PipelineBlockedError(f"--structure {src} does not exist")
+        structures_dir = _ROOT / (self.config.get("paths") or {}).get(
+            "structures_dir", "data/structures")
+        structures_dir.mkdir(parents=True, exist_ok=True)
+
+        stem = re.sub(r"[^A-Za-z0-9]+", "_", src.stem).strip("_").upper()[:40]
+        if not stem:
+            raise PipelineBlockedError(f"cannot derive a name from {src.name}")
+        pdb_id = f"{_LOCAL_PREFIX}{stem}"
+        dest = structures_dir / f"{pdb_id}.cif"
+
+        try:
+            st = gemmi.read_structure(str(src))
+        except Exception as exc:                       # noqa: BLE001
+            raise PipelineBlockedError(
+                f"could not read {src.name} as a structure: {exc}") from exc
+        st.setup_entities()
+        if not any(len(ch) for model in st for ch in model):
+            raise PipelineBlockedError(f"{src.name} contains no chains")
+        st.make_mmcif_document().write_file(str(dest))
+        logger.info(f"  local structure {src.name} -> {dest.name}")
+        return pdb_id
+
+    @staticmethod
     def _alphafold_accession(pdb_id: str) -> str:
         """
         The UniProt accession behind an `AF-<acc>` / `AF:<acc>` pseudo-id, or
@@ -5918,6 +6227,17 @@ class PipelineRunner:
         # one; every downstream lookup that would want them (entry_metadata,
         # uniprot_to_auth) already fails open, so a predicted monomer degrades
         # to "no restriction" rather than breaking.
+        # An operator's own file is already where it needs to be. Falling
+        # through would try to download `LOCAL-MYTARGET` from RCSB and fail the
+        # run on a 404 for a structure that is sitting on disk.
+        if self._local_structure_stem(pdb_id):
+            dest = structures_dir / f"{pdb_id.upper()}.cif"
+            if not dest.exists():
+                raise PipelineError(
+                    f"{pdb_id} is a local structure but {dest} is missing — "
+                    f"re-run with --structure pointing at the file.")
+            return dest
+
         af_acc = self._alphafold_accession(pdb_id)
         if af_acc:
             from src.ortholog_check import fetch_alphafold_model

@@ -644,6 +644,47 @@ python scripts/run_pipeline.py --workflow binder --target KRAS --project kras_sm
     --n-batches 2 --budget 2.00
 ```
 
+### 7c. Run from a structure you already have
+
+When you have the structure, both discovery questions are already answered —
+there is no target to find and no entry to choose. `--workflow structure` skips
+straight to hotspot analysis: it enumerates the chains, **measures** the largest
+interface, writes a deterministic target-intel artifact (no LLM call), and enters
+the same foundry stage machine at `interface`. One reasoning stage instead of
+four; everything from `trim` onward is identical to a `--workflow binder`
+campaign.
+
+```bash
+# Your own file — a construct, a prediction, anything gemmi can read. It is
+# copied into data/structures/ as LOCAL-<name>.cif and addressed by that id.
+python scripts/run_pipeline.py --workflow structure \
+    --structure ~/models/my_complex.cif \
+    --project my-complex --budget 3.00
+
+# An RCSB entry, without paying for the target-intel stage to choose it.
+python scripts/run_pipeline.py --workflow structure --pdb 7CZD --project pdl1
+
+# Name the chains yourself instead of taking the measured default. One chain
+# selects single-target mode (design_intent: inhibit_active_site).
+python scripts/run_pipeline.py --workflow structure --structure my.cif \
+    --project mine --chains B,A
+```
+
+**Pass `--uniprot` if you know the accession.** Three checks are keyed to
+identity rather than geometry, and all three fail open without one:
+`_verify_target_chain_assignment` (the guard that caught a campaign designed
+against an anti-PD-L1 nanobody instead of PD-L1), the organism/ortholog warning,
+and membrane topology — **without it, transmembrane residues are not stripped**,
+and on a receptor that is how you get designs that bind a lipid-facing
+hydrophobic slab. The run says so in `20_target_intel.md` either way. Hotspot
+grounding is unaffected; it reads residue names straight from the coordinates.
+
+Which chain is "the target" is an operator's choice, not a fact about the file:
+either side of a two-chain complex is a legitimate thing to design against. The
+default takes the larger chain of the largest measured interface — the
+substantial surface rather than the peptide or nanobody usually on the other
+side — and the report always states what it chose and how to swap it.
+
 Stages:
 
 ```

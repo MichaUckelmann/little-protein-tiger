@@ -233,6 +233,49 @@ kept 86%. BoltzGen's own `design_metrics`/
 `design_ranking` path is untouched and stays fully live as a deliberate
 escape hatch, not oversight.
 
+## A third entry point: structure-first
+
+`--workflow structure` (`_stage_structure_intel`) exists because the other two
+tracks both spend LLM stages answering "what should we design against?", and
+that is already answered when the operator hands you a structure. It is the
+same manoeuvre `_bridge_ppi_to_foundry` uses — compose the handoff
+`binder-target-intel` would have produced, write it to
+`_BINDER_STAGE_FILES["target_intel"]`, and enter `_run_binder_track` mid-stream
+— with one deliberate difference: the bridge enters at `trim` because PPI's
+structure stage already picked hotspots, this enters at **`interface`**, because
+nothing has looked at the structure yet and the epitope still has to be chosen
+by a model reading real coordinates. Only ONE stage calls an LLM.
+
+- **A local file travels as a `LOCAL-<stem>` pseudo-id**, the same trick as
+  `AF-<accession>`: every path in the pipeline is built as
+  `<structures_dir>/<ID>.cif`, so the file is copied there and addressed by id
+  thereafter. `_ensure_structure` returns it directly — falling through would
+  try to download `LOCAL-MY_TARGET` from RCSB and fail a run whose structure is
+  on disk. `.pdb` is converted to mmCIF on ingest.
+- **The interface prompt names the FILE for a local id, not the id.** An
+  unresolvable accession with no path is exactly the shape that made the
+  interface skill decide no structure existed and ask for one (the PD-L1/7CZD
+  case).
+- **Which chain is the target is measured, then stated as a choice.** Contacts
+  are counted with a KD-tree over the largest `_MAX_CHAINS_CONSIDERED` chains
+  (cheap); BSA is computed once, for the winner. The larger chain of that pair
+  becomes the target — on 7CZD that is chain B, PD-L1, and *not* the VHH, which
+  is the assignment an LLM stage got backwards on this exact entry. `--chains`
+  overrides it and the report always says what was picked and how to swap it.
+  A single chain selects `design_intent: inhibit_active_site`, which already
+  existed for AlphaFold monomers.
+- **`analyze_interface` returns `interface.bsa_total_A2`, nested — there is no
+  flat `bsa_total`.** A `.get("bsa_total", 0.0)` read reports "0 A^2 buried" for
+  a 2,449 A^2 interface, silently.
+- **Three guards go inactive without `--uniprot`, and the report says so.**
+  `_verify_target_chain_assignment`, `_check_structure_organism` and membrane
+  topology are all keyed to identity, not geometry. Failing open is right — an
+  operator's construct or prediction is in no database — but going quiet about
+  it is not, because the first of the three is what caught a multi-hour campaign
+  designed against a nanobody's CDR loop. **Transmembrane residues are not
+  stripped without an accession**; on a receptor that is a design that cannot
+  work in a cell. `_verify_hotspot_grounding` is unaffected (coordinates only).
+
 ## Non-obvious facts the binder track depends on
 
 These were each established by reproducing a real campaign; changing code near
