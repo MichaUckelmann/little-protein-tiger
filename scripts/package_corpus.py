@@ -100,12 +100,24 @@ def corpus_stats() -> dict:
 #: Nothing downstream reads them — `corpus_stats` and the vector ingest both
 #: glob `*.json` at the top level — so they were pure noise in a 100 MB
 #: download. Leading-underscore is the convention those scripts already use.
+#: Only these, and only directly under `data/fingerprints/`. The first version
+#: of this dropped ANY path with a leading-underscore component, which also
+#: removed LanceDB's own `_versions/`, `_transactions/` and `_deletions/`
+#: directories — and without `_versions/` the table cannot be opened at all.
+#: That shipped: the 2026-09-10 asset listed `fingerprints` in
+#: `table_names()` (which reads directory names) and then raised
+#: `ValueError: Table 'fingerprints' was not found` on open, so `search_corpus`
+#: was dead for anyone who downloaded it. A broad "looks internal" heuristic
+#: has no business near a database's on-disk format.
+_SCRATCH_DIRS = ("_gemma_compare", "_provider_compare")
+
+
 def _shippable(info: "tarfile.TarInfo") -> "tarfile.TarInfo | None":
     """Drop maintainer scratch from the archive. Returning None omits it."""
-    if any(part.startswith("_") for part in Path(info.name).parts[:-1]):
-        return None
-    if Path(info.name).name.startswith("_") and info.isdir():
-        return None
+    parts = Path(info.name).parts
+    if len(parts) >= 3 and parts[0] == "data" and parts[1] == "fingerprints":
+        if parts[2] in _SCRATCH_DIRS:
+            return None
     return info
 
 
@@ -186,14 +198,150 @@ def _verify_no_secrets() -> list[str]:
 _STRIPPED_COLUMNS = (("papers", "abstract"),)
 
 
-def _sanitized_db(workdir: Path) -> tuple[Path, int]:
-    """A copy of literature.db with third-party text blanked. Returns (path, rows)."""
+def permitted_keys(conn: sqlite3.Connection) -> tuple[set[str], dict[str, int]]:
+    """Curated papers whose licence AFFIRMATIVELY permits derivative works.
+
+    `papers.licence` is written by `scripts/audit_paper_licences.py`. NULL means
+    never checked and `""` means checked-and-none-recorded; `permits_derivatives`
+    treats both as restricted, which is the point — the conservative reading has
+    to be the one you get for free.
+    """
+    from src.paper_licence import classify, permits_derivatives
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(papers)")}
+    if "licence" not in cols:
+        raise SystemExit(
+            "papers.licence does not exist. Run\n"
+            "    python scripts/audit_paper_licences.py\n"
+            "to resolve licences before packaging, or pass --no-licence-filter "
+            "to ship every fingerprint regardless (see docs/licensing.md).")
+    rows = conn.execute(
+        "SELECT paper_key, licence FROM papers WHERE curation_status='completed'"
+    ).fetchall()
+    keep = {k for k, lic in rows if permits_derivatives(lic)}
+    counts: dict[str, int] = {}
+    for _k, lic in rows:
+        v = classify(lic)
+        counts[v] = counts.get(v, 0) + 1
+    return keep, counts
+
+
+def _fingerprint_keys(fp_dir: Path) -> dict[Path, str]:
+    """{fingerprint file: paper_key}, derived exactly as the vector store does.
+
+    Reusing `VectorStore._derive_paper_key` rather than parsing the filename:
+    the two must agree or the filtered fingerprint set and the filtered vector
+    table would disagree about the same paper.
+    """
+    import json as _json
+
+    from src.vector_store import VectorStore
+
+    out: dict[Path, str] = {}
+    for f in sorted(fp_dir.glob("*.json")):
+        try:
+            fp = _json.loads(f.read_text(encoding="utf-8"))
+        except Exception:                                     # noqa: BLE001
+            continue
+        out[f] = VectorStore._derive_paper_key(fp, f.stem)
+    return out
+
+
+def stage_permitted(workdir: Path, keep: set[str]) -> tuple[Path, set[str]]:
+    """Build a `data/` tree carrying only licence-permitted derivatives.
+
+    Every artifact below is derived from fingerprint TEXT, so filtering the
+    JSONs alone would not be enough:
+
+      * `fingerprints/` — the derivative itself.
+      * `vectors/` — the LanceDB table stores `embed_text` AND
+        `fingerprint_json` inline, so an unfiltered index ships the very text
+        the JSON was withheld to avoid shipping.
+      * `depmap_edges.parquet` / `clusters.json` — aggregated from
+        fingerprints, so they are rebuilt from the filtered set rather than
+        copied.
+      * `literature.db` — bibliographic metadata is fact, not expression, so
+        every row stays; but `fingerprint_path` is cleared for a paper whose
+        fingerprint is not in the archive, or the shipped database would point
+        at files that do not exist.
+
+    `pdb_metadata.json` is RCSB entry metadata and derives from no paper.
+    """
+    data = workdir / "data"
+    (data / "fingerprints").mkdir(parents=True, exist_ok=True)
+    src = _ROOT / "data"
+
+    # ── fingerprints
+    keys = _fingerprint_keys(src / "fingerprints")
+    kept_files = [f for f, k in keys.items() if k in keep]
+    for f in kept_files:
+        shutil.copy2(f, data / "fingerprints" / f.name)
+    print(f"  fingerprints  {len(kept_files):,} of {len(keys):,} kept")
+
+    # ── vectors: filter the table by paper_key into a fresh LanceDB
+    import lancedb
+
+    src_db = lancedb.connect(str(src / "vectors"))
+    names = list(src_db.table_names())
+    if names:
+        tbl = src_db.open_table(names[0])
+        arrow = tbl.to_arrow()
+        mask = [k in keep for k in arrow["paper_key"].to_pylist()]
+        import pyarrow as pa
+
+        filtered = arrow.filter(pa.array(mask))
+        dest_db = lancedb.connect(str(data / "vectors"))
+        dest_db.create_table(names[0], data=filtered, mode="overwrite")
+        print(f"  vectors       {filtered.num_rows:,} of {arrow.num_rows:,} rows kept")
+
+    # ── edges + clusters, rebuilt from what is actually shipping
+    from src.clustering import build_and_cluster
+
+    res = build_and_cluster(data / "fingerprints",
+                            edges_path=data / "depmap_edges.parquet",
+                            clusters_path=data / "clusters.json",
+                            force_rebuild_edges=True)
+    print(f"  graph         rebuilt: {res.get('cluster_count', 0):,} clusters "
+          f"from the kept fingerprints")
+
+    # ── everything paper-independent
+    for name in ("pdb_metadata.json",):
+        if (src / name).is_file():
+            shutil.copy2(src / name, data / name)
+    shipped = {keys[f] for f in kept_files}
+    return data, shipped
+
+
+def _sanitized_db(workdir: Path,
+                  shipped_files: set[str] | None = None) -> tuple[Path, int]:
+    """A copy of literature.db with third-party text blanked. Returns (path, rows).
+
+    `shipped_files` is the set of fingerprint FILENAMES actually in the
+    archive, and a row is cleared when its `fingerprint_path` basename is not
+    among them. Deliberately the filenames and not a set of paper_keys:
+    matching on keys left 255 rows pointing at files that had not shipped
+    (`papers.paper_key` and `VectorStore._derive_paper_key` do not always
+    agree), and then 4 more after that was fixed. The invariant worth
+    enforcing is "no row points at a file that is not here", so check exactly
+    that.
+    """
     src = _ROOT / "data" / "literature.db"
     dest = workdir / "literature.db"
     shutil.copy2(src, dest)
     cleared = 0
     conn = sqlite3.connect(dest)
     try:
+        if shipped_files is not None:
+            rows = conn.execute(
+                "SELECT paper_key, fingerprint_path FROM papers "
+                "WHERE curation_status='completed'").fetchall()
+            dropped = [(k,) for k, path in rows
+                       if not path or Path(path).name not in shipped_files]
+            conn.executemany(
+                "UPDATE papers SET fingerprint_path=NULL, "
+                "curation_status='licence_withheld' WHERE paper_key=?", dropped)
+            print(f"  literature.db {len(dropped):,} rows marked "
+                  f"'licence_withheld' (row kept, fingerprint not shipped)")
         for table, col in _STRIPPED_COLUMNS:
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
             if col not in cols:
@@ -293,37 +441,153 @@ def check() -> int:
     return 0
 
 
-def package(out: Path, level: int = 10) -> int:
+def _verify_archive(out: Path) -> bool:
+    """Extract the finished archive and USE it, before anyone else has to.
+
+    `--check` inspects the local corpus; this inspects the artifact. The
+    distinction is not academic: a tar filter meant to drop two scratch
+    directories also stripped LanceDB's `_versions/`, and every local check
+    passed while the shipped vector index could not be opened. Nothing short of
+    opening the packaged table would have caught it.
+    """
+    import sqlite3 as _sq
+    import subprocess as _sp
+    import tempfile as _tf
+
+    print("\n  Verifying the archive itself:")
+    with _tf.TemporaryDirectory() as td:
+        root = Path(td)
+        try:
+            _sp.run(f'zstd -dc "{out}" | tar -xf - -C "{root}"',
+                    shell=True, check=True, capture_output=True)
+        except _sp.CalledProcessError as exc:
+            print(f"    [FAIL] cannot extract: {exc.stderr[:200]!r}")
+            return False
+
+        data = root / "data"
+        fps = len(list((data / "fingerprints").glob("*.json")))
+        print(f"    [ok  ] {fps:,} fingerprint JSONs")
+
+        try:
+            import lancedb
+
+            tbl = lancedb.connect(str(data / "vectors")).open_table("fingerprints")
+            rows = tbl.count_rows()
+        except Exception as exc:                              # noqa: BLE001
+            print(f"    [FAIL] the vector index does not open: "
+                  f"{type(exc).__name__}: {exc}")
+            print("           search_corpus would be dead for every user.")
+            return False
+        if rows == 0:
+            print("    [FAIL] the vector index opens but is empty")
+            return False
+        print(f"    [ok  ] vector index opens, {rows:,} rows")
+
+        try:
+            conn = _sq.connect(f"file:{data / 'literature.db'}?mode=ro", uri=True)
+            n = conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
+            conn.close()
+        except Exception as exc:                              # noqa: BLE001
+            print(f"    [FAIL] the database does not open: {exc}")
+            return False
+        print(f"    [ok  ] database opens, {n:,} papers")
+
+        for name in ("depmap_edges.parquet", "clusters.json"):
+            if not (data / name).is_file():
+                print(f"    [FAIL] {name} missing")
+                return False
+        print("    [ok  ] edge index and clusters present")
+
+        names = {f.name for f in (data / "fingerprints").glob("*.json")}
+        conn = _sq.connect(f"file:{data / 'literature.db'}?mode=ro", uri=True)
+        dangling = [p for (p,) in conn.execute(
+            "SELECT fingerprint_path FROM papers WHERE fingerprint_path "
+            "IS NOT NULL AND TRIM(fingerprint_path) <> ''")
+            if Path(p).name not in names]
+        conn.close()
+        if dangling:
+            print(f"    [FAIL] {len(dangling):,} database rows point at "
+                  f"fingerprints not in the archive, e.g. {dangling[0]}")
+            return False
+        print("    [ok  ] no database row points at a missing fingerprint")
+    return True
+
+
+def package(out: Path, level: int = 10, licence_filter: bool = True) -> int:
     if check():
         return 1
     out.parent.mkdir(parents=True, exist_ok=True)
 
     stats = corpus_stats()
+    excludes = ["data/pdfs (source documents — ~95% of the corpus on "
+                "disk, and nothing downstream reads them)",
+                "papers.abstract (publisher-supplied text; nothing reads "
+                "it — see docs/licensing.md)"]
     manifest = {
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "contents": [rel for rel, _ in MEMBERS],
-        "excludes": ["data/pdfs (source documents — ~95% of the corpus on "
-                     "disk, and nothing downstream reads them)",
-                     "papers.abstract (publisher-supplied text; nothing reads "
-                     "it — see docs/licensing.md)"],
         **stats,
     }
 
     print(f"\nPackaging -> {out}")
     with tempfile.TemporaryDirectory() as td:
         tar_path = Path(td) / "corpus.tar"
+        staged: Path | None = None
+        keep: set[str] = set()
+        shipped_keys: set[str] = set()
+
+        if licence_filter:
+            with sqlite3.connect(_ROOT / "data" / "literature.db") as conn:
+                keep, counts = permitted_keys(conn)
+            print(f"  licence filter ON — keeping only papers whose licence "
+                  f"permits derivatives")
+            print(f"    derivatives permitted {counts.get('derivatives_ok', 0):>7,}")
+            print(f"    NO DERIVATIVES        {counts.get('no_derivatives', 0):>7,}"
+                  f"   excluded")
+            print(f"    unknown / unlicensed  {counts.get('unknown', 0):>7,}"
+                  f"   excluded")
+            staged, shipped_keys = stage_permitted(Path(td) / "staged", keep)
+            shipped = len(list((staged / "fingerprints").glob("*.json")))
+            manifest["fingerprints"] = shipped
+            manifest["papers_curated_shipped"] = shipped
+            manifest["papers_curated_local"] = stats.get("papers_curated")
+            manifest["licence_filter"] = {
+                "applied": True,
+                "rule": "ship a fingerprint only when papers.licence "
+                        "affirmatively permits derivative works; a No-Derivatives "
+                        "term or no recorded licence excludes it",
+                "source": "europepmc, via scripts/audit_paper_licences.py",
+                **{k: v for k, v in counts.items()},
+            }
+            excludes.append(
+                f"fingerprints, vectors and graph entries for "
+                f"{counts.get('no_derivatives', 0) + counts.get('unknown', 0):,} "
+                f"papers whose licence does not permit derivative works")
+        else:
+            print("  licence filter OFF (--no-licence-filter) — every "
+                  "fingerprint ships regardless of the paper's licence")
+            manifest["licence_filter"] = {"applied": False}
+        manifest["excludes"] = excludes
+
         with tarfile.open(tar_path, "w") as tf:
             mf = Path(td) / "MANIFEST.json"
             mf.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
             tf.add(mf, arcname="MANIFEST.json")
-            clean_db, cleared = _sanitized_db(Path(td))
+            shipped_files = ({f.name for f in
+                              (staged / "fingerprints").glob("*.json")}
+                             if licence_filter else None)
+            clean_db, cleared = _sanitized_db(Path(td), shipped_files)
             for rel, _ in MEMBERS:
                 if rel == "data/literature.db":
                     print(f"  + {rel}  ({cleared:,} abstracts stripped)")
                     tf.add(clean_db, arcname=rel)
                     continue
+                source = (staged.parent / rel) if staged else (_ROOT / rel)
+                if not source.exists():
+                    print(f"  - {rel}  (nothing left after the licence filter)")
+                    continue
                 print(f"  + {rel}")
-                tf.add(_ROOT / rel, arcname=rel, filter=_shippable)
+                tf.add(source, arcname=rel, filter=_shippable)
 
         raw = tar_path.stat().st_size
         # zstd -10 is a good size/time trade here; the archive is written once
@@ -341,7 +605,11 @@ def package(out: Path, level: int = 10) -> int:
     print(f"\n  {out}")
     print(f"  {_human(raw)} -> {_human(comp)}  ({100*comp/raw:.0f}% of raw)")
     print(f"  sha256 {_sha256(out)}")
-    print(f"\n  {stats.get('papers_curated', 0):,} curated papers.")
+    if not _verify_archive(out):
+        return 1
+
+    print(f"\n  {manifest.get('fingerprints', 0):,} fingerprints in the "
+          f"archive.")
     print("\nAttach this to a GitHub release; scripts/fetch_corpus.py downloads"
           "\nthe latest release asset by name.")
     return 0
@@ -353,8 +621,15 @@ def main() -> int:
                     help="Report what would be packaged; build nothing.")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--level", type=int, default=10, help="zstd level (default 10)")
+    ap.add_argument("--no-licence-filter", dest="licence_filter",
+                    action="store_false", default=True,
+                    help="ship every fingerprint regardless of the paper's "
+                         "licence. The default EXCLUDES No-Derivatives and "
+                         "unlicensed papers — see docs/licensing.md before "
+                         "using this.")
     args = ap.parse_args()
-    return check() if args.check else package(args.out, args.level)
+    return (check() if args.check
+            else package(args.out, args.level, args.licence_filter))
 
 
 if __name__ == "__main__":

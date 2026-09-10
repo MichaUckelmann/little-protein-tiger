@@ -192,3 +192,88 @@ def test_claude_md_thresholds_match_the_config_they_cite():
         assert rendered in text, (
             f"config.yaml sets {name} = {rendered}, which appears nowhere in "
             f"CLAUDE.md — update the note that explains it")
+
+
+# ── the licence gate ─────────────────────────────────────────────────────────
+
+def test_absence_of_a_licence_is_never_read_as_permission():
+    """The one rule the whole gate rests on.
+
+    A paper Europe PMC records no licence for is normally a publisher deposit:
+    free to read, not licensed for reuse. If `permits_derivatives` ever
+    defaults an unknown licence to True, the archive silently starts shipping
+    fingerprints of 5,684 papers nobody granted rights to.
+    """
+    from src.paper_licence import NO_DERIVATIVES, UNKNOWN, classify, permits_derivatives
+
+    for value in (None, "", "  ", "none", "unknown", "all rights reserved",
+                  "copyright Elsevier", "—"):
+        assert not permits_derivatives(value), f"{value!r} read as permission"
+        assert classify(value) == UNKNOWN, value
+
+    for value in ("cc by-nd", "cc by-nc-nd", "CC BY-NC-ND 4.0",
+                  "Attribution-NoDerivs 3.0"):
+        assert not permits_derivatives(value), f"{value!r} read as permission"
+        assert classify(value) == NO_DERIVATIVES, value
+
+    for value in ("cc by", "cc by-sa", "cc by-nc", "cc by-nc-sa", "cc0",
+                  "public domain"):
+        assert permits_derivatives(value), f"{value!r} wrongly restricted"
+
+
+def test_nd_is_matched_as_a_token_not_a_substring():
+    """"cc by" must never be read as ND because some word contains "nd"."""
+    from src.paper_licence import permits_derivatives
+
+    assert permits_derivatives("cc by")           # not "nd" in "by"
+    assert permits_derivatives("cc by-sa")
+    # a free-text field naming a journal, not a licence term
+    assert permits_derivatives("cc by (Endocrinology deposit)")
+
+
+def test_the_licence_gate_defaults_to_on_in_config():
+    """`--allow-restricted-licence` may turn it off; nothing may turn it on by
+    omission. The conservative setting has to be what you get for free."""
+    import yaml
+
+    cfg = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["quality"]["require_derivative_licence"] is True
+
+
+def test_every_licence_decision_goes_through_one_module():
+    """Four callers make this decision and must not drift.
+
+    A POSITIVE check — each gating script must import the shared module —
+    rather than hunting for a local ND literal. The first version of this did
+    hunt, and flagged two docstrings that merely *mention* `cc by-nc-nd`;
+    a test that cries wolf about prose gets muted, and then it protects
+    nothing.
+    """
+    gating = ("audit_paper_licences.py", "fetch_papers.py", "curate_papers.py",
+              "package_corpus.py")
+    missing = []
+    for name in gating:
+        src = (_SCRIPTS / name).read_text(encoding="utf-8")
+        if "paper_licence import" not in src and "src.paper_licence" not in src:
+            missing.append(name)
+    assert not missing, (
+        f"these gate on licences without importing src.paper_licence, so they "
+        f"carry their own copy of the rule: {missing}")
+
+
+def test_the_papers_table_can_record_a_licence():
+    """A sidecar JSON cannot gate a fetch or a package — the value has to be
+    somewhere a SQL query can see it, and a shipped database that carries its
+    own licence provenance is auditable by whoever receives it."""
+    import sqlite3
+    import tempfile
+
+    from src.database import Database
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = pathlib.Path(td) / "t.db"
+        Database(str(db_path))
+        cols = {r[1] for r in
+                sqlite3.connect(db_path).execute("PRAGMA table_info(papers)")}
+    for col in ("licence", "licence_source", "licence_checked_at"):
+        assert col in cols, f"papers.{col} missing"

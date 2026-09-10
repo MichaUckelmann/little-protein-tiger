@@ -124,6 +124,11 @@ def resolve_file_path(paper: Paper, config: dict) -> Path | None:
 def main():
     parser = argparse.ArgumentParser(description="Curate papers with Claude")
     parser.add_argument("--limit", type=int, default=0, help="Max papers to process (0 = all)")
+    parser.add_argument(
+        "--allow-restricted-licence", action="store_true",
+        help="curate papers whose licence forbids derivative works, and "
+             "papers with no recorded licence. OFF by default — the resulting "
+             "fingerprints may not be redistributable. See docs/licensing.md.")
     parser.add_argument("--reprocess", action="store_true", help="Reset and reprocess already-curated papers")
     parser.add_argument(
         "--discard-documents", action="store_true",
@@ -231,6 +236,29 @@ def main():
             logger.info(f"--limit {args.limit}: curating {len(papers)}")
     else:
         papers = db.get_uncurated(limit=args.limit)
+
+    # ── Second licence gate, after the one in `fetch_papers.py`. Curation is
+    #    what CREATES the derivative, so it is the last point at which not
+    #    creating it is still an option — and papers downloaded before the
+    #    fetch gate existed, or with it turned off, are already on disk. Skips
+    #    rather than errors: a restricted paper is not a fault, just one whose
+    #    fingerprint could not be redistributed.
+    quality_cfg = (config.get("quality") or {}) if isinstance(config, dict) else {}
+    if quality_cfg.get("require_derivative_licence", True) and not args.allow_restricted_licence:
+        from src.paper_licence import classify, permits_derivatives
+
+        blocked = [p for p in papers if not permits_derivatives(p.licence)]
+        if blocked:
+            papers = [p for p in papers if permits_derivatives(p.licence)]
+            nd = sum(1 for p in blocked if classify(p.licence) == "no_derivatives")
+            logger.info(
+                f"licence filter: skipping {len(blocked):,} paper(s) whose "
+                f"licence does not permit derivative works "
+                f"({nd:,} No-Derivatives, {len(blocked) - nd:,} with no "
+                f"licence recorded). Their fingerprints could not be "
+                f"redistributed. Run scripts/audit_paper_licences.py if the "
+                f"licences are simply unresolved; pass "
+                f"--allow-restricted-licence to curate them anyway.")
 
     if not papers:
         logger.info("No uncurated downloaded papers found.")

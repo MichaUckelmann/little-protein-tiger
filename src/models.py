@@ -48,6 +48,13 @@ class Paper(BaseModel):
     curation_model: Optional[str] = None
     curation_tokens: Optional[int] = None
     curation_error: Optional[str] = None
+    #: Reuse licence of the paper, e.g. "cc by", "cc by-nc-nd". `None` means
+    #: not yet checked; `""` means checked and the source records none — which
+    #: is the absence of permission, not permission. See
+    #: `scripts/audit_paper_licences.py` and `docs/licensing.md`.
+    licence: Optional[str] = None
+    licence_source: Optional[str] = None      # e.g. "europepmc"
+    licence_checked_at: Optional[str] = None
 
     def unique_key(self) -> str:
         """Return best available unique identifier."""

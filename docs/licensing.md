@@ -168,14 +168,43 @@ this project believes no ND term is engaged. That argument is unchanged by the
 audit. What has changed is that it can now be weighed against a count instead
 of an assumption, which is the honest position to argue from.
 
-If a maintainer or an institution decides the risk is not worth carrying, the
-audit makes the remedy mechanical rather than a guess:
+**The project has taken the conservative route.** As of 2026-09-10 the
+published archive ships a fingerprint only when the paper's licence
+affirmatively permits derivative works. That is **7,072 fingerprints of
+14,514**, and the asset went from 105 MB to 50 MB. The decision was to be
+safe rather than to rely on the argument above being correct.
 
-- excluding the ND papers' fingerprints leaves **13,011 of 14,517 (90%)**;
-- excluding ND *and* unlicensed leaves **7,327 (50%)**.
+Filtering the JSONs alone would not have been enough, because three other
+shipped artifacts are derived from fingerprint text:
 
-`scripts/audit_paper_licences.py --nd-only` prints the exact set, and exits
-non-zero when any ND paper is present, so it can gate a release.
+| Artifact | What was done |
+|---|---|
+| `data/fingerprints/` | only licence-permitted papers copied |
+| `data/vectors/` | the LanceDB table stores `embed_text` **and** `fingerprint_json` inline, so it is filtered by `paper_key` — an unfiltered index would ship the very text the JSON was withheld to avoid shipping |
+| `depmap_edges.parquet`, `clusters.json` | rebuilt from the filtered set, not copied |
+| `data/literature.db` | every row kept (bibliographic metadata is fact), but `fingerprint_path` cleared and `curation_status` set to `licence_withheld` for a paper whose fingerprint is not in the archive, so nothing points at a file that is not there |
+
+`package_corpus.py` then extracts its own output and *uses* it — opens the
+vector table, opens the database, checks no row dangles — because a local check
+cannot see a packaging bug. That check exists because one shipped: a tar filter
+meant to drop two scratch directories also stripped LanceDB's `_versions/`, and
+the 2026-09-10 asset listed the table in `table_names()` and then failed to
+open it, so `search_corpus` was dead for anyone who downloaded it.
+
+### The expansion tools default to the same rule
+
+`fetch_papers.py` resolves each pending paper's licence from Europe PMC and
+**does not download** ND or unlicensed papers; they stay indexed, exactly as
+the journal-tier gate leaves untiered papers indexed. `curate_papers.py`
+re-checks before extracting, since curation is what creates the derivative and
+papers fetched before the gate existed are already on disk. Both are governed
+by `quality.require_derivative_licence` (default **true**) and both take
+`--allow-restricted-licence` to override — for a corpus you keep to yourself.
+`package_corpus.py --no-licence-filter` is the separate, deliberate second
+switch needed to put such fingerprints in an archive.
+
+Expect the gate to roughly halve a fresh corpus build. That is the cost of
+being able to publish the result.
 
 **This is not legal advice** — see the note at the end of this file.
 

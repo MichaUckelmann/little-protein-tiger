@@ -9,6 +9,7 @@ Usage:
 import argparse
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows
@@ -27,6 +28,7 @@ from src.database import Database
 from src.models import DownloadStatus
 from src.search import EuropePMCClient, NCBIPMCClient, SemanticScholarClient
 from src.downloader import download_papers
+from src.paper_licence import classify, permits_derivatives, resolve_many
 from src.ranking import score_paper, is_conference_abstract, is_tiered_journal
 
 
@@ -52,6 +54,13 @@ def main():
     parser.add_argument("--keywords", nargs="+", help="Override keywords from config")
     parser.add_argument("--max", type=int, help="Max results per keyword (overrides config)")
     parser.add_argument("--dry-run", action="store_true", help="Search only, skip downloads")
+    parser.add_argument(
+        "--allow-restricted-licence", dest="require_derivative_licence",
+        action="store_false", default=None,
+        help="download papers whose licence forbids derivative works, and "
+             "papers with no recorded licence. OFF by default: a fingerprint "
+             "is derived from the paper, so those are ones you may not be able "
+             "to redistribute. Read docs/licensing.md first.")
     parser.add_argument(
         "--prefer-xml", action="store_true",
         help="Try PMC open-access XML before the publisher PDF for each paper. "
@@ -80,6 +89,11 @@ def main():
     exclude_types = {t.lower() for t in quality_cfg.get("exclude_pub_types", ["Congress", "Meeting Abstract"])}
     min_score         = quality_cfg.get("min_score_to_download", 0.0)
     require_tiered    = quality_cfg.get("require_tiered_journal", False)
+    # Default TRUE, and the CLI flag can only turn it off — the conservative
+    # setting has to be what you get without doing anything.
+    require_derivative_licence = quality_cfg.get("require_derivative_licence", True)
+    if args.require_derivative_licence is False:
+        require_derivative_licence = False
 
     pdf_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Config loaded: {len(keywords)} keywords, max {max_results}/keyword")
@@ -168,6 +182,51 @@ def main():
         and p.priority_score > min_score
         and (not require_tiered or is_tiered_journal(p.journal, tier1_extra, tier2_extra))
     ]
+    # ── Licence gate. Curating a paper produces a fingerprint, which is
+    #    derived from its content, so a No-Derivatives term — or no recorded
+    #    licence at all, which is the absence of permission and not permission
+    #    — makes that fingerprint one you may not redistribute. Gating at
+    #    DOWNLOAD is the cheapest place to stop: nothing is fetched, nothing is
+    #    curated, no API spend. Same posture as the journal-tier gate above:
+    #    everything found stays INDEXED, only the download is refused.
+    if require_derivative_licence:
+        need = [(p.unique_key(), p.pmcid, p.doi) for p in pending
+                if not p.licence]
+        if need:
+            logger.info(f"resolving licences for {len(need):,} papers "
+                        f"(Europe PMC, {len(need) // 40 + 1} requests)")
+            found = resolve_many(need, log=logger.warning)
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            for p in pending:
+                if p.unique_key() in found:
+                    p.licence = found[p.unique_key()]
+                    p.licence_source = "europepmc"
+                    p.licence_checked_at = now
+                    db.set_licence(p.unique_key(), p.licence, "europepmc", now)
+        before = len(pending)
+        blocked = [p for p in pending if not permits_derivatives(p.licence)]
+        pending = [p for p in pending if permits_derivatives(p.licence)]
+        if blocked:
+            by_verdict: dict[str, int] = {}
+            for p in blocked:
+                v = classify(p.licence)
+                by_verdict[v] = by_verdict.get(v, 0) + 1
+            logger.info(
+                f"licence filter: {len(blocked):,} of {before:,} pending "
+                f"papers will NOT be downloaded — "
+                f"{by_verdict.get('no_derivatives', 0):,} No-Derivatives, "
+                f"{by_verdict.get('unknown', 0):,} with no licence recorded. "
+                f"They stay indexed. Pass --allow-restricted-licence to fetch "
+                f"them anyway (see docs/licensing.md).")
+    else:
+        logger.warning(
+            "licence filter OFF (--allow-restricted-licence): papers under a "
+            "No-Derivatives licence, and papers with no licence recorded, WILL "
+            "be downloaded and curated. Fingerprints derived from them may not "
+            "be redistributable — do not publish such a corpus without "
+            "checking. scripts/package_corpus.py still excludes them from a "
+            "release archive unless you also pass --no-licence-filter.")
+
     pending.sort(key=lambda p: p.priority_score, reverse=True)
     if require_tiered:
         # Say so at runtime. Otherwise the only visible symptom of the gate is

@@ -59,6 +59,9 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
 from src.env_config import load_env  # noqa: E402
+from src.paper_licence import (  # noqa: E402
+    DERIVATIVES_OK, NO_DERIVATIVES, UNKNOWN, classify,
+)
 
 _DB = _ROOT / "data" / "literature.db"
 _CACHE = _ROOT / "data" / "paper_licences.json"
@@ -66,32 +69,6 @@ _SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 #: Europe PMC handles 40 OR-ed identifiers comfortably; larger batches start
 #: tripping its query-length limits.
 _BATCH = 40
-
-#: Licence strings, lowercased, that forbid derivative works. A fingerprint is
-#: derived from the paper's content, so these are the ones that matter here.
-_NO_DERIVATIVES = ("nd",)
-
-#: Licences that permit derivatives. `nc` restricts commercial use, which is a
-#: separate question from derivation — LPT is noncommercially licensed anyway.
-_DERIVATIVES_OK = ("cc by", "cc by-sa", "cc by-nc", "cc by-nc-sa",
-                   "cc0", "public domain", "pd")
-
-
-def classify(license_str: str | None) -> str:
-    """One of: no_derivatives | derivatives_ok | unknown."""
-    if not license_str or not str(license_str).strip():
-        return "unknown"
-    lic = str(license_str).strip().lower()
-    # Token match, not substring: "cc by-nd" ends in -nd, but a hypothetical
-    # "cc by-ndsomething" should not silently match, and "cc by" must not be
-    # read as ND because the word "and" appears elsewhere.
-    tokens = lic.replace("cc", "").replace("-", " ").split()
-    if any(t in _NO_DERIVATIVES for t in tokens):
-        return "no_derivatives"
-    if any(lic.startswith(ok) for ok in _DERIVATIVES_OK):
-        return "derivatives_ok"
-    return "unknown"
-
 
 def _rows(conn: sqlite3.Connection, everything: bool) -> list[dict]:
     where = "" if everything else "where curation_status='completed'"
@@ -170,6 +147,35 @@ def scan(rows: list[dict], sleep: float, limit: int | None) -> dict[str, dict]:
     return cache
 
 
+def write_to_db(cache: dict[str, dict]) -> int:
+    """Persist the resolved licence into `papers.licence`.
+
+    The cache alone cannot gate anything — `fetch_papers.py` and
+    `package_corpus.py` both need the value where a SQL query can see it, and
+    a shipped database that carries its own licence provenance is auditable by
+    whoever receives it.
+    """
+    import datetime as dt
+
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    n = 0
+    with sqlite3.connect(_DB) as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(papers)")}
+        if "licence" not in cols:
+            raise SystemExit(
+                "papers.licence does not exist — open the database through "
+                "src.database.Database once so its migration runs")
+        for key, info in cache.items():
+            # "" is meaningful: checked, and the source records no licence.
+            # NULL stays "never checked", so the two are distinguishable.
+            conn.execute(
+                "UPDATE papers SET licence=?, licence_source=?, "
+                "licence_checked_at=? WHERE paper_key=?",
+                (info.get("license") or "", "europepmc", now, key))
+            n += 1
+    return n
+
+
 def report(rows: list[dict], cache: dict[str, dict], nd_only: bool) -> int:
     by_key = {r["paper_key"]: r for r in rows}
     verdicts = Counter()
@@ -183,7 +189,7 @@ def report(rows: list[dict], cache: dict[str, dict], nd_only: bool) -> int:
         v = classify(info.get("license"))
         verdicts[v] += 1
         licences[(info.get("license") or "—").lower()] += 1
-        if v == "no_derivatives":
+        if v == NO_DERIVATIVES:
             nd.append({**by_key[key], **info})
         elif not info.get("resolved"):
             unresolved.append({**by_key[key], **info})
@@ -199,11 +205,11 @@ def report(rows: list[dict], cache: dict[str, dict], nd_only: bool) -> int:
     for lic, n in licences.most_common():
         print(f"  {lic:<24}{n:>7,}   {n / max(total, 1) * 100:>5.1f}%")
 
-    print(f"\n  {'derivatives permitted':<24}{verdicts['derivatives_ok']:>7,}")
-    print(f"  {'NO DERIVATIVES':<24}{verdicts['no_derivatives']:>7,}"
-          f"   <-- fingerprints of these are the question")
-    print(f"  {'unknown / unlicensed':<24}{verdicts['unknown']:>7,}"
-          f"   <-- not 'fine': usually all rights reserved")
+    print(f"\n  {'derivatives permitted':<24}{verdicts[DERIVATIVES_OK]:>7,}")
+    print(f"  {'NO DERIVATIVES':<24}{verdicts[NO_DERIVATIVES]:>7,}"
+          f"   <-- excluded from the release archive")
+    print(f"  {'unknown / unlicensed':<24}{verdicts[UNKNOWN]:>7,}"
+          f"   <-- also excluded: absence of permission is not permission")
     if unresolved:
         print(f"  {'(no Europe PMC record)':<24}{len(unresolved):>7,}")
 
@@ -250,6 +256,8 @@ def main() -> int:
         cache = json.loads(_CACHE.read_text(encoding="utf-8"))
     else:
         cache = scan(rows, args.sleep, args.limit)
+        n = write_to_db(cache)
+        print(f"  wrote papers.licence for {n:,} rows")
 
     return report(rows, cache, args.nd_only)
 

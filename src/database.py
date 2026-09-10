@@ -69,7 +69,18 @@ class Database:
                     fingerprint_path TEXT,
                     curation_model TEXT,
                     curation_tokens INTEGER,
-                    curation_error TEXT
+                    curation_error TEXT,
+                    -- Reuse licence of the PAPER, resolved from Europe PMC by
+                    -- `scripts/audit_paper_licences.py`. A fingerprint is
+                    -- derived from the paper's content, so a No-Derivatives
+                    -- term (`cc by-nc-nd`, `cc by-nd`) is what decides whether
+                    -- that fingerprint can be redistributed — and an EMPTY
+                    -- value is not permission, it is the absence of one.
+                    -- NULL means "not yet checked"; the empty string means
+                    -- "checked, and the source records no licence".
+                    licence TEXT,
+                    licence_source TEXT,
+                    licence_checked_at TEXT
                 )
             """)
 
@@ -104,6 +115,28 @@ class Database:
             if "curation_error" not in existing:
                 conn.execute("ALTER TABLE papers ADD COLUMN curation_error TEXT")
                 logger.debug("Migrated DB: added curation_error column")
+            # Reuse licence. Added 2026-09-10, after an audit found 1,506
+            # curated papers under a No-Derivatives term and 5,684 with no
+            # licence recorded at all — neither of which the database could
+            # express, so neither could gate anything.
+            for col in ("licence", "licence_source", "licence_checked_at"):
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE papers ADD COLUMN {col} TEXT")
+                    logger.debug(f"Migrated DB: added {col} column")
+
+    def set_licence(self, paper_key: str, licence: str | None,
+                    source: str | None = None, checked_at: str | None = None):
+        """Record a resolved reuse licence.
+
+        `""` is meaningful and different from NULL: it means the lookup ran and
+        the source records no licence, which `paper_licence.permits_derivatives`
+        reads as restricted. NULL means nobody has looked yet.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE papers SET licence=?, licence_source=?, "
+                "licence_checked_at=? WHERE paper_key=?",
+                (licence, source, checked_at, paper_key))
 
     def upsert_paper(self, paper: Paper):
         """Insert or update a paper keyed by DOI > PMCID > title hash."""

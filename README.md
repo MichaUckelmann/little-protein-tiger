@@ -11,8 +11,32 @@ LLM extraction → vector index + interaction graph) and a 16-stage resumable
 design orchestrator. Skills run from the CLI against the Gemini, Claude or
 OpenAI API, or conversationally inside Claude Desktop / Claude Code over MCP.
 
-**Corpus:** **14,517 curated papers**, shipped prebuilt with the vector index
-and interaction graph.
+**Corpus:** **7,072 curated papers** shipped prebuilt with the vector index and
+interaction graph, drawn from a working corpus of 14,517. Install it with
+`python scripts/fetch_corpus.py` — a clone has no `data/`.
+
+> ### 📄 The published corpus is deliberately limited, and you can extend it
+>
+> **It contains only papers whose licence permits redistributing a derivative
+> work.** A fingerprint is extracted from a paper's content, so a
+> No-Derivatives term (`cc by-nc-nd`, `cc by-nd`) — or no recorded licence at
+> all, which is the absence of permission rather than permission — means that
+> fingerprint is not ours to publish. Of the 14,517 papers in the maintainer's
+> working corpus, 7,327 permit derivatives, 1,506 carry an ND term and 5,684
+> record no licence; the release ships 7,072 fingerprints, about half.
+>
+> **So the shipped corpus is smaller than the tool can build, and its gaps are
+> licensing gaps rather than scientific ones.** You are encouraged to extend it
+> for your own field with `scripts/fetch_papers.py` and
+> `scripts/curate_papers.py` — **while obeying the licence terms of every
+> publisher you draw from.** Both scripts resolve each paper's licence and skip
+> restricted ones by default, and `scripts/audit_paper_licences.py` reports
+> what your own corpus contains. `--allow-restricted-licence` lifts the
+> restriction for a corpus you keep to yourself; whether you may then
+> redistribute it is on you.
+>
+> [docs/licensing.md](docs/licensing.md) has the measured breakdown and the
+> reasoning. It is not legal advice.
 
 > **Beta.** The corpus archive is published as
 > [v0.1.0](../../releases/tag/v0.1.0); `python scripts/fetch_corpus.py`

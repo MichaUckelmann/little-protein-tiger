@@ -28,6 +28,24 @@ quality:
   # how to extend them (tier1_extra / tier2_extra above).
   require_tiered_journal: true
 
+  # Only download papers whose licence AFFIRMATIVELY permits derivative works.
+  # Curating a paper produces a fingerprint, which is derived from its content,
+  # so a No-Derivatives term (`cc by-nc-nd`, `cc by-nd`) — or NO recorded
+  # licence, which is the absence of permission rather than permission — makes
+  # that fingerprint one you may not redistribute.
+  #
+  # Measured on the reference corpus: of 14,517 curated papers only 7,327
+  # (50.5%) permit derivatives, 1,506 (10.4%) carry an ND term and 5,684
+  # (39.2%) record no licence at all. So this gate roughly halves what a fresh
+  # corpus build downloads — which is the cost of being able to publish it.
+  #
+  # Licences are resolved from Europe PMC at download time and cached in
+  # `papers.licence`. `--allow-restricted-licence` turns the gate off for a
+  # corpus you will only ever use locally; `scripts/package_corpus.py` still
+  # refuses to put those fingerprints in a release archive unless you also pass
+  # `--no-licence-filter`. See docs/licensing.md.
+  require_derivative_licence: true
+
 # ---------------------------------------------------------------------------
 # Search keywords
 # ---------------------------------------------------------------------------
