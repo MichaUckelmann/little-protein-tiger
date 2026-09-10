@@ -304,7 +304,9 @@ design:
     # design; it costs only GPU time, and RF3 scales as (tokens/195)**1.62.
     target_budget_overshoot: 0.15
     # RF3 output is ~2.5 MB per design directory, so disk — not GPU — is the
-    # binding constraint: 48,000 refolds is ~120 GB.
+    # binding constraint. This is a CAP, not an estimate: 48,000 refolds is
+    # ~47 GB at the 195-token anchor and ~88 GB against a 220-residue target,
+    # per `foundry_runner.refold_bytes`. Free space still binds first.
     disk_budget_gb: 120
     min_free_gb: 20
     poll_interval_s: 120

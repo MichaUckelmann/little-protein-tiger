@@ -442,8 +442,20 @@ them without re-reading this list is how they get silently reverted.
   same work at 138 GPU-h). `calibrate()` takes `n_tokens` and applies the size
   law itself, so a caller that passes neither a measured rate nor a size gets a
   warning rather than a silently under-costed SCALE_UP.
-- **Disk, not GPU, is the binding constraint**: ~2.5 MB per RF3 design directory,
-  ~120 GB for a full production campaign. `plan_campaign` clamps `n_batches` to the
+- **Disk scales with the complex, like GPU time does.** A refold directory costs
+  **0.6-1.9 MB, not a flat 2.5 MB** — `foundry_runner.refold_bytes` is
+  `0.97 MB * (tokens/195)**1.49`, fitted over 27,304 refold directories in six
+  campaigns (nothing pruned) to within 1.6%. Half the bytes are coordinates
+  (O(N) `model.cif`) and half the PAE matrix inside `confidences.json` (O(N^2)),
+  which is why the exponent lands just under the runtime law's 1.62, and why
+  RF3 writing every artifact TWICE (`seed-0_sample-0/` plus a promoted copy, as
+  separate files, not hardlinks) doubles the whole thing rather than one part of
+  it. The old flat constant over-called the anchor by 155% and the smallest
+  campaign here by 238%, clamping `n_batches` on campaigns that fit comfortably.
+  `campaign_calibration` imported the rate law but kept its own stale copy of
+  the disk constant — **one anchor and one law now covers both**.
+  Measured totals: ~15 GB for a typical production campaign, 15 GB for the
+  largest campaign in `projects/` all-in. `plan_campaign` clamps `n_batches` to the
   disk budget, and `prune_confidences` deletes PAE matrices for non-survivors —
   wired into `_stage_binder_scoring` after `write_ranking_outputs`, and **off
   unless `design.foundry.prune_confidences` is set**, because ipSAE cannot be

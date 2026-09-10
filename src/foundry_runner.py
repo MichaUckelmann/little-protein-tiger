@@ -68,6 +68,32 @@ SEC_PER_RF3_REFOLD = 9.1          # at REF_TOKENS
 REF_TOKENS = 195                  # the anchor campaign's complex size
 RF3_SIZE_EXPONENT = 1.62
 
+# A refold DIRECTORY grows with complex size for the same reason its runtime
+# does, and this was a flat 2.5 MB — 3.2x the real cost at the anchor, which
+# clamped campaigns that would have fitted comfortably. Measured over six real
+# campaigns, 27,304 refold directories, every stage, nothing pruned
+# (`prune_confidences` was off for all of them), summed with os.scandir:
+#
+#     tokens   MB/refold (rf3_out)   whole stage   flat-2.5 error
+#        162          0.59              0.74            +238%
+#        195          0.79              0.98            +155%
+#        245          1.12              1.35            +85%
+#        264          1.28              1.54            +62%
+#        285          1.41              1.69            +48%
+#        300          1.57              1.87            +34%
+#
+# The anchor below is the WHOLE STAGE per refold, not rf3_out alone: mpnn_out
+# is another ~20% and rfd3 ~2%, and the question this feeds is "will the disk
+# fill", which does not care which subdirectory did it. The law fits those six
+# to within 1.6%, and the exponent lands just under the runtime law's 1.62 for
+# the same mixed-order reason: half the bytes are coordinates (O(N), the
+# model.cif) and half are the PAE matrix inside confidences.json (O(N^2)).
+# Note RF3 writes every artifact TWICE — once under seed-0_sample-0/ and once
+# promoted to the top level, as separate files, not hardlinks — so roughly half
+# of this is duplication inside RF3's own output convention.
+BYTES_PER_REFOLD = 0.97e6         # whole stage, per refold, at REF_TOKENS
+REFOLD_DISK_EXPONENT = 1.49
+
 
 def rf3_seconds_per_refold(n_tokens: int | None) -> float:
     """Estimated RF3 seconds per refold for a complex of ``n_tokens`` residues.
@@ -100,7 +126,17 @@ def sec_per_refold_observed(paths: FoundryPaths) -> float:
         return 0.0
     span = stamps[-1] - stamps[0]
     return span / (len(stamps) - 1) if span > 0 else 0.0
-BYTES_PER_RF3_DIR = 2.5e6
+
+
+def refold_bytes(n_tokens: int | None) -> float:
+    """On-disk bytes a campaign writes per refold, for an ``n_tokens`` complex.
+
+    Same shape as ``rf3_seconds_per_refold`` and derived from the same six
+    campaigns — see ``BYTES_PER_REFOLD``.
+    """
+    if not n_tokens or n_tokens <= 0:
+        return BYTES_PER_REFOLD
+    return BYTES_PER_REFOLD * (n_tokens / REF_TOKENS) ** REFOLD_DISK_EXPONENT
 
 
 class FoundryError(RuntimeError):
@@ -257,9 +293,11 @@ def plan_campaign(
     """
     Size a campaign and check it against the disk budget.
 
-    The disk clamp is not theoretical: at the reference production settings
-    (3000 batches x 4 designs x 4 sequences = 48,000 refolds) RF3 output is
-    ~120 GB, about half the free space on this workstation.
+    The disk clamp is not theoretical, but it is SIZE-DEPENDENT: at the
+    reference production settings (3000 batches x 4 designs x 4 sequences =
+    48,000 refolds) a campaign writes ~47 GB at the 195-token anchor and ~88 GB
+    against a 220-residue target, the trim budget's ceiling. The flat 2.5 MB
+    this used to assume said 120 GB for all of them.
     """
     f = cfg.get("foundry") or {}
     stage_cfg = f.get(mode) or {}
@@ -278,7 +316,7 @@ def plan_campaign(
     seconds = (expected_rfd3 * SEC_PER_RFD3_DESIGN
                + expected_mpnn * SEC_PER_MPNN_SEQ
                + expected_rf3 * per_refold)
-    disk = expected_rf3 * BYTES_PER_RF3_DIR / 1e9
+    disk = expected_rf3 * refold_bytes(n_tokens) / 1e9
     have = free_gb(paths.campaign_dir)
     budget_gb = float(f.get("disk_budget_gb", 120))
     min_free = float(f.get("min_free_gb", 20))
@@ -300,7 +338,7 @@ def plan_campaign(
         seconds = (expected_rfd3 * SEC_PER_RFD3_DESIGN
                    + expected_mpnn * SEC_PER_MPNN_SEQ
                    + expected_rf3 * per_refold)
-        disk = expected_rf3 * BYTES_PER_RF3_DIR / 1e9
+        disk = expected_rf3 * refold_bytes(n_tokens) / 1e9
 
     plan = CampaignPlan(
         mode=mode, n_batches=n_batches, diffusion_batch_size=dbs, n_seq=n_seq,

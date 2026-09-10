@@ -204,6 +204,51 @@ def test_calibrate_derives_the_refold_rate_from_complex_size():
     assert explicit.pessimistic.est_gpu_hours > large.pessimistic.est_gpu_hours
 
 
+def test_the_gate_and_the_planner_share_one_disk_law_too():
+    """The disk constant had the SAME duplication the rate did, and the gate's
+    copy was never re-measured — so `campaign_calibration` must not hold one."""
+    import src.campaign_calibration as cc
+    import src.foundry_runner as fr
+
+    assert not hasattr(cc, "BYTES_PER_RF3_DIR"), \
+        "the private duplicate is back; import refold_bytes instead"
+    assert cc.BYTES_PER_REFOLD == fr.BYTES_PER_REFOLD
+    assert fr.BYTES_PER_REFOLD != 2.5e6
+
+
+def test_disk_is_sized_from_the_complex_not_a_flat_constant():
+    """Measured over 27,304 refold directories in six campaigns, nothing
+    pruned. The fit is deterministic to ~1.6%, so these are assertions about
+    reality, not about a formula: `refold_bytes` must reproduce what the
+    campaigns on disk actually cost per refold, whole stage.
+
+    A flat 2.5 MB over-called the anchor by 155% and the smallest campaign we
+    ran by 238%, which clamps `n_batches` on campaigns that fit comfortably.
+    """
+    from src.foundry_runner import refold_bytes
+
+    # tokens -> MB per refold, whole stage, measured 2026-09-10
+    measured = {162: 0.74, 195: 0.98, 245: 1.35, 264: 1.54, 285: 1.69, 300: 1.87}
+    for tokens, mb in measured.items():
+        got = refold_bytes(tokens) / 1e6
+        assert abs(got - mb) / mb < 0.05, f"{tokens} tokens: {got:.2f} != {mb}"
+
+    # and it must stay monotonic in size, which a flat constant is not
+    sizes = [refold_bytes(t) for t in sorted(measured)]
+    assert sizes == sorted(sizes)
+
+
+def test_the_pdl1_campaign_disk_estimate_matches_what_it_wrote():
+    """One end-to-end anchor: PD-L1 was sized at 5,842 refolds and its
+    production stage wrote 5.70 GB for the 5,824 it actually ran. The flat
+    constant predicted 14.6 GB — the number `calibration.json` still carries.
+    """
+    from src.foundry_runner import refold_bytes
+
+    est_gb = 5842 * refold_bytes(195) / 1e9
+    assert 5.0 < est_gb < 6.5, est_gb
+
+
 def test_max_campaign_days_is_declared_in_config(config):
     """It was read with a hardcoded default from a key that did not exist, so
     the 120 GPU-h budget behind every SCALE_UP verdict was not tunable."""

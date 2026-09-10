@@ -1,7 +1,7 @@
 """
 Size a production campaign from a small calibration run.
 
-A production foundry campaign is a multi-day, ~120 GB commitment.  Deciding its
+A production foundry campaign is a multi-day, ~15-90 GB commitment.  Deciding its
 size by guessing is how you spend four days to learn the target was wrong.  This
 module answers one question from a ~1 200-refold sample:
 
@@ -44,7 +44,8 @@ from src.binder_ranking import (
 # SEC_PER_RF3_REFOLD below. No cycle: `foundry_runner` imports only
 # env_config / foundry_spec / job_registry.
 from src.foundry_runner import (
-    REF_TOKENS, SEC_PER_RF3_REFOLD, rf3_seconds_per_refold,
+    BYTES_PER_REFOLD, REF_TOKENS, SEC_PER_RF3_REFOLD, refold_bytes,
+    rf3_seconds_per_refold,
 )
 
 # Measured on the RTX PRO 4500 Blackwell (32 GB) for a ~175-token complex.
@@ -67,7 +68,6 @@ SEC_PER_MPNN_SEQ = 0.36
 #: when it has to fall back to the bare anchor. Callers with a MEASURED rate
 #: (`foundry_runner.sec_per_refold_observed`, or an earlier stage of the same
 #: campaign) should still pass `sec_per_rf3_refold` — it beats both.
-BYTES_PER_RF3_DIR = 2.5e6
 
 Z95 = 1.959963984540054
 
@@ -245,7 +245,8 @@ def choose_compute(res: CalibrationResult, *, max_local_hours: float = 48.0,
 # ----------------------------------------------------------------------
 
 def _cost(required_refolds: float, *, n_seq: int, prefilter_rate: float,
-          sec_per_rf3_refold: float = SEC_PER_RF3_REFOLD
+          sec_per_rf3_refold: float = SEC_PER_RF3_REFOLD,
+          bytes_per_refold: float = BYTES_PER_REFOLD
           ) -> tuple[float, float, float]:
     """(required RFD3 designs, GPU hours, disk GB) for a refold count."""
     prefilter_rate = max(prefilter_rate, 1e-6)
@@ -253,12 +254,14 @@ def _cost(required_refolds: float, *, n_seq: int, prefilter_rate: float,
     seconds = (required_designs * SEC_PER_RFD3_DESIGN
                + required_refolds * SEC_PER_MPNN_SEQ
                + required_refolds * (sec_per_rf3_refold or SEC_PER_RF3_REFOLD))
-    return required_designs, seconds / 3600.0, required_refolds * BYTES_PER_RF3_DIR / 1e9
+    disk = required_refolds * (bytes_per_refold or BYTES_PER_REFOLD) / 1e9
+    return required_designs, seconds / 3600.0, disk
 
 
 def _scale(rate: RateEstimate, p: float, *, basis: str, target: int,
            n_seq: int, prefilter_rate: float, lower_bound: bool,
-           sec_per_rf3_refold: float = SEC_PER_RF3_REFOLD) -> ScaleEstimate:
+           sec_per_rf3_refold: float = SEC_PER_RF3_REFOLD,
+           bytes_per_refold: float = BYTES_PER_REFOLD) -> ScaleEstimate:
     if p <= 0:
         return ScaleEstimate(basis, None, None, None, None, is_lower_bound=True)
     if rate.unit == "backbone":
@@ -269,7 +272,8 @@ def _scale(rate: RateEstimate, p: float, *, basis: str, target: int,
         required_backbones = required_refolds / max(n_seq, 1)
     designs, hours, disk = _cost(required_refolds, n_seq=n_seq,
                                  prefilter_rate=prefilter_rate,
-                                 sec_per_rf3_refold=sec_per_rf3_refold)
+                                 sec_per_rf3_refold=sec_per_rf3_refold,
+                         bytes_per_refold=bytes_per_refold)
     return ScaleEstimate(
         basis=basis,
         required_backbones=round(designs, 0),
@@ -361,6 +365,12 @@ def calibrate(
             f"{REF_TOKENS} tokens. A larger complex will be under-costed and "
             f"the SCALE_UP / budget decision made on it is not trustworthy.")
         sec_per_rf3_refold = SEC_PER_RF3_REFOLD
+    # Disk scales with the complex too, and unlike the rate there is nothing
+    # measured to prefer: `refold_bytes` is deterministic to within 1.6% across
+    # the six fitted campaigns, so the size law IS the best estimate. Falling
+    # back to the bare anchor needs no warning of its own — the rate warning
+    # above already fires on the same missing `n_tokens`.
+    bytes_per_refold = refold_bytes(n_tokens)
     if success_metric not in SUCCESS_METRICS:
         raise ValueError(
             f"success_metric must be one of {sorted(SUCCESS_METRICS)}, "
@@ -402,17 +412,20 @@ def calibrate(
         central = _scale(backbone_rate, backbone_rate.p_high, basis="rule-of-three",
                          target=target_designs, n_seq=n_seq,
                          prefilter_rate=prefilter_rate,
-                         sec_per_rf3_refold=sec_per_rf3_refold, lower_bound=True)
+                         sec_per_rf3_refold=sec_per_rf3_refold,
+                         bytes_per_refold=bytes_per_refold, lower_bound=True)
         pessimistic = central
     else:
         central = _scale(backbone_rate, backbone_rate.p_hat, basis="point estimate",
                          target=target_designs, n_seq=n_seq,
                          prefilter_rate=prefilter_rate,
-                         sec_per_rf3_refold=sec_per_rf3_refold, lower_bound=False)
+                         sec_per_rf3_refold=sec_per_rf3_refold,
+                         bytes_per_refold=bytes_per_refold, lower_bound=False)
         pessimistic = _scale(backbone_rate, backbone_rate.p_pessimistic,
                              basis="Wilson 95% lower bound", target=target_designs,
                              n_seq=n_seq, prefilter_rate=prefilter_rate,
                          sec_per_rf3_refold=sec_per_rf3_refold,
+                         bytes_per_refold=bytes_per_refold,
                              lower_bound=False)
 
     best_ipsae = max(
@@ -462,6 +475,7 @@ def calibrate(
                 rate_b, rate_b.p_pessimistic, basis="Wilson 95% lower bound",
                 target=target_designs, n_seq=n_seq, prefilter_rate=prefilter_rate,
                          sec_per_rf3_refold=sec_per_rf3_refold,
+                         bytes_per_refold=bytes_per_refold,
                 lower_bound=False)
             if _fits_plain(pessimistic_b):
                 bar_raised_to = b
@@ -470,7 +484,8 @@ def calibrate(
                 central = _scale(rate_b, rate_b.p_hat, basis="point estimate",
                                  target=target_designs, n_seq=n_seq,
                                  prefilter_rate=prefilter_rate,
-                         sec_per_rf3_refold=sec_per_rf3_refold, lower_bound=False)
+                         sec_per_rf3_refold=sec_per_rf3_refold,
+                         bytes_per_refold=bytes_per_refold, lower_bound=False)
                 pessimistic = pessimistic_b
                 break
 

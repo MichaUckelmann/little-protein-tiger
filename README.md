@@ -8,11 +8,11 @@ than model confidence alone.
 
 It is two pipelines sharing one corpus: a literature ETL (search → download →
 LLM extraction → vector index + interaction graph) and a 16-stage resumable
-design orchestrator. Skills run from the CLI against the Gemini or Claude API,
-or conversationally inside Claude Desktop / Claude Code over MCP.
+design orchestrator. Skills run from the CLI against the Gemini, Claude or
+OpenAI API, or conversationally inside Claude Desktop / Claude Code over MCP.
 
-**Corpus:** ~57,900 papers indexed · ~14,700 downloaded · **14,517 curated
-fingerprints**, shipped prebuilt with the vector index and interaction graph.
+**Corpus:** **14,517 curated fingerprints**, shipped prebuilt with the vector
+index and interaction graph.
 
 > **Beta.** The corpus archive is published as
 > [v0.1.0](../../releases/tag/v0.1.0); `python scripts/fetch_corpus.py`
@@ -92,13 +92,27 @@ it in one step.
 
 **`GEMINI_API_KEY` is the only key you need** — it is the default provider for
 every pipeline stage, for curation, and for `ask_corpus.py`.
-`ANTHROPIC_API_KEY` is optional: `--provider claude`, and the automatic
-fallback when a safety classifier declines a stage. `.env.example` documents
-every other variable — NCBI and Semantic Scholar rate limits, the
-corporate-proxy CA settings, and the tool paths (`LPT_FOUNDRY_ROOT`,
+`ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are both optional, and not
+interchangeable. `--provider claude` or `--provider openai` runs every stage on
+that provider instead; beyond that, `ANTHROPIC_API_KEY` is also what Gemini
+falls back to when a safety classifier declines a stage, so a run with only
+`GEMINI_API_KEY` has no fallback left. If you use `--provider openai`, replace
+the placeholder `gpt-5.6-*` rates in `config.yaml` with your account's before
+trusting `--budget`.
+
+`.env.example` documents every other variable — NCBI and Semantic Scholar rate
+limits, the corporate-proxy CA settings, and the tool paths (`LPT_FOUNDRY_ROOT`,
 `LPT_FOUNDRY_CKPT_DIR`, `LPT_BOLTZGEN_EXECUTABLE`, `LPT_PYROSETTA_PYTHON`,
 `LPT_CLUSTER_PIPELINE_ROOT`, `LPT_CLUSTER_PROTENIX_REPO`,
 `LPT_CLUSTER_SUBMIT_INSTRUCTIONS`).
+
+**Running designs on a local workstation** — we suggest a CUDA GPU with at
+least **24 GB VRAM**; more VRAM allows larger designs and targets. Budget
+**~15 GB free disk** for a typical production campaign and up to ~90 GB for a
+large target run at the un-calibrated default — measured across six campaigns,
+the biggest of which came to 15 GB all-in. A local install of the
+[foundry protein design suite](https://github.com/RosettaCommons/foundry) is
+necessary — LPT neither ships nor installs it.
 
 **[docs/beta-testing.md](docs/beta-testing.md)** walks all of this
 step-by-step, including what to do when a step fails.

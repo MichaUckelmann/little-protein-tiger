@@ -104,9 +104,11 @@ never break LPT's own venv.
     config time rather than after RFD3 has already run for an hour.
 
   Requirements: a CUDA GPU — **24 GB VRAM** is enough for small-to-moderate
-  designs, and larger targets scale from there — plus **~120 GB free disk**
-  for a full production campaign (~2.5 MB per RF3 design directory). Disk is
-  usually the binding constraint, not VRAM.
+  designs, and larger targets scale from there — plus **~15 GB free disk** for
+  a typical production campaign, up to ~90 GB for a large target at the
+  un-calibrated default. Measured: a refold directory costs
+  ~0.6-1.9 MB depending on complex size (`foundry_runner.refold_bytes`), so
+  disk scales with the target the same way GPU time does.
 - **Protenix** (`LPT_CLUSTER_PROTENIX_REPO`) — only needed for the cluster
   refold path's MSA fetch; a separate checkout with its own venv, subprocessed
   the same way as everything else here. If you don't have one,

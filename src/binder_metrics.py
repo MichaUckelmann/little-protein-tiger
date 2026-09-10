@@ -955,9 +955,12 @@ def prune_confidences(rf3_dir: Path, keep_names: set[str]) -> int:
     """
     Delete ``*_confidences.json`` for refolds not in `keep_names`.
 
-    The PAE matrices are the bulk of an RF3 output tree (~2.5 MB per design dir,
-    ~120 GB for a full production campaign).  Run this only AFTER scoring —
-    ipSAE cannot be recomputed once they are gone.
+    The PAE matrices are the largest single item in an RF3 output tree, but
+    "the bulk" oversells it: measured across six campaigns they are 50% of a
+    refold directory at 162 tokens rising to 64% at 300, because the other half
+    is coordinates.  So pruning reclaims roughly half the tree, not most of it
+    — on a 15 GB campaign, ~8 GB.  Run this only AFTER scoring — ipSAE cannot
+    be recomputed once they are gone.
     """
     import os
 

@@ -251,8 +251,12 @@ foundry venv itself whatever it is called; if you have more than one it will
 ask you to name it, since the wrong one may be built for a different GPU.
 
 **24 GB VRAM** runs small-to-moderate designs. Bigger targets want more.
-Budget **~120 GB free disk** for a full production campaign — disk is usually
-the binding constraint, not the GPU.
+Budget **~15 GB free disk** for a typical production campaign. Measured over
+six real campaigns, a refold directory costs ~0.6-1.9 MB depending on complex
+size, and the largest campaign here came to 15 GB across all three stages; a
+big target sized at the un-calibrated 3000-batch default could reach ~90 GB.
+`plan_campaign` estimates it up front from the complex size and clamps
+`n_batches` to fit.
 
 ## What a full GPU run costs
 
