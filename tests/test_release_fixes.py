@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from src.pipeline_runner import PipelineRunner, _split_fallback
+from src.pipeline_runner import PipelineRunner, _split_model_spec
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,11 +24,11 @@ def config() -> dict:
 
 
 # ----------------------------------------------------------------------
-# Refusal fallback: a cross-provider entry must not inherit the current provider
+# Per-stage model override: a cross-provider id must not inherit the provider
 # ----------------------------------------------------------------------
 
 def test_explicit_provider_prefix_wins():
-    assert _split_fallback("gemini:gemini-3.7-flash", "claude") == (
+    assert _split_model_spec("gemini:gemini-3.7-flash", "claude") == (
         "gemini", "gemini-3.7-flash")
 
 
@@ -38,38 +38,74 @@ def test_explicit_provider_prefix_wins():
     ("gemini-3.7-flash", "gemini"),
 ])
 def test_provider_is_inferred_from_an_unprefixed_model_id(model, expected):
-    """The bug: gemini is the default provider and `models.gemini.
-    refusal_fallbacks` names Claude models with no prefix. Inheriting the
-    current provider POSTed a Claude id to the Gemini endpoint -> 404 ->
-    HTTPError, which is not SkillRefusedError and so escaped the refusal
-    handler and killed the run."""
-    assert _split_fallback(model, "gemini") == (expected, model)
+    """The bug, found on the refusal chains this helper used to serve: they
+    named Claude models with no prefix while gemini was the default provider,
+    so inheriting the current provider POSTed a Claude id to the Gemini
+    endpoint -> 404 -> HTTPError, which is not SkillRefusedError and so
+    escaped the refusal handler and killed the run.
+
+    The chains are gone (a refusal is terminal), but `models.<provider>.
+    stages` overrides have exactly the same shape and the same hazard, and
+    they are now the ONLY way a stage gets a different model — so the
+    inference moved there rather than being deleted with the chains."""
+    assert _split_model_spec(model, "gemini") == (expected, model)
 
 
 def test_an_unrecognised_model_id_still_inherits_the_current_provider():
     """Local/Ollama ids carry no recognisable prefix; inheriting is correct."""
-    assert _split_fallback("gemma3:12b-it", "local") == ("gemma3", "12b-it")
-    assert _split_fallback("my-finetune", "local") == ("local", "my-finetune")
+    assert _split_model_spec("gemma3:12b-it", "local") == ("gemma3", "12b-it")
+    assert _split_model_spec("my-finetune", "local") == ("local", "my-finetune")
 
 
-def test_the_shipped_fallback_chains_all_resolve_to_a_real_provider(config):
-    """Guards the config itself: every entry in every chain must land on a
-    provider that `SkillRunner` can actually dispatch to."""
+def test_resolve_stage_actually_routes_through_it(config):
+    """A helper nothing calls is not a guard.
+
+    `_resolve_stage` used to split on ":" itself and fall back to the current
+    provider for a bare id, which is the 404 above. It must go through
+    `_split_model_spec` instead.
+    """
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner as PR
+
+    assert "_split_model_spec" in inspect.getsource(PR._resolve_stage)
+
+
+def test_any_per_stage_override_resolves_to_a_real_provider(config):
+    """Guards the config itself: every `models.<provider>.stages` entry must
+    land on a provider `SkillRunner` can actually dispatch to. Replaces the
+    same check over the old `refusal_fallbacks` chains.
+
+    Vacuous on the shipped config, which deliberately ships none — see
+    `test_no_per_stage_model_default_is_shipped`. It is here for the entry an
+    operator adds, which is the only way one appears now, and the synthetic
+    case below keeps it from passing for the wrong reason in the meantime.
+    """
     models_cfg = config.get("models") or {}
-    for provider in ("claude", "gemini", "openai"):
-        chain = (models_cfg.get(provider) or {}).get("refusal_fallbacks") or []
-        assert chain, f"{provider} has no refusal_fallbacks"
-        for entry in chain:
-            resolved, model = _split_fallback(entry, provider)
-            assert resolved in ("claude", "gemini", "openai", "local"), (
-                f"{provider} chain entry {entry!r} -> unknown provider "
-                f"{resolved!r}")
-            # The specific incident: a claude-* id resolving to gemini.
-            if model.startswith("claude-"):
-                assert resolved == "claude", (
-                    f"{entry!r} would send a Claude model to {resolved}")
-            if model.startswith("gemini-"):
-                assert resolved == "gemini"
+    cases = [(provider, stage, entry)
+             for provider in ("claude", "gemini", "openai")
+             for stage, entry in
+             (((models_cfg.get(provider) or {}).get("stages") or {}).items())]
+    # The shapes an operator actually writes, including the one that caused
+    # the incident: an unprefixed cross-provider id under the gemini default.
+    cases += [("gemini", "binder_summary", "claude-opus-5"),
+              ("gemini", "interface", "claude:claude-opus-5"),
+              ("claude", "summary", "gemini:gemini-3.7-flash"),
+              ("gemini", "summary", "gpt-5.6-terra")]
+
+    for provider, stage, entry in cases:
+        resolved, model = _split_model_spec(entry, provider)
+        assert resolved in ("claude", "gemini", "openai", "local"), (
+            f"models.{provider}.stages.{stage} = {entry!r} -> unknown "
+            f"provider {resolved!r}")
+        # The specific incident: a claude-* id resolving to gemini.
+        if model.startswith("claude-"):
+            assert resolved == "claude", (
+                f"{entry!r} would send a Claude model to {resolved}")
+        if model.startswith("gemini-"):
+            assert resolved == "gemini"
+        if model.startswith("gpt-"):
+            assert resolved == "openai"
 
 
 # ----------------------------------------------------------------------

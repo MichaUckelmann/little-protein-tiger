@@ -12,7 +12,7 @@ It used to carry its OWN agentic loop, hardcoded to Anthropic, with
 `search_corpus` as its only tool. That second implementation cost it
 everything the shared runner had already learned: Gemini support (and with
 it the cheaper, less refusal-prone default every other entry point uses),
-connection/429 retries, safety-refusal fallback across providers, token
+connection/429 retries, the shared refusal contract across providers, token
 accounting, and the other seventeen corpus tools — the interaction graph,
 DepMap co-essentiality, clusters, quantitative-evidence lookup — which are
 most of what makes exploring a corpus different from searching it.

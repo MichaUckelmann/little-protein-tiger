@@ -271,10 +271,13 @@ def _ledger_for(cell_dir: pathlib.Path, cap: float):
 def _spend(ledger) -> dict:
     """Cost and the four token buckets, plus which model actually served.
 
-    `served_model` is not decoration: a safety refusal walks
-    `models.gemini.refusal_fallbacks` into claude-opus-5, and a cell billed to
-    Opus while the table says "3.8" would put a $5 benchmark $20 over and read
-    as a token-efficiency regression.
+    `served_model` is not decoration: a cell can be served by a model other
+    than the one under test, via a `models.<provider>.stages` override, and
+    a cell billed to Opus while the table says "3.8" would put a $5
+    benchmark $20 over and read as a token-efficiency regression. (It used
+    to happen by itself, when a refusal walked an automatic fallback chain
+    into claude-opus-5; that chain is gone — a refusal now ends the cell —
+    but the check still earns its keep against a stray config override.)
     """
     total = ledger.totals()
     return {
@@ -600,7 +603,7 @@ def summarise() -> None:
     unexpected = {(s, sl, m): c["served_models"] for (s, sl, m), c in got.items()
                   if c["served_models"] not in ([m], [])}
     if unexpected:
-        print("\n  ⚠ cells NOT served by the model under test (refusal fallback):")
+        print("\n  ⚠ cells NOT served by the model under test (check models.<provider>.stages):")
         for key, served in sorted(unexpected.items()):
             print(f"    {key} -> {served}")
 

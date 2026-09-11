@@ -293,13 +293,17 @@ def test_the_provider_has_a_declared_api_key():
     assert SkillRunner._PROVIDER_KEYS["openai"] == "OPENAI_API_KEY"
 
 
-def test_a_bare_gpt_model_in_a_fallback_chain_resolves_to_openai():
+def test_a_bare_gpt_model_in_a_stage_override_resolves_to_openai():
     """Without a prefix rule a bare `gpt-…` inherits the CURRENT provider and
-    gets POSTed to that vendor's endpoint — a 404 that kills the run."""
-    from src.pipeline_runner import _split_fallback
+    gets POSTed to that vendor's endpoint — a 404 that kills the run.
 
-    assert _split_fallback("gpt-5.6-terra", "gemini") == ("openai", "gpt-5.6-terra")
-    assert _split_fallback("openai:gpt-5.6-luna", "claude") == ("openai", "gpt-5.6-luna")
+    The hazard was first hit on a refusal chain; `models.<provider>.stages` is
+    where an unprefixed id can still be written now that refusals are
+    terminal and the chains are gone."""
+    from src.pipeline_runner import _split_model_spec
+
+    assert _split_model_spec("gpt-5.6-terra", "gemini") == ("openai", "gpt-5.6-terra")
+    assert _split_model_spec("openai:gpt-5.6-luna", "claude") == ("openai", "gpt-5.6-luna")
 
 
 def test_cli_provider_choices_match_the_runner():

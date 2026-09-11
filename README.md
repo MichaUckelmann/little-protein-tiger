@@ -201,9 +201,10 @@ it in one step.
 every pipeline stage, for curation, and for `ask_corpus.py`.
 `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are both optional, and not
 interchangeable. `--provider claude` or `--provider openai` runs every stage on
-that provider instead; beyond that, `ANTHROPIC_API_KEY` is also what Gemini
-falls back to when a safety classifier declines a stage, so a run with only
-`GEMINI_API_KEY` has no fallback left. `--provider openai` is also **several
+that provider instead, and `models.<provider>.stages` in `config.yaml` routes
+a single stage to one. Neither is needed to recover from a safety-classifier
+refusal automatically — nothing does that; a declined stage ends the run and
+picking another model is your call. `--provider openai` is also **several
 times more expensive per token** than the default: `gpt-5.6-terra` is
 $2.00/$12.00 per million input/output tokens against gemini-3.7-flash's
 $0.75/$3.75. `gpt-5.6-luna`'s entry in `config.yaml` is still a placeholder —
@@ -884,7 +885,7 @@ carrying every stage report in full. No LLM, no GPU; regenerate any time with
 
 > **Why these defaults are what they are** — the sizing metric, the adaptive
 > bar, the geometric gates, membrane-topology handling, the chain-assignment
-> guards, safety-classifier refusal fallbacks, and the row-for-row scorer
+> guards, safety-classifier refusal handling, and the row-for-row scorer
 > validation are all documented with their measurements in
 > [CLAUDE.md](CLAUDE.md) ("Non-obvious facts the binder track depends on").
 > Read that before changing a threshold.
@@ -1149,17 +1150,17 @@ work:
 
 | Control | What it does |
 |---|---|
-| **Two models, then stop** | A stage declined by a safety classifier is retried on one other frontier model. If **two** decline, the run fails — it does not continue down to a smaller model until something answers. Enforced in code (`MAX_REFUSALS_BEFORE_STOP`), not just by the configured chain's length. |
-| **Refusals are visible** | Every stage report names the model that wrote it; a stage another model declined first says so, both HTML reports show it, and the manifest records it. A fallback that only reaches a log line is one nobody reviewing the campaign can see. |
+| **A refusal is final** | A stage declined by a safety classifier ends the run. LPT never retries it on another model: any automatic retry is the pipeline going looking for a model that will produce what your chosen one declined to, and no reader of the output can tell that apart from a legitimate workaround for a miscalibrated classifier. Choosing another model is your decision, via `--provider` or `models.<provider>.stages`. |
+| **Refusals are visible** | Every stage report names the model that wrote it, and both HTML reports show it. A declined stage writes no report at all, so the refusal goes in the manifest as a `refusal:<stage>` checkpoint — the model, the category, the call number. A refusal that only reaches a log line is one nobody reviewing the campaign can see. |
 | **Select-agent screening** | Before any GPU stage, the target is name-screened against the [Federal Select Agent Program list](https://www.selectagents.gov/sat/list.htm). A hit **warns and continues** — such work is often legitimate, but it is regulated, and you should know before committing days of compute. Advisory, never a block, and never a clearance. |
-| **`provenance.json` per run** | One machine-readable record of what the campaign targeted, which model chose the epitope, whether anything was declined, and what the screen found. For a dual-use tool auditability is the control actually available; prevention is not, since the generative models are public. |
+| **`provenance.json` per run** | One machine-readable record of what the campaign targeted, which model chose the epitope, and what the screen found. For a dual-use tool auditability is the control actually available; prevention is not, since the generative models are public. |
 
 Read **[docs/responsible-use.md](docs/responsible-use.md)** before using the
 design tracks. It covers intended use, what the confidence metrics do and do
 not tell you, biosecurity expectations, and this project's position on safety
-classifiers (short version: model fallback across providers is a legitimate
-response to one miscalibrated classifier; walking a chain until something
-answers, or rewording a prompt to get past a check, is not).
+classifiers (short version: a refusal is final, overriding it is a decision
+for you to take and record rather than one the pipeline takes on its own,
+and rewording a prompt to get past a check is not an accepted contribution).
 
 ## Licence and third-party tools
 

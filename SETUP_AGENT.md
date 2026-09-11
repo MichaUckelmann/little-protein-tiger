@@ -87,7 +87,7 @@ Ask, and wait for answers:
   committed to Phase 6.
 - **API keys.** `GEMINI_API_KEY` is the default provider for every pipeline
   stage. `ANTHROPIC_API_KEY` is optional for the pipeline (used by
-  `--provider claude` and as the refusal fallback). It is **not** needed to
+  `--provider claude`, or routing one stage there). It is **not** needed to
   curate or to query the corpus: `curation.provider` is `gemini`
   (`gemini-3.1-flash-lite`) and `scripts/ask_corpus.py` defaults to gemini
   too, so a Gemini key alone covers every track. Neither key

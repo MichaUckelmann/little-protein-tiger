@@ -221,10 +221,12 @@ def check_api_keys(rep: Report) -> None:
                             "epitope yourself with --hotspots B56,B66 and the "
                             "interface stage makes no model call."),
             tracks=("structure",))
-    # Design tracks: a nice-to-have (refusal fallback, --provider claude).
+    # Design tracks: a nice-to-have (--provider claude, or a per-stage
+    # override). No longer "the refusal fallback" — a declined stage ends
+    # the run and LPT never reaches for another model on its own.
     rep.add("ANTHROPIC_API_KEY", OK if ant else WARN,
-            "set" if ant else f"{ant_why} — needed for --provider claude "
-                              "and as the refusal fallback",
+            "set" if ant else f"{ant_why} — needed for --provider claude, "
+                              "or to route one stage there yourself",
             "" if ant else "Optional here. Add ANTHROPIC_API_KEY to .env to enable it.",
             tracks=("ppi", "binder"))
     # Literature track. Whether an Anthropic key is actually needed depends on
@@ -239,7 +241,7 @@ def check_api_keys(rep: Report) -> None:
                   f"{curation or 'the configured provider'}")
         hint = (f"Optional. Querying and curation both run on "
                 f"{curation or 'the configured provider'}; an Anthropic key only "
-                f"adds --provider claude and the refusal fallback.")
+                f"adds --provider claude and per-stage Claude overrides.")
     rep.add("ANTHROPIC_API_KEY", OK if ant else WARN,
             "set" if ant else detail, "" if ant else hint,
             tracks=("literature",))

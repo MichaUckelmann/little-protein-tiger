@@ -67,72 +67,72 @@ _DEFAULT_MODELS = {
 # Haiku cannot do extended thinking; stages that ask for it get upgraded here.
 _THINKING_UPGRADE_MODEL = "claude-sonnet-5"
 
-# Models to retry on when a safety classifier declines a request, in order.
+# There is NO automatic refusal fallback, deliberately. A safety classifier
+# declining a stage ends the run; choosing a different model is the operator's
+# decision, taken after reading the refusal. See docs/responsible-use.md and
+# `_run_stage`.
 #
-# Gemini goes FIRST, not last. Measured across three separate interface-stage
-# refusals on the same target (PD-L1): claude-sonnet-5 refused (category "bio"),
-# then claude-opus-5 ALSO refused (same category) every single time, at a higher
-# per-token cost than the model that follows it — pure wasted spend, ~$0.13 for
-# nothing, three times over. Anthropic's safety classifiers are consistent
-# across the Claude family for a given category, so trying a second Claude
-# model after a categorised refusal is a bet that has not once paid off here.
-# claude-haiku-4-5 is kept as a same-provider fallback in case Gemini itself
-# declines or errors (see SkillRefusedError handling in `_run_gemini`) —
-# reached only when the immediate switch does not resolve it.
-# Two independent frontier models, then stop — see `models.claude.
-# refusal_fallbacks` in config.yaml for why this chain does not continue down
-# to a smaller model. Crossing providers once answers "is this classifier
-# miscalibrated for structural biology"; walking further would be shopping for
-# a permissive verdict.
-_REFUSAL_FALLBACK_MODELS = ["gemini:gemini-3.7-flash", "claude-opus-5"]
-
-#: How many distinct models may decline before the run stops. Two frontier
-#: models agreeing is treated as a result, not an obstacle.
-MAX_REFUSALS_BEFORE_STOP = 2
-
-# Model-id prefix -> provider, for refusal_fallbacks entries written WITHOUT an
-# explicit "provider:model" prefix.
-# `gpt-` matters as much as the other two: a bare `gpt-5.6-terra` in a
-# refusal chain would otherwise inherit the CURRENT provider and get POSTed to
-# whichever endpoint that is, which is the 404-kills-the-run failure documented
-# below.
+# The measurement behind that, read the right way round: across three separate
+# interface-stage refusals on one target (PD-L1), claude-sonnet-5 refused
+# (category "bio") and claude-opus-5 then refused too — same category, every
+# time, ~$0.13 apiece for nothing. Within a provider a categorised refusal is
+# CONSISTENT rather than arbitrary, which is a reason to take the verdict
+# seriously; it is not a map of which model to try next. See
+# docs/responsible-use.md, "If you override a refusal".
+#
+# Model-id prefix -> provider, for a per-stage model override written WITHOUT
+# an explicit "provider:model" prefix.
+# `gpt-` matters as much as the other two: a bare `gpt-5.6-terra` under
+# `models.<provider>.stages` would otherwise inherit the CURRENT provider and
+# get POSTed to whichever endpoint that is, which is the 404-kills-the-run
+# failure documented below.
 _MODEL_ID_PROVIDERS = (("claude-", "claude"), ("gemini-", "gemini"),
                        ("gpt-", "openai"))
 
 
-def _split_fallback(fallback: str, current_provider: str) -> tuple[str, str]:
-    """Resolve one `refusal_fallbacks` entry to (provider, model_id).
+def _split_model_spec(spec: str, current_provider: str) -> tuple[str, str]:
+    """Resolve a configured model id to (provider, model_id).
 
     An explicit "provider:model" always wins. Otherwise the provider is inferred
     from the model-id prefix, and only falls back to the CURRENT provider for an
     id we don't recognise (a local/Ollama model, say).
 
-    Inferring rather than inheriting matters: `models.gemini.refusal_fallbacks`
-    is `["claude-opus-5", "claude-haiku-4-5"]` with no prefix, and gemini is the
-    default provider for every stage. Inheriting the current provider sent those
-    Claude ids to the Gemini endpoint, which 404s — and a 404 raises HTTPError,
-    not SkillRefusedError, so it escapes the refusal handler and kills the run.
-    The safety net turned a recoverable refusal into a hard crash.
+    Inferring rather than inheriting matters, and it was learned from the
+    refusal chains this used to serve: those named Claude ids with no prefix
+    while gemini was the default provider, so inheriting the current provider
+    POSTed a Claude id to the Gemini endpoint, which 404s — and a 404 raises
+    HTTPError, not SkillRefusedError, turning a recoverable refusal into a hard
+    crash. The chains are gone (a refusal is terminal now — see `_run_stage`),
+    but `models.<provider>.stages` overrides have exactly the same shape and
+    the same hazard, so the inference moved there rather than being deleted.
     """
-    if ":" in fallback:
-        provider, model_id = fallback.split(":", 1)
+    if ":" in spec:
+        provider, model_id = spec.split(":", 1)
         return provider, model_id
     for prefix, provider in _MODEL_ID_PROVIDERS:
-        if fallback.startswith(prefix):
-            return provider, fallback
-    return current_provider, fallback
+        if spec.startswith(prefix):
+            return provider, spec
+    return current_provider, spec
 
 # Per-stage default model overrides keyed by stage name. Picks up before the
 # global _default_model but after an explicit user override via stage_models.
-# Currently: stage 6 (summary) defaults to Haiku because Sonnet-class models
-# trigger a biosecurity refusal on the "review of designed binders" task
-# regardless of prompt wording, and Haiku handles tabular summarisation
-# correctly and cheaply.
-_DEFAULT_STAGE_MODELS = {
-    "claude": {
-        "summary": "claude-haiku-4-5",
-        "binder_summary": "claude-haiku-4-5",
-    },
+#
+# DELIBERATELY EMPTY: LPT ships no per-stage model default for any provider.
+# It used to put `summary` and `binder_summary` on claude-haiku-4-5, because
+# Sonnet-class models trigger a biosecurity refusal on the "review of designed
+# binders" task regardless of prompt wording and Haiku answers it. That is a
+# smaller model producing content a larger one declined — the same thing the
+# removed refusal-fallback chain did, pre-declared instead of reached at
+# runtime, and a config file is not a good enough reason for the pipeline to
+# ship it as a default. So `--provider claude` now runs those two stages on
+# claude-sonnet-5 and MAY BE REFUSED there, which ends the run; the default
+# provider (gemini) answers them cleanly and is unaffected.
+#
+# The table stays as the hook: `_resolve_stage` reads it, and an operator who
+# has read a refusal and made the call sets `models.<provider>.stages.<stage>`
+# in config.yaml, where the decision is theirs and is recorded.
+_DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
+    "claude": {},
     "gemini": {},
     "openai": {},
 }
@@ -310,10 +310,11 @@ class PipelineRunner:
         (gemini-3.7-flash): ~4x cheaper input than claude-sonnet-5, and
         this pipeline's own ledger shows it reliably answering the same
         target-intel/interface prompts claude-sonnet-5 refuses (category
-        "bio") — see `models.claude.refusal_fallbacks` in config.yaml,
-        which leads with Gemini for exactly that reason. Gemini can still
-        decline in principle; `models.gemini.refusal_fallbacks` covers
-        that case by falling through to Claude.
+        "bio"). Gemini can decline too, and when it does the run STOPS:
+        there is no automatic fallback to another model. Picking a
+        different one is the operator's call, made after reading the
+        refusal — `--provider`, or a `models.<provider>.stages` override
+        for a single stage.
     model_id : str | None
         Override model ID; defaults to provider default.
     output_dir : Path | None
@@ -363,6 +364,18 @@ class PipelineRunner:
         # config.yaml `models:` is the source of truth; the module-level
         # _DEFAULT_* tables are the fallback when it is absent.
         self._models_cfg = (config.get("models") or {}).get(provider) or {}
+        # A config carried over from before refusals became terminal will still
+        # list `refusal_fallbacks`. Silently ignoring it would be the worst
+        # outcome: the operator believes a declined stage will be retried
+        # elsewhere, and it will not be. Say so once, loudly, per run.
+        if self._models_cfg.get("refusal_fallbacks"):
+            logger.warning(
+                f"models.{provider}.refusal_fallbacks is set and is NO LONGER "
+                f"READ — automatic retry on another model was removed. A stage "
+                f"a safety classifier declines now ends the run; choosing a "
+                f"different model is your decision, via --provider or "
+                f"models.{provider}.stages.<stage>. Delete the key to silence "
+                f"this. See docs/responsible-use.md.")
         self._default_model = (
             model_id
             or self._models_cfg.get("default")
@@ -6030,13 +6043,16 @@ class PipelineRunner:
             self.provider == "claude"
             and stage in self._ext_thinking
         )
-        # A per-stage override may name a different PROVIDER as "gemini:model".
-        # That is how a stage whose prompt one provider's safety classifier
-        # declines gets routed elsewhere without moving the whole pipeline.
-        provider = self.provider
-        if ":" in model_id:
-            provider, model_id = model_id.split(":", 1)
-            use_thinking = use_thinking and provider == "claude"
+        # A per-stage override may name a different PROVIDER as "gemini:model",
+        # which is how ONE stage gets routed elsewhere without moving the whole
+        # pipeline — now the only supported way to change a stage's model, since
+        # a refusal no longer picks one automatically.
+        #
+        # `_split_model_spec`, not a bare split: a prefixed id like
+        # `gpt-5.6-terra` written without its provider would otherwise inherit
+        # the current one and be POSTed to the wrong endpoint, which 404s.
+        provider, model_id = _split_model_spec(model_id, self.provider)
+        use_thinking = use_thinking and provider == "claude"
 
         if use_thinking and "haiku" in model_id.lower():
             upgrade = self._models_cfg.get("thinking_upgrade") or _THINKING_UPGRADE_MODEL
@@ -6052,59 +6068,45 @@ class PipelineRunner:
     _PROVENANCE_HEADING = "## MODEL PROVENANCE"
 
     def _stage_provenance_note(self, skill_name: str, provider: str,
-                               model: str,
-                               declined: list[SkillRefusedError]) -> str:
+                               model: str) -> str:
         """A "who wrote this" block for every stage report.
 
-        Written on the CLEAN path as well as after a refusal, deliberately:
-        "this stage was produced by the first model asked" is the statement
-        that makes "this one was not" mean something. A fallback that only
-        appears in a log line is a fallback nobody reviewing the campaign can
-        see, and the report is what circulates.
+        There is no "declined first" case to report here: a refusal is
+        terminal, so a declined stage writes no report at all and the refusal
+        is recorded in the manifest instead (`_record_refusal`). What this
+        block is for is the other half of the same question — every stage
+        naming the model behind it, so "which model produced this claim" is
+        answerable from the artifact that circulates rather than from a log.
         """
-        asked = len(declined) + 1
-        lines = ["", "", self._PROVENANCE_HEADING, "",
-                 f"- skill: `{skill_name}`",
-                 f"- written by: **{provider}:{model}**"
-                 + (f" — model {asked} of {asked} asked" if declined else
-                    " — the first model asked")]
-        if declined:
-            lines.append(f"- declined first ({len(declined)}):")
-            for r in declined:
-                lines.append(
-                    f"    - `{r.model}` — safety classifier, category "
-                    f"`{r.category or 'unspecified'}` (call #{r.iteration})")
-            lines.append(
-                f"- A provider safety classifier declined this stage and it "
-                f"was retried on a different model. This project treats that "
-                f"as a response to an inconsistently-calibrated classifier, "
-                f"not as a way around a safety decision: the chain stops at "
-                f"{MAX_REFUSALS_BEFORE_STOP} models and the run then fails "
-                f"rather than trying a smaller one. See "
-                f"`docs/responsible-use.md`.")
-        return "\n".join(lines) + "\n"
+        return "\n".join([
+            "", "", self._PROVENANCE_HEADING, "",
+            f"- skill: `{skill_name}`",
+            f"- written by: **{provider}:{model}** — the model the operator "
+            f"selected. LPT never substitutes a model on its own; a stage a "
+            f"safety classifier declines ends the run.",
+        ]) + "\n"
 
-    def _record_refusals(self, stage: str, skill: str,
-                         declined: list[SkillRefusedError],
-                         answered_by: tuple[str, str] | None) -> None:
+    def _record_refusal(self, stage: str, skill: str,
+                        refusal: SkillRefusedError) -> None:
         """Put a refusal in the manifest, not only in the log.
 
-        Called on BOTH outcomes — a fallback that answered, and a run that
-        stopped because every model declined. The manifest is the only account
-        of why a run ended once the process is gone, and a resume must not be
-        able to lose it.
+        This is the whole audit trail for a run that a classifier stopped: the
+        stage report was never written, the process is about to exit, and the
+        manifest is the only account that survives either. A later `--start-from
+        {stage}` on a different model can then be read against the record of
+        why the first attempt ended.
         """
-        if not declined:
-            return
         self._binder_checkpoint(
-            f"refusal_fallback:{stage}", stage, "choice",
+            f"refusal:{stage}", stage, "gate",
             {"skill": skill,
-             "declined": [{"model": r.model, "category": r.category,
-                           "iteration": r.iteration} for r in declined],
-             "answered_by": (f"{answered_by[0]}:{answered_by[1]}"
-                             if answered_by else None),
-             "stopped": answered_by is None,
-             "max_refusals_before_stop": MAX_REFUSALS_BEFORE_STOP})
+             "declined_by": refusal.model,
+             "category": refusal.category,
+             "iteration": refusal.iteration,
+             "automatic_fallback": False,
+             "note": ("The run stopped. LPT does not retry a refused stage on "
+                      "another model — selecting one is the operator's "
+                      "decision, taken after reading the refusal. See "
+                      "docs/responsible-use.md.")})
 
     def _run_stage(
         self,
@@ -6155,83 +6157,54 @@ class PipelineRunner:
                                        estimated=estimate)
             except BudgetExceeded as exc:
                 self._budget_pause(exc)
-        # Which models declined, in order, and which one finally produced the
-        # content. Declared out here so the clean path reports provenance too:
-        # "this stage was written by the first model asked" is the statement
-        # that makes "this one was not" meaningful.
-        declined: list[SkillRefusedError] = []
         try:
             try:
                 output_text = runner.run(query, context_text=context_text)
-            except SkillRefusedError as first_refusal:
-                # Work down the fallback chain, but only so far. A refusal is
-                # model- AND query-dependent, so crossing to another provider
-                # once tests whether ONE classifier is miscalibrated for
-                # structural biology — a real and documented problem here.
-                # Continuing past MAX_REFUSALS_BEFORE_STOP would instead be
-                # shopping for a permissive verdict, and nobody reading the
-                # output could tell the two apart. Two frontier models
-                # declining is a result: stop and say so.
-                chain = [m for m in (self._models_cfg.get("refusal_fallbacks")
-                                     or _REFUSAL_FALLBACK_MODELS)
-                         if m != model_id]
-                output_text = None
-                declined.append(first_refusal)
-                for fallback in chain:
-                    if len(declined) >= MAX_REFUSALS_BEFORE_STOP:
-                        # Enforced in code, not only by the configured chain's
-                        # length: a config.yaml listing five fallbacks must not
-                        # be able to walk past this.
-                        logger.error(
-                            f"  [{skill_name}] {len(declined)} models declined "
-                            f"this stage "
-                            f"({', '.join(sorted({r.model for r in declined}))})"
-                            f" — not trying {fallback} or anything after it. "
-                            f"Two independent frontier models agreeing is "
-                            f"treated as a result, not an obstacle. If you "
-                            f"believe this target is legitimate, raise it as "
-                            f"an issue rather than adding a fallback (see "
-                            f"docs/responsible-use.md).")
-                        break
-                    logger.warning(f"{declined[-1]}. Retrying on {fallback}.")
-                    if self._ledger is not None:
-                        self._ledger.record(
-                            stage=stage_key, skill=skill_name,
-                            provider=provider, model=model_id,
-                            usage=runner.usage(),
-                            note=f"refused (category={declined[-1].category})")
-                    fb_provider, fb_model = _split_fallback(fallback, provider)
-                    runner = SkillRunner(
-                        skill_name=skill_name, provider=fb_provider,
-                        model_id=fb_model, config=self.config,
-                        max_iter=self.max_iter, max_input_tokens=self.max_tokens,
-                        use_extended_thinking=use_thinking,
-                    )
-                    model_id, provider = fb_model, fb_provider
-                    try:
-                        output_text = runner.run(query, context_text=context_text)
-                        break
-                    except SkillRefusedError as again:
-                        declined.append(again)
-                if output_text is None:
-                    # Record it before raising: the manifest is the only
-                    # account of WHY a run stopped once the process is gone.
-                    self._record_refusals(stage_key, skill_name, declined, None)
-                    tried = ", ".join(sorted({r.model for r in declined}))
-                    raise SkillRefusedError(
-                        skill=skill_name, model=tried,
-                        category=declined[-1].category,
-                        iteration=declined[-1].iteration,
-                    ) from first_refusal
-                self._record_refusals(stage_key, skill_name, declined,
-                                      (provider, model_id))
+            except SkillRefusedError as refusal:
+                # A REFUSAL IS TERMINAL. There is no automatic fallback, by
+                # design, and this is the second time that boundary moved: the
+                # chain first stopped continuing down to a smaller model, and
+                # now it does not retry at all.
+                #
+                # The reasoning that killed the last rung applies to every
+                # rung. Any automatic retry is the pipeline deciding, on its
+                # own, to go looking for a model that will produce content the
+                # operator's chosen model declined to produce — and no reader
+                # of the output can distinguish that from a legitimate
+                # workaround for a miscalibrated classifier. Those refusals ARE
+                # often miscalibrated for structural-biology analysis, which is
+                # exactly why the judgement belongs to a person who has read
+                # the refusal and can say why this target is legitimate, rather
+                # than to a `for` loop that cannot.
+                #
+                # So: record it where it survives the process, tell the
+                # operator precisely how to make that decision themselves, and
+                # raise.
+                self._record_refusal(stage_key, skill_name, refusal)
+                logger.error(
+                    f"  [{skill_name}] {provider}:{model_id} declined this "
+                    f"stage (category {refusal.category or 'unspecified'}, "
+                    f"call #{refusal.iteration}). THE RUN STOPS HERE — "
+                    f"LPT does not automatically retry on another model.\n"
+                    f"    Read the refusal and judge for yourself whether "
+                    f"this target is legitimate work — you are accountable "
+                    f"for that call, and if two frontier models decline it, "
+                    f"treat that as a result.\n"
+                    f"    To steer the run yourself:\n"
+                    f"      --provider <claude|gemini|openai>      (whole run)\n"
+                    f"      models.{provider}.stages.{stage_key}: "
+                    f"\"<provider>:<model>\"   (this stage only, config.yaml)\n"
+                    f"    Resume where you left off with "
+                    f"--start-from {stage_key}. Do not reword the prompt to "
+                    f"get past the classifier — see docs/responsible-use.md.")
+                raise
         finally:
             if self._ledger is not None:
                 entry = self._ledger.record(
-                    # `provider`, not `self.provider`: a cross-provider refusal
-                    # fallback rebinds both, and billing the run's default
-                    # provider for a call another provider actually served makes
-                    # the ledger's per-provider spend wrong.
+                    # `provider`, not `self.provider`: a per-stage
+                    # `models.<provider>.stages` override can name another
+                    # provider, and billing the run's default for a call that
+                    # one actually served makes per-provider spend wrong.
                     stage=stage_key, skill=skill_name, provider=provider,
                     model=model_id, usage=runner.usage(),
                 )
@@ -6253,7 +6226,7 @@ class PipelineRunner:
         # VERIFICATION" through to end-of-file, so anything appended after it
         # is rendered inside the citation block in both HTML reports.
         output_text = output_text + self._stage_provenance_note(
-            skill_name, provider, model_id, declined)
+            skill_name, provider, model_id)
         if citation_note:
             output_text = output_text + citation_note
 

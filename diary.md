@@ -4077,3 +4077,129 @@ Hence `--rescore`, which re-derives every artifact-based metric from the
 reports on disk without making an API call, and `raw_interface.md`, the
 pre-correction interface report kept per cell so the next scorer fix is a
 rescore rather than another $2. `tests/test_model_bench.py` pins both rules.
+
+## 2026-09-11 — Automatic refusal fallback removed: a declined stage is now final
+
+The fallback chain is gone. `models.<provider>.refusal_fallbacks`,
+`_REFUSAL_FALLBACK_MODELS` and `MAX_REFUSALS_BEFORE_STOP` are all deleted;
+`_run_stage` records the refusal in the manifest and re-raises. Nothing asks a
+second model.
+
+### The argument that cut the last rung cuts all of them
+
+Two days ago the chain was shortened rather than removed: it used to end in
+`claude-haiku-4-5`, which had answered a PD-L1 interface stage that
+`claude-sonnet-5` and `claude-opus-5` both declined, so the last rung went on
+the grounds that reaching it meant the pipeline had obtained content two better
+models refused to produce. The residue of that reasoning was a cap
+(`MAX_REFUSALS_BEFORE_STOP = 2`) and a justification for what remained:
+crossing providers ONCE "probes an inconsistently-calibrated classifier."
+
+That distinction does not survive contact with the output. A probe and a search
+for a permissive verdict are the same API calls in the same order, and nobody
+reading a stage report can tell which one produced it. The honest version is
+that **any** automatic retry is the pipeline deciding, by itself, to go looking
+for a model that will produce what the operator's chosen model declined to.
+
+The refusals often *are* miscalibrated for structural-biology analysis — that
+part was never wrong, and it is exactly why this is a person's call. A person
+can say why a target is legitimate, having read the refusal, and is accountable
+for the answer. A `for` loop can do neither. So overriding a refusal is now an
+operator action with three named routes (`--provider`,
+`models.<provider>.stages.<stage>`, `--start-from <stage>` to resume), all
+three printed in the error the refusal raises.
+
+### What had to change that wasn't the chain
+
+- **A stale config key warns, loudly, in `__init__`.** Silently ignoring
+  `refusal_fallbacks` is the worst available outcome: the operator believes a
+  declined stage will be retried elsewhere, and it will not be.
+- **`_split_fallback` survived as `_split_model_spec`, and gained the consumer
+  it should always have had.** Deleting it with the chains would have dropped a
+  real guard: `_resolve_stage` split on `":"` itself and fell back to the
+  CURRENT provider for a bare id, so `models.gemini.stages.summary:
+  claude-opus-5` would POST a Claude id to the Gemini endpoint — a 404, which
+  raises `HTTPError`, not `SkillRefusedError`, and so kills the run instead of
+  reporting a refusal. That was the original incident on the chains; per-stage
+  overrides have the identical shape and are now the only way a stage gets a
+  different model. `_resolve_stage` routes through it.
+- **`_record_refusals` → `_record_refusal`**, checkpoint id `refusal_fallback:
+  <stage>` → `refusal:<stage>`, kind `choice` → `gate`. It is no longer a
+  record of a substitution that happened; it is the entire audit trail of a run
+  that stopped, since the stage report was never written and the process is
+  about to exit.
+- **The readers keep parsing `declined`.** `report_common.parse_provenance` and
+  `run_provenance.collect`/`footer_html` are collectors over whatever is on
+  disk, and campaigns that ran under the old behaviour have reports carrying a
+  declined list. Dropping the field would quietly rewrite their history; the
+  footer's claim that the stage "was retried on a different model" was the only
+  part that had to change, since it is now true only of those old runs.
+- **The last two per-stage haiku defaults went too**, in the same change after
+  a first pass tried to keep them. `summary` and `binder_summary` were pinned
+  to `claude-haiku-4-5` in both `_DEFAULT_STAGE_MODELS` and
+  `models.claude.stages`, because Sonnet-class models decline the "review of
+  designed binders" task and Haiku answers it. The argument for keeping them —
+  that a config file makes it the operator's explicit, reviewable choice — does
+  not survive the fact that LPT is the one who wrote the config: pre-declaring
+  "when the larger model refuses, use the smaller one" is the chain's behaviour
+  with the loop unrolled. Both tables now ship empty for every provider, and
+  stay only as the hook an operator sets themselves.
+
+  The cost is real and is written down in `config.yaml` rather than discovered:
+  under `--provider claude`, those two stages run on `claude-sonnet-5` and may
+  be refused, which ends the run **at the final summary**. The designs and
+  scores are already on disk by then — the write-up is what is lost, and
+  re-running that one stage on a model the operator picks is the intended
+  response. The default provider (gemini) answers both cleanly, so the shipped
+  path is unaffected.
+
+### Operational note
+
+Caught before it mattered: a PD-L1 binder campaign was mid-production (rf3
+2,438/3,988) with a pain-receptor PPI run queued behind it in a `queue.sh`.
+The live run was unaffected — Python imports once, `_load_config()` runs once,
+and nothing in `src/` re-reads `config.yaml` mid-run — but the queued one
+launches a fresh process against this checkout, so it inherits the new policy.
+Worth remembering that an edit to this repo reaches a queued campaign and not a
+running one.
+
+### The policy forbade the mechanism and then documented the manoeuvre
+
+Caught on review, and worth recording because the first draft of
+`docs/responsible-use.md` read as finished. It removed the automatic chain,
+explained at length why any automatic retry is indefensible — and then, two
+headings later, under "Choosing another model yourself", supplied:
+
+- an efficacy claim: *"Refusals are strongly model-dependent, so this often
+  works"*,
+- a worked example pinning the interface stage to `claude:claude-opus-5`, the
+  exact rung that had been cut from the chain for that exact stage,
+- and an efficiency note on which family to skip so as not to waste an
+  attempt.
+
+That is the deleted chain with a person in the loop instead of a `for`
+statement. It produces the same artifact and leaves the same unanswerable
+question about where the content came from, and a policy cannot both forbid a
+thing and optimise it.
+
+The replacement (`### If you override a refusal`) keeps the controls documented
+— an operator needs `--start-from` to exist, and LPT cannot stop anyone editing
+a config, so pretending otherwise would be theatre — but states what the
+override commits them to, names walking model to model by hand as the same
+thing as the chain, and keeps "two frontier models declining is a result" as a
+heuristic addressed to the person now that no code applies it. The same
+framing leaked into `_run_stage`'s error log, the `_MODEL_ID_PROVIDERS`
+comment and `docs/beta-testing.md`; all three are fixed, and beta-testing now
+asks testers to REPORT a refusal rather than route around it, since that is
+the only route by which a miscalibration gets fixed for anyone else.
+
+The PD-L1 measurement stays, read the other way round: within a provider a
+categorised refusal is *consistent* rather than arbitrary (sonnet refused,
+opus refused, same category, three for three), which is a reason to take the
+verdict seriously — not a map of where to go next.
+
+Two tests pin it, because prose is where this kind of drift happens:
+`test_the_policy_does_not_advertise_model_switching_as_effective` greps the
+policy for affirmative efficacy phrasings, and
+`test_the_refusal_names_the_controls_and_what_using_them_commits_you_to`
+asserts the log carries the accountability half and not just the how-to.

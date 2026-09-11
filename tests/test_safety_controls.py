@@ -3,13 +3,17 @@
 Four things are pinned here, each of which is a decision rather than an
 implementation detail — which is why they get tests rather than comments:
 
-1. **The refusal chain stops at two frontier models.** It used to end in a
-   smaller model that did answer an interface stage both Sonnet and Opus had
-   declined. Falling back across providers once probes an inconsistently
-   calibrated classifier; continuing until something answers is shopping for
-   a permissive verdict, and no reader of the output could tell them apart.
-2. **A refusal reaches the deliverable**, not just a log line. The report is
-   what circulates.
+1. **A refusal is terminal, and no other model is asked.** There used to be
+   a fallback chain; it was shortened once (it ended in a smaller model that
+   answered an interface stage both Sonnet and Opus had declined) and then
+   removed, because the argument against the last rung is the argument
+   against all of them: any automatic retry is the pipeline going looking for
+   a model that will produce what the operator's chosen model declined to,
+   and no reader of the output can tell that apart from a legitimate
+   workaround for a miscalibrated classifier.
+2. **A refusal reaches the record**, not just a log line — the manifest for a
+   run that stopped, the stage report for every stage that was written. The
+   report is what circulates.
 3. **The select-agent screen is advisory and name-based**, and its two
    hardest cases behave correctly: SARS-CoV-2 is not a select agent while
    SARS-CoV is, and *Ricinus communis* is not one while ricin is.
@@ -21,6 +25,7 @@ Nothing here needs network, GPU, API keys or the corpus.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 
@@ -31,49 +36,74 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _TEMPLATES = _ROOT / "src" / "report_templates"
 
 
-# ── 1. the refusal chain stops ───────────────────────────────────────────────
+@contextlib.contextmanager
+def captured_logs(level: str = "WARNING"):
+    """Collect loguru messages emitted inside the block.
 
-def test_two_models_is_the_cap_and_it_is_enforced_in_code():
-    """A config listing five fallbacks must not be able to walk past two."""
-    from src.pipeline_runner import MAX_REFUSALS_BEFORE_STOP
-
-    assert MAX_REFUSALS_BEFORE_STOP == 2
-
-
-@pytest.mark.parametrize("provider", ["claude", "gemini"])
-def test_no_configured_chain_falls_back_to_a_smaller_model(provider):
-    """claude-haiku-4-5 was the last rung of both chains and is gone.
-
-    It is the one model that answered the PD-L1 interface stage after two
-    frontier models declined it, which is exactly why it cannot be in a
-    refusal chain: reaching it means the run obtained content that two better
-    models refused to produce.
+    Not `caplog`: this project logs through loguru, which does not propagate to
+    the stdlib `logging` handlers pytest installs, so `caplog.records` is empty
+    no matter what was logged. Both assertions below are about text an operator
+    has to actually see, so capturing the real sink is the point.
     """
-    cfg = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
-    chain = (cfg["models"][provider] or {}).get("refusal_fallbacks") or []
-    assert chain, f"models.{provider}.refusal_fallbacks is empty"
-    assert not any("haiku" in entry.lower() for entry in chain), (
-        f"models.{provider}.refusal_fallbacks falls back to a smaller model: "
-        f"{chain}")
+    from loguru import logger
+
+    messages: list[str] = []
+    sink_id = logger.add(lambda m: messages.append(m.record["message"]),
+                         level=level)
+    try:
+        yield messages
+    finally:
+        logger.remove(sink_id)
 
 
-def test_the_code_default_chain_also_stops_at_one_fallback():
-    """`_REFUSAL_FALLBACK_MODELS` applies when config names no chain."""
-    from src.pipeline_runner import _REFUSAL_FALLBACK_MODELS
+# ── 1. a refusal is terminal ─────────────────────────────────────────────────
 
-    assert not any("haiku" in m.lower() for m in _REFUSAL_FALLBACK_MODELS)
+def test_the_fallback_machinery_is_gone_not_merely_unused():
+    """A leftover constant is an invitation to re-wire it.
 
-
-def test_a_third_model_is_never_asked(tmp_path, monkeypatch):
-    """The real behaviour, not a config assertion.
-
-    `--provider claude` configures TWO fallbacks, so without the cap this
-    would instantiate three runners. It must stop after two and raise.
+    Asserted by name because these three were the whole mechanism, and a
+    later change that reintroduces any of them should have to delete this
+    test and explain why in the diff.
     """
     import src.pipeline_runner as pr
-    from src.skill_runner import SkillRefusedError
 
-    asked: list[str] = []
+    for name in ("_REFUSAL_FALLBACK_MODELS", "MAX_REFUSALS_BEFORE_STOP",
+                 "_split_fallback", "_record_refusals"):
+        assert not hasattr(pr, name) and not hasattr(pr.PipelineRunner, name), (
+            f"{name} is back — automatic refusal fallback was removed "
+            f"deliberately, see docs/responsible-use.md")
+
+
+@pytest.mark.parametrize("provider", ["claude", "gemini", "openai"])
+def test_no_shipped_config_names_a_fallback_chain(provider):
+    """The key is not read any more; leaving it set in the shipped config
+    would tell an operator the opposite of what happens."""
+    cfg = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    block = cfg["models"].get(provider) or {}
+    assert "refusal_fallbacks" not in block, (
+        f"models.{provider}.refusal_fallbacks is still in config.yaml")
+
+
+def test_a_stale_config_key_warns_rather_than_being_silently_ignored():
+    """The worst outcome is an operator believing a retry will happen.
+
+    A config carried over from before this change still lists the key, and
+    nothing reads it — so it has to say so out loud, once, per run.
+    """
+    import src.pipeline_runner as pr
+
+    cfg = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    cfg["models"]["gemini"]["refusal_fallbacks"] = ["claude-opus-5"]
+    with captured_logs("WARNING") as messages:
+        pr.PipelineRunner(config=cfg, provider="gemini")
+    assert any("refusal_fallbacks" in m and "NO LONGER" in m
+               for m in messages), (
+        f"no warning for a stale refusal_fallbacks key: {messages}")
+
+
+def _always_refuses(asked: list[str]):
+    """A SkillRunner stand-in that declines and records who was asked."""
+    from src.skill_runner import SkillRefusedError
 
     class _ZeroUsage:
         input_tokens = output_tokens = 0
@@ -91,55 +121,181 @@ def test_a_third_model_is_never_asked(tmp_path, monkeypatch):
         def usage(self):
             return _ZeroUsage()
 
-    monkeypatch.setattr(pr, "SkillRunner", AlwaysRefuses)
+    return AlwaysRefuses
+
+
+@pytest.mark.parametrize("provider", ["claude", "gemini"])
+def test_exactly_one_model_is_asked_and_the_stage_writes_nothing(
+        provider, tmp_path, monkeypatch):
+    """The real behaviour, not a config assertion.
+
+    Both providers, because the two used to configure different chains and a
+    surviving chain on either would show up as a second model being asked.
+    """
+    import src.pipeline_runner as pr
+    from src.skill_runner import SkillRefusedError
+
+    asked: list[str] = []
+    monkeypatch.setattr(pr, "SkillRunner", _always_refuses(asked))
     runner = pr.PipelineRunner(config=yaml.safe_load(
         (_ROOT / "config.yaml").read_text(encoding="utf-8")),
-        provider="claude", output_dir=tmp_path)
-    # Two fallbacks configured; the cap must still stop at two models total.
-    assert len(runner._models_cfg.get("refusal_fallbacks") or []) == 2
+        provider=provider, output_dir=tmp_path)
 
     with pytest.raises(SkillRefusedError):
         runner._run_stage("complex-structure-analysis", "q", [],
                           tmp_path / "out.md", stage="interface")
 
-    assert len(asked) == 2, (
-        f"{len(asked)} models were asked, cap is 2: {asked}")
+    assert len(asked) == 1, f"{len(asked)} models asked, must be 1: {asked}"
     assert not (tmp_path / "out.md").exists(), (
         "a refused stage must not write a stage report")
 
 
-# ── 2. a refusal reaches the deliverable ─────────────────────────────────────
-
-def test_the_clean_path_also_names_its_model():
-    """"Written by the first model asked" is what makes "and this one was
-    not" mean anything. A block that only appears after a refusal is a block
-    a reader has no baseline for."""
+def test_the_refusal_survives_the_process_in_the_manifest(tmp_path,
+                                                          monkeypatch):
+    """The stage report was never written and the process is about to exit,
+    so the manifest checkpoint is the entire audit trail — and it is what a
+    later `--start-from <stage>` on another model gets read against."""
     import src.pipeline_runner as pr
-
-    note = pr.PipelineRunner._stage_provenance_note(
-        pr.PipelineRunner.__new__(pr.PipelineRunner),
-        "complex-structure-analysis", "gemini", "gemini-3.7-flash", [])
-    assert "## MODEL PROVENANCE" in note
-    assert "gemini:gemini-3.7-flash" in note
-    assert "the first model asked" in note
-
-
-def test_a_refusal_is_named_in_the_stage_report_and_round_trips():
-    import src.pipeline_runner as pr
-    from src.report_common import parse_provenance
     from src.skill_runner import SkillRefusedError
 
-    declined = [SkillRefusedError(skill="s", model="claude-sonnet-5",
-                                  category="bio", iteration=7)]
+    recorded: list[tuple] = []
+
+    class _Project:
+        def set_checkpoint(self, cp_id, round_id, stage, kind, payload=None):
+            recorded.append((cp_id, stage, kind, payload))
+
+    monkeypatch.setattr(pr, "SkillRunner", _always_refuses([]))
+    runner = pr.PipelineRunner(config=yaml.safe_load(
+        (_ROOT / "config.yaml").read_text(encoding="utf-8")),
+        provider="gemini", output_dir=tmp_path)
+    runner._project, runner._round_id = _Project(), "round-1"
+
+    with pytest.raises(SkillRefusedError):
+        runner._run_stage("complex-structure-analysis", "q", [],
+                          tmp_path / "out.md", stage="interface")
+
+    assert recorded, "a refusal that stopped the run left no manifest record"
+    cp_id, stage, _kind, payload = recorded[-1]
+    assert cp_id == "refusal:interface" and stage == "interface"
+    assert payload["declined_by"] == "gemini-3.7-flash"
+    assert payload["category"] == "bio"
+    assert payload["automatic_fallback"] is False
+
+
+def test_the_refusal_names_the_controls_and_what_using_them_commits_you_to(
+        tmp_path, monkeypatch):
+    """A terminal refusal that does not say what to do next is a dead end —
+    but the message must not read as a sanctioned route past a classifier
+    either, which is the trap the docs fell into once already (an efficacy
+    claim, "this often works", next to the instructions).
+
+    So both halves are pinned: the controls, AND the accountability. The log
+    is what an operator actually reads; the policy is only real if it is here
+    too and not just in docs/responsible-use.md.
+    """
+    import src.pipeline_runner as pr
+    from src.skill_runner import SkillRefusedError
+
+    monkeypatch.setattr(pr, "SkillRunner", _always_refuses([]))
+    runner = pr.PipelineRunner(config=yaml.safe_load(
+        (_ROOT / "config.yaml").read_text(encoding="utf-8")),
+        provider="gemini", output_dir=tmp_path)
+
+    with captured_logs("ERROR") as messages:
+        with pytest.raises(SkillRefusedError):
+            runner._run_stage("complex-structure-analysis", "q", [],
+                              tmp_path / "out.md", stage="interface")
+    logged = "\n".join(messages)
+    for expected in ("--provider", "stages.interface", "--start-from interface",
+                     "responsible-use.md"):
+        assert expected in logged, f"the refusal log never names {expected!r}"
+    # The policy half. Without these the message is just a how-to.
+    assert "Do not reword" in logged
+    assert "accountable" in logged
+    assert "two frontier models decline" in logged
+    # And it must not promise that switching works.
+    for banned in ("often works", "usually works", "will answer",
+                   "least likely to help"):
+        assert banned not in logged.lower(), (
+            f"the refusal log advertises model-switching as effective: "
+            f"{banned!r}")
+
+
+def test_the_policy_does_not_advertise_model_switching_as_effective():
+    """The contradiction this guards against was live in the repo.
+
+    `docs/responsible-use.md` removed the automatic chain and then, two
+    headings later, explained how to do it by hand — with an efficacy claim
+    ("Refusals are strongly model-dependent, so this often works"), a worked
+    example naming the exact rung that had been cut from the chain, and a note
+    on which family to skip to save a wasted attempt. That is the deleted
+    chain with a person in the loop, and the policy cannot both forbid and
+    optimise it.
+    """
+    policy = (_ROOT / "docs" / "responsible-use.md").read_text(encoding="utf-8")
+    lowered = policy.lower()
+    # Only phrasings that cannot occur in a negative construction. "which
+    # model to try next" is deliberately NOT here: the policy uses it as a
+    # negation ("not a map of which model to try next"), and a substring test
+    # cannot tell that from the claim itself.
+    for banned in ("so this often works", "usually works",
+                   "least likely to help"):
+        assert banned not in lowered, (
+            f"responsible-use.md advertises model-switching: {banned!r}")
+    # It has to say the override is the operator's to answer for, and that
+    # walking model to model by hand is the same thing as the deleted chain.
+    assert "accountable" in lowered
+    assert "walking model to model" in lowered
+    assert "not acceptable" in lowered or "will be declined" in lowered
+
+
+# ── 2. a refusal reaches the record ──────────────────────────────────────────
+
+def test_every_stage_report_names_the_model_that_wrote_it():
+    """Which model produced a claim has to be answerable from the artifact
+    that circulates, not from a log line that is gone."""
+    import src.pipeline_runner as pr
+    from src.report_common import parse_provenance
+
     note = pr.PipelineRunner._stage_provenance_note(
         pr.PipelineRunner.__new__(pr.PipelineRunner),
-        "complex-structure-analysis", "gemini", "gemini-3.7-flash", declined)
-
-    assert "claude-sonnet-5" in note and "bio" in note
+        "complex-structure-analysis", "gemini", "gemini-3.7-flash")
+    assert "## MODEL PROVENANCE" in note
+    assert "gemini:gemini-3.7-flash" in note
     parsed = parse_provenance(note)
     assert parsed["written_by"] == "gemini:gemini-3.7-flash"
-    assert parsed["declined"] == [{"model": "claude-sonnet-5",
-                                  "category": "bio"}]
+    assert parsed["skill"] == "complex-structure-analysis"
+    # Nothing can have declined first: the run would have stopped.
+    assert parsed["declined"] == []
+
+
+def test_the_block_says_no_model_was_substituted():
+    """The provenance block is where a reader learns the policy, since it is
+    the only part of it that travels with the artifact."""
+    import src.pipeline_runner as pr
+
+    note = pr.PipelineRunner._stage_provenance_note(
+        pr.PipelineRunner.__new__(pr.PipelineRunner),
+        "complex-structure-analysis", "gemini", "gemini-3.7-flash")
+    assert "never substitutes" in note
+    assert "ends the run" in note
+
+
+def test_an_old_campaigns_declined_list_is_still_read():
+    """`parse_provenance` and `run_provenance` are collectors over whatever is
+    on disk. No new run can write a declined list, but campaigns that ran
+    under the old automatic-fallback behaviour have reports carrying one, and
+    dropping the field would quietly rewrite their history."""
+    from src.report_common import parse_provenance
+
+    historical = ("## MODEL PROVENANCE\n\n- skill: `x`\n"
+                  "- written by: **claude-opus-5** — model 2 of 2 asked\n"
+                  "- declined first (1):\n"
+                  "    - `gemini-3.7-flash` — safety classifier, category "
+                  "`bio` (call #4)\n")
+    parsed = parse_provenance(historical)
+    assert parsed["declined"] == [{"model": "gemini-3.7-flash",
+                                   "category": "bio"}]
     assert parsed["asked"] == 2
 
 

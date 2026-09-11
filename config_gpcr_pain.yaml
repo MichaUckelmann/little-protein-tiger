@@ -221,19 +221,9 @@ keywords:
 models:
   claude:
     default: claude-sonnet-5
-    refusal_fallbacks:
-    - gemini:gemini-3.7-flash
-    - claude-opus-5
-    - claude-haiku-4-5
-    stages:
-      binder_summary: claude-haiku-4-5
-      summary: claude-haiku-4-5
     thinking_upgrade: claude-sonnet-5
   gemini:
     default: gemini-3.7-flash
-    refusal_fallbacks:
-    - claude-opus-5
-    - claude-haiku-4-5
   pricing:
     claude-fable-5:
       input: 10.0

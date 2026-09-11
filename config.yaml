@@ -103,80 +103,83 @@ models:
   # this run's own live evidence is claude-sonnet-5 refusing (category
   # "bio") on BOTH the target_intel and interface stages for a routine
   # antagonist-design query, each refusal burning real spend (one cost
-  # $1.10 for nothing — see `refusal_fallbacks` below) before falling
-  # through to Gemini, which then answered cleanly every time. Going
-  # straight to Gemini skips paying for that failure. `--provider claude`
-  # still selects the Claude path in full, `models.claude.*` below is
-  # unchanged and still authoritative for it.
+  # $1.10 for nothing). Gemini answered the same prompts cleanly every
+  # time, so starting there skips paying for that failure.
+  # `--provider claude` still selects the Claude path in full.
+  #
+  # THERE ARE NO `refusal_fallbacks` ANY MORE — the key is gone from every
+  # provider below, and nothing reads it. A safety classifier declining a
+  # stage ENDS THE RUN. Selecting a different model is a decision for the
+  # operator to take after reading the refusal, not something the pipeline
+  # does on its own:
+  #
+  #   --provider <claude|gemini|openai>       whole run
+  #   models.<provider>.stages.<stage>        one stage (see `stages:` below)
+  #   --start-from <stage>                    resume where it stopped
+  #
+  # Why it was removed, in one line: any automatic retry is the pipeline
+  # going looking for a model that will produce content the operator's
+  # chosen model declined to produce, and nobody reading the output can
+  # tell that apart from a legitimate workaround for a miscalibrated
+  # classifier. These refusals often ARE miscalibrated for structural
+  # biology — which is why the judgement belongs to a person who can say
+  # why a target is legitimate, and not to a `for` loop that cannot.
+  # See docs/responsible-use.md.
   claude:
     default: "claude-sonnet-5"
     # Haiku cannot do extended thinking; stages requesting it upgrade to this.
     thinking_upgrade: "claude-sonnet-5"
-    # Retry here when a safety classifier declines a request. Refusals are
-    # strongly model-dependent: on the complex-structure-analysis prompt,
-    # claude-sonnet-5 refuses with category "bio"; claude-opus-5 answers for some
-    # targets and declines for others, so this is a chain tried in order.
-    # Tried in order when a safety classifier declines. A fallback entry may name
-    # another provider as "provider:model".
+    # Historical note, kept because it is the evidence behind the policy
+    # above: refusals are strongly model-dependent. On the
+    # complex-structure-analysis prompt claude-sonnet-5 refuses with category
+    # "bio", and across three separate interface-stage refusals on one target
+    # (PD-L1) claude-opus-5 ALSO refused every time, same category, ~$0.13
+    # spent for nothing each time. Anthropic's classifiers are consistent
+    # across the Claude family for a given category, so if you are choosing a
+    # replacement model by hand, another Claude is the least likely to help.
+    # Per-stage model overrides. This is the ONLY way a stage gets a model
+    # other than `default` above, and it is a deliberate, recorded choice in a
+    # config file — which is the point. An entry may name another PROVIDER as
+    # "provider:model" (a bare id is routed by its own prefix, so
+    # `claude-opus-5` under models.gemini.stages reaches Anthropic, not a 404).
     #
-    # Gemini goes FIRST, not last — an earlier version tried Claude
-    # alternates before crossing providers, and that measurably wastes both
-    # tokens and wall-clock. Ledger evidence from three separate interface-
-    # stage refusals on one target (PD-L1): claude-sonnet-5 refused (category
-    # "bio"), then claude-opus-5 ALSO refused (same category), every time,
-    # $0.13 spent for nothing each time. Anthropic's safety classifiers are
-    # consistent across the Claude family for a given category, so a
-    # same-provider retry after a categorised refusal is a bet that has not
-    # once paid off here.
+    # SHIPPED EMPTY, on purpose. `summary` and `binder_summary` used to be
+    # pinned here to claude-haiku-4-5, because Sonnet-class models decline the
+    # "review of designed binders" task and Haiku answers it. That is a smaller
+    # model producing content a larger one refused — the same thing the deleted
+    # fallback chain did, pre-declared rather than reached at runtime — so it
+    # went with the chain.
     #
-    # THE CHAIN STOPS AT TWO FRONTIER MODELS, DELIBERATELY. It used to end in
-    # claude-haiku-4-5, which did answer the PD-L1 interface stage after
-    # sonnet and opus both declined — and that is exactly the shape this
-    # project does not want. Falling back across providers is a legitimate
-    # response to ONE inconsistently-calibrated classifier; continuing down
-    # to a smaller model until something answers is provider-shopping for a
-    # permissive verdict, and it cannot be distinguished from it by anyone
-    # reading the output. Two independent frontier models declining is a
-    # RESULT: the run raises SkillRefusedError and stops. If you believe the
-    # target is legitimate, raise it as an issue — do not add a rung.
-    refusal_fallbacks: ["gemini:gemini-3.7-flash", "claude-opus-5"]
-    stages:
-      # Sonnet-class models trigger a biosecurity refusal on the "review of
-      # designed binders" task regardless of prompt wording; Haiku handles the
-      # tabular summarisation correctly and ~3x cheaper.
-      summary: "claude-haiku-4-5"
-      binder_summary: "claude-haiku-4-5"
-      # A per-stage override may name another PROVIDER as "provider:model".
-      # The binder track's `interface` stage is declined by claude-sonnet-5 and
-      # often by claude-opus-5 with category "bio"; claude-haiku-4-5 answers but
-      # cannot reliably produce the MODEL-READY HOTSPOTS table the next stage
-      # parses. Gemini answers and is ~4x cheaper on input.
-      # interface: "gemini:gemini-3.7-flash"   # force it; normally a fallback
+    # CONSEQUENCE, and it is real: under `--provider claude` those two stages
+    # now run on claude-sonnet-5 and may be REFUSED, which ends the run at the
+    # final summary (the designs and scores are already on disk; the write-up
+    # is what you lose). The default provider answers them cleanly. If you hit
+    # it and judge the work legitimate, that is exactly the decision this key
+    # is for:
+    #
+    #   stages:
+    #     binder_summary: "gemini:gemini-3.7-flash"
+    #
+    # The binder track's `interface` stage is the other known refusal: declined
+    # by claude-sonnet-5 and often by claude-opus-5 with category "bio". Do not
+    # reach for claude-haiku-4-5 there — it answers, but cannot reliably
+    # produce the MODEL-READY HOTSPOTS table the next stage parses. Gemini
+    # answers and is ~4x cheaper on input.
+    stages: {}
   gemini:
     default: "gemini-3.7-flash"
-    # If gemini-3.7-flash itself declines (SkillRefusedError from
-    # `_run_gemini` — an empty-candidates / promptFeedback.blockReason /
-    # per-candidate SAFETY-class finishReason), fall through to Claude
-    # rather than retrying Gemini itself; this is the primary chain now
-    # that gemini is the default provider, mirroring the claude block's
-    # own refusal_fallbacks above (which still leads with Gemini for the
-    # `--provider claude` path).
-    #
-    # ONE rung, not two: gemini-3.7-flash plus claude-opus-5 is two
-    # independent frontier models, and if both decline the run stops rather
-    # than trying a smaller one. See the claude block above for why that
-    # boundary is where it is.
-    refusal_fallbacks: ["claude-opus-5"]
+    # gemini-3.7-flash can decline too (`_run_gemini` raises
+    # SkillRefusedError for an empty-candidates response, a
+    # promptFeedback.blockReason, or a SAFETY-class per-candidate
+    # finishReason). When it does, the run stops — see the note at the top of
+    # this block. `--provider claude` is a reasonable thing to try NEXT, as a
+    # decision you take having read the refusal.
 
   openai:
     # Responses API (`/v1/responses`), reached with `requests` like gemini —
     # no vendor SDK. "terra" is the general model; "luna" is the sibling and
     # is selectable per stage or with --model-id.
     default: "gpt-5.6-terra"
-    # No same-family rung first: crossing providers immediately on a refusal
-    # is cheaper than walking models that share a classifier verdict, which is
-    # the lesson the claude chain above encodes.
-    refusal_fallbacks: ["gemini:gemini-3.7-flash", "claude-opus-5"]
 
   # USD per 1M tokens.  Cache multipliers apply to the INPUT rate:
   # cache writes bill at ~1.25x (5-minute TTL; use 2.0 for a 1h TTL) and cache

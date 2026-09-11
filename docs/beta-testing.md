@@ -88,14 +88,22 @@ they counted as "set".
 | Variable | Needed for | Get it from |
 |---|---|---|
 | `GEMINI_API_KEY` | every design stage (the default provider) | [aistudio.google.com](https://aistudio.google.com/apikey) |
-| `ANTHROPIC_API_KEY` | optional everywhere — `--provider claude`, and the fallback when a safety classifier declines a design stage | [console.anthropic.com](https://console.anthropic.com/) |
+| `ANTHROPIC_API_KEY` | optional everywhere — `--provider claude`, or `models.claude.stages` to route one stage there | [console.anthropic.com](https://console.anthropic.com/) |
 | `NCBI_EMAIL` | only if you extend the corpus yourself | your own address |
 
 Gemini is the default because it is ~4× cheaper on input *and* declines fewer
 protein-design prompts. Safety-classifier refusals on interface-analysis stages
-are a routine operational fact here, not a bug — if Gemini declines, the run
-automatically falls back to Claude, which is what `ANTHROPIC_API_KEY` buys you
-even on the design tracks.
+are a routine operational fact here, not a bug — but they are **terminal**: if
+the model declines a stage, the run records it and stops. LPT does not retry on
+another model, deliberately.
+
+If it happens to you during the beta, **the most useful thing you can do is
+tell us** — which target, which stage, which category — rather than route
+around it. That is the signal that gets a miscalibration fixed for everyone.
+You can steer the run onto another provider yourself, and an
+`ANTHROPIC_API_KEY` is what makes that possible, but read
+[docs/responsible-use.md](responsible-use.md) ("If you override a refusal")
+first — it is an override you are accountable for, not a fallback.
 
 ## 3. Reference data
 

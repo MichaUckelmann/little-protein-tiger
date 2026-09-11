@@ -171,6 +171,12 @@ def parse_provenance(text: str) -> dict | None:
     or None when the block is absent — which is the normal case for a stage
     report written before this block existed, and for every deterministic
     stage (there is no model to name).
+
+    ``declined`` is always empty for a report written after refusals became
+    terminal: a declined stage produces no report at all now, and the refusal
+    is recorded in the manifest instead. It is still parsed because campaigns
+    that ran under the old automatic-fallback behaviour have reports that do
+    carry it, and this reads whatever is on disk.
     """
     m = re.search(r"##\s+MODEL PROVENANCE\s*\n(.*?)(?=\n##\s|\Z)",
                   text or "", re.DOTALL | re.IGNORECASE)

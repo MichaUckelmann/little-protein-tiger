@@ -1127,14 +1127,20 @@ reaches the reader verbatim, as noise.
 class SkillRunnerError(RuntimeError):
     """Misconfiguration caught before any API call — a missing key, say.
 
-    Distinct from `SkillRefusedError`: nothing was sent, nothing was billed,
-    and no model fallback can help. The message is meant to be read by a user
-    on a fresh clone, so it names the env var and the file to put it in.
+    Distinct from `SkillRefusedError`: nothing was sent and nothing was
+    billed. The message is meant to be read by a user on a fresh clone, so
+    it names the env var and the file to put it in.
     """
 
 
 class SkillRefusedError(RuntimeError):
-    """A safety classifier declined the request; no content was returned."""
+    """A safety classifier declined the request; no content was returned.
+
+    Terminal by contract. `PipelineRunner._run_stage` records it in the
+    manifest and re-raises; it does NOT retry the stage on another model.
+    Choosing a different model is the operator's decision, taken after
+    reading the refusal — see docs/responsible-use.md.
+    """
 
     def __init__(self, *, skill: str, model: str, category: str | None,
                  iteration: int):
@@ -2062,10 +2068,13 @@ class SkillRunner:
                 # empty report and the run failed three stages later with a
                 # confusing "no hotspots" error.
                 #
-                # This is strongly model-dependent — measured on the same
+                # It is strongly model-dependent — measured on the same
                 # structure-analysis prompt, claude-sonnet-5 refuses with
-                # category "bio" where claude-opus-5 and claude-haiku-4-5 answer
-                # normally — so the caller retries on a fallback model.
+                # category "bio" where claude-opus-5 and claude-haiku-4-5
+                # answer normally. That is a fact for the OPERATOR to act
+                # on, not for the pipeline: the caller records this and
+                # stops rather than retrying elsewhere (see
+                # `PipelineRunner._run_stage` and docs/responsible-use.md).
                 details = getattr(response, "stop_details", None)
                 category = getattr(details, "category", None)
                 raise SkillRefusedError(
@@ -2195,9 +2204,10 @@ class SkillRunner:
             reason = (body.get("incomplete_details") or {}).get("reason")
             # A declined request is a `refusal` content part, or an
             # `incomplete_details.reason` of content_filter. Both must raise
-            # the SAME error Claude's stop_reason and Gemini's blockReason do,
-            # or `_resolve_stage`'s refusal-fallback chain cannot fire and the
-            # stage writes a 0-byte report that fails three stages later.
+            # the SAME error Claude's stop_reason and Gemini's blockReason do.
+            # One contract, three providers: the caller ends the run on it,
+            # and anything that escapes as a different exception type would
+            # instead write a 0-byte report that fails three stages later.
             refusals = [c.get("refusal") for o in out_items
                         if o.get("type") == "message"
                         for c in (o.get("content") or [])
@@ -2351,7 +2361,7 @@ class SkillRunner:
             # normal candidate but with finishReason SAFETY/PROHIBITED_CONTENT/
             # BLOCKLIST/RECITATION/SPII and no `content` key. Both must raise
             # SkillRefusedError, the same signal Claude's refusal produces, so
-            # the caller's fallback chain handles them uniformly rather than
+            # the caller ends the run on any of them uniformly rather than
             # crashing on a raw KeyError/IndexError here.
             candidates = body.get("candidates") or []
             block_reason = (body.get("promptFeedback") or {}).get("blockReason")

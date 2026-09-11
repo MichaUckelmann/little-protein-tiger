@@ -97,6 +97,12 @@ def collect(run_dir: Path) -> dict[str, Any]:
         if prov:
             entry["written_by"] = prov.get("written_by")
             entry["skill"] = prov.get("skill")
+            # Still read, though no NEW run can produce it: a refusal is
+            # terminal now, so a declined stage writes no report at all and
+            # the refusal is recorded in the manifest instead. Campaigns run
+            # before that change have reports that DO carry a declined list,
+            # and this is a collector over whatever is on disk — dropping the
+            # field would quietly rewrite their history.
             if prov.get("declined"):
                 entry["declined"] = prov["declined"]
         else:
@@ -141,6 +147,9 @@ def collect(run_dir: Path) -> dict[str, Any]:
         "models": {
             # The question an auditor actually asks: did any model decline
             # this work, and did the content then come from another one?
+            # For a run made after refusals became terminal the answer to the
+            # second half is always "no" — nothing here can be non-empty
+            # unless the reports predate that change.
             "declined": declined_any,
             "any_refusal": bool(declined_any),
         },
@@ -191,8 +200,9 @@ def footer_html(record: dict[str, Any]) -> str:
 
     A refusal that only reaches a log line is one nobody reviewing the
     campaign can see, and the report is the artifact that circulates. So the
-    model behind each LLM stage is named in the report itself, and a stage
-    that another model declined first says so.
+    model behind each LLM stage is named in the report itself. The "declined
+    first" column can only be non-empty for a campaign that ran before
+    refusals became terminal, and it is kept for exactly those.
     """
     rows = [s for s in record.get("stages", []) if s.get("written_by")]
     if not rows:
@@ -215,9 +225,11 @@ def footer_html(record: dict[str, Any]) -> str:
     if record.get("models", {}).get("any_refusal"):
         out.append(
             "<p style=\"margin-top:10px;\">A provider safety classifier "
-            "declined at least one stage above, and it was retried on a "
-            "different model. LPT stops after two models decline rather than "
-            "trying a smaller one — see <code>docs/responsible-use.md</code>.</p>")
+            "declined at least one stage above, and the content came from a "
+            "different model instead. This campaign predates the removal of "
+            "automatic model fallback: LPT no longer substitutes a model on "
+            "its own, and a declined stage now ends the run \u2014 see "
+            "<code>docs/responsible-use.md</code>.</p>")
     return "\n".join(out)
 
 

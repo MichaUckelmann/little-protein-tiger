@@ -802,10 +802,8 @@ three separate refusals on one target (PD-L1): `claude-sonnet-5` refuses, then
 `claude-opus-5` **also** refuses (same category), every time — a same-provider
 retry after a categorised refusal has not once succeeded here, and it is not
 free: ~$0.13 spent for nothing per attempt. `claude-haiku-4-5` eventually
-answered in that same run — **and that is why it is no longer in any refusal
-chain.** See "Two frontier models, then stop" below: reaching a smaller model
-after two better ones declined is the one outcome this project treats as
-out of bounds, so the ladder was cut rather than kept for its recall.
+answered in that same run, and that observation is now a warning rather than a
+feature: see "A refusal is terminal" below.
 
 **This is why `provider` defaults to `"gemini"` (`gemini-3.7-flash`), not
 `"claude"`, for every pipeline stage** (`PipelineRunner.__init__`'s
@@ -818,58 +816,93 @@ drafts substantive content (here, call #7 of an agentic tool-use loop —
 calls #1–6 were pure tool orchestration with nothing for a classifier to
 catch), and token usage is billed for that call *before* the
 `stop_reason == "refusal"` check in `skill_runner.py` — the compute already
-happened. Gemini answered cleanly both times. `--provider claude` still
-selects the Claude path in full; nothing about the fallback mechanics below
-changed, only which provider a run starts on.
+happened. Gemini answered cleanly both times. Since a refusal now ends the
+run, which provider a run *starts* on is the whole of the decision, and that
+is why this default is worth more than a cost comparison.
 
-So `models.<provider>.refusal_fallbacks` is a **chain**, and an entry may name
-another provider as `"provider:model"` (`_resolve_stage` returns a provider
-alongside the model). For the (now non-default) `claude` provider, **Gemini
-goes first**, not last: crossing providers immediately on the first refusal is
-cheaper and faster than walking same-family models that share the same
-classifier verdict; `claude-opus-5` stays in that chain only for the rare case
-Gemini itself declines or errors. For the default `gemini` provider,
-`models.gemini.refusal_fallbacks` is the single rung `claude-opus-5` — there is
-no same-family model to burn a wasted attempt on first. Either direction,
-`_run_gemini` raises the same
-`SkillRefusedError` for a Gemini-side safety block (empty `candidates`, a
-`promptFeedback.blockReason`, or a per-candidate `finishReason` of
-`SAFETY`/`PROHIBITED_CONTENT`/`BLOCKLIST`/`RECITATION`/`SPII`), so the chain
-degrades the same way regardless of which provider declines.
+`_run_gemini` raises the same `SkillRefusedError` for a Gemini-side safety
+block (empty `candidates`, a `promptFeedback.blockReason`, or a per-candidate
+`finishReason` of `SAFETY`/`PROHIBITED_CONTENT`/`BLOCKLIST`/`RECITATION`/
+`SPII`), and `_run_openai` for a `refusal` content part or an
+`incomplete_details.reason` of `content_filter`. One contract, three
+providers: the run ends the same way regardless of which declines.
 
 A refusal raises `SkillRefusedError` rather than returning "". The old behaviour
 wrote a 0-byte stage report and the run failed three stages later with a
 confusing "no MODEL-READY HOTSPOTS" error.
 
-**Do not reword prompts to get around a classifier.** Model fallback is a
-legitimate engineering response; prompt engineering aimed at defeating a safety
-check is not.
+**Do not reword prompts to get around a classifier.** Selecting a different
+model deliberately is a legitimate operator decision; prompt engineering aimed
+at defeating a safety check is not.
 
-### Two frontier models, then stop — and do not add a rung
+### A refusal is terminal — there is no fallback chain any more
 
-`MAX_REFUSALS_BEFORE_STOP = 2`, enforced in `_run_stage` rather than by the
-configured chain's length, so a `config.yaml` naming five fallbacks still
-stops at two. Crossing providers ONCE probes an inconsistently-calibrated
-classifier, which is a real and documented problem here; continuing until
-something answers is shopping for a permissive verdict, and no reader of the
-output can tell the two apart. A stage every model declined raises
-`SkillRefusedError` and ends the run.
+`_run_stage` records the refusal and re-raises. **Nothing retries the stage on
+another model.** `models.<provider>.refusal_fallbacks`,
+`_REFUSAL_FALLBACK_MODELS` and `MAX_REFUSALS_BEFORE_STOP` are all gone; a
+config that still sets the key gets a startup warning from
+`PipelineRunner.__init__` rather than being silently ignored, because an
+operator believing a retry will happen is the worst outcome.
 
-The failure mode this closes was live in the repo: the chain ended in
-`claude-haiku-4-5` precisely *because* it answered a PD-L1 interface stage
-that Sonnet and Opus had both refused. If a stage is consistently declined
-for a target you believe is legitimate, raise an issue — the fix is never a
-longer chain.
+That boundary moved twice, for one reason. The chain first stopped short of
+`claude-haiku-4-5`, which had answered a PD-L1 interface stage Sonnet and Opus
+both refused — reaching it meant the pipeline obtained content two better
+models declined to produce. The same argument does not stop at the last rung:
+**any** automatic retry is the pipeline deciding on its own to go looking for a
+model that will produce what the operator's chosen model declined to, and no
+reader of the output can tell that apart from a legitimate workaround for a
+miscalibrated classifier. Those refusals often *are* miscalibrated for
+structural-biology analysis — which is exactly why the judgement belongs to a
+person who has read the refusal and can say why the target is legitimate,
+rather than to a `for` loop that cannot. If a stage is consistently declined
+for a target you believe is legitimate, raise an issue; the fix is never a
+retry.
 
-Three things make a refusal visible rather than a log line:
-`_stage_provenance_note` appends a `## MODEL PROVENANCE` block to **every**
-stage report (on the clean path too — "written by the first model asked" is
-what makes "this one was not" mean anything), `_record_refusals` writes a
-`refusal_fallback:<stage>` manifest checkpoint on both outcomes, and
-`run_provenance.footer_html` renders the per-stage table into both HTML
-reports. The block goes in **before** the citation note, because
+Overriding it is an operator action, and `_run_stage`'s error log names the
+controls: `--provider`, `models.<provider>.stages.<stage>` (which may name
+another provider as `"provider:model"`), and `--start-from <stage>` to resume
+without re-paying for earlier stages. Those are steering controls, not a
+sanctioned route past a classifier, and neither the log nor the docs claim
+switching models works — walking model to model by hand is the deleted chain
+with a person in the loop, and `docs/responsible-use.md` ("If you override a
+refusal") says so and says what the override commits the operator to. Do not
+add efficacy advice to either.
+
+**`_DEFAULT_STAGE_MODELS` is now empty for every provider, and
+`models.<provider>.stages` ships empty too** — LPT routes no stage to a
+different model on its own. `summary` and `binder_summary` were pinned to
+`claude-haiku-4-5` until this change, because Sonnet-class models decline the
+"review of designed binders" task and Haiku answers it; that is a smaller model
+producing content a larger one refused, which is what the fallback chain was
+deleted for, and pre-declaring it in a config file does not change what it is.
+The consequence is real and is documented in `config.yaml`: under `--provider
+claude` those two stages now run on `claude-sonnet-5` and **may be refused,
+ending the run at the final summary** — the designs and scores are already on
+disk, the write-up is what is lost. The default provider answers them cleanly.
+The tables stay as the hook (`_resolve_stage` reads them) for an operator who
+has read a refusal and made the call themselves.
+
+`_split_model_spec` (formerly `_split_fallback`) survived the deletion because
+per-stage overrides have the same hazard the chains did: a bare `claude-opus-5`
+under `models.gemini.stages` would inherit the CURRENT provider and be POSTed
+to the Gemini endpoint, which 404s — and an `HTTPError` is not a
+`SkillRefusedError`, so it kills the run instead of being reported as a
+refusal. `_resolve_stage` now routes every per-stage model through it, so the
+provider is inferred from the id's prefix (`claude-`/`gemini-`/`gpt-`) and only
+an unrecognised id (a local/Ollama model) inherits the current provider.
+
+Two things make a refusal visible rather than a log line: `_record_refusal`
+writes a `refusal:<stage>` manifest checkpoint naming the model, category and
+call number — the only account of why a run ended once the process is gone,
+and what a later `--start-from` is read against — and
+`_stage_provenance_note` appends a `## MODEL PROVENANCE` block to every stage
+report that *is* written, which `run_provenance.footer_html` renders into both
+HTML reports. The block goes in **before** the citation note, because
 `report_common.extract_citation_section` matches to end-of-file and would
-otherwise swallow it.
+otherwise swallow it. `parse_provenance` and `run_provenance` still READ a
+"declined first" list: no new run can produce one, but campaigns that ran
+under the old behaviour have reports that carry it, and those are collectors
+over whatever is on disk.
 
 ## Advisory select-agent screening, not a viral blocklist
 

@@ -26,7 +26,7 @@ def config() -> dict:
 @pytest.fixture
 def runner(config) -> PipelineRunner:
     # Explicit provider="claude": this fixture backs tests that specifically
-    # validate Claude-path model resolution (haiku/thinking upgrades, the
+    # validate Claude-path model resolution (the thinking upgrade, the
     # structure/interface stage inversion under the claude default model) —
     # not "whatever the pipeline's overall default provider happens to be".
     # See test_pipeline_defaults_to_gemini for that.
@@ -62,10 +62,16 @@ def test_explicit_stage_beats_the_ambiguous_inversion(runner):
         assert model == runner._default_model
         assert provider == "claude"
 
-    # design-analyst defaults to Haiku on `summary` and `binder_summary`, but
-    # the ambiguous inversion only ever finds `summary`.
-    assert "haiku" in runner._resolve_stage("design-analyst", "binder_summary")[0]
-    assert "haiku" in runner._resolve_stage("design-analyst", "summary")[0]
+    # Both design-analyst stages resolve to the provider default now. LPT
+    # ships NO per-stage model default: these two used to be pinned to
+    # claude-haiku-4-5 because Sonnet-class models decline the "review of
+    # designed binders" task, which made a smaller model produce content a
+    # larger one refused — the same pattern as the deleted fallback chain.
+    for stage in ("summary", "binder_summary"):
+        model, _, provider = runner._resolve_stage("design-analyst", stage)
+        assert model == runner._default_model, stage
+        assert "haiku" not in model.lower(), stage
+        assert provider == "claude"
 
 
 def test_every_binder_llm_stage_maps_to_a_skill():
@@ -116,10 +122,37 @@ def test_extended_thinking_upgrades_off_haiku(config):
     # Extended thinking is a Claude-only mechanic (use_thinking is gated on
     # provider == "claude" in _resolve_stage) — explicit provider here tests
     # that mechanic specifically, not the pipeline's overall default.
-    r = PipelineRunner(config, provider="claude", extended_thinking_stages={"summary"})
+    #
+    # The haiku has to be PUT there now: LPT ships no per-stage model default,
+    # so nothing reaches this branch unless an operator pins one. That is the
+    # case the upgrade exists for — Haiku cannot do extended thinking, and the
+    # request must win over the pinned model rather than being dropped.
+    cfg = json.loads(json.dumps(config))          # don't mutate the module fixture
+    cfg["models"]["claude"]["stages"] = {"summary": "claude-haiku-4-5"}
+    r = PipelineRunner(cfg, provider="claude", extended_thinking_stages={"summary"})
     model, thinking, _ = r._resolve_stage("design-analyst", "summary")
     assert thinking is True
     assert "haiku" not in model.lower()
+
+
+def test_no_per_stage_model_default_is_shipped(config):
+    """The point of point 4: nothing in LPT routes a stage to a smaller model
+    on its own. `summary`/`binder_summary` were the last two, pinned to
+    claude-haiku-4-5 because Sonnet-class models decline the "review of
+    designed binders" task — a smaller model answering what a larger one
+    refused, which is the pattern the fallback chain was deleted for.
+
+    Both layers are checked: the module table and the shipped config. An
+    operator may still set one, and that is the difference — it is their
+    recorded decision, not LPT's default.
+    """
+    from src.pipeline_runner import _DEFAULT_STAGE_MODELS
+
+    for provider, table in _DEFAULT_STAGE_MODELS.items():
+        assert table == {}, f"_DEFAULT_STAGE_MODELS[{provider!r}] = {table}"
+    for provider in ("claude", "gemini", "openai"):
+        stages = ((config["models"].get(provider) or {}).get("stages") or {})
+        assert not stages, f"models.{provider}.stages ships {stages}"
 
 
 def test_no_stale_model_ids_in_the_config():
@@ -482,35 +515,17 @@ def test_a_refusal_raises_rather_than_returning_an_empty_report():
     assert exc.model == "claude-sonnet-5"
 
 
-def test_refusal_fallback_chain_is_configured_and_excludes_the_default(config):
+def test_a_refusal_is_not_retried_on_any_other_model(config, tmp_path,
+                                                    monkeypatch):
+    """The inverse of the test this replaces.
+
+    There used to be a fallback chain, and this asserted the stage was
+    retried down it. A refusal is terminal now: exactly one SkillRunner is
+    built, the error propagates, and the stage writes nothing. The full
+    policy — the manifest record, the operator instructions, both providers —
+    is pinned in tests/test_safety_controls.py; this guards the stage entry
+    point the rest of the pipeline actually calls.
     """
-    Refusals are model- AND query-dependent: claude-sonnet-5 refuses the
-    structure-analysis prompt outright, claude-opus-5 answers for some targets
-    and declines for others. Hence a fallback, and it may not be the model that
-    already refused.
-
-    This used to assert `len(chain) >= 2`, which the two-models-then-stop
-    policy makes wrong: the default (gemini) chain is now ONE rung, because
-    gemini plus one fallback already is two independent frontier models, and
-    the run stops there rather than trying a smaller one. See
-    `MAX_REFUSALS_BEFORE_STOP` and docs/responsible-use.md.
-    """
-    from src.pipeline_runner import (
-        MAX_REFUSALS_BEFORE_STOP, _REFUSAL_FALLBACK_MODELS,
-    )
-
-    r = PipelineRunner(config, workflow="binder")
-    chain = r._models_cfg.get("refusal_fallbacks") or _REFUSAL_FALLBACK_MODELS
-    assert chain, "there must be at least one fallback"
-    assert r._default_model not in chain
-    # However long the chain is, the number of models actually attempted is
-    # capped — and no rung may be a smaller model reached after two frontier
-    # models declined.
-    assert 1 + len(chain) >= MAX_REFUSALS_BEFORE_STOP
-    assert not any("haiku" in m.lower() for m in chain), chain
-
-
-def test_refusal_is_retried_on_the_fallback_model(config, tmp_path, monkeypatch):
     from src.skill_runner import SkillRefusedError, SkillRunner
 
     calls: list[str] = []
@@ -521,23 +536,23 @@ def test_refusal_is_retried_on_the_fallback_model(config, tmp_path, monkeypatch)
         calls.append(self.model_id)
 
     def fake_run(self, query, context_text=None, trace_path=None):
-        if self.model_id == "claude-sonnet-5":
-            raise SkillRefusedError(skill=self.skill_name, model=self.model_id,
-                                    category="bio", iteration=1)
-        return "ok\n\n### PIPELINE HANDOFF\n- go_recommendation: GO\n"
+        raise SkillRefusedError(skill=self.skill_name, model=self.model_id,
+                                category="bio", iteration=1)
 
     monkeypatch.setattr(SkillRunner, "__init__", fake_init)
     monkeypatch.setattr(SkillRunner, "run", fake_run)
     monkeypatch.setattr(SkillRunner, "usage", lambda self: __import__(
         "src.token_budget", fromlist=["Usage"]).Usage())
 
-    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder", provider="claude")
-    handoff = r._run_stage("complex-structure-analysis", "q", [],
-                           tmp_path / "out.md", stage="interface")
-    assert handoff.get("go_recommendation") == "GO"
-    assert calls[0] == "claude-sonnet-5"
-    first_fallback = (r._models_cfg.get("refusal_fallbacks") or [])[0]
-    assert calls[1] == first_fallback.split(":", 1)[-1]   # strip a "provider:" prefix
+    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder",
+                       provider="claude")
+    with pytest.raises(SkillRefusedError):
+        r._run_stage("complex-structure-analysis", "q", [],
+                     tmp_path / "out.md", stage="interface")
+
+    assert calls == ["claude-sonnet-5"], (
+        f"a second model was asked after a refusal: {calls}")
+    assert not (tmp_path / "out.md").exists()
 
 
 def test_thinking_blocks_round_trip_with_their_signature():
@@ -575,9 +590,11 @@ def test_placeholder_chain_ids_are_rejected_at_parse_time(config):
                          "partner_chain": "H"}, limit=1)
 
 
-def test_refusal_chain_reports_every_model_that_declined(config, tmp_path,
-                                                         monkeypatch):
-    """"Two other models declined too" is information, not a reason to retry on."""
+def test_the_refusing_model_is_named_in_the_error(config, tmp_path,
+                                                 monkeypatch):
+    """Which model declined, and under what category, is the whole of what
+    the operator needs to decide what to do next — so it must be in the
+    exception, not only in the log."""
     from src.skill_runner import SkillRefusedError, SkillRunner
 
     def always_refuse(self, query, context_text=None, trace_path=None):
@@ -592,7 +609,8 @@ def test_refusal_chain_reports_every_model_that_declined(config, tmp_path,
     with pytest.raises(SkillRefusedError) as exc:
         r._run_stage("complex-structure-analysis", "q", [], tmp_path / "o.md",
                      stage="interface")
-    assert "claude-opus-5" in str(exc.value)
+    assert "gemini-3.7-flash" in str(exc.value)
+    assert "bio" in str(exc.value)
 
 
 def test_oversized_tool_results_are_truncated(config, monkeypatch):
@@ -672,15 +690,21 @@ def test_gemini_models_are_priced():
     assert r is not None and r.input_per_mtok > 0
 
 
-def test_gemini_is_the_immediate_fallback_no_other_claude_model_is_tried(
-        config, tmp_path, monkeypatch):
-    """
-    Regression for real ledger waste: on three separate interface-stage
-    refusals for one target, claude-sonnet-5 refused, then claude-opus-5 ALSO
-    refused (same category, ~$0.13 spent for nothing each time) before
-    claude-haiku-4-5 finally answered. Crossing providers on the FIRST refusal
-    avoids paying for a same-family retry that has never once succeeded here —
-    so exactly one fallback attempt (Gemini) must be made, never opus or haiku.
+def test_a_claude_refusal_does_not_cross_to_gemini_either(config, tmp_path,
+                                                         monkeypatch):
+    """The three tests this replaces pinned the old chain's shape: that Gemini
+    led it, that it was reached immediately, and that a Gemini-side decline
+    fell through again.
+
+    The measurement behind them stands and is worth keeping written down — on
+    three separate interface-stage refusals for one target, claude-sonnet-5
+    refused and claude-opus-5 then refused too, ~$0.13 each time for nothing,
+    before claude-haiku-4-5 answered. What changed is the conclusion drawn
+    from it. Crossing providers was justified as a probe of one miscalibrated
+    classifier, but the pipeline cannot tell a probe from shopping for a
+    permissive verdict, and neither can a reader of its output. So NO
+    provider is tried second, and this asserts the cross-provider hop
+    specifically, since it was the one the chain led with.
     """
     from src.skill_runner import SkillRefusedError, SkillRunner
 
@@ -695,58 +719,21 @@ def test_gemini_is_the_immediate_fallback_no_other_claude_model_is_tried(
         if self.provider == "claude" and self.model_id == "claude-sonnet-5":
             raise SkillRefusedError(skill=self.skill_name, model=self.model_id,
                                     category="bio", iteration=1)
-        if self.provider != "gemini":
-            raise AssertionError(
-                f"wasted a call on {self.provider}:{self.model_id} — the "
-                f"immediate fallback should have gone straight to Gemini")
-        return "ok\n\n### PIPELINE HANDOFF\n- go_recommendation: GO\n"
+        raise AssertionError(
+            f"{self.provider}:{self.model_id} was asked after a refusal — "
+            f"a refusal is terminal, see docs/responsible-use.md")
 
     monkeypatch.setattr(SkillRunner, "__init__", fake_init)
     monkeypatch.setattr(SkillRunner, "run", fake_run)
     monkeypatch.setattr(SkillRunner, "usage", lambda self: __import__(
         "src.token_budget", fromlist=["Usage"]).Usage())
 
-    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder", provider="claude")
-    handoff = r._run_stage("complex-structure-analysis", "q", [],
-                           tmp_path / "o.md", stage="interface")
-    assert handoff.get("go_recommendation") == "GO"
-    # Exactly two SkillRunners: the original refusal, then Gemini. Never opus,
-    # never haiku.
-    assert seen == [("claude", "claude-sonnet-5"), ("gemini", "gemini-3.7-flash")]
-
-
-def test_gemini_leads_the_configured_fallback_chain(config):
-    """
-    Gemini must be tried before any same-provider Claude fallback — that
-    ordering is what makes the immediate-switch behaviour above the DEFAULT,
-    not an incidental mock artifact.
-    """
-    chain = config["models"]["claude"]["refusal_fallbacks"]
-    assert chain, "no fallback chain configured"
-    assert chain[0].startswith("gemini"), (
-        "Gemini must lead the chain — trying another Claude model first pays "
-        "for a same-family refusal that measurably never succeeds")
-
-
-def test_if_gemini_also_refuses_the_chain_still_falls_through(config, tmp_path,
-                                                              monkeypatch):
-    """Defense in depth: a Gemini-side decline must not strand the stage."""
-    from src.skill_runner import SkillRefusedError, SkillRunner
-
-    def fake_run(self, query, context_text=None, trace_path=None):
-        if self.model_id in ("claude-sonnet-5", "gemini-3.7-flash"):
-            raise SkillRefusedError(skill=self.skill_name, model=self.model_id,
-                                    category="bio", iteration=1)
-        return "ok\n\n### PIPELINE HANDOFF\n- go_recommendation: GO\n"
-
-    monkeypatch.setattr(SkillRunner, "run", fake_run)
-    monkeypatch.setattr(SkillRunner, "usage", lambda self: __import__(
-        "src.token_budget", fromlist=["Usage"]).Usage())
-
-    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder")
-    handoff = r._run_stage("complex-structure-analysis", "q", [],
-                           tmp_path / "o.md", stage="interface")
-    assert handoff.get("go_recommendation") == "GO"
+    r = PipelineRunner(config, output_dir=tmp_path, workflow="binder",
+                       provider="claude")
+    with pytest.raises(SkillRefusedError):
+        r._run_stage("complex-structure-analysis", "q", [],
+                     tmp_path / "o.md", stage="interface")
+    assert seen == [("claude", "claude-sonnet-5")]
 
 
 def test_gemini_prompt_level_block_is_a_refusal_not_a_crash(monkeypatch):
@@ -754,7 +741,8 @@ def test_gemini_prompt_level_block_is_a_refusal_not_a_crash(monkeypatch):
     A prompt Gemini declines outright returns an EMPTY candidates list and a
     top-level promptFeedback.blockReason — no content to index into. Without
     detecting this, `_run_gemini` would crash on a raw IndexError instead of
-    letting the fallback chain handle it like any other refusal.
+    surfacing it as the refusal it is — one contract across all three
+    providers, so the run ends the same way whichever one declines.
     """
     import sys
     sys.path.insert(0, str(_ROOT))

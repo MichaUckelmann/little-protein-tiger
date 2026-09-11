@@ -36,6 +36,9 @@ here. Effort estimates are rough (trivial < small < medium < large).
 - [x] Pipeline-wide default LLM provider changed `claude` → `gemini`
   (`gemini-3.7-flash`) across `PipelineRunner`, `run_pipeline.py --provider`,
   `run_skill.py --model`; `models.gemini.refusal_fallbacks` added.
+  **Superseded:** automatic refusal fallback was removed entirely — a
+  declined stage now ends the run and the key is no longer read. See
+  docs/responsible-use.md, "Why there is no automatic fallback".
 - [x] New `src/ppi_report.py` (+ `scripts/generate_ppi_report.py`) mirrors
   `src/binder_report.py` for the PPI track; both now share
   `src/report_common.py` and `src/report_templates/_shared/{base.css,base.js}`.

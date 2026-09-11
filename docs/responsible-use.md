@@ -56,50 +56,114 @@ is not neutral just because it was assembled automatically.
 
 The LLM stages of this pipeline are sometimes declined by provider safety
 classifiers — the interface-analysis stage most often, categorised `bio`. This
-is an expected operational fact and is handled by falling back to a different
-model or provider (`models.<provider>.refusal_fallbacks`).
+is an expected operational fact of running it.
 
-**Rewording a prompt to get around a safety classifier is not an accepted
-contribution to this project.** Model fallback is a legitimate engineering
-response to an inconsistent classifier; prompt engineering aimed at defeating a
-safety check is not, and pull requests doing it will be declined. If a stage is
-consistently refused for a target you believe is legitimate, that is worth
-raising as an issue rather than routing around.
+**A refusal is final. LPT does not retry the stage on another model.** The run
+records the refusal and stops.
 
-### Two models, then stop
+You can still choose a different model — nothing stops you editing a config —
+but that is an override you are making and answerable for, not a fallback the
+pipeline performs. "If you override a refusal" below says what it commits you
+to and what this project will not accept.
 
-The fallback chain stops after **two** independent frontier models decline
-(`MAX_REFUSALS_BEFORE_STOP` in `src/pipeline_runner.py`, enforced in code so a
-longer configured chain cannot walk past it). The run then raises
-`SkillRefusedError` and fails.
+### Why there is no automatic fallback
 
-That boundary is deliberate, and it moved. The chain used to end in
-`claude-haiku-4-5`, which did answer a PD-L1 interface stage that
-`claude-sonnet-5` and `claude-opus-5` had both declined. Reaching that rung
-means the pipeline obtained content two better models refused to produce, and
-nobody reading the output could distinguish it from the legitimate case.
+There used to be one: `models.<provider>.refusal_fallbacks` named a chain, and
+a declined stage was retried down it. That chain is gone, and the key is no
+longer read (a config that still sets it gets a warning at startup).
 
-So the line is:
+The boundary moved twice, for the same reason each time. The chain first ended
+in `claude-haiku-4-5`, which did answer a PD-L1 interface stage that
+`claude-sonnet-5` and `claude-opus-5` had both declined — so the last rung was
+cut, on the grounds that reaching it meant the pipeline had obtained content
+two better models refused to produce. But that argument does not stop at the
+last rung. **Any** automatic retry is the pipeline deciding, by itself, to go
+looking for a model that will produce what the operator's chosen model
+declined to produce, and no reader of the output can distinguish that from a
+legitimate workaround for a miscalibrated classifier.
 
-- **Crossing providers once is a probe**, and a justified one — these refusals
-  are demonstrably miscalibrated for structural-biology analysis. A single
-  cross-provider retry asks "is this one classifier wrong?"
-- **Continuing until something answers is shopping for a permissive verdict.**
-  Two frontier models agreeing is treated as a result, not an obstacle.
+These refusals often *are* miscalibrated for structural-biology analysis. That
+is an argument for a person overriding them, not a `for` loop: a person can
+say why this target is legitimate, having read the refusal, and is accountable
+for the answer. A retry loop can do neither.
 
-Do not add a rung to get a stage through. Raise an issue instead.
+### If you override a refusal
+
+The controls below are not a way past a safety decision. They are how the
+pipeline is steered, and a refusal does not make them stop existing — LPT
+cannot prevent you from changing a model, and pretending otherwise would be
+theatre. What it can do is be clear about what you are taking on when you use
+them for this.
+
+**Overriding a refusal means asserting that the classifier is wrong about this
+specific target, and you are accountable for that assertion.** Before you do
+it, you should be able to say why the work is legitimate *to someone else* —
+and if that answer is not obvious enough to write down, the right venue is
+your institution's biosafety or dual-use research review, not a config file.
+The refusal itself is a poor guide either way: these classifiers are
+demonstrably miscalibrated for structural-biology analysis in both directions,
+so neither a refusal nor an answer tells you anything about whether your
+target is appropriate. That judgement was always yours.
+
+What is **not** acceptable, and will be declined as a contribution:
+
+- **Rewording a prompt** so a classifier stops objecting.
+- **Walking model to model until one answers.** Doing this by hand is the
+  deleted fallback chain with a person in the loop instead of a `for`
+  statement; it produces the same artifact and the same unanswerable question
+  about where the content came from. If two independent frontier models decline
+  a stage, treat that as a result. It was the right heuristic when the code
+  applied it and it is still the right one now that you do.
+- **Treating a refusal as a defect to route around.** If a stage is
+  consistently declined for a target you believe is legitimate, raise it as an
+  issue — that is a signal worth collecting, and it is how a miscalibration
+  gets fixed for everyone rather than worked around once.
+
+The controls, for completeness:
+
+```bash
+--provider claude|gemini|openai    # which provider runs the LLM stages
+--start-from <stage>               # resume, rather than re-paying for earlier stages
+```
+
+```yaml
+# one stage only, in config.yaml
+models:
+  gemini:
+    stages:
+      <stage>: "<provider>:<model>"
+```
+
+A note on what the evidence actually shows, since it is easy to read the wrong
+way round: across three separate interface-stage refusals on one target,
+`claude-sonnet-5` refused and `claude-opus-5` then refused too — same
+category, every time. Within a provider, a categorised refusal is *consistent*
+rather than arbitrary. That is a reason to take the verdict seriously, not a
+map of which model to try next.
+
+**LPT ships no per-stage model default**, for any provider. `summary` and
+`binder_summary` used to be pinned to `claude-haiku-4-5`, because Sonnet-class
+models decline the "review of designed binders" task and Haiku answers it —
+a smaller model producing content a larger one refused, which is the same thing
+the deleted chain did, merely pre-declared instead of reached at runtime. It
+went with the chain.
+
+So under `--provider claude` those two stages run on `claude-sonnet-5` and may
+be refused, which ends the run at the final summary. What is lost is the
+write-up: the designs, the scores and the gate decisions are already on disk
+and are readable without it. The default provider answers those stages
+cleanly, which is the reason it is the default.
 
 ### A refusal is recorded where you can see it
 
 Every stage report ends with a `## MODEL PROVENANCE` block naming the model
-that wrote it — on the clean path too, because "written by the first model
-asked" is what makes "this one was not" meaningful. When a model declined
-first, that block names it and its category, both HTML reports show it in a
-"which model wrote which stage" table, and the project manifest gets a
-`refusal_fallback:<stage>` checkpoint so the record survives the process.
-
-A run that stopped because every model declined records that too — the
-manifest is the only account of why a run ended once the process is gone.
+that wrote it, and both HTML reports render a "which model wrote which stage"
+table from it. Since a declined stage writes no report at all, the refusal
+itself goes in the project manifest — a `refusal:<stage>` checkpoint carrying
+the model, the category, and the call number. The manifest is the only account
+of why a run ended once the process is gone, so a later `--start-from <stage>`
+on a model you chose can be read against the record of why the first attempt
+stopped.
 
 ## Select-agent screening
 
@@ -135,9 +199,10 @@ it. Confirm institutional approval before synthesising anything.
 
 Every report directory gets a `provenance.json` (`src/run_provenance.py`),
 regenerated whenever a report is: the project and query, the target identity
-the campaign settled on, which model wrote each stage and whether any model
-declined first, the select-agent screen result, the calibration verdict, and
-the API spend.
+the campaign settled on, which model wrote each stage, the select-agent
+screen result, the calibration verdict, and the API spend. (Its `declined`
+field stays in the schema for campaigns that ran under the old
+automatic-fallback behaviour; a run made since then cannot populate it.)
 
 For a dual-use tool, auditability is the control that is actually available —
 the generative models are public and `--workflow structure` takes any file, so
