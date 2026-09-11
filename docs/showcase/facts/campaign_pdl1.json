@@ -1,93 +1,93 @@
 {
   "alternatives": [
     {
-      "pdb_id": "8AOK",
-      "why_not": "second-largest BSA and most H-bonds, but low hydrophobic fraction (0.22) suggests a flatter, more polar epitope, harder to reproduce with a de novo binder"
+      "pdb_id": "7CZD",
+      "why_not": "Alternative high-affinity VHH interface; retained as secondary competitive site in sites_json."
     },
     {
-      "pdb_id": "7C88",
-      "why_not": "clinically validated (JS003) but smaller interface (1347 Å²) than 7CZD/8AOK; kept as a secondary literature reference, not primary"
+      "pdb_id": "8AOK",
+      "why_not": "VHH6 interface with lower hydrophobic fraction (phi = 0.22) compared to 8ZNL (phi = 0.39)."
+    },
+    {
+      "pdb_id": "5JDS",
+      "why_not": "Nanobody KN035 complex; similar IgV epitope to 7CZD/8ZNL but lower BSA (1648 Å²)."
     },
     {
       "pdb_id": "8AOM",
-      "why_not": "full-ectodomain chain (222 aa, exceeds trim budget), extremely hydrophobic with almost no H-bonds (3) — likely a non-functional or peripheral epitope, not the PD-1 hot spot"
-    },
-    {
-      "pdb_id": "7SJQ",
-      "why_not": "smaller interface (1159 Å²) from a cystine-dense peptide scaffold; useful precedent but lower information content than 7CZD"
+      "why_not": "Extracellular ectodomain complex with sparse hydrogen bonds (3) and lower interface quality."
     }
   ],
   "binder_len_max": 86,
   "binder_len_min": 70,
-  "bsa_A2": 2449,
+  "bsa_A2": 1844,
   "budget_cap_usd": 10.0,
   "calibration": {
     "backbone_rate": {
-      "k": 19,
-      "n": 358,
-      "p_hat": 0.05307262569832402,
-      "p_high": 0.08139811476539055,
-      "p_low": 0.03423666892430301,
+      "k": 33,
+      "n": 479,
+      "p_hat": 0.06889352818371608,
+      "p_high": 0.09517323179567269,
+      "p_low": 0.04947354106280746,
       "unit": "backbone",
       "zero_hits": false
     },
     "bar_raised_to": 0.85,
     "central": {
       "basis": "point estimate",
-      "est_disk_gb": 9.4,
-      "est_gpu_hours": 11.5,
+      "est_disk_gb": 2.8,
+      "est_gpu_hours": 10.0,
       "is_lower_bound": false,
-      "required_backbones": 1526.0,
-      "required_refolds": 3768.0
+      "required_backbones": 879.0,
+      "required_refolds": 2903.0
     },
     "diffused": 580,
-    "hours": 4.84,
+    "hours": 6.6,
     "n_seq": 4,
     "pessimistic": {
       "basis": "Wilson 95% lower bound",
-      "est_disk_gb": 14.6,
-      "est_gpu_hours": 17.8,
+      "est_disk_gb": 3.8,
+      "est_gpu_hours": 13.9,
       "is_lower_bound": false,
-      "required_backbones": 2366.0,
-      "required_refolds": 5842.0
+      "required_backbones": 1224.0,
+      "required_refolds": 4043.0
     },
-    "prefilter_rate": 0.6172413793103448,
-    "prefiltered": 358,
-    "refolds": 1432,
+    "prefilter_rate": 0.8258620689655173,
+    "prefiltered": 479,
+    "refolds": 1916,
     "requested_bar": 0.7,
     "softer_rates": [
       [
         0.5,
-        158
+        350
       ],
       [
         0.6,
-        123
+        286
       ],
       [
         0.65,
-        106
+        258
       ],
       [
         0.7,
-        90
+        221
       ],
       [
         0.75,
-        71
+        173
       ],
       [
         0.8,
-        42
+        120
       ],
       [
         0.85,
-        21
+        55
       ]
     ],
     "target_designs": 50,
     "verdict": "SCALE_UP",
-    "verdict_reason": "19/358 backbones produced an excellent design (5.31%, 95% CI 3.42%-8.14%). Even at the pessimistic bound the run costs ~18 GPU-h / 15 GB, inside the 120 h / 120 GB budget. This target is unusually good — the trial supports sizing at iptm > 0.85 (requested was 0.7) within budget, so the bar was raised rather than sizing to the loosest workable target."
+    "verdict_reason": "33/479 backbones produced an excellent design (6.89%, 95% CI 4.95%-9.52%). Even at the pessimistic bound the run costs ~14 GPU-h / 4 GB, inside the 120 h / 120 GB budget. This target is unusually good — the trial supports sizing at iptm > 0.85 (requested was 0.7) within budget, so the bar was raised rather than sizing to the loosest workable target."
   },
   "candidates": [
     {
@@ -181,373 +181,375 @@
       "res": 1.997
     }
   ],
-  "contig": "70-86,/0,B18-134",
+  "citations_checked": 3,
+  "citations_verified": 3,
+  "contig": "70-86,/0,B20-133",
   "default_model": "gemini-3.7-flash",
   "default_provider": "gemini",
   "design_backend": "foundry",
   "designs": [
     {
-      "dock": 1.156,
-      "full_name": "cd274_binder_001_cd274_binder_001_502_model_3_b0_d2",
-      "ipsae_min": 0.7048,
-      "iptm": 0.8872500061988831,
+      "dock": 1.229,
+      "full_name": "cd274_binder_001_cd274_binder_001_96_model_0_b0_d0",
+      "ipsae_min": 0.6601,
+      "iptm": 0.8608981370925903,
+      "len": 86,
+      "name": "96_model_0_b0_d0",
+      "plddt": 0.8323,
+      "rosetta_ddg": -53.075,
+      "seq": "MDAALAATRELAALLAKFNKVASPEQRREAARELLRLAEAIRARDRAAAEAAVDRLVEIASKVLSPEEVAALRRAARALVDLTLAA"
+    },
+    {
+      "dock": 0.958,
+      "full_name": "cd274_binder_001_cd274_binder_001_160_model_1_b0_d3",
+      "ipsae_min": 0.7595,
+      "iptm": 0.904320240020752,
       "len": 84,
-      "name": "502_model_3_b0_d2",
-      "plddt": 0.8239,
-      "rosetta_ddg": -66.279,
-      "seq": "MEERVKRILEEVRELLERVGAEELIPYAEAIAKELAEEALKQGVSESVIVSHIILSASAAHNQGLEAGLAFARELIKDTVELLK"
+      "name": "160_model_1_b0_d3",
+      "plddt": 0.831,
+      "rosetta_ddg": -44.814,
+      "seq": "MLSREEVEELVRESVEEVKEETGLEIEIEDLRITETETHFAVILKLNVDGKKAVAVATIPKSASREEAKETLINAIRLAVDAAL"
     },
     {
-      "dock": 1.168,
-      "full_name": "cd274_binder_001_cd274_binder_001_320_model_3_b0_d1",
-      "ipsae_min": 0.8199,
-      "iptm": 0.9228222966194153,
-      "len": 80,
-      "name": "320_model_3_b0_d1",
-      "plddt": 0.8322,
-      "rosetta_ddg": -53.12,
-      "seq": "MDEAEDEFFAEARARLAAAAEASTEEAVELALELVEEGVRRGLPLILAANLVAVAAAAQLSREKALAVIEALRERLLEHR"
-    },
-    {
-      "dock": 1.548,
-      "full_name": "cd274_binder_001_cd274_binder_001_53_model_2_b0_d0",
-      "ipsae_min": 0.7615,
-      "iptm": 0.9081355929374695,
-      "len": 82,
-      "name": "53_model_2_b0_d0",
-      "plddt": 0.8398,
-      "rosetta_ddg": -47.142,
-      "seq": "MLEEDRERATKLIDEGSKAFKAGDYETALKKFEEAAKSKDLGLQAMAYRLRARVYKAMGDEEKAKEDYKKADELESKAVPRP"
-    },
-    {
-      "dock": 0.479,
-      "full_name": "cd274_binder_001_cd274_binder_001_320_model_2_b0_d0",
-      "ipsae_min": 0.797,
-      "iptm": 0.9125615954399109,
-      "len": 80,
-      "name": "320_model_2_b0_d0",
-      "plddt": 0.8015,
-      "rosetta_ddg": -56.505,
-      "seq": "KVEEALELIRKGLELMSQKKYKEAAELFEEAARLAEEALGETDSLALMSLLLAGIAYEKAGDLEKAKELFERVEALNAKV"
-    },
-    {
-      "dock": 0.945,
-      "full_name": "cd274_binder_001_cd274_binder_001_407_model_0_b0_d2",
-      "ipsae_min": 0.7137,
-      "iptm": 0.8916885852813721,
-      "len": 84,
-      "name": "407_model_0_b0_d2",
-      "plddt": 0.8077,
-      "rosetta_ddg": -62.167,
-      "seq": "LERLAEELRELAEELRPLAPGVAAAALNALEKLPESPDPGGVLAAAALLLYAAAEEAGDAELAERARALLAEIAEAFGIDARIP"
-    },
-    {
-      "dock": 0.526,
-      "full_name": "cd274_binder_001_cd274_binder_001_177_model_2_b0_d2",
-      "ipsae_min": 0.5691,
-      "iptm": 0.8317915201187134,
-      "len": 83,
-      "name": "177_model_2_b0_d2",
-      "plddt": 0.823,
-      "rosetta_ddg": -55.542,
-      "seq": "MSKEEALKKALEYLEEGIKAAEAGDLKEATRYAFLAASYLIKAGLDEEAKKLMEEVSAATVAGDAEALIATLKKAKEFVEKEL"
-    },
-    {
-      "dock": 0.818,
-      "full_name": "cd274_binder_001_cd274_binder_001_245_model_2_b0_d3",
-      "ipsae_min": 0.6752,
-      "iptm": 0.8760536313056946,
-      "len": 78,
-      "name": "245_model_2_b0_d3",
-      "plddt": 0.8089,
-      "rosetta_ddg": -49.657,
-      "seq": "SGVLTDTVGDVTTTFALLEDPATGTRLTVRLTEKGEEARLTITTQQGDRVTVEVEEMSAEEARARLDALLAANVPVPA"
-    },
-    {
-      "dock": 1.047,
-      "full_name": "cd274_binder_001_cd274_binder_001_498_model_2_b0_d3",
-      "ipsae_min": 0.629,
-      "iptm": 0.865583062171936,
-      "len": 70,
-      "name": "498_model_2_b0_d3",
-      "plddt": 0.8393,
-      "rosetta_ddg": -47.951,
-      "seq": "MKKEIEEANKIMEEAVKKVGEHIAAKDYEGALKTLEEAIERIEKLNIPQRYKDGLISFLEALKAHVERLA"
-    },
-    {
-      "dock": 1.133,
-      "full_name": "cd274_binder_001_cd274_binder_001_313_model_1_b0_d1",
-      "ipsae_min": 0.7066,
-      "iptm": 0.8799446225166321,
-      "len": 78,
-      "name": "313_model_1_b0_d1",
-      "plddt": 0.8115,
-      "rosetta_ddg": -54.589,
-      "seq": "SHLEEAVRALEEGIEAARAGDLSKATLAVLEAVEHLVDAGHQELAAELLNEVMPALVAEDYEKAVEALERARERVLEL"
-    },
-    {
-      "dock": 1.852,
-      "full_name": "cd274_binder_001_cd274_binder_001_561_model_3_b0_d1",
-      "ipsae_min": 0.809,
-      "iptm": 0.9114232063293457,
-      "len": 84,
-      "name": "561_model_3_b0_d1",
-      "plddt": 0.8354,
-      "rosetta_ddg": -48.621,
-      "seq": "MEKIEKIKEEITEKSLKYLNEKLSKAKSIEEIEDARDEAIAYAAKLISEAAKKYGLSVEEAKEIFRDVIEALKKEAEKAKKKFE"
-    },
-    {
-      "dock": 1.065,
-      "full_name": "cd274_binder_001_cd274_binder_001_312_model_0_b0_d1",
-      "ipsae_min": 0.4496,
-      "iptm": 0.7940822839736938,
+      "dock": 1.206,
+      "full_name": "cd274_binder_001_cd274_binder_001_90_model_2_b0_d1",
+      "ipsae_min": 0.7476,
+      "iptm": 0.9008834362030029,
       "len": 85,
-      "name": "312_model_0_b0_d1",
-      "plddt": 0.8236,
-      "rosetta_ddg": -59.828,
-      "seq": "MSIEIETPASVEEAVALLERLAKEILEGKDPYARAVAMQEIALAAGVPKDVVVELFNELLRAISRGDKEAVRAVAERLIAAVRAQ"
+      "name": "90_model_2_b0_d1",
+      "plddt": 0.8164,
+      "rosetta_ddg": -48.749,
+      "seq": "MTEEARKLAVEALRRAAEAAKDNPRLKETLELLAKVVANSSDAAAVATLLAHAARTAEALGEEEAAKILREALEKMRAMGIEVRE"
     },
     {
-      "dock": 0.67,
-      "full_name": "cd274_binder_001_cd274_binder_001_263_model_3_b0_d1",
-      "ipsae_min": 0.6119,
-      "iptm": 0.8561879992485046,
-      "len": 72,
-      "name": "263_model_3_b0_d1",
-      "plddt": 0.8224,
-      "rosetta_ddg": -48.403,
-      "seq": "SFITKTVPAKSLEEAIAAAEKLVREEFGEVELESEVVRGNGAILKYKAEDSTITVLISLDGDTATIGIVKEK"
-    },
-    {
-      "dock": 0.941,
-      "full_name": "cd274_binder_001_cd274_binder_001_181_model_2_b0_d1",
-      "ipsae_min": 0.7188,
-      "iptm": 0.889981746673584,
-      "len": 71,
-      "name": "181_model_2_b0_d1",
-      "plddt": 0.8355,
-      "rosetta_ddg": -49.563,
-      "seq": "SSLREELGRLVARGSEAILAEDLEAAERVVEELRELARRAEEAGDRETAETARAFAEHLEKLIRKVRELQA"
-    },
-    {
-      "dock": 1.452,
-      "full_name": "cd274_binder_001_cd274_binder_001_56_model_0_b0_d3",
-      "ipsae_min": 0.5203,
-      "iptm": 0.8065400719642639,
-      "len": 85,
-      "name": "56_model_0_b0_d3",
-      "plddt": 0.8226,
-      "rosetta_ddg": -55.1,
-      "seq": "DAAVEALLAKDFERAEALLVEALERGDREATRLGALMLATLLAAAGHVDEAKALIEKLAAGELTAEDLRRAVALARENADLVEPG"
-    },
-    {
-      "dock": 1.303,
-      "full_name": "cd274_binder_001_cd274_binder_001_295_model_0_b0_d0",
-      "ipsae_min": 0.6347,
-      "iptm": 0.8546749353408813,
-      "len": 80,
-      "name": "295_model_0_b0_d0",
-      "plddt": 0.8104,
-      "rosetta_ddg": -49.09,
-      "seq": "SENYKEFLSNLANDLIDRLVELGLSREEAIEIVIEKAKEAGIEVEVEGDKVLLKEAPTVEQKDAFLKGLFDAVNAAYAAA"
-    },
-    {
-      "dock": 1.063,
-      "full_name": "cd274_binder_001_cd274_binder_001_314_model_0_b0_d3",
-      "ipsae_min": 0.73,
-      "iptm": 0.8928212523460388,
-      "len": 74,
-      "name": "314_model_0_b0_d3",
-      "plddt": 0.8352,
-      "rosetta_ddg": -46.759,
-      "seq": "SDKEKIKKIEELAKKAIEEIKNAKSIEEIKEILSKARKEILELIKGASEEVKEKAAEEMLKIMETAQKKAKELL"
-    },
-    {
-      "dock": 1.05,
-      "full_name": "cd274_binder_001_cd274_binder_001_230_model_1_b0_d3",
-      "ipsae_min": 0.7207,
-      "iptm": 0.8921880722045898,
-      "len": 81,
-      "name": "230_model_1_b0_d3",
-      "plddt": 0.8291,
-      "rosetta_ddg": -48.893,
-      "seq": "MLAEEVLELLRRVRKLAEEAGKKGSAALLDSMIEEIEAHPDDLSTLGAAALVAAVVAEQLGDKELAEEARRLLERVNELAA"
-    },
-    {
-      "dock": 0.758,
-      "full_name": "cd274_binder_001_cd274_binder_001_120_model_0_b0_d2",
-      "ipsae_min": 0.7226,
-      "iptm": 0.8870271444320679,
-      "len": 78,
-      "name": "120_model_0_b0_d2",
-      "plddt": 0.8453,
-      "rosetta_ddg": -46.502,
-      "seq": "MKEEYRELGEKYKKEAEELAAKDPKSLVAARKYMLAAISYLKAGDKEAAIEAAEKAKEILEAAGENTAFADDLIELAK"
-    },
-    {
-      "dock": 1.879,
-      "full_name": "cd274_binder_001_cd274_binder_001_268_model_0_b0_d2",
-      "ipsae_min": 0.6741,
-      "iptm": 0.8603522777557373,
-      "len": 85,
-      "name": "268_model_0_b0_d2",
-      "plddt": 0.8149,
-      "rosetta_ddg": -55.627,
-      "seq": "MSEAIVINEYIDAKSGEEALEKAREIAEKKIEELSKEKKAEAEVETLAEAVAYNKKKNETIATVLKKVKLKNGDTVTILVTVTSR"
-    },
-    {
-      "dock": 1.143,
-      "full_name": "cd274_binder_001_cd274_binder_001_392_model_3_b0_d0",
-      "ipsae_min": 0.7961,
-      "iptm": 0.9130599498748779,
+      "dock": 0.879,
+      "full_name": "cd274_binder_001_cd274_binder_001_18_model_0_b0_d3",
+      "ipsae_min": 0.8066,
+      "iptm": 0.9194439053535461,
       "len": 77,
-      "name": "392_model_3_b0_d0",
-      "plddt": 0.8414,
-      "rosetta_ddg": -44.712,
-      "seq": "MKEAEEAYEEGLKAYAEKDYEKAAEHFEKAAELAGVSELAKEALFNLARALLKLGKEEEADEKLEEANKIAEKLKEA"
+      "name": "18_model_0_b0_d3",
+      "plddt": 0.8122,
+      "rosetta_ddg": -49.677,
+      "seq": "MRIPDVRALAEALGISERVAQVLATAIVLSQVTSRERAVELALRALRLLGVELSREELEELIRRAEETAKELGLLEL"
+    },
+    {
+      "dock": 1.419,
+      "full_name": "cd274_binder_001_cd274_binder_001_3_model_2_b0_d1",
+      "ipsae_min": 0.8419,
+      "iptm": 0.9296041131019592,
+      "len": 86,
+      "name": "3_model_2_b0_d1",
+      "plddt": 0.802,
+      "rosetta_ddg": -53.868,
+      "seq": "MAKAISSGASVGLLKILQGASLEEAVEAARETATALADKYGLSEEEKKEVVEKVEEIVEEVYKMKKEGASNDELLDFLAKKVNELV"
+    },
+    {
+      "dock": 0.985,
+      "full_name": "cd274_binder_001_cd274_binder_001_71_model_3_b0_d1",
+      "ipsae_min": 0.7692,
+      "iptm": 0.9045944213867188,
+      "len": 74,
+      "name": "71_model_3_b0_d1",
+      "plddt": 0.8147,
+      "rosetta_ddg": -55.893,
+      "seq": "SVDEVLELIAEVVNLAVKAGMSAEVAAEIAAHLIKAYTTGDKAALEKAKELARANLDEETAAEIEKLAEKIAAL"
+    },
+    {
+      "dock": 1.909,
+      "full_name": "cd274_binder_001_cd274_binder_001_179_model_1_b0_d0",
+      "ipsae_min": 0.644,
+      "iptm": 0.8623337149620056,
+      "len": 83,
+      "name": "179_model_1_b0_d0",
+      "plddt": 0.8487,
+      "rosetta_ddg": -46.418,
+      "seq": "MKTIDTEAFREALERELGLRLDDGEASIVTAAAMLALEVSREKGLQLLELARELGKISQELYDKLVANFDEIIEIARSLIKEK"
+    },
+    {
+      "dock": 1.409,
+      "full_name": "cd274_binder_001_cd274_binder_001_138_model_1_b0_d1",
+      "ipsae_min": 0.5585,
+      "iptm": 0.8497384786605835,
+      "len": 76,
+      "name": "138_model_1_b0_d1",
+      "plddt": 0.8013,
+      "rosetta_ddg": -64.026,
+      "seq": "MSLEEAVREHIRTVERARDSLELSEELREEIDRLIARAREALAAGDLRTAGRHVAEALRLLVKAADENNQEIKVSA"
+    },
+    {
+      "dock": 0.755,
+      "full_name": "cd274_binder_001_cd274_binder_001_37_model_3_b0_d1",
+      "ipsae_min": 0.7171,
+      "iptm": 0.890805721282959,
+      "len": 77,
+      "name": "37_model_3_b0_d1",
+      "plddt": 0.8202,
+      "rosetta_ddg": -46.637,
+      "seq": "MKEAIELIKKGLTAYSKGDYETAKEYFEKAAKSKDLRIKGIAYGLLSIVYREMGDEKKAEEYNAKSKEAYAAAEAAA"
+    },
+    {
+      "dock": 0.862,
+      "full_name": "cd274_binder_001_cd274_binder_001_243_model_0_b0_d1",
+      "ipsae_min": 0.7131,
+      "iptm": 0.8836895823478699,
+      "len": 78,
+      "name": "243_model_0_b0_d1",
+      "plddt": 0.8298,
+      "rosetta_ddg": -52.166,
+      "seq": "MEVPPLVLSPETLERMREIFREIGVELSDAEIVAAAFAVLAGFRSLVEYYIDRMVAMGASREEAREALERAAALARED"
+    },
+    {
+      "dock": 0.865,
+      "full_name": "cd274_binder_001_cd274_binder_001_59_model_1_b0_d2",
+      "ipsae_min": 0.8087,
+      "iptm": 0.9193888902664185,
+      "len": 79,
+      "name": "59_model_1_b0_d2",
+      "plddt": 0.8216,
+      "rosetta_ddg": -48.149,
+      "seq": "MEKEFAALKEAAANADLVATKVALSKLLLAAVEEAGRPLDSPELTELAQEILAAVEAGDAEAAVAAAERLEALLRELLA"
+    },
+    {
+      "dock": 1.18,
+      "full_name": "cd274_binder_001_cd274_binder_001_274_model_3_b0_d0",
+      "ipsae_min": 0.5449,
+      "iptm": 0.8354489803314209,
+      "len": 75,
+      "name": "274_model_3_b0_d0",
+      "plddt": 0.8321,
+      "rosetta_ddg": -50.646,
+      "seq": "SRVEAAIESVVHHTALLAAEYSKERAAEQAERDIAATRRVLGDEFTEADEAETRARVAEVLALSREELRARVAAA"
+    },
+    {
+      "dock": 0.587,
+      "full_name": "cd274_binder_001_cd274_binder_001_133_model_1_b0_d2",
+      "ipsae_min": 0.6614,
+      "iptm": 0.8772554397583008,
+      "len": 70,
+      "name": "133_model_1_b0_d2",
+      "plddt": 0.8334,
+      "rosetta_ddg": -47.404,
+      "seq": "SGAAALAALADEIAAEPGADAALVARAREAIAAGDLAAAIDLLSAAAMTLPREKKLPMLDRIVALSRAIA"
+    },
+    {
+      "dock": 1.008,
+      "full_name": "cd274_binder_001_cd274_binder_001_197_model_0_b0_d0",
+      "ipsae_min": 0.7503,
+      "iptm": 0.9099342226982117,
+      "len": 71,
+      "name": "197_model_0_b0_d0",
+      "plddt": 0.8296,
+      "rosetta_ddg": -44.028,
+      "seq": "MERLRAAADSTVDLARFTVEKLKKGEISKKQAQNLLGVVRAGLAKLREWGASEEDLARIEAAIAELEKAIA"
+    },
+    {
+      "dock": 0.937,
+      "full_name": "cd274_binder_001_cd274_binder_001_288_model_2_b0_d1",
+      "ipsae_min": 0.6357,
+      "iptm": 0.8628391027450562,
+      "len": 79,
+      "name": "288_model_2_b0_d1",
+      "plddt": 0.819,
+      "rosetta_ddg": -50.824,
+      "seq": "SFFQRLIEQLKKYMAENKLSRTQALTVATAIMYALLQLGASEEEAKAAVKEALVELAGLSEEEAEEIAEEALALVRASS"
+    },
+    {
+      "dock": 1.24,
+      "full_name": "cd274_binder_001_cd274_binder_001_224_model_0_b0_d3",
+      "ipsae_min": 0.7702,
+      "iptm": 0.9177294969558716,
+      "len": 84,
+      "name": "224_model_0_b0_d3",
+      "plddt": 0.8233,
+      "rosetta_ddg": -41.895,
+      "seq": "MKAREIAEQIVRTAGKRLGLSEEEIEEAVRLMLETADELLERYGDKLTEEQIYMSAAQATVLAMQAGDLSAVRARAEELAERTI"
+    },
+    {
+      "dock": 0.909,
+      "full_name": "cd274_binder_001_cd274_binder_001_162_model_0_b0_d1",
+      "ipsae_min": 0.5989,
+      "iptm": 0.8439458608627319,
+      "len": 77,
+      "name": "162_model_0_b0_d1",
+      "plddt": 0.8296,
+      "rosetta_ddg": -52.008,
+      "seq": "MSLRELVQAVYEALAPHVSQAVADLAAYVTYLALRRKLSVEEALKLFEELAKKAGLELSEAQRAAIREALAAALEAA"
+    },
+    {
+      "dock": 1.658,
+      "full_name": "cd274_binder_001_cd274_binder_001_211_model_0_b0_d2",
+      "ipsae_min": 0.8248,
+      "iptm": 0.9280785322189331,
+      "len": 72,
+      "name": "211_model_0_b0_d2",
+      "plddt": 0.8413,
+      "rosetta_ddg": -41.105,
+      "seq": "MDEEAKKLLEKGLELLKEGKYEEAIKLFEEAAKLGTGKVKAEALGALAVAYISLGDYESAEKAAAEANKAAA"
+    },
+    {
+      "dock": 0.718,
+      "full_name": "cd274_binder_001_cd274_binder_001_297_model_1_b0_d2",
+      "ipsae_min": 0.6765,
+      "iptm": 0.8877227306365967,
+      "len": 83,
+      "name": "297_model_1_b0_d2",
+      "plddt": 0.8195,
+      "rosetta_ddg": -44.894,
+      "seq": "EIPPISREEAEELARRIEEATGIKLSPDTAAAIALIAELLPEERAKEVIRSILAAEGIEATDEQIETILRIAREFMAEKKREL"
+    },
+    {
+      "dock": 0.589,
+      "full_name": "cd274_binder_001_cd274_binder_001_103_model_2_b0_d0",
+      "ipsae_min": 0.6124,
+      "iptm": 0.84702068567276,
+      "len": 86,
+      "name": "103_model_2_b0_d0",
+      "plddt": 0.8223,
+      "rosetta_ddg": -47.738,
+      "seq": "SDQVTAALNNLDAAYKTASEEAKPHIAAAQLHLSLGYMAAGEGDRARALAHLDAALEHLDKALAIQPSPELEAAKAHVEAVRAAVA"
     }
   ],
-  "ended": "2026-08-22",
-  "frozen_stats": "input:     5,824\nsurvivors: 715\n\ndropped by first failing criterion:\n  binder_rmsd_dock <= 5         2,464\n  iptm >= 0.5                   1,299\n  no clash                        992\n  hotspot_engagement >= 1         322\n  binder_rmsd_fold <= 2            31\n  binder_plddt >= 0.75              1\n\npassing each criterion alone:\n  binder_rmsd_dock <= 5         3,360  ( 57.7%)\n  epitope_recall >= 0.5         5,678  ( 97.5%)\n  hotspot_engagement >= 1       4,949  ( 85.0%)\n  binder_rmsd_fold <= 2         5,621  ( 96.5%)\n  binder_plddt >= 0.75          5,791  ( 99.4%)\n  iptm >= 0.5                   2,089  ( 35.9%)\n  iface_pae <= 15               2,859  ( 49.1%)\n  no clash                      2,190  ( 37.6%)\n\ndistinct backbones among survivors: 462\ncomposite columns: ipsae_min, neg_binder_rmsd_dock, binder_plddt, iptm, neg_iface_pae, epitope_recall, hotspot_engagement, neg_rosetta_ddg, rosetta_cms, neg_rosetta_vbuns\n",
+  "ended": "2026-09-11",
+  "frozen_stats": "input:     3,988\nsurvivors: 708\n\ndropped by first failing criterion:\n  binder_rmsd_dock <= 5         1,577\n  iptm >= 0.5                   1,008\n  no clash                        651\n  binder_rmsd_fold <= 2            43\n  binder_plddt >= 0.75              1\n\npassing each criterion alone:\n  binder_rmsd_dock <= 5         2,411  ( 60.5%)\n  epitope_recall >= 0.5         3,871  ( 97.1%)\n  hotspot_engagement >= 0.75    3,886  ( 97.4%)\n  binder_rmsd_fold <= 2         3,832  ( 96.1%)\n  binder_plddt >= 0.75          3,959  ( 99.3%)\n  iptm >= 0.5                   1,551  ( 38.9%)\n  iface_pae <= 15               2,171  ( 54.4%)\n  no clash                      1,819  ( 45.6%)\n\ndistinct backbones among survivors: 390\ncomposite columns: ipsae_min, neg_binder_rmsd_dock, binder_plddt, iptm, neg_iface_pae, epitope_recall, hotspot_engagement, neg_rosetta_ddg, rosetta_cms, neg_rosetta_vbuns\n",
   "gate_current": {
     "alone": [
       [
         "binder_rmsd_dock <= 5",
-        3360,
-        57.7
+        2411,
+        60.5
       ],
       [
         "epitope_recall >= 0.5",
-        5678,
-        97.5
+        3871,
+        97.1
       ],
       [
         "hotspot_engagement >= 0.75",
-        5685,
-        97.6
+        3886,
+        97.4
       ],
       [
         "binder_rmsd_fold <= 2",
-        5621,
-        96.5
+        3832,
+        96.1
       ],
       [
         "binder_plddt >= 0.75",
-        5791,
-        99.4
+        3959,
+        99.3
       ],
       [
         "iptm >= 0.5",
-        2089,
-        35.9
+        1551,
+        38.9
       ],
       [
         "iface_pae <= 15",
-        2859,
-        49.1
+        2171,
+        54.4
       ],
       [
         "no clash",
-        2190,
-        37.6
+        1819,
+        45.6
       ]
     ],
-    "backbones": 488,
+    "backbones": 390,
     "dropped": [
       [
         "binder_rmsd_dock <= 5",
-        2464
+        1577
       ],
       [
         "iptm >= 0.5",
-        1478
+        1008
       ],
       [
         "no clash",
-        1090
+        651
       ],
       [
         "binder_rmsd_fold <= 2",
-        38
-      ],
-      [
-        "binder_plddt >= 0.75",
-        2
-      ]
-    ],
-    "survivors": 752
-  },
-  "gate_historical": {
-    "alone": [
-      [
-        "binder_rmsd_dock <= 5",
-        3360,
-        57.7
-      ],
-      [
-        "epitope_recall >= 0.5",
-        5678,
-        97.5
-      ],
-      [
-        "hotspot_engagement >= 1",
-        4949,
-        85.0
-      ],
-      [
-        "binder_rmsd_fold <= 2",
-        5621,
-        96.5
-      ],
-      [
-        "binder_plddt >= 0.75",
-        5791,
-        99.4
-      ],
-      [
-        "iptm >= 0.5",
-        2089,
-        35.9
-      ],
-      [
-        "iface_pae <= 15",
-        2859,
-        49.1
-      ],
-      [
-        "no clash",
-        2190,
-        37.6
-      ]
-    ],
-    "backbones": 462,
-    "dropped": [
-      [
-        "binder_rmsd_dock <= 5",
-        2464
-      ],
-      [
-        "iptm >= 0.5",
-        1299
-      ],
-      [
-        "no clash",
-        992
-      ],
-      [
-        "hotspot_engagement >= 1",
-        322
-      ],
-      [
-        "binder_rmsd_fold <= 2",
-        31
+        43
       ],
       [
         "binder_plddt >= 0.75",
         1
       ]
     ],
-    "survivors": 715
+    "survivors": 708
+  },
+  "gate_historical": {
+    "alone": [
+      [
+        "binder_rmsd_dock <= 5",
+        2411,
+        60.5
+      ],
+      [
+        "epitope_recall >= 0.5",
+        3871,
+        97.1
+      ],
+      [
+        "hotspot_engagement >= 1",
+        3749,
+        94.0
+      ],
+      [
+        "binder_rmsd_fold <= 2",
+        3832,
+        96.1
+      ],
+      [
+        "binder_plddt >= 0.75",
+        3959,
+        99.3
+      ],
+      [
+        "iptm >= 0.5",
+        1551,
+        38.9
+      ],
+      [
+        "iface_pae <= 15",
+        2171,
+        54.4
+      ],
+      [
+        "no clash",
+        1819,
+        45.6
+      ]
+    ],
+    "backbones": 390,
+    "dropped": [
+      [
+        "binder_rmsd_dock <= 5",
+        1577
+      ],
+      [
+        "iptm >= 0.5",
+        1005
+      ],
+      [
+        "no clash",
+        650
+      ],
+      [
+        "binder_rmsd_fold <= 2",
+        43
+      ],
+      [
+        "hotspot_engagement >= 1",
+        4
+      ],
+      [
+        "binder_plddt >= 0.75",
+        1
+      ]
+    ],
+    "survivors": 708
   },
   "geometry": {
     "contrast": [
@@ -560,144 +562,161 @@
         8
       ]
     ],
-    "dock_first_fail": 2464,
-    "dock_first_fail_lowconf": 2232,
-    "dock_first_fail_lowconf_pct": 90.6,
+    "dock_first_fail": 1577,
+    "dock_first_fail_lowconf": 1407,
+    "dock_first_fail_lowconf_pct": 89.2,
     "dock_max": 5.0,
     "iptm_bar": 0.7,
     "iptm_gate": 0.5,
-    "n_confidently_misdocked": 51,
-    "n_high_iptm": 1026,
-    "n_high_iptm_docked": 975,
-    "pct_docked": 95.0
+    "n_confidently_misdocked": 43,
+    "n_high_iptm": 802,
+    "n_high_iptm_docked": 759,
+    "pct_docked": 94.6
   },
   "go": "GO",
-  "go_rationale": "Top-5 all exceed iPTM 0.89 with interface PAE ≤ 3.81 Å, perfect hotspot engagement, zero clashes. Rank-1 is a strong lead. **Caveat: liability columns absent from input table — must verify no high-severity developability flags before wet-lab commitment.**",
+  "go_rationale": "Calibration trial demonstrated high designability (6.89% yield) with top picks achieving sub-angstrom docking RMSDs, iPTM up to 0.930, and ipsae_min exceeding 0.80.",
   "gpu_hours": {
-    "calibration": 4.84,
-    "pilot": 0.87,
-    "production": 20.65,
-    "total": 26.36
+    "calibration": 6.6,
+    "pilot": 1.1,
+    "production": 13.67,
+    "total": 21.37
   },
   "has_report_html": true,
   "hotspot_engagement_now": 0.75,
   "hotspots": [
     {
-      "atoms": "CD2,OH",
-      "auth": 56,
+      "atoms": "CB",
+      "auth": 53,
       "backbone_only": false,
-      "bsa": 66.9,
-      "ddg": -3.87,
-      "ddg_rank": 1,
-      "label": 39,
+      "bsa": 11.4,
+      "ddg": null,
+      "ddg_rank": null,
+      "label": 34,
+      "largest_bsa": false,
+      "name": "Ala",
+      "region": "Central β-Sheet Hydrophobic & Aromatic Core"
+    },
+    {
+      "atoms": "CD1,CG2",
+      "auth": 55,
+      "backbone_only": false,
+      "bsa": 51.9,
+      "ddg": -1.45,
+      "ddg_rank": 5,
+      "label": 36,
+      "largest_bsa": false,
+      "name": "Ile",
+      "region": "Central β-Sheet Hydrophobic & Aromatic Core"
+    },
+    {
+      "atoms": "CD2,OH",
+      "auth": 57,
+      "backbone_only": false,
+      "bsa": 34.5,
+      "ddg": null,
+      "ddg_rank": null,
+      "label": 38,
       "largest_bsa": false,
       "name": "Tyr",
-      "region": "CC′/FG-loop"
+      "region": "Central β-Sheet Hydrophobic & Aromatic Core"
     },
     {
-      "atoms": "CD,OE1",
-      "auth": 58,
-      "backbone_only": false,
-      "bsa": 17.1,
-      "ddg": null,
-      "ddg_rank": null,
-      "label": 41,
-      "largest_bsa": false,
-      "name": "Glu",
-      "region": "CC′/FG-loop"
-    },
-    {
-      "atoms": "ND1,NE2",
+      "atoms": "CG1,CG2",
       "auth": 69,
       "backbone_only": false,
-      "bsa": 67.8,
-      "ddg": -2.9,
-      "ddg_rank": 2,
-      "label": 52,
-      "largest_bsa": false,
-      "name": "His",
-      "region": "CC′/FG-loop"
-    },
-    {
-      "atoms": "NZ,CE",
-      "auth": 75,
-      "backbone_only": false,
-      "bsa": 60.1,
+      "bsa": 33.7,
       "ddg": null,
       "ddg_rank": null,
-      "label": 58,
+      "label": 50,
       "largest_bsa": false,
-      "name": "Lys",
-      "region": "CC′/FG-loop"
+      "name": "Val",
+      "region": "Central β-Sheet Hydrophobic & Aromatic Core"
+    },
+    {
+      "atoms": "CD2,NE2",
+      "auth": 70,
+      "backbone_only": false,
+      "bsa": 60.5,
+      "ddg": -3.69,
+      "ddg_rank": 2,
+      "label": 51,
+      "largest_bsa": false,
+      "name": "His",
+      "region": "Central β-Sheet Hydrophobic & Aromatic Core"
     },
     {
       "atoms": "CZ,NH1",
-      "auth": 113,
+      "auth": 114,
       "backbone_only": false,
-      "bsa": 28.9,
+      "bsa": 20.1,
       "ddg": null,
       "ddg_rank": null,
-      "label": 96,
+      "label": 95,
       "largest_bsa": false,
       "name": "Arg",
-      "region": "C-terminal F/G-strand"
+      "region": "Central β-Sheet Hydrophobic & Aromatic Core"
     },
     {
-      "atoms": "CA (no sidechain — backbone contact only)",
-      "auth": 119,
-      "backbone_only": true,
-      "bsa": 38.8,
-      "ddg": null,
-      "ddg_rank": null,
-      "label": 102,
+      "atoms": "CG,SD",
+      "auth": 116,
+      "backbone_only": false,
+      "bsa": 61.8,
+      "ddg": -1.73,
+      "ddg_rank": 4,
+      "label": 97,
       "largest_bsa": false,
-      "name": "Gly",
-      "region": "C-terminal F/G-strand"
+      "name": "Met",
+      "region": "Central β-Sheet Hydrophobic & Aromatic Core"
     },
     {
-      "atoms": "CB (no sidechain — backbone/CB contact only)",
-      "auth": 121,
-      "backbone_only": true,
-      "bsa": 66.4,
-      "ddg": null,
-      "ddg_rank": null,
-      "label": 104,
+      "atoms": "CB,OG",
+      "auth": 118,
+      "backbone_only": false,
+      "bsa": 22.0,
+      "ddg": -2.0,
+      "ddg_rank": 3,
+      "label": 99,
       "largest_bsa": false,
-      "name": "Ala",
-      "region": "C-terminal F/G-strand"
+      "name": "Ser",
+      "region": "Central β-Sheet Hydrophobic & Aromatic Core"
     },
     {
-      "atoms": "CG,OD1",
+      "atoms": "CB",
       "auth": 122,
       "backbone_only": false,
-      "bsa": 9.1,
-      "ddg": null,
-      "ddg_rank": null,
-      "label": 105,
+      "bsa": 50.3,
+      "ddg": -1.41,
+      "ddg_rank": 6,
+      "label": 103,
       "largest_bsa": false,
-      "name": "Asp",
-      "region": "C-terminal F/G-strand"
+      "name": "Ala",
+      "region": "Central β-Sheet Hydrophobic & Aromatic Core"
     },
     {
       "atoms": "CD2,OH",
-      "auth": 123,
+      "auth": 124,
       "backbone_only": false,
-      "bsa": 71.4,
-      "ddg": null,
-      "ddg_rank": null,
-      "label": 106,
+      "bsa": 106.3,
+      "ddg": -4.98,
+      "ddg_rank": 1,
+      "label": 105,
       "largest_bsa": true,
       "name": "Tyr",
-      "region": "C-terminal F/G-strand"
+      "region": "Central β-Sheet Hydrophobic & Aromatic Core"
     }
   ],
-  "interface_rationale": "largest BSA, most complete interface residue coverage (44), strong H-bond network (30) and good hydrophobicity (0.34) at the highest resolution (1.64 Å) among all IgV-domain complexes in the table; this front-sheet face is the epitope essentially every characterized PD-L1 blocker (antibodies, macrocyclic peptides, small molecules per corpus) converges on, making it the best structural proxy for the PD-1 binding footprint",
-  "lit_doi": "10.3390/molecules24244428",
-  "lit_kd": "1.38 µM",
-  "llm_calls": 5,
+  "interface_rationale": "8ZNL provides a high-resolution (1.77 Å) template of a validated de novo miniprotein binding the PD-1-competitive IgV face with high BSA (1844 Å²) and balanced hydrophobicity (phi = 0.39).",
+  "lit_doi": "10.7554/eLife.22889",
+  "lit_dois": [
+    "10.7554/eLife.22889",
+    "10.1021/acs.biochem.9b00822",
+    "10.1186/s12943-023-01853-4"
+  ],
+  "lit_kd": null,
+  "llm_calls": 3,
   "llm_calls_by_stage": {
     "binder_summary": 1,
-    "interface": 3,
+    "interface": 1,
     "target_intel": 1
   },
   "llm_stages": [
@@ -705,112 +724,238 @@
     "interface",
     "binder_summary"
   ],
-  "manual_4zqk": {
-    "cutoff_A": 4.5,
-    "design_contacts": 26,
-    "hotspots_that_are_pd1_contacts": 7,
-    "n_hotspots": 9,
-    "pct": 78,
-    "pd1_contacts": 18,
-    "pd1_only": [
-      19,
-      23,
-      26,
-      124
-    ],
-    "pdb_id": "4ZQK",
-    "shared": 14,
-    "source": "manual UCSF ChimeraX session, not part of the run",
-    "superpose_identity_pct": 99.1,
-    "superpose_n_ca": 115,
-    "superpose_rmsd_A": 0.83
-  },
   "models": {
-    "claude-haiku-4-5": 0.015924,
-    "claude-sonnet-5": 2.107877
+    "gemini-3.7-flash": 0.182747
   },
-  "n_scored": 5824,
+  "n_scored": 3988,
   "partner_chain": "A",
-  "partner_name": "anti-PD-L1 VHH (nanobody, reagent)",
-  "pdb_id": "7CZD",
+  "partner_name": "PD-L1 de novo binder",
+  "pdb_id": "8ZNL",
   "pilot": {
-    "hours": 0.87,
-    "n_filtered": 64,
-    "n_rf3": 256,
+    "hours": 1.1,
+    "n_filtered": 79,
+    "n_rf3": 316,
     "n_rfd3": 100
   },
   "production": {
-    "hours": 20.65,
-    "n_filtered": 1456,
-    "n_mpnn": 5824,
-    "n_rf3": 5824,
-    "n_rfd3": 2364,
-    "prefilter_rate": 0.6159
+    "hours": 13.67,
+    "n_filtered": 997,
+    "n_mpnn": 3988,
+    "n_rf3": 3988,
+    "n_rfd3": 1224,
+    "prefilter_rate": 0.8145
   },
   "query": "Design binders against PD-L1 to block its interaction with PD-1.",
   "regions": [
     {
-      "hydrophobic_fraction": 0.6,
+      "hydrophobic_fraction": 0.8,
       "n": 1,
       "rating": "Excellent",
       "residues": [
-        113,
-        115,
+        53,
+        55,
+        57,
+        69,
+        70,
+        114,
         116,
-        117,
-        119,
-        120,
+        118,
+        122,
+        124
+      ],
+      "short": "Central β-Sheet Hydrophobic & Aromatic Core",
+      "title": "Central β-Sheet Hydrophobic & Aromatic Core"
+    },
+    {
+      "hydrophobic_fraction": 0.5,
+      "n": 2,
+      "rating": "Excellent",
+      "residues": [
+        114,
+        116,
+        118,
         121,
         122,
         123,
-        125
+        124,
+        126
       ],
-      "short": "C-terminal F/G-strand",
-      "title": "C-terminal F/G-strand hotspot (Arg113–Tyr123)"
-    },
-    {
-      "hydrophobic_fraction": 0.44,
-      "n": 2,
-      "rating": "Good",
-      "residues": [
-        54,
-        56,
-        58,
-        63,
-        66,
-        68,
-        69,
-        73,
-        75
-      ],
-      "short": "CC′/FG-loop",
-      "title": "CC′/FG-loop hotspot (Ile54–Lys75)"
+      "short": "F-G Loop / Strand Basic & Aromatic Anchor",
+      "title": "F-G Loop / Strand Basic & Aromatic Anchor"
     }
   ],
   "rosetta_cap": 300,
   "rosetta_scored": 300,
   "sites": [
     {
-      "partner_name": "anti-PD-L1 VHH",
-      "pdb_id": "7CZD",
-      "rationale": "largest, best-resolved, best-balanced (BSA/H-bond/hydrophobicity) description of the canonical PD-1-competitive front-sheet epitope",
-      "site_id": "vhh_frontsheet"
-    },
-    {
       "partner_name": "PD-L1 de novo binder",
       "pdb_id": "8ZNL",
-      "rationale": "existing de novo mini-binder solved at the same IgV face — direct proof the epitope is tractable for the exact design modality being used here, smaller BSA (1844 Å²) but valuable as a design-trial comparator",
-      "site_id": "denovo_precedent"
+      "rationale": "Directly defines the designable miniprotein epitope on the PD-L1 IgV beta-sheet face that sterically occludes PD-1 binding.",
+      "site_id": "denovo_igv_face"
+    },
+    {
+      "partner_name": "anti-PD-L1 VHH",
+      "pdb_id": "7CZD",
+      "rationale": "High-resolution (1.64 Å) single-domain antibody interface covering an extensive 2449 Å² footprint across the PD-1 binding site.",
+      "site_id": "vhh_czd_epitope"
     }
   ],
-  "spend_usd": 2.123801,
-  "started": "2026-08-21",
+  "spend_usd": 0.182747,
+  "started": "2026-09-10",
   "target_chain": "B",
-  "target_chain_length": 117,
+  "target_chain_length": 114,
   "target_gene": "CD274",
   "top_k_count": 20,
-  "trim_residues": 117,
+  "trim_residues": 114,
   "trim_segments": 1,
   "uniprot": "Q9NZQ7",
-  "wall_hours": 27.14
+  "wall_hours": 21.47,
+  "zqk": {
+    "cutoff_A": 4.5,
+    "design_contacts": 30,
+    "design_only_auth": [
+      21,
+      22,
+      47,
+      50,
+      52,
+      53,
+      54,
+      59,
+      62,
+      64,
+      69,
+      70,
+      72,
+      74,
+      76,
+      77,
+      114,
+      119
+    ],
+    "hotspots_that_are_pd1_contacts": 6,
+    "n_hotspots": 10,
+    "pct": 80,
+    "pct_of_design": 40,
+    "pct_of_pd1": 80,
+    "pd1_chain": "B",
+    "pd1_contacts": 15,
+    "pd1_only": [
+      20,
+      24,
+      27
+    ],
+    "pdb_id": "4ZQK",
+    "pdl1_chain": "A",
+    "refold": {
+      "design": [
+        2,
+        3,
+        28,
+        31,
+        33,
+        34,
+        35,
+        36,
+        38,
+        40,
+        43,
+        45,
+        48,
+        50,
+        51,
+        53,
+        55,
+        57,
+        58,
+        95,
+        97,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107
+      ],
+      "design_only": [
+        2,
+        3,
+        28,
+        31,
+        33,
+        34,
+        35,
+        40,
+        43,
+        45,
+        50,
+        51,
+        53,
+        55,
+        57,
+        58,
+        95,
+        100
+      ],
+      "pd1": [
+        1,
+        5,
+        8,
+        36,
+        38,
+        48,
+        97,
+        99,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107
+      ],
+      "pd1_only": [
+        1,
+        5,
+        8
+      ],
+      "shared": [
+        36,
+        38,
+        48,
+        97,
+        99,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107
+      ]
+    },
+    "refold_offset": 19,
+    "shared": 12,
+    "shared_auth": [
+      55,
+      57,
+      67,
+      116,
+      118,
+      120,
+      121,
+      122,
+      123,
+      124,
+      125,
+      126
+    ],
+    "source": "computed at build time from the run's own rank-1 refold",
+    "superpose_identity_pct": 100.0,
+    "superpose_n_ca": 113,
+    "superpose_rmsd_A": 0.87
+  }
 }

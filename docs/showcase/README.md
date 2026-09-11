@@ -12,7 +12,7 @@ previews will point at the old host.
 |---|---|---|
 | `pain_receptors.html` | `projects/pain_receptors_v3` | The most recent end-to-end run, and the fullest arc: one general prompt about pain, three candidate targets ranked by evidence, the CGRP receptor chosen, a designable structure measured out, a reachable epitope on a membrane protein, a trial that sized the campaign, and 365 gated designs |
 | `ppi_discovery.html` | `projects/mesothelioma_showcase` | The PPI track end to end — an unnamed target chosen, argued, sized from a measured hit rate, and designed against on GPU; with the archived BoltzGen run as the before |
-| `campaign_pdl1.html` | `projects/pdl1_e2e` | A complete binder campaign against PD-L1 — target choice, epitope, calibration gate, production funnel, ranked designs |
+| `campaign_pdl1.html` | `projects/pdl1_rc1` | A complete binder campaign against PD-L1 (8ZNL) — target choice, epitope, calibration gate, production funnel, ranked designs, and a computed 4ZQK cross-check. Replaced the August `pdl1_e2e` build (7CZD) in Sep 2026; that run is still on disk if the old page is ever needed |
 | `corpus_explorer.html` | `outputs/mesothelioma_showcase.txt`, `data/` | One corpus-explorer session: tool trace, fingerprint schema, interaction + DepMap graphs |
 
 ## Where the numbers come from
@@ -51,6 +51,8 @@ which is not a declared project dependency:
 
 ```bash
 .venv/bin/python docs/showcase/build_campaign.py    # -> campaign_pdl1.html  (build first: owns the shared CSS)
+.venv/bin/python docs/showcase/render_pdl1.py       # -> assets/{design_face,epitope,native_face,pd1_face,footprint}.webp
+.venv/bin/python docs/showcase/build_campaign.py    # again, to embed the new renders
 .venv/bin/python docs/showcase/build_ppi.py         # -> ppi_discovery.html
 .venv/bin/python docs/showcase/build_corpus.py      # -> corpus_explorer.html
 .venv/bin/python docs/showcase/build_pain.py        # -> pain_receptors.html
@@ -61,6 +63,14 @@ which is not a declared project dependency:
 `campaign_pdl1.html` first: every other page reads its CSS out of that file's
 `<style>` block. The preview cards are inputs to the landing page, so
 `build_index.py` last.
+
+`build_campaign.py` appears **twice** on purpose, and only when the renders
+are being regenerated. `render_pdl1.py` reads its hotspot numbering and the
+two contact footprints out of `facts/campaign_pdl1.json`, which
+`build_campaign.py` writes — so the facts have to exist before the images can
+be drawn, and the images have to exist before the page can inline them. Skip
+the render step entirely on a normal rebuild; the committed `.webp` files are
+the inputs and nothing regenerates them implicitly.
 
 ## Publishing
 
@@ -104,11 +114,31 @@ external assets and no network dependency.
 
 ## Regenerating the structure images
 
-`render_pain.py` is the one render scripted end to end — run
-`.venv/bin/python docs/showcase/render_pain.py` and it re-derives the hotspot
-numbering, aims the camera and writes `assets/pain_design.webp` +
+`render_pain.py` and `render_pdl1.py` are the two renders scripted end to end.
+Each re-derives the hotspot numbering, aims the camera and writes its page's
+figures: `render_pain.py` gives `assets/pain_design.webp` +
 `assets/pain_epitope.webp` (the hero pair) and `assets/pain_rank1-4.webp` (the
-design cards).
+design cards); `render_pdl1.py` gives the campaign page's five —
+`design_face`, `epitope`, `native_face`, `pd1_face` and `footprint`.
+
+`render_pdl1.py` is the port this section used to ask for, and it added three
+things worth knowing beyond `render_pain.py`'s list:
+
+- **A deposited entry is not one complex.** 8ZNL's asymmetric unit holds four
+  copies of the 1:1 pair (chains A-H) and the interface stage analysed exactly
+  one. Rendered whole, the "what a real binder does here" figure showed eight
+  chains, six in ChimeraX's default colours — a crystal-packing diagram. The
+  pair to show comes from the run's own handoff, never from assuming a PDB
+  entry labels its target A.
+- **A before/after pair must be cropped to ONE box.** The same argument the
+  design cards make: `design_face` and `epitope` are framed once and then
+  cropped to the union of their bounding boxes, because cropping each to its
+  own gave 1119x909 against 946x725, so at one column width the "before" and
+  "after" showed PD-L1 at different sizes.
+- **A large partner defeats the camera tilt.** PD-1 is big enough and central
+  enough that opaque cartoon on the shared axis sat squarely in front of the
+  footprint the figure exists to reveal. PD-L1 is drawn as a surface with
+  PD-1 half-transparent over it instead.
 
 **The four card renders share one camera and one crop.** Each is a separate RF3
 refold, so its target sits in its own frame; rendered independently the cards
@@ -136,8 +166,8 @@ it, so the "bare epitope" and "design bound" images of a pair share one camera
 and can be read as before/after.
 
 The PD-1 comparison on the campaign page superposes PDB 4ZQK's PD-L1 chain onto
-the campaign's own copy (ChimeraX `matchmaker`, 0.83 A over 115 CA at 99.1%
-identity) so both partners share one frame and one camera, then counts contact
+the campaign's own copy so both partners share one frame and one camera, then
+counts contact
 residues at a 4.5 A heavy-atom cutoff on each side. 4ZQK took no part in the
 run, which is what makes it an independent check rather than a restatement.
 
@@ -169,14 +199,43 @@ from — the one artefact you cannot quietly correct after publishing.
 .venv/bin/python docs/showcase/build_carousel.py            # -> assets/lpt_carousel.pdf
 .venv/bin/python docs/showcase/build_carousel_pdl1.py       # -> assets/lpt_carousel_pdl1.pdf
 .venv/bin/python docs/showcase/build_video.py               # -> assets/lpt_hook.mp4
+.venv/bin/python docs/showcase/render_pdl1.py --only-turntable   # -> assets/turntable_pdl1/
+.venv/bin/python docs/showcase/build_video_pdl1.py          # -> assets/lpt_hook_pdl1.mp4
 ```
 
 | Asset | Shape | For |
 |---|---|---|
 | `assets/lpt_carousel.pdf` | 11 slides, 1080x1350 | LinkedIn renders an uploaded PDF as a swipeable deck |
 | `assets/lpt_carousel_pdl1.pdf` | 11 slides, 1080x1350 | the same, for the target-already-named entry point |
-| `assets/lpt_hook.mp4` | 57 s, 1080x1350, silent | feed video; autoplay is muted, so every claim is on screen |
+| `assets/lpt_hook.mp4` | 57 s, 1080x1350, silent | feed video, **disease-first** entry point; autoplay is muted, so every claim is on screen |
 | `assets/lpt_hook_poster.png` | 1080x1350 | upload as the video thumbnail — the first frame is a half-typed prompt |
+| `assets/lpt_hook_pdl1.mp4` | 57 s, 1080x1350, silent | the same, **target-first** — the binder track on the PD-L1/8ZNL campaign |
+| `assets/lpt_hook_pdl1_poster.png` | 1080x1350 | its thumbnail |
+
+**Two videos, two entry points**, on the same split as the decks.
+`build_video.py` opens on a disease prompt and sells the reasoning that picks
+the target; `build_video_pdl1.py` opens on a target the viewer already has and
+sells everything downstream — nine solved structures ranked on measured
+interfaces, a textbook epitope that is *wrong* on this entry (every PD-L1
+review names Tyr56; in 8ZNL residue 56 is a valine), a trial that raised its
+own success bar, the eight gates, and the 4ZQK cross-check. It imports the
+palette, type scale, layout primitives, pacing and the Chrome/ffmpeg
+machinery from `build_video.py` — two videos posted together that share a
+palette but drift in type scale read as two projects — so only the scenes
+live in the second file. Its turntable is `assets/turntable_pdl1/`, written by
+`render_pdl1.py --only-turntable`, deliberately NOT the `assets/turntable/`
+that `render_hero.py` writes: one shared folder would mean whichever render
+ran last silently decided what both videos showed.
+
+Two traps it hit that the first video does not:
+`.term` ships `word-break:break-word`, which is right for a prose query and
+wrong for a command line — it split `--target` as `-` then `-target`, in the
+frame a viewer is most likely to screenshot. And the 90 turntable frames are
+cropped to the union of their bounding boxes before being scaled into the
+plate: scaling the raw 1080x1080 canvases fits their transparent margins too
+(the complex arrived visibly smaller than its plate), while cropping each to
+its own box rescales the model every frame, which reads as breathing rather
+than turning.
 
 **Two decks, two entry points.** `build_carousel.py` opens on one sentence about
 a disease and sells the four reasoning stages that decide what to bind;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the PD-L1 campaign showcase page from projects/pdl1_e2e.
+"""Build the PD-L1 campaign showcase page from projects/pdl1_rc1.
 
 The first end-to-end binder campaign this repo ran (21-22 Aug 2026), and the one
 the later showcases are measured against: one target name in, a calibration gate
@@ -41,9 +41,11 @@ sys.path.insert(0, str(ROOT))
 
 import _facts                                            # noqa: E402
 from _common import head as _mkhead                      # noqa: E402
-from src.handoff import parse_handoff                    # noqa: E402
+from src.handoff import (                                 # noqa: E402
+    parse_handoff, parse_hotspot_residues,
+)
 
-PROJECT = ROOT / "projects/pdl1_e2e"
+PROJECT = ROOT / "projects/pdl1_rc1"
 RUN = PROJECT / "runs/round-1"
 BINDER = RUN / "binder"
 ASSETS = HERE / "assets"
@@ -55,20 +57,203 @@ _AA1 = {"A": "ALA", "R": "ARG", "N": "ASN", "D": "ASP", "C": "CYS", "Q": "GLN",
         "Y": "TYR", "V": "VAL"}
 _TITLE = {v: v.title() for v in _AA1.values()}
 
-# The one analysis on this page that is NOT in the run directory: a manual
-# ChimeraX superposition of PDB 4ZQK (PD-1/PD-L1) onto the campaign's own rank-1
-# refold, done by hand after the campaign finished. It is kept because it is the
-# only independent evidence that the pipeline aimed at the PD-1 footprint, and it
-# is labelled as manual on the page — an unversioned session cannot be extracted
-# and must not be presented as though the pipeline produced it.
-MANUAL_4ZQK = {
-    "source": "manual UCSF ChimeraX session, not part of the run",
-    "pdb_id": "4ZQK", "cutoff_A": 4.5,
-    "pd1_contacts": 18, "design_contacts": 26, "shared": 14, "pct": 78,
-    "hotspots_that_are_pd1_contacts": 7, "n_hotspots": 9,
-    "superpose_rmsd_A": 0.83, "superpose_n_ca": 115, "superpose_identity_pct": 99.1,
-    "pd1_only": [19, 23, 26, 124],
-}
+# The independent check: PDB 4ZQK (PD-1 bound to PD-L1) superposed onto this
+# campaign's own rank-1 refold, then contact footprints counted on both sides.
+# 4ZQK took no part in the run, which is what makes it evidence rather than a
+# restatement of the pipeline's own output.
+#
+# This used to be a hand-made ChimeraX session pasted in as a literal dict,
+# labelled "manual" on the page because an unversioned session cannot be
+# extracted. It is now computed here, so it goes through `_facts.load` like
+# every other number and the page's provenance claim covers it too. The old
+# figures were for the 7CZD campaign's rank-1 design and do not describe this
+# one: a different structure, a different epitope and a different binder.
+ZQK_PATH = ROOT / "data/structures/4ZQK_ba1.cif"
+CONTACT_CUTOFF_A = 4.5
+
+
+def _rank1_refold(top_row: dict) -> pathlib.Path:
+    """The rank-1 design's RF3 refold directory, found by name.
+
+    `os.scandir`, never a glob: `rf3_out` holds one directory per refold —
+    1,824 of them here, and tens of thousands on a larger campaign.
+    """
+    import os
+
+    base = BINDER / "campaign/production/rf3_out"
+    if not base.is_dir():
+        raise _facts.SourceMissing(str(base))
+    with os.scandir(base) as it:
+        for e in it:
+            if e.name == top_row["name"]:
+                cif = pathlib.Path(e.path) / f"{e.name}_model.cif"
+                if cif.is_file():
+                    return cif
+    raise _facts.SourceMissing(f"{base}/{top_row['name']}_model.cif")
+
+
+def _zqk_overlap(refold_cif: pathlib.Path, hotspots: dict[int, str]) -> dict:
+    """Superpose 4ZQK's PD-L1 onto the refold's target, count both footprints.
+
+    Three facts from this repo's own notes make or break this:
+
+      * RF3 renumbers the refold's chains — binder A, target B — and the
+        target 1-based, while the hotspot ids are AUTHOR numbering from the
+        deposited entry. The offset is DERIVED here and then verified against
+        every hotspot's residue name; a wrong offset silently reports contacts
+        for arbitrary residues, which is exactly the failure that looks fine.
+      * 4ZQK's PD-L1 is chain A and its PD-1 is chain B, identified by
+        sequence identity to the refold's own target rather than by position.
+      * Waters and ligands are stripped before superposing, or ordered waters
+        join the contact counts on both sides.
+    """
+    import gemmi
+
+    if not ZQK_PATH.is_file():
+        raise _facts.SourceMissing(str(ZQK_PATH))
+    from src.structure_tools import sequence_identity
+
+    ref = gemmi.read_structure(str(refold_cif))
+    ref.setup_entities()
+    ref.remove_ligands_and_waters()
+    target = ref[0]["B"]
+
+    # -- offset, derived then proven
+    offsets = {}
+    for off in range(-60, 80):
+        offsets[off] = sum(
+            1 for auth, name in hotspots.items() for r in target
+            if r.seqid.num == auth - off and r.name == name)
+    offset, agree = max(offsets.items(), key=lambda kv: kv[1])
+    if agree != len(hotspots):
+        raise SystemExit(
+            f"4ZQK check: refold offset {offset} explains only {agree} of "
+            f"{len(hotspots)} hotspot names — refusing to report contacts "
+            f"against a mapping that does not hold")
+
+    zqk = gemmi.read_structure(str(ZQK_PATH))
+    zqk.setup_entities()
+    zqk.remove_ligands_and_waters()
+    tgt_seq = gemmi.one_letter_code([r.name for r in target])
+    chains = [(ch.name, gemmi.one_letter_code([r.name for r in ch])) for ch in zqk[0]]
+    chains = [(n, sq) for n, sq in chains if len(sq) >= 30]
+    ident = {n: sequence_identity(tgt_seq, sq) for n, sq in chains}
+    pdl1_chain = max(ident, key=ident.get)
+    pd1_chain = min(ident, key=ident.get)
+    if pdl1_chain == pd1_chain or ident[pdl1_chain] < 0.8:
+        raise SystemExit(f"4ZQK check: cannot tell PD-L1 from PD-1 ({ident})")
+
+    pol_t, pol_z = target.get_polymer(), zqk[0][pdl1_chain].get_polymer()
+    sup = gemmi.calculate_superposition(pol_t, pol_z, pol_z.check_polymer_type(),
+                                        gemmi.SupSelect.CaP)
+    zqk[0].transform_pos_and_adp(sup.transform)
+
+    ns = gemmi.NeighborSearch(ref, CONTACT_CUTOFF_A + 1.5).populate()
+    hydrogen = gemmi.Element("H")
+
+    def footprint(residues) -> set[int]:
+        hit: set[int] = set()
+        for res in residues:
+            for atom in res:
+                if atom.element == hydrogen:
+                    continue
+                for mark in ns.find_atoms(atom.pos, "\0", radius=CONTACT_CUTOFF_A):
+                    cra = mark.to_cra(ref[0])
+                    if cra.chain.name != "B" or cra.atom.element == hydrogen:
+                        continue
+                    if cra.atom.pos.dist(atom.pos) <= CONTACT_CUTOFF_A:
+                        hit.add(cra.residue.seqid.num)
+        return hit
+
+    pd1 = footprint(list(zqk[0][pd1_chain]))
+    design = footprint(list(ref[0]["A"]))
+    shared = pd1 & design
+    auth = lambda n: n + offset                                   # noqa: E731
+    return {
+        "source": "computed at build time from the run's own rank-1 refold",
+        "pdb_id": "4ZQK", "cutoff_A": CONTACT_CUTOFF_A,
+        "pdl1_chain": pdl1_chain, "pd1_chain": pd1_chain,
+        "refold_offset": offset,
+        "pd1_contacts": len(pd1), "design_contacts": len(design),
+        "shared": len(shared),
+        # Of PD-1's OWN footprint, how much the design covers. The reciprocal
+        # (share of the design's footprint) is a different and easier number
+        # because the design is the larger of the two, so both are published.
+        # `pct` is what the page has always printed and it has always meant
+        # "of PD-1's own footprint" — kept under both names so the semantics
+        # are readable in the facts file rather than implied by a call site.
+        "pct": round(100 * len(shared) / len(pd1)) if pd1 else 0,
+        "pct_of_pd1": round(100 * len(shared) / len(pd1)) if pd1 else 0,
+        "pct_of_design": round(100 * len(shared) / len(design)) if design else 0,
+        "hotspots_that_are_pd1_contacts":
+            sum(1 for a in hotspots if (a - offset) in pd1),
+        "n_hotspots": len(hotspots),
+        "superpose_rmsd_A": round(sup.rmsd, 2),
+        "superpose_n_ca": sup.count,
+        "superpose_identity_pct": round(100 * ident[pdl1_chain], 1),
+        "pd1_only": sorted(auth(n) for n in (pd1 - design)),
+        "shared_auth": sorted(auth(n) for n in shared),
+        # Published in AUTHOR numbering for the page and in REFOLD numbering
+        # for `render_pdl1.py`, which colours these three sets on the refold's
+        # own coordinates and must not re-derive the offset itself.
+        "design_only_auth": sorted(auth(n) for n in (design - pd1)),
+        "refold": {"pd1": sorted(pd1), "design": sorted(design),
+                   "shared": sorted(shared),
+                   "pd1_only": sorted(pd1 - design),
+                   "design_only": sorted(design - pd1)},
+    }
+
+
+_AA3 = frozenset(_AA1.values())
+
+
+def _parse_bsa(md: str) -> dict[int, float]:
+    """Per-residue buried surface area, from the hotspot-region lines.
+
+    Two conventions are in the wild, because this is LLM-authored prose and
+    the skill prompt has been edited between runs:
+
+        7CZD (Aug 2026):  `- BSA contributions (Å²): R113 28.9, M115 43.1`
+        8ZNL (Sep 2026):  `- BSA contributions (Å²): TYR124 (106.3), MET116 (61.8)`
+
+    One-letter-and-bare-value, versus three-letter-and-parenthesised. Only the
+    first was handled, so the newer campaign extracted ZERO BSA values and the
+    page then died on `max()` of an empty sequence — a failure that reads as a
+    missing file rather than a changed format. Three-letter codes are matched
+    first and gated on being real amino acids, so `A122 (50.3)` cannot be read
+    as alanine-122 by the one-letter branch and then silently overwritten.
+    """
+    out: dict[int, float] = {}
+    for line in re.findall(r"- BSA contributions \(Å²\): (.+)", md):
+        for name, num, val in re.findall(r"\b([A-Z]{3})(\d+)\s*\(([\d.]+)\)", line):
+            if name in _AA3:
+                out[int(num)] = float(val)
+        for _one, num, val in re.findall(
+                r"\b([A-Z])(\d+)\s+([\d.]+)(?=[,\s]|$)", line):
+            out.setdefault(int(num), float(val))
+    return out
+
+
+def _parse_ddg(md: str) -> dict[int, float]:
+    """Per-residue ΔΔG, as the interface stage reported it.
+
+    The newer report states it structurally on its `Key chain B residues`
+    line (`TYR124 (ddG = -4.98 kcal/mol, BSA = 106.3 Å²)`) and yields six
+    values; the older one only mentioned two in prose (`Tyr56 ... (−3.87
+    kcal/mol)`). Both are read, structured form first. Signs are normalised
+    to negative: a stabilising ΔΔG is quoted with a Unicode minus in one
+    report and an ASCII hyphen in the other, and `abs()` on the magnitude is
+    safer than trusting which.
+    """
+    out: dict[int, float] = {}
+    for name, num, _sign, val in re.findall(
+            r"\b([A-Z]{3})(\d+)\s*\(ddG\s*=\s*([−-]?)([\d.]+)\s*kcal/mol", md):
+        if name in _AA3:
+            out[int(num)] = -abs(float(val))
+    for _name, num, _sign, val in re.findall(
+            r"([A-Z][a-z]{2})(\d+)[^()\n]{0,80}\(([−-])([\d.]+) kcal/mol\)", md):
+        out.setdefault(int(num), -abs(float(val)))
+    return out
 
 
 # --------------------------------------------------------------- extraction
@@ -115,19 +300,25 @@ def extract() -> dict:
 
     # -- hotspots: the interface stage's own MODEL-READY table, joined to the
     #    per-residue BSA and ddG it reported for the two regions it ranked.
-    hs_block = iface_md.split("MODEL-READY HOTSPOTS")[1]
-    hs_rows = re.findall(r"^\|\s*([A-Z]{3})\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(.+?)\s*\|",
-                         hs_block, re.M)
+    #
+    #    Read with the PIPELINE's parser, not a third regex of this file's own.
+    #    The one that used to live here required the residue name in its own
+    #    cell (`| ALA | 53 |`) and this campaign's interface stage writes
+    #    `| ALA53 | 53 |` — both of which `handoff.parse_hotspot_residues`
+    #    accepts, because it is the parser the run itself was built with. The
+    #    page's whole claim is that its numbers come from the run; a stricter
+    #    private copy of the run's own format is how that claim quietly stops
+    #    being true, and here it simply refused to build.
+    hs_json = parse_hotspot_residues(iface_md, parse_handoff(iface_md))
+    if not hs_json:
+        raise SystemExit("no MODEL-READY HOTSPOTS section in 21_interface.md")
+    hs_rows = [(r["residue"], str(r["auth_seq_id"]), str(r["label_seq_id"]),
+                r["rfd3_atoms"]) for r in json.loads(hs_json)["residues"]]
     if not hs_rows:
         raise SystemExit("no hotspot rows parsed from 21_interface.md")
 
-    bsa: dict[int, float] = {}
-    for line in re.findall(r"- BSA contributions \(Å²\): (.+)", iface_md):
-        for one, num, val in re.findall(r"\b([A-Z])(\d+)\s+([\d.]+)", line):
-            bsa[int(num)] = float(val)
-    ddg = {int(n): -float(v) for _a, n, _s, v in
-           re.findall(r"([A-Z][a-z]{2})(\d+)[^()\n]{0,80}\(([−-])([\d.]+) kcal/mol\)",
-                      iface_md)}
+    bsa = _parse_bsa(iface_md)
+    ddg = _parse_ddg(iface_md)
     regions = []
     titles = re.findall(r"^#### Region (\d+): (.+?) — (\w+)\s*$", iface_md, re.M)
     members = re.findall(r"^- Residues: (.+)$", iface_md, re.M)
@@ -157,8 +348,26 @@ def extract() -> dict:
             "ddg_rank": next((i + 1 for i, (k, _v) in enumerate(best_ddg) if k == a), None),
         })
 
-    doi = re.search(r"(10\.\d{4,9}/[^\s—,)]+)", iface_md).group(1)
-    kd_v, kd_u = re.search(r"Kd ≈ ([\d.]+)\s*(µM|nM)", iface_md).groups()
+    # -- the literature the interface stage grounded itself in. Its own
+    #    `## CITATION VERIFICATION` block is the record of how many of those
+    #    DOIs `_verify_citations` found in the local corpus, which is the
+    #    claim worth making — "cited" and "checked against the corpus" are
+    #    different things and the page should only assert the second.
+    dois = []
+    for d in re.findall(r"(10\.\d{4,9}/[^\s—,;)]+)", iface_md):
+        if d not in dois:
+            dois.append(d)
+    if not dois:
+        raise SystemExit("no DOI cited in 21_interface.md")
+    cites = re.search(r"- Citations checked: (\d+)", iface_md)
+    verified = re.search(r"- Verified in corpus: (\d+)", iface_md)
+
+    # A Kd is quoted only when the stage happened to cite one. The 7CZD run
+    # did ("a PD-L1-mimicking peptide ... Kd ≈ 1.5 µM"); the 8ZNL run cites
+    # three DOIs and no affinity. Required, this killed the build — and a page
+    # that invents an affinity to fill the slot would be far worse than one
+    # that does not mention it.
+    kd = re.search(r"Kd ≈ ([\d.]+)\s*(µM|nM)", iface_md)
 
     # -- the gate, twice. `filter_stats.txt` is the FROZEN record of what this
     #    run decided, at the hotspot_engagement >= 1 threshold in force then.
@@ -228,6 +437,10 @@ def extract() -> dict:
         "rosetta_ddg": float(ros[d["name"]]["ddg"]) if d["name"] in ros else None,
     } for d in top_k]
 
+    # -- the independent check, computed rather than pasted (see _zqk_overlap)
+    zqk = _zqk_overlap(_rank1_refold(top_k[0]),
+                       {int(a): n3 for n3, a, _l, _at in hs_rows})
+
     return {
         "query": manifest["query"],
         "started": start.date().isoformat(), "ended": end.date().isoformat(),
@@ -269,7 +482,10 @@ def extract() -> dict:
                        for c in cands["candidates"]],
 
         "regions": regions, "hotspots": hotspots,
-        "lit_doi": doi, "lit_kd": f"{kd_v} {kd_u}",
+        "lit_doi": dois[0], "lit_dois": dois,
+        "lit_kd": (f"{kd.group(1)} {kd.group(2)}" if kd else None),
+        "citations_checked": int(cites.group(1)) if cites else None,
+        "citations_verified": int(verified.group(1)) if verified else None,
 
         "trim_residues": int(trim["n_residues"]), "trim_segments": int(trim["n_segments"]),
         "contig": trim["contig"],
@@ -317,7 +533,7 @@ def extract() -> dict:
         "go": summary.get("go_recommendation", "GO"),
         "go_rationale": summary.get("go_rationale", ""),
         "has_report_html": (BINDER / "report.html").is_file(),
-        "manual_4zqk": MANUAL_4ZQK,
+        "zqk": zqk,
     }
 
 
@@ -329,7 +545,7 @@ BB = CAL["backbone_rate"]
 CENT, PESS = CAL["central"], CAL["pessimistic"]
 HIST, CUR = F["gate_historical"], F["gate_current"]
 D = F["designs"]
-M4 = F["manual_4zqk"]
+M4 = F["zqk"]
 N_HS = len(F["hotspots"])
 GPU = F["gpu_hours"]
 
@@ -675,7 +891,7 @@ HTML = f"""{_HEAD}
 
   <div class="term"><span class="p">$</span> python scripts/run_pipeline.py --workflow binder \\
   <br>&nbsp;&nbsp;&nbsp;&nbsp;--target "{F["target_gene"]}" \\
-  <br>&nbsp;&nbsp;&nbsp;&nbsp;--project pdl1_e2e --budget {F["budget_cap_usd"]:.2f}</div>
+  <br>&nbsp;&nbsp;&nbsp;&nbsp;--project pdl1_rc1 --budget {F["budget_cap_usd"]:.2f}</div>
 
   <figure class="hero-fig">
     <img src="{img('design_face')}" alt="The top-ranked designed mini-protein bound to PD-L1, seen down the epitope axis. The designed binder covers the nine hotspot residues.">
@@ -734,11 +950,12 @@ HTML = f"""{_HEAD}
       one trial per site under <code>binder/sites/&lt;site_id&gt;/</code>.</p>
     </div>
     <figure class="fig">
-      <img src="{img('native_face')}" alt="The anti-PD-L1 nanobody bound to PD-L1 in 7CZD, seen down the same epitope axis.">
+      <img src="{img('native_face')}" alt="The crystallised partner bound to PD-L1 in {F["pdb_id"]}, seen down the same epitope axis.">
       <figcaption><strong>{F["pdb_id"]}</strong> — what a real binder does here. The
-      anti-PD-L1 VHH (grey) covers the same front β-sheet face, viewed on the same axis as
-      the design above. {F["bsa_A2"]:,} Å² buried, {_CHOSEN["iface_res"]} interface
-      residues, {_CHOSEN["hbonds"]} H-bonds, {_CHOSEN["res"]:.2f} Å.</figcaption>
+      entry's own crystallised partner ({F["partner_name"]}, grey) covers the front
+      β-sheet face, viewed on the same axis as the design above. {F["bsa_A2"]:,} Å²
+      buried, {_CHOSEN["iface_res"]} interface residues, {_CHOSEN["hbonds"]} H-bonds,
+      {_CHOSEN["res"]:.2f} Å.</figcaption>
     </figure>
   </div>
 </section>
@@ -752,17 +969,22 @@ HTML = f"""{_HEAD}
       residue at every position in the downloaded structure and computes per-residue
       buried area, then ranks contiguous patches by how designable they are. Two regions
       came back: {" and ".join(f'the {r["short"]} (rated <em>{r["rating"].lower()}</em>)' for r in F["regions"])}.</p>
-      <p>It also grounded the choice in the corpus: a PD-L1-mimicking peptide built around
-      exactly Tyr56, Arg113, Ala121, Asp122 and Tyr123 binds PD-1 at
-      <strong>K<sub>d</sub> ≈ {F["lit_kd"]}</strong> — one citation checked, one verified
-      against the local literature database.</p>
-      <div class="note-box"><p>Asked to analyse <strong>this exact structure</strong> on
-      an earlier occasion, the stage assigned <code>target_chain=A</code> and wrote its
-      hotspots on the anti-PD-L1 VHH's own CDR loop — real, correctly-numbered residues on
-      the wrong molecule, which hotspot checking alone cannot catch. Two guards now run
-      before any trim is built: one reads the real residue name at each position, the
-      other confirms the target chain is the target by sequence identity to UniProt. Both
-      passed here, on chain {F["target_chain"]}.</p></div>
+      <p>It also grounded the choice in the corpus, and the run records how far that
+      went: <strong>{F["citations_verified"]} of {F["citations_checked"]} cited DOIs were
+      found in the local literature database</strong> — mutagenesis and inhibitor work on
+      this exact face, led by <code>{F["lit_doi"]}</code>. "Cited" and "checked against
+      the corpus" are different claims, and the pipeline only makes the second because it
+      is the one it can verify.</p>
+      <div class="note-box"><p><strong>The textbook answer would have been wrong on this
+      entry.</strong> The PD-L1 hotspot every review names is Tyr56 — and on
+      <strong>{F["pdb_id"]}</strong>, chain {F["target_chain"]} residue 56 is a
+      <strong>valine</strong>. Asked to analyse this structure, the interface stage has
+      previously returned the canonical numbering verbatim: residues that are real and
+      correctly numbered in a <em>different</em> PD-L1 crystal form. Two guards run before
+      any trim is built — one reads the actual residue name at every position in the
+      downloaded file, the other confirms by sequence identity to UniProt that the target
+      chain is the target. Both passed here, and the aromatic anchors this run chose are
+      Tyr124 and Tyr57, which are the tyrosines {F["pdb_id"]} actually has.</p></div>
     </div>
     <figure class="fig">
       <img src="{img('epitope')}" alt="PD-L1 surface with the nine hotspot residues highlighted, no binder present.">
@@ -892,17 +1114,24 @@ HTML = f"""{_HEAD}
 </section>
 
 <section class="stage">
-  <div class="stage-h"><p class="step">Independent check · manual, outside the run</p>
+  <div class="stage-h"><p class="step">Independent check · outside the run</p>
     <h2>Would it actually get in PD-1's way?</h2></div>
-  <p>Nothing in this campaign ever saw PD-1. The epitope was chosen from a nanobody
-  complex, and the designs were folded against PD-L1 alone. So the human PD-1/PD-L1
-  complex — PDB <strong>{M4["pdb_id"]}</strong>, which played no part in the run — is a
-  genuinely independent way to ask whether the pipeline aimed at the right patch.</p>
-  <div class="note-box"><p><strong>Everything in this section was done by hand.</strong>
-  It is a UCSF ChimeraX superposition run after the campaign finished, not a pipeline
-  stage: unlike every other number on this page it is not extracted from
-  <code>projects/pdl1_e2e</code>, and it is not reproducible by re-running the
-  campaign.</p></div>
+  <p>Nothing in this campaign ever saw PD-1. The epitope was chosen from a crystallised
+  binder complex, and the designs were folded against PD-L1 alone. So the human
+  PD-1/PD-L1 complex — PDB <strong>{M4["pdb_id"]}</strong>, which played no part in the
+  run — is a genuinely independent way to ask whether the pipeline aimed at the right
+  patch.</p>
+  <div class="note-box"><p><strong>This check is computed at build time, not by
+  hand.</strong> The earlier version of this page reported a ChimeraX session run after
+  the campaign finished and said so, because an unversioned session cannot be extracted
+  and must not be presented as though the pipeline produced it. It is now done in code
+  from the run's own rank-1 refold, so it goes through the same <code>facts/</code>
+  snapshot as every other number here and moves as a reviewable diff. <strong>4ZQK is
+  still not part of the run</strong> — that is the point of it — but the measurement is
+  now reproducible: the refold&rarr;author residue offset is derived and then checked
+  against all {M4["n_hotspots"]} hotspot names before a single contact is counted,
+  because a wrong offset reports contacts for arbitrary residues and looks
+  perfectly fine.</p></div>
   <p>Superposing {M4["pdb_id"]}'s PD-L1 onto the campaign's own copy puts both partners in
   one frame: {M4["superpose_rmsd_A"]} Å over {M4["superpose_n_ca"]} Cα at
   {M4["superpose_identity_pct"]}% sequence identity, so the two really are the same protein
@@ -983,7 +1212,7 @@ HTML = f"""{_HEAD}
 
 <footer>
   <p>Every figure on this page is extracted at build time from
-  <code>projects/pdl1_e2e</code> — <code>manifest.json</code>, <code>ledger.jsonl</code>,
+  <code>projects/pdl1_rc1</code> — <code>manifest.json</code>, <code>ledger.jsonl</code>,
   <code>candidates/candidates.json</code>, <code>calibration/calibration.json</code>,
   <code>campaign/*/plan.json</code>, <code>scoring/refold_scores.csv</code>,
   <code>scoring/top_k.csv</code>, <code>scoring/rosetta_metrics.csv</code> and the stage
@@ -991,8 +1220,9 @@ HTML = f"""{_HEAD}
   parser. The gate is re-applied through <code>src.binder_ranking.filter_records</code>
   rather than re-implemented here. The extracted values are committed to
   <code>docs/showcase/facts/campaign_pdl1.json</code>, so any number that moves shows up as
-  a reviewable diff. The one exception is the {M4["pdb_id"]} comparison, labelled above:
-  it is a manual analysis, not part of the run.</p>
+  a reviewable diff — including the {M4["pdb_id"]} comparison, which used to be the one
+  hand-made exception on this page and is now computed alongside everything else. 4ZQK
+  itself is still external to the campaign, which is what makes it a check.</p>
   <p>Structure images rendered with UCSF ChimeraX from the campaign's own RF3 refolds and
   from PDB {F["pdb_id"]}; the hotspot residues shown are the {N_HS} the interface stage
   selected, mapped through the refold's own numbering. The run also carries its own
