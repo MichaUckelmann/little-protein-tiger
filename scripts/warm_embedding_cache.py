@@ -93,7 +93,8 @@ def main() -> int:
         SentenceTransformer(args.model)
     except ImportError:
         print("sentence-transformers is not installed — this is the literature\n"
-              "track's dependency:  pip install -e \".[corpus]\"", file=sys.stderr)
+              "track's dependency:  "
+              f'"{sys.executable}" -m pip install -e ".[corpus]"', file=sys.stderr)
         return 2
     except Exception as exc:                                  # noqa: BLE001
         # Name the two causes that actually happen, because the upstream

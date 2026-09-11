@@ -551,6 +551,15 @@ def package(out: Path, level: int = 10, licence_filter: bool = True) -> int:
             manifest["fingerprints"] = shipped
             manifest["papers_curated_shipped"] = shipped
             manifest["papers_curated_local"] = stats.get("papers_curated")
+            # `papers_curated` came from `**stats`, which counts the
+            # MAINTAINER's corpus (14,517). The licence filter ships far
+            # fewer (7,072), and this is the field `fetch_corpus.py` prints
+            # and a reader treats as "what did I just download" — so it has
+            # to describe the archive. A setup agent reported ~14,000
+            # curated papers to a user who had received half that, then
+            # went looking for the missing ones. The provenance number is
+            # still here as `papers_curated_local`.
+            manifest["papers_curated"] = shipped
             manifest["licence_filter"] = {
                 "applied": True,
                 "rule": "ship a fingerprint only when papers.licence "

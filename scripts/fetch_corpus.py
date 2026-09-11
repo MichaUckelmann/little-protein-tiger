@@ -175,9 +175,25 @@ def install(archive: Path, force: bool) -> int:
             if manifest.is_file():
                 data = json.loads(manifest.read_text(encoding="utf-8"))
                 manifest.unlink()
-                print(f"\n  {data.get('papers_curated', 0):,} curated papers, "
+                # `papers_curated_shipped` FIRST, and not merely as a
+                # nicety: the published v0.1.0 manifest carries a
+                # `papers_curated` copied from the maintainer's own corpus
+                # (14,517) while the archive holds the licence-permitted
+                # subset (7,072). Reading the shipped field fixes the
+                # report for assets that are already out there, which
+                # re-packaging cannot.
+                curated = (data.get("papers_curated_shipped")
+                           or data.get("papers_curated") or 0)
+                print(f"\n  {curated:,} curated papers, "
                       f"{data.get('papers_indexed', 0):,} indexed "
                       f"(built {data.get('created', 'unknown')})")
+                if (data.get("licence_filter") or {}).get("applied"):
+                    withheld = data.get("papers_curated_local")
+                    print("  Fingerprints ship only for papers whose licence "
+                          "permits derivative works"
+                          + (f" — {withheld:,} are curated locally, the rest "
+                             f"are withheld, not missing" if withheld else "")
+                          + ". See docs/licensing.md.")
     return 0
 
 

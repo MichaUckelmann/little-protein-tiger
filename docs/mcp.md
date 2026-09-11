@@ -86,7 +86,7 @@ Both servers carry instructions telling the model **not to reach for them on
 its own**, and every `SKILL.md` frontmatter begins "Invoke ONLY when the user
 explicitly asks…".
 
-That is deliberate. The corpus is ~14,500 papers weighted toward chromatin,
+That is deliberate. The corpus is ~7,000 papers weighted toward chromatin,
 histone chaperones and structural biology. Claude's own knowledge spans all of
 biology. If a general question ("what does p53 do?") silently became a corpus
 search, you would get a **narrower and worse answer than the model would have
@@ -136,5 +136,5 @@ full-text, no corpus provenance) only when the corpus has nothing.
 | Server won't start on Windows | Don't bypass `scripts/launch_mcp.py` — it sets `OMP_NUM_THREADS=1` etc. before importing `sentence_transformers`, without which the import hangs |
 | `search_corpus` fails with a HuggingFace error | Embedding model not cached; see the warm-up command above |
 | Tools missing after moving the checkout | `.mcp.json` holds absolute paths — re-run `scripts/setup_mcp_json.py` |
-| `literature-db` won't import | Needs the `corpus` extra: `pip install -e ".[corpus]"` |
+| `literature-db` won't import | Needs the `corpus` extra: `.venv/bin/python -m pip install -e ".[corpus]"` |
 | Corpus tools return nothing | No corpus installed: `python scripts/fetch_corpus.py` |

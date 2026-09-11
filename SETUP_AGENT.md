@@ -33,14 +33,22 @@ and installing everything by default wastes gigabytes and hours.
    terms costs API spend. If that comes up, state the estimate and wait for a
    yes.
 
-   When you suggest a first real run in Phase 9, **tell the user it costs money
-   and show them `--budget`.** The measured figures in this repo are $0.54-$2.12
-   per design campaign, but they are measurements on one provider at one
-   month's prices: `--provider openai` is several times dearer per token, an
-   intro rate can expire, and a corpus extension is a different order of spend
-   entirely. Recommend `--budget <USD>` on every metered command you hand over,
-   and say that a provider-side spend limit is the only cap that covers what
-   the user does outside LPT.
+   When you suggest a first real run in Phase 9, **tell the user it costs
+   money and show them the cap that command actually has.** The measured
+   figures in this repo are $0.54-$2.12 per design campaign, but they are
+   measurements on one provider at one month's prices: `--provider openai` is
+   several times dearer per token, an intro rate can expire, and a corpus
+   extension is a different order of spend entirely.
+
+   **`--budget USD` exists on `run_pipeline.py` only.** It is per-PROJECT and
+   cumulative across rounds and resumes, which is why it lives there and not
+   on the single-shot scripts — there is no project to accumulate against.
+   `scripts/ask_corpus.py` and `scripts/run_skill.py` are metered too and take
+   **`--max-iter` and `--max-tokens`**; passing them `--budget` is an
+   `unrecognized arguments` error, reported from a real setup trial where an
+   agent added it to `ask_corpus.py` because this rule used to say "every
+   metered command". Say that a provider-side spend limit is the only cap that
+   covers what the user does outside LPT.
 3. **Do not modify** `config.yaml`, `CLAUDE.md`, `.mcp.json` (except by running
    `scripts/setup_mcp_json.py`), or anything under `src/`. If setup seems to
    need a source change, stop and tell the user why.
@@ -59,22 +67,55 @@ and installing everything by default wastes gigabytes and hours.
    if the user does not have them, say which tracks are unavailable and move on.
 6. **Verify by running, not by reading.** After each phase, run the relevant
    check and show the user its real output.
+7. **Never hand over a command you have not verified parses.** Run it with
+   `--help`, or check the flag exists, before putting it in front of the user
+   — and do not extrapolate a flag from a neighbouring track. Two real
+   failures from one trial: `--workflow ppi --target <GENE>` (`--target` is
+   binder-only; ppi takes `--query`), and `ask_corpus.py --budget 1` (no such
+   flag). Both were invented by pattern-matching. A command that errors is
+   worse than no suggestion: it is the last thing the user sees from a setup
+   that otherwise worked, and they cannot tell a wrong suggestion from a
+   broken install.
+8. **Install only into the project's own venv, and never via a bare `pip`.**
+   Always `.venv/bin/python -m pip install ...` (Windows:
+   `.venv\Scripts\python -m pip`). A bare `pip` after activating a venv that
+   has no pip in it resolves to the next pip on `PATH` — measured on the
+   reference workstation, `~/miniconda3/bin/pip`, which would have installed
+   LPT into the user's conda base environment. `python -m pip` cannot be
+   satisfied by another interpreter: it fails with `No module named pip`,
+   which is the outcome you want. `doctor.py`'s **Virtual environment** row
+   reports which environment you are actually in; it must read `[ok]` before
+   you install anything. If it does not, stop — do not install and hope.
 
 ### Phase 1 — Interview
 
 Ask, and wait for answers:
 
-- **Which tracks do you want?** Describe them honestly:
+- **Which tracks do you want?** Offer the full install first, then the
+  individual tracks, and describe all of them honestly:
   | Track | What it does | Needs |
   |---|---|---|
+  | **`everything`** | All four tracks below, in one pass | Everything in the rows below, and on Linux + NVIDIA to be genuinely complete. **~6 GB installed** before any campaign (the `corpus` extra dominates), plus ~15 GB per design campaign. You still supply foundry yourself, and it does **not** include registering the MCP servers — see below |
   | `structure` | PDB/interface analysis, epitope choice, trimming, RFD3 spec | Base install only. A `GEMINI_API_KEY` **unless** the operator names the epitope with `--hotspots` |
-  | `literature` | Corpus search, discovery workflows | + `corpus` extra (~3 GB downloaded, **~5.8 GB installed**); the corpus itself is a free ~105 MB download. CLI needs `GEMINI_API_KEY`; over MCP it needs **no key** |
+  | `literature` | Corpus search, discovery workflows | + `corpus` extra (~3 GB downloaded, **~5.8 GB installed**); the corpus itself is a free ~50 MB download (~7,000 papers — see Phase 6). CLI needs `GEMINI_API_KEY`; over MCP it needs **no key** |
   | `ppi` | Discovery → design | + BoltzGen *or* foundry, + `GEMINI_API_KEY` |
   | `binder` | RFD3/MPNN/RF3 campaigns | + foundry, + a CUDA GPU, + ~15 GB disk per campaign (up to ~90 GB for a large target), + `GEMINI_API_KEY` |
 
+  **If the user picks `everything`, run every phase in order and skip nothing
+  — but say plainly what "everything" cannot include.** Phase 7 is the limit:
+  LPT does not ship foundry and you must not install it (ground rule 5 — it
+  needs licence acceptance only the user can give, and a torch build matched to
+  their GPU). So a full install still ends with you asking for a foundry path,
+  and on macOS or Windows the binder track is unavailable however much is
+  installed. Say this BEFORE starting, not at Phase 7, or a user who chose
+  "everything" will reasonably read the foundry question as a failure.
+  `--stop-after spec` gives them both design tracks' full reasoning path with
+  an API key alone, so a full install is genuinely useful without it.
+
   `structure` works everywhere in about 10 minutes and is the only track with a
   genuinely keyless path — see Phase 9 for its command. Say so; many users need
-  only that. **Note what it does NOT include:** `report.html` is generated from
+  only that, and `everything` being offered first is not a recommendation.
+  **Note what `structure` does NOT include:** `report.html` is generated from
   a completed GPU campaign's refold scores, so it belongs to `binder`, not
   here.
 - **OS and hardware.** Run `nvidia-smi`, check free disk (`df -h .`), check
@@ -113,11 +154,24 @@ Ask, and wait for answers:
 ### Phase 2 — Base install
 
 ```bash
-python3.12 -m venv .venv || { rm -rf .venv; echo "3.12 cannot build a venv"; }
-source .venv/bin/activate                               # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-cp .env.example .env
+python3.12 -m venv .venv \
+  && source .venv/bin/activate \
+  && .venv/bin/python -m pip install -e ".[dev]" \
+  && cp .env.example .env
 ```
+
+**Chained with `&&`, and `.venv/bin/python -m pip` rather than `pip`, for one
+reason each.** The `&&` is so a failed venv cannot fall through to the install
+step — an earlier version of this block used `|| { rm -rf .venv; echo ...; }`,
+which printed a warning and then ran the install anyway. And a bare `pip` after
+activating a venv that has no pip in it resolves to whatever pip is next on
+`PATH`: measured on the reference workstation, that was
+`~/miniconda3/bin/pip`, so the project would have been installed into the
+user's conda base environment. `.venv/bin/python -m pip` cannot be satisfied by
+another interpreter — it fails with `No module named pip`, which is the
+outcome you want. `./scripts/setup.sh` applies the same guards (it verifies
+pip lives inside `.venv` before installing, and tries `ensurepip` on a broken
+one) if you would rather run that than the four commands.
 
 **Prefer 3.12 if it can build a venv — test that, not whether it exists.** LPT
 supports 3.12-3.14, but on 3.13+ behind a TLS-inspecting proxy some downloads
@@ -130,10 +184,12 @@ The virtual environment was not created successfully because ensurepip is not
 available. ... apt install python3.12-venv
 ```
 
-**That failure leaves a `.venv` with no `pip` in it**, and a later
-`source .venv/bin/activate && pip install` then silently uses the SYSTEM pip.
-`rm -rf .venv` before retrying, as the command above does. Three exits, in
-order of preference:
+**That failure can leave a `.venv` behind with no `pip` in it**, and a later
+`source .venv/bin/activate && pip install` then silently uses whatever pip is
+next on `PATH` — the system one, or conda's. `rm -rf .venv` before retrying;
+the `&&` chain above stops rather than installing, so you will see the venv
+error itself rather than a successful install in the wrong place. Three exits,
+in order of preference:
 
 1. `sudo apt install python3.12-venv`, then retry. Needs root, which a user on
    a managed lab workstation often does not have.
@@ -147,8 +203,8 @@ order of preference:
    fine; it just needs that one variable.
 
 ~790 MB, ~94 packages, no torch. For the literature track add the `corpus`
-extra as well — `pip install -e ".[corpus]"` after the above, or
-`pip install -e ".[dev,corpus]"` in one go. It pulls sentence-transformers and,
+extra as well — `.venv/bin/python -m pip install -e ".[corpus]"` after the
+above, or `".[dev,corpus]"` in one go. It pulls sentence-transformers and,
 transitively, torch and the CUDA wheels: **~3 GB downloaded, ~5.8 GB
 installed** (`pyproject.toml` states both). Budget the installed figure, not
 the download.
@@ -159,8 +215,9 @@ pip resolves the CUDA build regardless. If the user declined both design
 tracks, install the CPU wheel first and the extra will accept it:
 
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install -e ".[corpus]"
+.venv/bin/python -m pip install torch \
+  --index-url https://download.pytorch.org/whl/cpu
+.venv/bin/python -m pip install -e ".[corpus]"
 ```
 
 **If HTTPS fails with a certificate error**, the user is behind a
@@ -245,15 +302,33 @@ no PubMed rate limits.
 python scripts/fetch_corpus.py
 ```
 
-~105 MB compressed. Afterwards `du -sh data/` reports **~480 MB** — about
-410 MB of that is corpus artifacts (`vectors/` 215 MB, `fingerprints/`
-158 MB, `literature.db` 35 MB) and the rest is Phase 3's reference data. The
-figures here are decimal MB; `du` shows MiB, so it reads ~7% smaller. **14,517 curated papers**, of
-which 14,514 have fingerprint files on disk — `doctor.py` reports the file
-count and the two figures differ by three. Plus the vector index and a database
-indexing all 57,907 papers the maintainer's searches found. `search_corpus`
+**~50 MB compressed** — `fetch_corpus.py --check` prints the real asset size
+before downloading, so read it from there rather than from this line.
+
+> ⚠ **The installed-size figures below were measured against the full
+> 14,517-fingerprint corpus and are roughly double what the licence-filtered
+> release actually installs.** They have not been re-measured against the
+> reduced asset. Report what `du -sh data/` actually says rather than
+> predicting it, and treat a much smaller number as correct. For reference,
+> the full corpus was ~480 MB in `data/` — about 410 MB of corpus artifacts
+> (`vectors/` 215 MB, `fingerprints/` 158 MB, `literature.db` 35 MB) plus
+> Phase 3's reference data. Those are decimal MB; `du` shows MiB, so it
+> reads ~7% smaller again.
+
+**Expect ~7,072 curated papers, NOT ~14,500 — the smaller number is correct
+and is not a failed or partial download.** A fingerprint is a derivative
+work, so one ships only for a paper whose licence permits derivatives; of
+the maintainer's 14,517 curated papers, 7,072 qualify and the rest are
+withheld (`scripts/package_corpus.py`, `docs/licensing.md`). The shipped
+`literature.db` marks those rows `licence_withheld` rather than deleting
+them, so `doctor.py` and `search_corpus` both report ~7,072 and that is the
+number to confirm against. **Do not go looking for the missing half, and do
+not offer to curate it** — that is real API spend against ground rule 2 for
+papers deliberately excluded. Plus the vector index and a database indexing
+all 57,907 papers the maintainer's searches found. `search_corpus`
 works immediately afterwards **once the embedding model is cached** — that is
-Phase 8, and on a cold machine `doctor.py` will show it failing until then.
+the end of this phase, and on a cold machine `doctor.py` will show it failing
+until then.
 
 Source documents (PDFs/XMLs) are deliberately excluded — they are ~95% of the
 corpus on disk and nothing downstream reads them.
@@ -291,6 +366,28 @@ If they do want to extend it, then and only then:
 
 Curation self-runs identifier normalisation, the graph rebuild and vector
 ingest afterwards; do not run those by hand.
+
+#### Warm the embedding cache — part of this phase, not the MCP one
+
+`search_corpus` cannot run without the embedding model on disk, and that is
+true of **every** transport: `scripts/ask_corpus.py` and the pipeline's own
+corpus tools need it just as much as the MCP server does. It used to sit in
+Phase 8, which now only runs if the user opts into MCP — so a literature-track
+user who declined MCP would have ended up with a corpus they could not search.
+
+```bash
+python scripts/warm_embedding_cache.py          # ~439 MB, one time
+python scripts/warm_embedding_cache.py --check  # is it already there?
+```
+
+**Use the script, not a bare `python -c`.** A one-liner does not call
+`src.env_config.load_env()`, so neither `LPT_CA_BUNDLE` nor
+`LPT_SSL_RELAX_STRICT` applies and the download fails verification behind a
+TLS-inspecting proxy — after five silent retries, with the *same* unhelpful
+`OSError` the missing-cache case produces. Measured: 73 s to fail that way
+versus 12 s to succeed. The MCP launcher additionally sets `HF_HUB_OFFLINE=1`,
+so on that transport an uncached model fails with a HuggingFace error that
+names nothing about LPT.
 
 ### Phase 7 — GPU tools (ppi / binder tracks only)
 
@@ -347,9 +444,29 @@ command.
   licence. `docs/pyrosetta_setup.md` covers the Python-ABI trap that makes a
   separate conda env necessary.
 
-### Phase 8 — MCP servers (optional)
+### Phase 8 — MCP servers (OPT-IN — ask, and default to skipping)
 
-Only if the user wants LPT's tools inside Claude Desktop or Claude Code:
+**Do not run this phase unless the user says yes to a direct question.** Ask
+it in as many words:
+
+> "Do you want LPT's tools registered inside Claude Desktop or Claude Code?
+> This is separate from the CLI, which already works. I'll skip it otherwise —
+> it's one command to add later."
+
+Anything other than a clear yes means **skip the phase**, say you have skipped
+it, and name the command that adds it later. "Everything" in Phase 1 does
+**not** cover this: it selects LPT's own tracks, and registering tools inside
+another application is a change to that application's configuration, not to
+this install. A setup agent ran it unasked, which writes `.mcp.json`, changes
+how a user's editor behaves in their other projects, and can leave a
+permanently-red server in their UI (below). None of that is recoverable by the
+user without being told what happened.
+
+Nothing else depends on this phase. The CLI, every pipeline track and
+`scripts/ask_corpus.py` all work without it — the embedding cache the corpus
+needs was moved into Phase 6 precisely so that declining MCP costs nothing.
+
+If they do say yes:
 
 ```bash
 python scripts/setup_mcp_json.py
@@ -378,21 +495,6 @@ Claude **Desktop** needs the printed `mcpServers` block copied into
 file only at startup; without a restart the servers silently do not appear, and
 you cannot restart it for them.
 
-If they chose the literature track, warm the embedding cache too — the MCP
-launcher sets `HF_HUB_OFFLINE=1`, so an uncached model fails with a
-HuggingFace error that names nothing about LPT:
-
-```bash
-python scripts/warm_embedding_cache.py          # ~439 MB, one time
-python scripts/warm_embedding_cache.py --check  # is it already there?
-```
-
-**Use the script, not a bare `python -c`.** A one-liner does not call
-`src.env_config.load_env()`, so neither `LPT_CA_BUNDLE` nor
-`LPT_SSL_RELAX_STRICT` applies and the download fails verification behind a
-TLS-inspecting proxy — after five silent retries, with the *same* unhelpful
-`OSError` the missing-cache case produces. Measured: 73 s to fail that way
-versus 12 s to succeed.
 
 ### Phase 9 — Finish
 
@@ -432,11 +534,24 @@ versus 12 s to succeed.
      `spec/*.json`. `GO/NO-GO: INCOMPLETE` is normal for `--stop-after spec`,
      but "PIPELINE COMPLETE" is printed even when every site failed — check for
      the spec file, and check `29_site_comparison.md` for a `FAILED:` line.
-   - binder: `python scripts/run_pipeline.py --workflow binder --target <GENE> --project test --stop-after spec`
+   - binder: `python scripts/run_pipeline.py --workflow binder --target <GENE> --project test --budget 2 --stop-after spec`
      (`--stop-after spec` validates everything up to the GPU without spending
      GPU time — the right first run.)
-   - literature, CLI: `python scripts/ask_corpus.py "<a question in their field>"`
-     (needs `GEMINI_API_KEY`).
+   - ppi — **`--query`, never `--target`.** The target-name-first entry is the
+     binder track; ppi discovers the target from a free-text goal, so
+     `--target` is refused here:
+     ```bash
+     python scripts/run_pipeline.py --workflow ppi \
+       --query "Design binders against RING1B to block its interaction with RING1A." \
+       --project test --budget 2 --stop-after spec
+     ```
+     `--project` is required (the default `design.backend` is `foundry`, and
+     the foundry stages it hands off to need a resumable manifest). If they
+     already know the protein and want the shorter path, give them the binder
+     line above instead — it is the same foundry stage machine with the
+     discovery stages skipped.
+   - literature, CLI: `python scripts/ask_corpus.py "<a question in their field>" --max-iter 10`
+     (needs `GEMINI_API_KEY`. **No `--budget` here** — see ground rule 2.)
    - literature, **no key needed**: the MCP route. `search_corpus` runs locally
      against the downloaded index, so a user on a Claude subscription needs no
      API key at all — `doctor.py` still reports the track NOT READY on the

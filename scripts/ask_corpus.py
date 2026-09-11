@@ -54,7 +54,15 @@ def _provider_for(model_id: str) -> str | None:
     return None
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
+    """The flag surface, separated from `main` so it can be inspected.
+
+    `run_pipeline.py` already exposes one, and `tests/test_setup_agent_doc.py`
+    parse-checks every command `SETUP_AGENT.md` hands to a user against these.
+    A setup agent suggested `ask_corpus.py ... --budget 1` — a flag this script
+    has never had — and the user's first real command after a working install
+    was an `unrecognized arguments` error.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Ask the curated literature corpus questions in plain language. "
@@ -93,7 +101,11 @@ def main() -> None:
     parser.add_argument(
         "--max-tokens", type=int, default=100_000,
         help="Abort a turn whose input exceeds this many tokens (default: 100000)")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
 
     provider = args.provider
     if args.model_id:

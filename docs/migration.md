@@ -26,8 +26,8 @@ cd little_protein_tiger
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Linux/macOS
-pip install -e ".[corpus,dev]"    # drop `corpus,` if you don't want the
-                                  # literature track
+.venv/bin/python -m pip install -e ".[corpus,dev]"   # drop `corpus,` if you
+                                  # don't want the literature track
 python scripts/fetch_reference_data.py   # required by ppi/binder
 ```
 

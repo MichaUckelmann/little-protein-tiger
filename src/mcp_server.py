@@ -50,15 +50,23 @@ except ModuleNotFoundError as exc:
 logger.info("sentence_transformers imported. Starting MCP server.")
 
 
-def _curated_papers(default: int = 14_500) -> int:
+def _curated_papers(default: int = 7_000) -> int:
     """How many curated papers the corpus on THIS machine actually holds.
 
     Read, not hardcoded. The `instructions` string below is what a model reads
     when deciding whether this corpus is worth consulting at all, and it said
-    "~11,000" against a shipped corpus of 14,517 — under-reporting by 24% to
-    the one consumer whose job is to judge relevance. A literal will rot again
-    the next time the corpus grows; `docs/journal-filtering.md` gets this right
+    "~11,000" against the maintainer's corpus of 14,517 — misreporting to the
+    one consumer whose job is to judge relevance. A literal will rot again the
+    next time the corpus changes; `docs/journal-filtering.md` gets this right
     by dating its snapshot, and this gets it right by not having one.
+
+    The fallback matters less than the read but still has to be honest: a
+    RELEASED corpus holds ~7,072 curated papers, not 14,517, because
+    fingerprints ship only for papers whose licence permits derivative works
+    (`scripts/package_corpus.py`, docs/licensing.md). The shipped
+    `literature.db` marks the rest `licence_withheld`, so the query above
+    returns the shipped number on a user's machine and the maintainer's on
+    this one — which is the point of reading it.
     """
     try:
         import sqlite3

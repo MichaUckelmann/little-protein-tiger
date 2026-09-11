@@ -29,7 +29,7 @@ the requirements differ sharply — check this table before installing anything.
 |---|---|---|---|---|
 | **A. Design from a named target** | "design binders against RING1B" → epitope, spec, campaign | Only past the spec stage | **No** | Gemini |
 | **B. Design from a broad prompt** | "inhibitors for pain receptors" → picks the target for you | Only past the spec stage | **Yes** | Gemini |
-| **C. Ask the literature** | conversational queries over ~14,500 curated papers | No | **Yes** | Gemini |
+| **C. Ask the literature** | conversational queries over ~7,000 curated papers | No | **Yes** | Gemini |
 
 Two things to know before you plan your testing:
 
@@ -57,14 +57,16 @@ cd little-protein-tiger
 python3.12 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-pip install -e ".[dev]"            # ~650 MB, no torch
+# Not a bare `pip` — on a venv built without pip that resolves to the system
+# or conda pip and installs LPT outside the project.
+.venv/bin/python -m pip install -e ".[dev]"     # ~650 MB, no torch
 ```
 
 Add the corpus extra **only if you want track B or C** — it pulls torch and
 costs about 3 GB:
 
 ```bash
-pip install -e ".[corpus,dev]"
+.venv/bin/python -m pip install -e ".[corpus,dev]"
 ```
 
 `./scripts/setup.sh` does all of the above plus steps 2–3 in one shot, if you
@@ -122,9 +124,19 @@ run stops two seconds in.
 python scripts/fetch_corpus.py
 ```
 
-~106 MB compressed, ~451 MB installed: 14,517 curated paper fingerprints, the
-prebuilt vector index, and the paper database. You do **not** rebuild or
+~50 MB compressed: **7,072** curated paper fingerprints, the prebuilt vector
+index, and the paper database. (`fetch_corpus.py --check` prints the current
+asset size; the installed footprint has not been re-measured since the
+corpus was licence-filtered, so expect well under the ~451 MB the full
+corpus used.) You do **not** rebuild or
 re-ingest anything after this.
+
+**~7,000 is the expected number, not a truncated download.** A fingerprint is
+a derivative work, so one ships only where the paper's licence permits
+derivatives: 7,072 of the maintainer's 14,517 curated papers qualify. The
+database still indexes all 57,907 papers found, and the withheld rows are
+marked `licence_withheld` rather than dropped — see
+[docs/licensing.md](licensing.md).
 
 > **⚠️ Beta note:** if this reports `no lpt-corpus* asset found`, the release
 > asset has not been published yet. That is a known repo state, not a problem

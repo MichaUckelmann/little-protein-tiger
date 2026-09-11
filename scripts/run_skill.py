@@ -56,7 +56,15 @@ def _available_skills() -> list[str]:
                   if (p / "SKILL.md").is_file())
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
+    """The flag surface, separated from `main` so it can be inspected.
+
+    `tests/test_openai_provider.py` reached for this behind a
+    `hasattr(rs, "_build_parser")` guard, which meant half that test had been
+    silently skipping for as long as the guard existed. Same reason
+    `ask_corpus.py` grew one: a documented command has to be checkable
+    against the real parser.
+    """
     parser = argparse.ArgumentParser(
         description="Run a pipeline skill via Claude or Gemini API.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -142,7 +150,11 @@ def main() -> None:
         ),
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
 
     if not args.interactive and not args.query:
         parser.error("--query is required (or pass --interactive to start a REPL)")

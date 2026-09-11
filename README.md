@@ -183,9 +183,13 @@ conda, no system packages — every base dependency ships prebuilt wheels.
 ```bash
 python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
 
-pip install -e ".[dev]"           # base: structure + design tracks
-pip install -e ".[corpus,dev]"    # ALSO the literature track (~3 GB: torch,
-                                  # lancedb, sentence-transformers)
+# `.venv/bin/python -m pip`, not a bare `pip`: if the venv was built without
+# pip (on Debian/Ubuntu `python3-venv` is a separate package) a bare `pip`
+# silently resolves to the next one on PATH — the system's, or conda's — and
+# installs LPT outside this project. Windows: .venv\Scripts\python -m pip
+.venv/bin/python -m pip install -e ".[dev]"        # base: structure + design
+.venv/bin/python -m pip install -e ".[corpus,dev]" # ALSO literature (~3 GB:
+                                  # torch, lancedb, sentence-transformers)
 
 cp .env.example .env              # then add your keys
 python scripts/fetch_reference_data.py    # ~52 MB, public, no key — required

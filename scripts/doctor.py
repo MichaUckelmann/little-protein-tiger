@@ -129,13 +129,53 @@ def check_interpreter(rep: Report) -> None:
             tracks=TRACKS)
 
 
+def check_venv(rep: Report) -> None:
+    """Is this interpreter isolated from the system Python?
+
+    `check_interpreter` already appends "(not in a venv)" to the Python row,
+    but that row's status is decided by the VERSION, so an install in the
+    wrong place can still read `[ok]`. This gets its own status.
+
+    Not cosmetic. A bare `pip install` under an activated venv that has no pip
+    in it (on Debian/Ubuntu `python3-venv` is a separate package, so the
+    ensurepip step can fail) resolves to the next pip on PATH. Measured on the
+    reference workstation, that was `~/miniconda3/bin/pip` — LPT would have
+    been installed into the user's conda base environment, where nothing else
+    in this project expects to find it. `scripts/setup.sh` now verifies pip
+    lives inside `.venv` before installing; this reports the outcome.
+    """
+    in_venv = sys.prefix != sys.base_prefix
+    conda_env = (os.environ.get("CONDA_DEFAULT_ENV") or "").strip()
+    if in_venv:
+        rep.add("Virtual environment", OK, sys.prefix, tracks=TRACKS)
+    elif conda_env and conda_env != "base":
+        # A named conda env is isolated too — different mechanism, same
+        # guarantee, and LPT does not care which one it lives in.
+        rep.add("Virtual environment", OK,
+                f"conda env {conda_env!r} — {sys.prefix}", tracks=TRACKS)
+    else:
+        rep.add("Virtual environment", WARN,
+                ("conda base environment" if conda_env == "base"
+                 else "none — this is the system interpreter")
+                + f" ({sys.prefix})",
+                "LPT expects its own venv: python3.12 -m venv .venv && "
+                "source .venv/bin/activate, then reinstall with "
+                "'.venv/bin/python -m pip install -e \".[dev]\"'. "
+                "Installing into a shared interpreter puts LPT and its pinned "
+                "deps where other projects can break them.",
+                tracks=TRACKS)
+
+
 def check_package(rep: Report) -> None:
     try:
         import src.pipeline_runner  # noqa: F401
         rep.add("Package imports", OK, "src.pipeline_runner", tracks=TRACKS)
     except Exception as exc:                      # pragma: no cover - env dependent
         rep.add("Package imports", FAIL, str(exc)[:90],
-                'pip install -e ".[dev]"', tracks=TRACKS)
+                # sys.executable, not a bare `pip`: this names the interpreter
+                # the check actually ran under, so the install cannot land in
+                # a different environment than the one reporting the failure.
+                f'"{sys.executable}" -m pip install -e ".[dev]"', tracks=TRACKS)
 
 
 def check_corpus_extra(rep: Report) -> None:
@@ -143,7 +183,8 @@ def check_corpus_extra(rep: Report) -> None:
                if not _module_available(m)]
     if missing:
         rep.add("Corpus extra", FAIL, f"missing: {', '.join(missing)}",
-                'pip install -e ".[corpus]"   (~3 GB: pulls torch)',
+                f'"{sys.executable}" -m pip install -e ".[corpus]"'
+                '   (~3 GB: pulls torch)',
                 tracks=("literature",))
     else:
         rep.add("Corpus extra", OK, "lancedb + sentence-transformers",
@@ -576,7 +617,8 @@ def main() -> int:
     args = ap.parse_args()
 
     rep = Report()
-    for probe in (check_interpreter, check_package, check_corpus_extra,
+    for probe in (check_interpreter, check_venv, check_package,
+                  check_corpus_extra,
                   check_api_keys, check_reference_data, check_corpus,
                   check_embedding_cache, check_structures, check_gpu,
                   check_disk, check_foundry, check_pyrosetta,

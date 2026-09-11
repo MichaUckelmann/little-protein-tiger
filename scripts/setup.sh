@@ -40,15 +40,74 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Virtual environment
 # ---------------------------------------------------------------------------
+# A DIRECTORY NAMED .venv IS NOT PROOF OF A WORKING VENV, and the difference
+# is not cosmetic. On Debian/Ubuntu the interpreter and its venv module are
+# separate packages, so `python3 -m venv` can fail at the ensurepip step and
+# leave a .venv behind with no pip in it. Activating that venv and running a
+# bare `pip install` then resolves to whatever pip is NEXT ON PATH — on a
+# machine with conda that is conda's pip, so the project lands in the user's
+# base environment instead. Measured on the reference workstation: an
+# activated pip-less venv gave /home/<user>/miniconda3/bin/pip (python 3.13).
+#
+# So: verify, never assume, and never call a bare `pip` below — `"$PY" -m pip`
+# cannot be satisfied by another interpreter's pip. It fails with "No module
+# named pip", which is the correct outcome.
+venv_has_pip() {
+    [ -x "$PY" ] && "$PY" -m pip --version >/dev/null 2>&1
+}
+
+venv_remedies() {
+    cat >&2 <<'REMEDY'
+    Three ways out, in order of preference:
+      1. sudo apt install python3.12-venv     (then re-run this script)
+      2. uv venv --python 3.12 && uv pip install -e ".[dev]"
+         uv bundles its own bootstrap — no system package, no root. uv.lock is
+         tracked in this repo, so this path is supported.
+      3. Create the venv with another interpreter:  python3.13 -m venv .venv
+         On 3.13+ behind a TLS-inspecting proxy also set LPT_SSL_RELAX_STRICT=1
+         in .env — see SETUP_AGENT.md Phase 2.
+REMEDY
+}
+
 if [ ! -d "$VENV_DIR" ]; then
     echo "==> Creating virtual environment at $VENV_DIR"
-    python3 -m venv "$VENV_DIR"
-else
+    python3 -m venv "$VENV_DIR" || {
+        # Nothing of value in a half-built venv, and leaving it behind is what
+        # makes the NEXT run take the "reuse" branch over a broken directory.
+        rm -rf "$VENV_DIR"
+        echo "==> Could not create a virtual environment at $VENV_DIR." >&2
+        venv_remedies
+        exit 1
+    }
+elif venv_has_pip; then
     echo "==> Reusing existing virtual environment at $VENV_DIR"
+else
+    # Deliberately NOT rm -rf: this venv may hold gigabytes the user installed,
+    # and rebuilding with the same interpreter that broke it would just fail
+    # again. Try to repair, then stop and say so.
+    echo "==> $VENV_DIR exists but has no working pip — attempting repair"
+    "$PY" -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+
+if ! venv_has_pip; then
+    echo "==> No usable pip inside $VENV_DIR — refusing to continue." >&2
+    echo "    Installing now would fall through to another interpreter's pip" >&2
+    echo "    and put LPT outside this project's environment." >&2
+    venv_remedies
+    echo "    Or remove it and start clean:  rm -rf $VENV_DIR" >&2
+    exit 1
 fi
 
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
+
+# Belt and braces: prove the pip we are about to use lives in THIS venv.
+PIP_HOME="$("$PY" -c 'import pip, pathlib; print(pathlib.Path(pip.__file__).resolve())')"
+case "$PIP_HOME" in
+    "$VENV_DIR"/*) : ;;
+    *) echo "==> pip resolves to $PIP_HOME, outside $VENV_DIR — refusing." >&2
+       exit 1 ;;
+esac
 
 # LPT needs 3.12+. Catch it here rather than three imports later.
 "$PY" - <<'PYEOF'
@@ -69,11 +128,11 @@ PYEOF
 # needs them, semantic corpus search.
 if [ "$WITH_CORPUS" -eq 1 ]; then
     echo "==> Installing project (base + corpus + dev)  — ~3.7 GB, includes torch"
-    pip install -e ".[corpus,dev]"
+    "$PY" -m pip install -e ".[corpus,dev]"
 else
     echo "==> Installing project (base + dev)  — ~650 MB, no torch"
     echo "    Add --with-corpus for semantic corpus search (pulls torch, ~3 GB more)."
-    pip install -e ".[dev]"
+    "$PY" -m pip install -e ".[dev]"
 fi
 
 # ---------------------------------------------------------------------------

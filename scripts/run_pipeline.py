@@ -452,6 +452,19 @@ def main() -> int:
     is_structure = args.workflow == "structure"
 
     if not args.query and not (is_binder and args.target) and not is_structure:
+        # Name the ACTUAL fix when --target was the misunderstanding. Both
+        # checks would fire for `--workflow ppi --target RING1B`: this one
+        # first, then "--target applies to --workflow binder only" further
+        # down — so a user who did as told by the first message hit a second
+        # error on the next attempt. Reported from a real setup trial.
+        if args.target and not is_binder:
+            parser.error(
+                f"--target is for --workflow binder only. For --workflow "
+                f"{args.workflow}, state the goal with --query instead:\n"
+                f'  --query "Design binders against {args.target} to block '
+                f'its key interaction."\n'
+                f"Or use the target-name-first track: --workflow binder "
+                f"--target {args.target}.")
         parser.error("--query is required (or --target, for --workflow binder).")
     if is_structure and not args.query:
         # The objective is optional here — the structure IS the brief — but the
