@@ -30,7 +30,59 @@ import pyarrow.csv as pacsv
 from loguru import logger
 
 
-_DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "depmap" / "CRISPRGeneEffect.csv"
+_ROOT = Path(__file__).resolve().parent.parent
+_BUNDLED_PATH = _ROOT / "data" / "depmap" / "CRISPRGeneEffect.csv"
+
+#: Env var / config key that relocate the CRISPR matrix. Same precedence rule
+#: as every other machine-specific path in this repo (`src/env_config.py`):
+#: the env var wins, `config.yaml` is a same-machine fallback.
+_ENV_VAR = "LPT_DEPMAP_CSV"
+_CONFIG_KEY = ("paths", "depmap_csv")
+
+
+def _configured_path() -> Path:
+    """Where the CRISPR matrix lives on THIS machine.
+
+    The path was hardcoded until a reviewer pointed out the obvious: this is a
+    420 MB hand download, and in a lab it is exactly the kind of file that
+    already sits on a shared volume with one copy for everyone. Hardcoding it
+    meant a second copy per checkout, or a symlink, or nothing — the same
+    argument that got `LPT_FOUNDRY_CKPT_DIR` added for the model weights.
+
+    `load_env` is called here rather than assumed: `skill_runner` and the MCP
+    servers do call it at import, but `python -c "import src.depmap"` does
+    not, and a var that works from one entry point and not another is worse
+    than no var. Both are cheap and idempotent — python-dotenv never
+    overwrites an already-set variable.
+
+    Wrapped in try/except because a low-level data module must not fail to
+    import over a malformed config file; the bundled default still works.
+    """
+    try:
+        from src.env_config import load_env, resolve_env_path
+
+        load_env()
+        configured = resolve_env_path(_ENV_VAR, _config_value())
+    except Exception:                                        # noqa: BLE001
+        configured = None
+    if not configured:
+        return _BUNDLED_PATH
+    # `~` because a shared-volume path is commonly written that way, and
+    # relative-against-the-repo because every other path in `paths:` is.
+    candidate = Path(configured).expanduser()
+    return candidate if candidate.is_absolute() else (_ROOT / candidate)
+
+
+def _config_value() -> str | None:
+    """`paths.depmap_csv` from config.yaml, or None. Best-effort."""
+    try:
+        import yaml
+
+        cfg = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
+        section, key = _CONFIG_KEY
+        return ((cfg or {}).get(section) or {}).get(key) or None
+    except Exception:                                        # noqa: BLE001
+        return None
 
 # Module-level singletons. None until first access.
 _DATA: np.ndarray | None = None  # shape (n_cell_lines, n_genes), float32, NaN where missing
@@ -50,18 +102,34 @@ def _ensure_loaded(path: Path | None = None) -> None:
     the same path was already loaded.
     """
     global _DATA, _GENE_TO_IDX, _GENE_NAMES, _CELL_LINES, _DATA_PATH
-    target = Path(path) if path else _DEFAULT_PATH
+    target = Path(path) if path else _configured_path()
     if _DATA is not None and _DATA_PATH == target:
         return
 
     logger.info(f"Loading DepMap CRISPR data from {target} ...")
     if not target.exists():
+        # "only the wildcard-expert needs it" was wrong, and misleading in
+        # the one place it was read: find_cocorrelated_genes is offered to
+        # pathway-expert (the PPI track's stage 0), molecular-biology-expert
+        # and corpus-explorer as well, so a plain `--workflow ppi` run hits
+        # this. Name the tools, not a skill.
         raise FileNotFoundError(
-            f"DepMap CSV not found at {target}. This ~420 MB file is optional "
-            f"— only the wildcard-expert DepMap tools need it — and DepMap's "
-            f"portal cannot be scripted, so download CRISPRGeneEffect.csv by "
-            f"hand from https://depmap.org/portal/data_page/?tab=allData and "
-            f"save it there. Run `python scripts/fetch_reference_data.py --check` to see all reference-data status.")
+            f"DepMap CSV not found at {target}. Two tools need it — "
+            f"find_cocorrelated_genes and get_genetic_codependency, plus "
+            f"export_subgraph(with_depmap=True) — and they are offered to the "
+            f"pathway, literature and corpus-explorer skills, so a design run "
+            f"can reach them. Everything else works without it: the "
+            f"interaction graph, clusters, novelty_signal and the rest of "
+            f"export_subgraph read the corpus, not DepMap. A run is NOT "
+            f"blocked by this — the tool returns this message to the model, "
+            f"which carries on without co-essentiality evidence. This ~420 MB "
+            f"file is optional and DepMap's portal cannot be scripted, so "
+            f"download CRISPRGeneEffect.csv by hand from "
+            f"https://depmap.org/portal/data_page/?tab=allData and save it "
+            f"there — or point {_ENV_VAR} (in .env) at a copy you already "
+            f"have, which is what a shared lab volume wants. Run `python "
+            f"scripts/fetch_reference_data.py --check` to see all "
+            f"reference-data status.")
 
     # pyarrow.csv handles the 440 MB file in ~3 s and respects float→NaN
     # encoding for empty cells out of the box. We materialise the columns

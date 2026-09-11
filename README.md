@@ -144,7 +144,7 @@ work that uses their data.
 | **[UniProt](https://www.uniprot.org)** | Target resolution, canonical sequences for the identity checks, and the membrane topology that decides which surface a binder can reach |
 | **[AlphaFold DB](https://alphafold.ebi.ac.uk)** (EMBL-EBI / DeepMind) | Predicted monomers, addressed as `AF-<accession>` when a target has no experimental entry |
 | **[HGNC](https://www.genenames.org)** | The approved-symbol authority behind `src/identifier_normalizer.py` |
-| **[DepMap](https://depmap.org/portal/)** (Broad Institute) | CRISPR gene-effect data behind the co-essentiality edges and the wildcard track's novelty triage |
+| **[DepMap](https://depmap.org/portal/)** (Broad Institute) | CRISPR gene-effect data behind the co-essentiality edges, the wildcard track's novelty triage, and `find_cocorrelated_genes` / `get_genetic_codependency` wherever they are offered — the pathway and literature skills included. Optional hand download, see Requirements |
 | **[Europe PMC](https://europepmc.org)** · **[PMC Open Access](https://www.ncbi.nlm.nih.gov/pmc/tools/openftlist/)** · **NCBI E-utilities** · **Semantic Scholar** · **bioRxiv/medRxiv** | Literature search, full-text retrieval, and the per-paper licence lookup the corpus gate depends on |
 
 ### Python libraries doing the heavy lifting
@@ -196,6 +196,28 @@ python scripts/fetch_reference_data.py    # ~52 MB, public, no key — required
                                           # before any ppi/binder run
 python scripts/doctor.py                  # what this machine can run
 ```
+
+**One optional file is a hand download.** Two corpus tools —
+`find_cocorrelated_genes` and `get_genetic_codependency`, plus
+`export_subgraph(with_depmap=True)` — read DepMap's CRISPR gene-effect
+matrix, and DepMap serves it through a portal that 403s a scripted GET. So
+`fetch_reference_data.py` prints instructions instead of fetching it:
+
+> Download **`CRISPRGeneEffect.csv`** (~420 MB, DepMap Public current
+> release) from <https://depmap.org/portal/data_page/?tab=allData> and save
+> it as `data/depmap/CRISPRGeneEffect.csv`. Then
+> `python scripts/fetch_reference_data.py --check` to confirm.
+>
+> Already have it, or share one copy across a lab? Set
+> **`LPT_DEPMAP_CSV`** in `.env` to that file instead of duplicating it —
+> `~` and repo-relative paths both work, and `--check` will confirm the
+> relocated copy.
+
+Skipping it is fine and is the default. Those three tools then return an
+error to the model and **the run continues** without co-essentiality
+evidence — they are reachable from the pathway, literature and
+corpus-explorer skills, so a `--workflow ppi` run can call them and carry
+on. Everything else in the graph toolset reads the corpus, not DepMap.
 
 Or `./scripts/setup.sh` (`--with-corpus` also installs the extra and fetches
 the corpus archive; `--check` re-runs the readiness report only) to do all of

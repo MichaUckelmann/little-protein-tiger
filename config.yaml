@@ -88,6 +88,15 @@ paths:
   db_path: "data/literature.db"
   fingerprint_dir: "data/fingerprints"
   structures_dir: "data/structures"
+  # DepMap's CRISPR gene-effect matrix. Blank = data/depmap/CRISPRGeneEffect.csv.
+  # It is a 420 MB HAND download (DepMap's portal 403s a scripted GET), so in a
+  # lab it is usually one shared copy — point at it rather than duplicating it
+  # per checkout. `LPT_DEPMAP_CSV` in .env overrides this; see
+  # docs/environment_setup.md. Relative paths resolve against the repo root and
+  # `~` is expanded. Only find_cocorrelated_genes, get_genetic_codependency and
+  # export_subgraph(with_depmap=True) read it; without it they return an error
+  # and the run continues.
+  depmap_csv: ""
 
 # ── Model selection + pricing ────────────────────────────────────────────────
 # Single source of truth for which model each pipeline stage uses and what it

@@ -63,6 +63,19 @@ class Dataset:
 
     @property
     def path(self) -> Path:
+        # The CRISPR matrix is relocatable (LPT_DEPMAP_CSV / paths.depmap_csv),
+        # and `src.depmap` is the one place that precedence is implemented.
+        # Asking it, rather than reproducing the rule, is what keeps `--check`
+        # and the hand-download instructions pointing where the loader will
+        # actually look — telling a user to save 420 MB to a path nothing
+        # reads is the whole failure this avoids.
+        if self.filename == "CRISPRGeneEffect.csv":
+            try:
+                from src.depmap import _configured_path
+
+                return _configured_path()
+            except Exception:                                # noqa: BLE001
+                pass
         return DEST_DIR / self.filename
 
 
@@ -101,9 +114,12 @@ DATASETS: tuple[Dataset, ...] = (
         approx_mb=420,
         required=False,
         manual=True,
-        purpose=("CRISPR Chronos gene-effect matrix. Only the wildcard-expert "
-                 "DepMap tools (get_genetic_codependency, "
-                 "find_cocorrelated_genes) need it."),
+        purpose=("CRISPR Chronos gene-effect matrix. Needed by "
+                 "find_cocorrelated_genes, get_genetic_codependency and "
+                 "export_subgraph(with_depmap=True) — reachable from the "
+                 "pathway, literature and corpus-explorer skills, so a "
+                 "design run can call them. Without it those tools return "
+                 "an error and the run continues."),
     ),
 )
 
@@ -227,7 +243,11 @@ def check() -> int:
             tag = f"{tag}, manual download" if ds.manual else tag
             print(f"  [MISS] {ds.filename:32s} {'':>12s}  ({tag})")
             if ds.manual:
+                # Both halves, matching `download`'s manual branch: a
+                # hand-download needs the exact destination as much as the
+                # URL, and the header's DEST_DIR only implies it.
                 print(f"         get it from: {ds.url}")
+                print(f"         save it as:  {ds.path}")
             print(f"         {ds.purpose}")
             if ds.required:
                 missing_required += 1
@@ -246,7 +266,10 @@ def main() -> int:
                     help="Report what's present and exit; download nothing.")
     ap.add_argument("--with-depmap", action="store_true",
                     help=f"Also fetch CRISPRGeneEffect.csv (~420 MB), needed "
-                         f"only by the wildcard-expert DepMap tools.")
+                         f"only by find_cocorrelated_genes, "
+                         f"get_genetic_codependency and "
+                         f"export_subgraph(with_depmap=True). Runs continue "
+                         f"without it; those tools return an error.")
     ap.add_argument("--force", action="store_true",
                     help="Re-download even if the file is already present.")
     args = ap.parse_args()
@@ -261,8 +284,10 @@ def main() -> int:
     ok = all(res for d, res in results if not d.manual)
 
     if not args.with_depmap:
-        print("\nSkipped CRISPRGeneEffect.csv (~420 MB) — pass --with-depmap if "
-              "you want the wildcard-expert DepMap tools.")
+        print("\nSkipped CRISPRGeneEffect.csv (~420 MB) — pass --with-depmap "
+              "if you want find_cocorrelated_genes / "
+              "get_genetic_codependency. Every other corpus tool works "
+              "without it, and a run that calls them continues.")
     print()
     return 0 if ok else 1
 

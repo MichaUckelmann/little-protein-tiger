@@ -35,6 +35,14 @@ python scripts/fetch_reference_data.py   # required by ppi/binder
 
 Transfer `data/literature.db`, `data/fingerprints/`, and `data/vectors/` to the same paths on the new machine. Optionally add `data/pdfs/` if you want curation capability.
 
+Also copy **`data/depmap/CRISPRGeneEffect.csv`** if you have it. Step 1's
+`fetch_reference_data.py` re-fetches the two required reference files
+automatically, but not this one — it is a ~420 MB hand download from a
+portal that 403s a scripted GET, so copying it across is much less work
+than fetching it again — or leave it where it is on a shared volume and
+set `LPT_DEPMAP_CSV` in the new machine's `.env`. Skipping it only disables
+`find_cocorrelated_genes` / `get_genetic_codependency`; runs continue.
+
 **3. Recreate `.env`**
 
 Copy `.env.example` to `.env` and fill in your API keys. If you use the

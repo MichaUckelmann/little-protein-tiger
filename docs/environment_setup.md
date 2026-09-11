@@ -42,11 +42,22 @@ fail if that command is missing too.
 | `LPT_CLUSTER_PIPELINE_ROOT` | A `binder_pipeline`-shaped checkout for cluster staging | `src/cluster_runner.py` (`--compute cluster` only) |
 | `LPT_CLUSTER_PROTENIX_REPO` | A separate Protenix checkout, for MSA fetching | `src/cluster_runner.py` (cluster path, `msa_source: protenix_hosted`) |
 | `LPT_CLUSTER_SUBMIT_INSTRUCTIONS` | Free text shown in the cluster pause message (login node, `cd` path) | `src/cluster_runner.py` |
+| `LPT_DEPMAP_CSV` | DepMap's `CRISPRGeneEffect.csv` (~420 MB hand download), if not at `data/depmap/` | `src/depmap.py`, and through it the corpus co-essentiality tools |
 
-All six are optional and independently gated — nothing at import time
+All seven are optional and independently gated — nothing at import time
 requires any of them. Each is only consulted when the specific stage that
-needs it actually runs, and each is entirely absent from the literature
-corpus pipeline.
+needs it actually runs.
+
+`LPT_DEPMAP_CSV` is the one that is **not** about GPU tools, and the only
+one the literature pipeline reads: it exists because that matrix is a hand
+download big enough that a lab keeps one shared copy, and the path was
+hardcoded until it wasn't. `src/depmap.py` resolves it with the same
+precedence as the rest (env var, then `paths.depmap_csv` in `config.yaml`,
+then the bundled `data/depmap/` default), expands `~`, and resolves a
+relative path against the repo root. `fetch_reference_data.py --check` and
+`doctor.py` both ask `src/depmap.py` where to look rather than assuming, so
+a relocated file reports as present and the hand-download instructions name
+the path the loader will actually read.
 
 `scripts/setup.sh` finishes by running `scripts/doctor.py`, which *probes*
 rather than path-tests: it runs the binary, calls `nvidia-smi`, and imports

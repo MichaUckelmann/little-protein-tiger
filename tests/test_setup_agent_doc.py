@@ -11,6 +11,10 @@ invented by pattern-matching: Phase 9 listed a `binder` command using
 `--target` but no `ppi` command at all, and ground rule 2 said to recommend
 `--budget` on "every metered command" while only `run_pipeline.py` has it.
 
+The commands checked below are read out of the doc, so editing an example's
+text cannot break these tests — only changing its *shape* can, which is the
+point.
+
 That is a doc-vs-CLI drift, and prose is exactly where this kind of drift
 survives review. A command that errors is worse than no suggestion: it is the
 last thing a user sees from a setup that otherwise worked, and they cannot
@@ -55,15 +59,37 @@ def _phase(name: str, until: str) -> str:
 def _commands(section: str) -> list[list[str]]:
     """Every `python scripts/<x>.py ...` invocation in `section`, tokenised.
 
-    Backslash-continuations are joined first: the doc wraps long commands, and
-    reading only the first physical line would check a prefix rather than the
-    command.
+    Three details, each of which produced a wrong reading before it was
+    handled — found by running this extractor over README.md, where both of
+    the last two occur:
+
+    * Backslash-continuations are joined first. The doc wraps long commands,
+      and reading one physical line checks a prefix, not the command.
+    * A trailing ``# comment`` is stripped. `README.md` has
+      ``ask_corpus.py    # start empty, then prompt``, which is valid shell
+      and became three bogus positional arguments.
+    * ``)`` is NOT a terminator. It used to be, to stop at a markdown
+      ``(parenthetical)``, but that truncates
+      ``--query "... chain A (TEAD4) ..."`` mid-string — which then fails to
+      tokenise at all. Backtick and newline end a command; an unbalanced
+      trailing ``)`` is trimmed instead.
+
+    A command that cannot be tokenised is returned as a single-element list so
+    the test reports it, rather than raising at import and taking collection
+    down with it.
     """
     flat = re.sub(r"\\\n\s*", " ", section)
     out = []
-    for raw in re.findall(r"python (scripts/[a-z_]+\.py[^\n`)]*)", flat):
-        parts = shlex.split(_PLACEHOLDER_RE.sub("PLACEHOLDER", raw.strip()))
-        out.append(parts)
+    for raw in re.findall(r"python3? (scripts/[a-z_]+\.py[^\n`]*)", flat):
+        cmd = raw.strip()
+        cmd = re.sub(r"\s+#.*$", "", cmd)            # trailing shell comment
+        while cmd.endswith(")") and cmd.count(")") > cmd.count("("):
+            cmd = cmd[:-1].strip()                    # markdown parenthetical
+        cmd = _PLACEHOLDER_RE.sub("PLACEHOLDER", cmd)
+        try:
+            out.append(shlex.split(cmd))
+        except ValueError:
+            out.append([f"UNTOKENISABLE: {cmd}"])
     return out
 
 
@@ -92,6 +118,8 @@ def test_the_doc_still_suggests_commands_at_all():
 @pytest.mark.parametrize("argv", _PHASE9_COMMANDS,
                          ids=lambda a: " ".join(a[:4]))
 def test_every_phase_9_command_parses(argv):
+    assert not argv[0].startswith("UNTOKENISABLE"), (
+        f"a documented command has unbalanced quotes: {argv[0]}")
     script, args = argv[0].split("/")[-1], argv[1:]
     parser = _parser_for(script)
     if parser is None:
@@ -158,3 +186,52 @@ def test_documented_scripts_are_checkable():
         f"Phase 9 hands over {unchecked} but they expose no _build_parser, so "
         f"test_every_phase_9_command_parses skips them. Extract a "
         f"_build_parser() and add it to _PARSERS.")
+
+
+# ── the same gap class, in the docs humans read ──────────────────────────────
+#
+# SETUP_AGENT.md is not the only place that hands over commands, and a stale
+# flag in README.md is read by more people. Running this extractor over them
+# found no invalid command — 36 checked — so this locks that in rather than
+# fixing anything.
+
+_HUMAN_DOCS = ("README.md", "docs/beta-testing.md", "docs/migration.md",
+               "docs/environment_setup.md", "docs/mcp.md",
+               "docs/licensing.md", "docs/database.md",
+               "docs/journal-filtering.md", "docs/pyrosetta_setup.md")
+
+
+def _human_doc_commands() -> list[tuple[str, list[str]]]:
+    out = []
+    for name in _HUMAN_DOCS:
+        path = _ROOT / name
+        if not path.is_file():
+            continue
+        for argv in _commands(path.read_text(encoding="utf-8")):
+            if argv and argv[0].split("/")[-1] in _PARSERS:
+                out.append((name, argv))
+    return out
+
+
+_HUMAN_COMMANDS = _human_doc_commands()
+
+
+def test_the_human_docs_still_contain_commands():
+    assert len(_HUMAN_COMMANDS) >= 20, (
+        f"only {len(_HUMAN_COMMANDS)} checkable commands found across "
+        f"{len(_HUMAN_DOCS)} docs — the extractor has gone blind")
+
+
+@pytest.mark.parametrize("doc,argv", _HUMAN_COMMANDS,
+                         ids=lambda v: (v if isinstance(v, str)
+                                        else " ".join(v[:3])))
+def test_every_human_doc_command_parses(doc, argv):
+    assert not argv[0].startswith("UNTOKENISABLE"), (
+        f"{doc}: unbalanced quotes in {argv[0]}")
+    parser = _parser_for(argv[0].split("/")[-1])
+    with contextlib.redirect_stderr(io.StringIO()) as err:
+        try:
+            parser.parse_args(argv[1:])
+        except SystemExit:
+            pytest.fail(f"{doc} documents a command the CLI rejects:\n"
+                        f"  {' '.join(argv)}\n{err.getvalue()}")

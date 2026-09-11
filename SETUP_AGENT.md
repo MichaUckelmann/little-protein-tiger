@@ -251,9 +251,38 @@ python scripts/fetch_reference_data.py
 ```
 
 ~52 MB, public, no credentials. **Required** for the ppi and binder tracks —
-without it they die two seconds in. Add `--with-depmap` only if the user wants
-the wildcard-expert DepMap tools (that file is ~420 MB and must be fetched by
-hand from the DepMap portal; the script prints the URL).
+without it they die two seconds in.
+
+`--with-depmap` does **not** download `CRISPRGeneEffect.csv` — it cannot.
+DepMap serves through an interactive portal that 403s a scripted GET
+(verified), so the flag prints hand-download instructions and returns. The
+user fetches it themselves:
+
+> **DepMap CRISPR matrix (~420 MB, optional)**
+> 1. Open <https://depmap.org/portal/data_page/?tab=allData>
+> 2. Download **`CRISPRGeneEffect.csv`** (DepMap Public, current release)
+> 3. Save it as `data/depmap/CRISPRGeneEffect.csv` in this checkout
+> 4. Confirm with `python scripts/fetch_reference_data.py --check`
+>
+> **Ask first whether they already have this file** — it is a 420 MB hand
+> download and labs share one copy. If they do, set `LPT_DEPMAP_CSV` in
+> `.env` to it (ground rule 1: `.env`, never `config.yaml`) rather than
+> having them download or copy it again. `--check` confirms the relocated
+> path, and a `find ~ -name CRISPRGeneEffect.csv` is worth one attempt
+> before asking them to fetch 420 MB.
+
+`--with-depmap` and `--check` both print that URL and that destination
+path, so you never have to recall either — run one and read it back to the
+user. **It is not wildcard-only.**
+Exactly two tools need it — `find_cocorrelated_genes` and
+`get_genetic_codependency`, plus `export_subgraph(with_depmap=True)` — and
+those are offered to `pathway-expert` (the PPI track's **stage 0**),
+`molecular-biology-expert` and `corpus-explorer` as well as
+`wildcard-expert`. So a plain `--workflow ppi` run reaches them, which four
+places in this repo used to deny. Skipping it is still the right default:
+the tool hands the model an explanatory error and the run continues without
+co-essentiality evidence. Tell the user that in Phase 9 rather than letting
+them meet it as a red `WARNING` mid-run.
 
 ### Phase 4 — Prove it works
 
@@ -542,7 +571,7 @@ you cannot restart it for them.
      `--target` is refused here:
      ```bash
      python scripts/run_pipeline.py --workflow ppi \
-       --query "Design binders against RING1B to block its interaction with RING1A." \
+       --query "Design binders against RING1B to block E3 ligase activity" \
        --project test --budget 2 --stop-after spec
      ```
      `--project` is required (the default `design.backend` is `foundry`, and
@@ -559,7 +588,25 @@ you cannot restart it for them.
 3. Point them at `docs/responsible-use.md`. Every design this pipeline emits is
    an unvalidated computational hypothesis, and anyone synthesising a sequence
    is responsible for screening it.
-4. Summarise: what is installed, what is not, what it would take to add the
+4. **Name what is degraded, not just what is missing.** A user who declined
+   an optional component will otherwise meet it as a red `WARNING` mid-run and
+   read it as a broken install. For each one they skipped, say which feature
+   stops working and whether the run survives:
+
+   | Skipped | What stops working | Run survives? |
+   |---|---|---|
+   | `CRISPRGeneEffect.csv` (`--with-depmap`) | `find_cocorrelated_genes`, `get_genetic_codependency`, `export_subgraph(with_depmap=True)`. **Reached by the PPI track's stage 0, not just wildcard-expert** | **Yes** — the tool hands the model an error, it continues without co-essentiality evidence. Hand-download steps are in Phase 3 |
+   | foundry | every GPU stage: `pilot`, `calibration`, `production`, scoring | Yes up to `--stop-after spec`; it stops there |
+   | PyRosetta | the Rosetta terms in the final composite score | Yes — `design.pyrosetta.enabled: auto` skips them |
+   | the corpus | the whole literature track, and corpus-citation checks in design runs | Yes — citation verification reports nothing to check |
+   | MCP servers | LPT's tools inside Claude Desktop/Code | Yes — the CLI is unaffected |
+
+   The DepMap row is the one that has actually bitten someone: a `--workflow
+   ppi` run called `find_cocorrelated_genes` in its first stage and logged a
+   `FileNotFoundError` the operator had been given no warning about. It is a
+   `WARNING` in the log and an `[n/a]` row in `doctor.py`, and neither means
+   the run failed.
+5. Summarise: what is installed, what is not, what it would take to add the
    rest, and what you spent.
 
 ### If something fails

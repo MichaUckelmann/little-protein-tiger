@@ -115,9 +115,18 @@ def test_applying_twice_is_idempotent(monkeypatch, tmp_path):
 
 
 def test_every_entry_point_routes_through_load_env():
-    """`load_dotenv` must not be called directly — a new call site that used it
-    would silently skip the CA fan-out, which is how httpx came to be missed."""
+    """python-dotenv's loader must not be called directly — a new call site
+    that used it would silently skip the CA fan-out, which is how httpx came
+    to be missed.
+
+    Backtick-quoted spans are stripped before searching. This repo documents
+    its reasoning in comments, so a docstring *naming* the function it must
+    not call used to fail this (`src/depmap.py` did, explaining why it calls
+    `load_env` instead). Nothing is weakened by it: backticks are not Python
+    syntax, so a real call can never sit inside a pair of them.
+    """
     import pathlib
+    import re
 
     root = pathlib.Path(__file__).resolve().parent.parent
     offenders = []
@@ -125,6 +134,8 @@ def test_every_entry_point_routes_through_load_env():
         for path in (root / sub).rglob("*.py"):
             if path.name == "env_config.py" or "__pycache__" in path.parts:
                 continue
-            if "load_dotenv" in path.read_text(encoding="utf-8", errors="ignore"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            code = re.sub(r"`[^`\n]*`", "", text)      # drop documentation
+            if "load_dotenv" in code:
                 offenders.append(str(path.relative_to(root)))
     assert not offenders, f"call src.env_config.load_env instead: {offenders}"

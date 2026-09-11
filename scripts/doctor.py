@@ -307,13 +307,29 @@ def check_reference_data(rep: Report) -> None:
         rep.add("Reference data", OK, "UniProt id-mapping + HGNC",
                 tracks=("binder", "ppi"))
 
-    crispr = depmap / "CRISPRGeneEffect.csv"
+    # `tracks` includes "ppi": this row used to be literature-only, so a
+    # ppi-track install never saw it — and then `pathway-expert`, the PPI
+    # track's stage 0, called find_cocorrelated_genes and got a
+    # FileNotFoundError the operator had been given no warning about. NA, not
+    # WARN: the run genuinely continues without it.
+    # Relocatable via LPT_DEPMAP_CSV / paths.depmap_csv — ask src.depmap
+    # rather than assuming data/depmap/, or this row reports "absent" for a
+    # file the loader finds perfectly well somewhere else.
+    try:
+        from src.depmap import _BUNDLED_PATH, _configured_path
+
+        crispr = _configured_path()
+        relocated = crispr != _BUNDLED_PATH
+    except Exception:                                        # noqa: BLE001
+        crispr, relocated = depmap / "CRISPRGeneEffect.csv", False
     rep.add("DepMap CRISPR matrix", OK if crispr.is_file() else NA,
-            "present" if crispr.is_file()
-            else "absent — only the wildcard-expert DepMap tools need it",
+            (f"present ({crispr})" if relocated else "present")
+            if crispr.is_file()
+            else "absent — find_cocorrelated_genes and "
+                 "get_genetic_codependency will return an error; runs continue",
             "" if crispr.is_file()
             else "Optional, ~420 MB: https://depmap.org/portal/data_page/?tab=allData",
-            tracks=("literature",))
+            tracks=("literature", "ppi"))
 
 
 def check_corpus(rep: Report) -> None:

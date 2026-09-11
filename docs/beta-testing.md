@@ -403,8 +403,17 @@ shortest path between two proteins · the corpus's biggest hubs · how novel a
 protein is · export a neighbourhood to Cytoscape · Louvain clusters.
 
 **DepMap co-dependency** — is an interaction supported by CRISPR
-co-essentiality · what genes are most co-essential with X. *(Needs the optional
-420 MB DepMap matrix, downloaded by hand.)*
+co-essentiality · what genes are most co-essential with X.
+
+> *Needs one optional hand download:* **`CRISPRGeneEffect.csv`** (~420 MB)
+> from <https://depmap.org/portal/data_page/?tab=allData>, saved as
+> `data/depmap/CRISPRGeneEffect.csv` — or set `LPT_DEPMAP_CSV` in `.env` to a
+> copy you already have. DepMap's portal 403s a scripted GET,
+> so `fetch_reference_data.py --with-depmap` prints these steps rather than
+> downloading. Without it these two tools return an error and **the run
+> continues** — which you will see as a `WARNING` in a design run too, since
+> `find_cocorrelated_genes` is offered to the pathway stage, not just the
+> wildcard track. That is not a failed install.
 
 **Structure calculations** (no API key, no corpus) — interface analysis and
 buried surface area · residue contacts · mutation clash checks · sequence and
