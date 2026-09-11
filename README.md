@@ -1,5 +1,19 @@
 # Little Protein Tiger
 
+<p align="center">
+  <img src="docs/showcase/assets/hero_receptor.webp" width="380"
+       alt="A designed mini-protein binder, in green, sitting on the extracellular face of the full-length CGRP receptor; the receptor is grey with its transmembrane helices crossing a drawn membrane plane, and the CGRP peptide agonist is red.">
+</p>
+
+<p align="center"><sub><b>One prompt about pain, and this came back.</b>
+LPT&rsquo;s lead CGRP-receptor binder (green) superposed onto the full-length
+receptor (PDB 6E3Y, grey) &mdash; 122 of its atoms within 4.5&nbsp;&Aring; of
+the CGRP agonist it would have to displace (red). The campaign designed
+against a 115-residue ectodomain crystal and never saw 6E3Y, which is what
+makes the overlap a check rather than a restatement.<br>
+<a href="https://michauckelmann.github.io/little-protein-tiger/">See the
+showcases &rarr;</a></sub></p>
+
 **Point it at a disease and it comes back with designed protein binders — or
 point it at a target you already have and skip to the design.** LPT reads the
 literature, picks a target and a structure, chooses the epitope, generates and
@@ -113,18 +127,28 @@ numbers can be audited rather than taken on trust.
 
 ## Built on
 
-**LPT is an orchestrator. It does not generate a backbone, design a sequence,
-or fold anything itself** — it decides *what* to design and *whether the result
-is any good*, and hands the actual structural work to other people's models.
-Nearly everything below is someone else's research, and the parts that matter
-most are the two design engines.
+**The generative models are not ours.** LPT does not diffuse a backbone,
+design a sequence or fold a complex — RFdiffusion3, MPNN and RF3 do that, and
+nearly everything in the tables below is someone else's research. The two
+design engines are the parts that matter most.
+
+What LPT does itself is the structural analysis on either side of them. It
+ranks candidate complexes on interfaces it computes rather than on citation
+count; picks the epitope and grounds every hotspot in the real coordinates;
+proves by sequence identity that the chain it is about to design against is
+the protein you asked for; trims the target to a contig RFD3 can hold fixed
+without opening hydrophobic core or keeping a transmembrane span a binder
+could never reach in a cell; and then measures every refold it gets back —
+dock geometry, per-residue confidence, interface pAE, ipSAE — to decide which
+results are real. The engines generate. The decisions, and the arithmetic
+behind them, are LPT&rsquo;s.
 
 ### The engines that do the design
 
 | Project | What LPT uses it for |
 |---|---|
 | **[foundry](https://github.com/RosettaCommons/foundry)** — RFdiffusion3, MPNN, RF3 (Institute for Protein Design, UW) | **The core of both design tracks.** RFD3 generates binder backbones against the chosen epitope, MPNN designs their sequences, RF3 refolds every candidate complex — and RF3's own confidence output is what every gate and ranking metric in LPT is computed from. `--workflow binder`, and `--workflow ppi` by default. |
-| **[BoltzGen](https://github.com/HannesStark/boltzgen)** (Hannes Stärk *et al.*) | The alternative design backend, and the **only** path for cyclic peptides — RFD3 has none. `--design-engine boltzgen`, selected automatically by `--modality cyclic_peptide`. |
+| **[BoltzGen](https://github.com/HannesStark/boltzgen)** (Hannes Stark *et al.*) | The alternative design backend, and the **only** path for cyclic peptides — RFD3 has none. `--design-engine boltzgen`, selected automatically by `--modality cyclic_peptide`. |
 | **[ProteinMPNN](https://github.com/dauparas/ProteinMPNN)** / **[LigandMPNN](https://github.com/dauparas/LigandMPNN)** (Justas Dauparas *et al.*) | The sequence-design family foundry's `mpnn` stage runs; LPT drives it with the `solublempnn` checkpoint. |
 | **[PyRosetta](https://www.pyrosetta.org)** (RosettaCommons) — *optional* | Relax + InterfaceAnalyzer on gate survivors, and per-design hotspot SASA. Used only *after* designs exist; both tracks run end-to-end without it. |
 | **[Protenix](https://github.com/bytedance/Protenix)** (ByteDance) — *optional* | Refold backend on the SLURM cluster path, in place of local RF3. |
@@ -1242,7 +1266,7 @@ Bundled third-party material — see
   against. Neither the IPD, the University of Washington, nor the foundry
   contributors endorse LPT.
 - **BoltzGen documentation and example spec**
-  (`skills/protein-design-script/boltzgen_*`) — MIT, © 2025 Hannes Stärk.
+  (`skills/protein-design-script/boltzgen_*`) — MIT, © 2025 Hannes Stark.
 
 Python dependencies are MIT/BSD/Apache, with one to be aware of: **PyMuPDF is
 AGPL-3.0-or-later**. It is imported at runtime by `src/text_extractor.py` for
