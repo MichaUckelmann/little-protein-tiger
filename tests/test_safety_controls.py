@@ -272,6 +272,26 @@ def test_the_screen_is_advisory_and_says_so():
     assert "Name screening only" in text
 
 
+def test_the_screen_is_actually_called_from_both_tracks():
+    """A control nothing calls is not a control.
+
+    The same reflection trick `test_audit_fixes` uses for the chain-assignment
+    and hotspot-grounding guards, for the same reason: a refactor can delete a
+    call site without touching the function, and the tests that assert the
+    function *works* all still pass. Both tracks must screen before they
+    reach a GPU stage.
+    """
+    import inspect
+
+    import src.pipeline_runner as pr
+
+    ppi = inspect.getsource(pr.PipelineRunner.run)
+    binder = inspect.getsource(pr.PipelineRunner._run_binder_track)
+    for name, src in (("ppi run()", ppi), ("_run_binder_track", binder)):
+        assert "_screen_select_agents" in src, (
+            f"{name} no longer screens for select agents")
+
+
 def test_the_screen_never_blocks_a_run():
     """Pinned as a contract, not an accident: the checkpoint payload says
     `blocking: False` and the function returns hits rather than raising."""
