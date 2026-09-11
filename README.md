@@ -1144,11 +1144,22 @@ not a working binder. If you synthesize anything derived from it, screening the
 sequence is your responsibility; use a synthesis provider that screens orders
 (see the [IGSC Harmonized Screening Protocol](https://genesynthesisconsortium.org/)).
 
+Four things the pipeline does about this, none of which constrain legitimate
+work:
+
+| Control | What it does |
+|---|---|
+| **Two models, then stop** | A stage declined by a safety classifier is retried on one other frontier model. If **two** decline, the run fails — it does not continue down to a smaller model until something answers. Enforced in code (`MAX_REFUSALS_BEFORE_STOP`), not just by the configured chain's length. |
+| **Refusals are visible** | Every stage report names the model that wrote it; a stage another model declined first says so, both HTML reports show it, and the manifest records it. A fallback that only reaches a log line is one nobody reviewing the campaign can see. |
+| **Select-agent screening** | Before any GPU stage, the target is name-screened against the [Federal Select Agent Program list](https://www.selectagents.gov/sat/list.htm). A hit **warns and continues** — such work is often legitimate, but it is regulated, and you should know before committing days of compute. Advisory, never a block, and never a clearance. |
+| **`provenance.json` per run** | One machine-readable record of what the campaign targeted, which model chose the epitope, whether anything was declined, and what the screen found. For a dual-use tool auditability is the control actually available; prevention is not, since the generative models are public. |
+
 Read **[docs/responsible-use.md](docs/responsible-use.md)** before using the
 design tracks. It covers intended use, what the confidence metrics do and do
 not tell you, biosecurity expectations, and this project's position on safety
-classifiers (short version: model fallback is fine, prompt-engineering around a
-safety check is not).
+classifiers (short version: model fallback across providers is a legitimate
+response to one miscalibrated classifier; walking a chain until something
+answers, or rewording a prompt to get past a check, is not).
 
 ## Licence and third-party tools
 

@@ -147,6 +147,28 @@ section.block.tint .callout{ background:var(--paper); }
 .callout.warn{ border-left-color:var(--warn); }
 .callout.warn .tag{ color:var(--warn); }
 
+/* ---------- safety notice ----------
+   Deliberately STATIC markup in each shell.html rather than rendered by
+   app.js: this is the one thing on the page that must not disappear if the
+   JS throws. It sits directly under the hero because the hero is where the
+   confident-looking numbers are, and the whole point is that those numbers
+   describe predictions. Full width (no max-width:74ch like .callout) so it
+   reads as a property of the document, not a remark inside a section. */
+.safetynotice{
+  border:1px solid var(--warn); border-left:4px solid var(--warn);
+  background:var(--warn-soft); border-radius:0 8px 8px 0;
+  padding:16px 22px; margin:0 48px 4px; margin-top:28px;
+}
+.safetynotice .tag{
+  font-family:var(--font-mono); font-size:10.5px; text-transform:uppercase;
+  letter-spacing:0.08em; color:var(--warn); margin-bottom:7px; font-weight:600;
+}
+.safetynotice p{ margin:0 0 8px; font-size:14px; color:var(--ink); line-height:1.55; max-width:88ch; }
+.safetynotice p:last-child{ margin-bottom:0; }
+.safetynotice strong{ font-weight:700; }
+.safetynotice a{ color:var(--warn); }
+@media (max-width:900px){ .safetynotice{ margin-left:20px; margin-right:20px; } }
+
 /* ---------- tables ---------- */
 .tablewrap{ overflow-x:auto; border:1px solid var(--rule); border-radius:8px; margin:22px 0; }
 table.data{ width:100%; border-collapse:collapse; font-size:13.5px; min-width:600px; }

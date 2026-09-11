@@ -802,7 +802,10 @@ three separate refusals on one target (PD-L1): `claude-sonnet-5` refuses, then
 `claude-opus-5` **also** refuses (same category), every time — a same-provider
 retry after a categorised refusal has not once succeeded here, and it is not
 free: ~$0.13 spent for nothing per attempt. `claude-haiku-4-5` eventually
-answered in that same run.
+answered in that same run — **and that is why it is no longer in any refusal
+chain.** See "Two frontier models, then stop" below: reaching a smaller model
+after two better ones declined is the one outcome this project treats as
+out of bounds, so the ladder was cut rather than kept for its recall.
 
 **This is why `provider` defaults to `"gemini"` (`gemini-3.7-flash`), not
 `"claude"`, for every pipeline stage** (`PipelineRunner.__init__`'s
@@ -824,11 +827,11 @@ another provider as `"provider:model"` (`_resolve_stage` returns a provider
 alongside the model). For the (now non-default) `claude` provider, **Gemini
 goes first**, not last: crossing providers immediately on the first refusal is
 cheaper and faster than walking same-family models that share the same
-classifier verdict; `claude-opus-5` / `claude-haiku-4-5` stay in that chain only
-as a fallback for the rare case Gemini itself declines or errors. For the
-default `gemini` provider, `models.gemini.refusal_fallbacks` leads straight to
-`claude-opus-5` / `claude-haiku-4-5` — there is no same-family model to burn a
-wasted attempt on first. Either direction, `_run_gemini` raises the same
+classifier verdict; `claude-opus-5` stays in that chain only for the rare case
+Gemini itself declines or errors. For the default `gemini` provider,
+`models.gemini.refusal_fallbacks` is the single rung `claude-opus-5` — there is
+no same-family model to burn a wasted attempt on first. Either direction,
+`_run_gemini` raises the same
 `SkillRefusedError` for a Gemini-side safety block (empty `candidates`, a
 `promptFeedback.blockReason`, or a per-candidate `finishReason` of
 `SAFETY`/`PROHIBITED_CONTENT`/`BLOCKLIST`/`RECITATION`/`SPII`), so the chain
@@ -841,6 +844,59 @@ confusing "no MODEL-READY HOTSPOTS" error.
 **Do not reword prompts to get around a classifier.** Model fallback is a
 legitimate engineering response; prompt engineering aimed at defeating a safety
 check is not.
+
+### Two frontier models, then stop — and do not add a rung
+
+`MAX_REFUSALS_BEFORE_STOP = 2`, enforced in `_run_stage` rather than by the
+configured chain's length, so a `config.yaml` naming five fallbacks still
+stops at two. Crossing providers ONCE probes an inconsistently-calibrated
+classifier, which is a real and documented problem here; continuing until
+something answers is shopping for a permissive verdict, and no reader of the
+output can tell the two apart. A stage every model declined raises
+`SkillRefusedError` and ends the run.
+
+The failure mode this closes was live in the repo: the chain ended in
+`claude-haiku-4-5` precisely *because* it answered a PD-L1 interface stage
+that Sonnet and Opus had both refused. If a stage is consistently declined
+for a target you believe is legitimate, raise an issue — the fix is never a
+longer chain.
+
+Three things make a refusal visible rather than a log line:
+`_stage_provenance_note` appends a `## MODEL PROVENANCE` block to **every**
+stage report (on the clean path too — "written by the first model asked" is
+what makes "this one was not" mean anything), `_record_refusals` writes a
+`refusal_fallback:<stage>` manifest checkpoint on both outcomes, and
+`run_provenance.footer_html` renders the per-stage table into both HTML
+reports. The block goes in **before** the citation note, because
+`report_common.extract_citation_section` matches to end-of-file and would
+otherwise swallow it.
+
+## Advisory select-agent screening, not a viral blocklist
+
+`src/select_agents.py` name-screens the query, target complex, RCSB entry
+title and chain descriptions against the Federal Select Agent Program list
+before any GPU stage (`_screen_select_agents`, called from `_stage_pathway`'s
+target selection and from `_run_binder_track` after target_intel). It
+**warns, checkpoints and continues** — never blocks.
+
+- **A "viral targets" filter was considered and rejected**, and the reasoning
+  is in that module's docstring: a binder against a viral protein IS an
+  antiviral, so the filter is inverted relative to the risk; "viral protein"
+  does not partition cleanly; and `--workflow structure` takes any local
+  file, so an input-side block is bypassed by renaming one.
+- **Two patterns carry the whole check's usability.** SARS-CoV-2 is NOT a
+  select agent while SARS-CoV is, so it needs an explicit `excluded_if` or
+  every COVID structure fires and the check gets ignored. And matching is
+  phrase-with-word-boundaries, never substring: that is what keeps `ricin`
+  out of `ricinus` (castor bean, not listed) and `mallei` out of
+  `pseudomallei`.
+- The transcribed list goes stale — it is amended by rule. `SOURCE_REVIEWED`
+  rides along in the checkpoint payload so a run records its vintage.
+
+`src/run_provenance.py` collects one `provenance.json` per report directory
+(regenerated whenever a report is, so old campaigns gain one). It is a
+**collector**: every field is copied from an artifact that already existed,
+and nothing in it re-derives a number.
 
 ## Persistent project layer
 

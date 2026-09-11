@@ -317,7 +317,18 @@ def _hero_and_rail(pathway_handoff: dict, lit_handoff: dict, struct_handoff: dic
 
 
 def _footer_html(run_dir: Path, generated_at: str) -> str:
-    return (
+    # Same reasoning as the binder report's footer: name the model behind
+    # each LLM stage, and say when one declined before another accepted.
+    provenance = ""
+    try:
+        from src import run_provenance
+
+        record = run_provenance.collect(run_dir)
+        run_provenance.write(run_dir)
+        provenance = run_provenance.footer_html(record)
+    except Exception:                                         # noqa: BLE001
+        provenance = ""
+    return provenance + (
         f"<p><b>Provenance.</b> Generated from <code>{run_dir}</code>. Target "
         f"selection ran through <code>pathway-expert</code> (or "
         f"<code>wildcard-expert</code>); tractability and prior art through "

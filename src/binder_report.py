@@ -403,7 +403,19 @@ def _hero_and_rail(target_intel: dict, calibration: dict | None, source_label: s
 
 
 def _footer_html(binder_dir: Path, source_label: str, generated_at: str) -> str:
-    return (
+    # Model provenance first: which model wrote which stage, and whether any
+    # model declined the work before one accepted it. Best-effort — a
+    # provenance read must never be what breaks a report.
+    provenance = ""
+    try:
+        from src import run_provenance
+
+        record = run_provenance.collect(binder_dir)
+        run_provenance.write(binder_dir)
+        provenance = run_provenance.footer_html(record)
+    except Exception:                                         # noqa: BLE001
+        provenance = ""
+    return provenance + (
         f"<p><b>Provenance.</b> Generated from <code>{binder_dir}</code> "
         f"({source_label}). Structure/site selection ran through "
         f"<code>binder-target-intel</code>; hotspot selection through "

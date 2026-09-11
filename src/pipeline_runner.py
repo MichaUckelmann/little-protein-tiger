@@ -79,8 +79,16 @@ _THINKING_UPGRADE_MODEL = "claude-sonnet-5"
 # claude-haiku-4-5 is kept as a same-provider fallback in case Gemini itself
 # declines or errors (see SkillRefusedError handling in `_run_gemini`) —
 # reached only when the immediate switch does not resolve it.
-_REFUSAL_FALLBACK_MODELS = ["gemini:gemini-3.7-flash", "claude-opus-5",
-                           "claude-haiku-4-5"]
+# Two independent frontier models, then stop — see `models.claude.
+# refusal_fallbacks` in config.yaml for why this chain does not continue down
+# to a smaller model. Crossing providers once answers "is this classifier
+# miscalibrated for structural biology"; walking further would be shopping for
+# a permissive verdict.
+_REFUSAL_FALLBACK_MODELS = ["gemini:gemini-3.7-flash", "claude-opus-5"]
+
+#: How many distinct models may decline before the run stops. Two frontier
+#: models agreeing is treated as a result, not an obstacle.
+MAX_REFUSALS_BEFORE_STOP = 2
 
 # Model-id prefix -> provider, for refusal_fallbacks entries written WITHOUT an
 # explicit "provider:model" prefix.
@@ -707,6 +715,9 @@ class PipelineRunner:
                     handoff["pdb_id"] = better
                 self._check_structure_organism(
                     result.pdb_id, result.target_complex or "")
+                self._screen_select_agents(
+                    "pathway", [query, result.target_complex or ""],
+                    pdb_id=result.pdb_id)
 
             # ── Stage 1: molecular-biology-expert ────────────────────────────
             # Runs BEFORE structure: literature-derived target_site_hint goes
@@ -2507,6 +2518,60 @@ class PipelineRunner:
             f"of area against its LIGAND, and designing there targets a "
             f"different biology than a receptor/accessory-protein interface."
             + alt)
+
+    def _screen_select_agents(self, stage: str, texts: list[str], *,
+                              pdb_id: str = "") -> list[dict]:
+        """Name-screen the campaign against the Federal Select Agent list.
+
+        Warns and records a manifest checkpoint; **never blocks**. See
+        `src/select_agents.py` for why this is a select-agent screen rather
+        than the "exclude viral targets" filter it might look like it should
+        be — briefly: a binder against a viral protein is an antiviral, so
+        that filter is inverted relative to the risk, and `--workflow
+        structure` takes any local file so an input-side block is bypassed by
+        renaming one.
+
+        A hit means "confirm you have institutional approval", which is a true
+        and actionable statement. A clean result means only that no listed
+        name appeared in the text — never that a target is cleared.
+        """
+        from src import select_agents
+
+        candidates = list(texts)
+        if pdb_id and not pdb_id.upper().startswith(("AF-", "LOCAL-")):
+            # The entry title and chain descriptions are where a structure
+            # names itself ("Crystal structure of ricin A chain"), and the
+            # user's query often does not.
+            try:
+                from src.target_resolve import entry_metadata
+
+                meta = (entry_metadata([pdb_id]) or {}).get(pdb_id.upper()) or {}
+                candidates.append(meta.get("title") or "")
+                candidates += [(c.get("description") or "")
+                               for c in (meta.get("chains") or {}).values()]
+            except Exception as exc:                          # noqa: BLE001
+                logger.debug(f"select-agent screen: no metadata for {pdb_id}: {exc}")
+
+        try:
+            hits = select_agents.screen(candidates)
+        except Exception as exc:                              # noqa: BLE001
+            logger.warning(f"select-agent screen failed: {exc}")
+            return []
+        if not hits:
+            return []
+
+        logger.warning("  ⚠ SELECT AGENT SCREEN\n"
+                       + select_agents.describe(hits))
+        self._binder_checkpoint(
+            "select_agent_screen", stage, "gate",
+            {"hits": hits,
+             "list_source": select_agents.SOURCE_URL,
+             "list_reviewed": select_agents.SOURCE_REVIEWED,
+             "blocking": False,
+             "note": ("Name screening only, and advisory: the run was NOT "
+                      "stopped. Confirm institutional approval before "
+                      "synthesising anything.")})
+        return hits
 
     def _check_structure_organism(self, pdb_id: str, target_complex: str) -> None:
         """
@@ -4677,6 +4742,16 @@ class PipelineRunner:
                     result.target_complex = (
                         f"{gene} / {partner}" if partner else gene)
 
+            # Advisory select-agent screen, once the target is named and
+            # BEFORE any GPU stage — the point is to reach the operator
+            # before a multi-day campaign, not after it.
+            self._screen_select_agents(
+                "target_intel",
+                [query, result.target_complex or "",
+                 intel.get("target_gene") or "",
+                 intel.get("partner_name") or ""],
+                pdb_id=intel.get("pdb_id") or "")
+
             # ── Site trials: compare epitopes by measured yield ─────────────
             # Reasoning cannot settle which of two defensible sites is more
             # designable; a few hundred backbones each can.
@@ -5972,6 +6047,65 @@ class PipelineRunner:
             model_id = upgrade
         return model_id, use_thinking, provider
 
+    #: Heading both HTML reports look for. Changing it means changing
+    #: `report_common.extract_provenance_section` too.
+    _PROVENANCE_HEADING = "## MODEL PROVENANCE"
+
+    def _stage_provenance_note(self, skill_name: str, provider: str,
+                               model: str,
+                               declined: list[SkillRefusedError]) -> str:
+        """A "who wrote this" block for every stage report.
+
+        Written on the CLEAN path as well as after a refusal, deliberately:
+        "this stage was produced by the first model asked" is the statement
+        that makes "this one was not" mean something. A fallback that only
+        appears in a log line is a fallback nobody reviewing the campaign can
+        see, and the report is what circulates.
+        """
+        asked = len(declined) + 1
+        lines = ["", "", self._PROVENANCE_HEADING, "",
+                 f"- skill: `{skill_name}`",
+                 f"- written by: **{provider}:{model}**"
+                 + (f" — model {asked} of {asked} asked" if declined else
+                    " — the first model asked")]
+        if declined:
+            lines.append(f"- declined first ({len(declined)}):")
+            for r in declined:
+                lines.append(
+                    f"    - `{r.model}` — safety classifier, category "
+                    f"`{r.category or 'unspecified'}` (call #{r.iteration})")
+            lines.append(
+                f"- A provider safety classifier declined this stage and it "
+                f"was retried on a different model. This project treats that "
+                f"as a response to an inconsistently-calibrated classifier, "
+                f"not as a way around a safety decision: the chain stops at "
+                f"{MAX_REFUSALS_BEFORE_STOP} models and the run then fails "
+                f"rather than trying a smaller one. See "
+                f"`docs/responsible-use.md`.")
+        return "\n".join(lines) + "\n"
+
+    def _record_refusals(self, stage: str, skill: str,
+                         declined: list[SkillRefusedError],
+                         answered_by: tuple[str, str] | None) -> None:
+        """Put a refusal in the manifest, not only in the log.
+
+        Called on BOTH outcomes — a fallback that answered, and a run that
+        stopped because every model declined. The manifest is the only account
+        of why a run ended once the process is gone, and a resume must not be
+        able to lose it.
+        """
+        if not declined:
+            return
+        self._binder_checkpoint(
+            f"refusal_fallback:{stage}", stage, "choice",
+            {"skill": skill,
+             "declined": [{"model": r.model, "category": r.category,
+                           "iteration": r.iteration} for r in declined],
+             "answered_by": (f"{answered_by[0]}:{answered_by[1]}"
+                             if answered_by else None),
+             "stopped": answered_by is None,
+             "max_refusals_before_stop": MAX_REFUSALS_BEFORE_STOP})
+
     def _run_stage(
         self,
         skill_name: str,
@@ -6021,25 +6155,51 @@ class PipelineRunner:
                                        estimated=estimate)
             except BudgetExceeded as exc:
                 self._budget_pause(exc)
+        # Which models declined, in order, and which one finally produced the
+        # content. Declared out here so the clean path reports provenance too:
+        # "this stage was written by the first model asked" is the statement
+        # that makes "this one was not" meaningful.
+        declined: list[SkillRefusedError] = []
         try:
             try:
                 output_text = runner.run(query, context_text=context_text)
             except SkillRefusedError as first_refusal:
-                # Work down the fallback chain. A refusal is model- AND
-                # query-dependent, so "another model declined too" is real
-                # information and worth reporting rather than retrying forever.
+                # Work down the fallback chain, but only so far. A refusal is
+                # model- AND query-dependent, so crossing to another provider
+                # once tests whether ONE classifier is miscalibrated for
+                # structural biology — a real and documented problem here.
+                # Continuing past MAX_REFUSALS_BEFORE_STOP would instead be
+                # shopping for a permissive verdict, and nobody reading the
+                # output could tell the two apart. Two frontier models
+                # declining is a result: stop and say so.
                 chain = [m for m in (self._models_cfg.get("refusal_fallbacks")
                                      or _REFUSAL_FALLBACK_MODELS)
                          if m != model_id]
-                output_text, refusals = None, [first_refusal]
+                output_text = None
+                declined.append(first_refusal)
                 for fallback in chain:
-                    logger.warning(f"{refusals[-1]}. Retrying on {fallback}.")
+                    if len(declined) >= MAX_REFUSALS_BEFORE_STOP:
+                        # Enforced in code, not only by the configured chain's
+                        # length: a config.yaml listing five fallbacks must not
+                        # be able to walk past this.
+                        logger.error(
+                            f"  [{skill_name}] {len(declined)} models declined "
+                            f"this stage "
+                            f"({', '.join(sorted({r.model for r in declined}))})"
+                            f" — not trying {fallback} or anything after it. "
+                            f"Two independent frontier models agreeing is "
+                            f"treated as a result, not an obstacle. If you "
+                            f"believe this target is legitimate, raise it as "
+                            f"an issue rather than adding a fallback (see "
+                            f"docs/responsible-use.md).")
+                        break
+                    logger.warning(f"{declined[-1]}. Retrying on {fallback}.")
                     if self._ledger is not None:
                         self._ledger.record(
                             stage=stage_key, skill=skill_name,
                             provider=provider, model=model_id,
                             usage=runner.usage(),
-                            note=f"refused (category={refusals[-1].category})")
+                            note=f"refused (category={declined[-1].category})")
                     fb_provider, fb_model = _split_fallback(fallback, provider)
                     runner = SkillRunner(
                         skill_name=skill_name, provider=fb_provider,
@@ -6052,14 +6212,19 @@ class PipelineRunner:
                         output_text = runner.run(query, context_text=context_text)
                         break
                     except SkillRefusedError as again:
-                        refusals.append(again)
+                        declined.append(again)
                 if output_text is None:
-                    tried = ", ".join(sorted({r.model for r in refusals}))
+                    # Record it before raising: the manifest is the only
+                    # account of WHY a run stopped once the process is gone.
+                    self._record_refusals(stage_key, skill_name, declined, None)
+                    tried = ", ".join(sorted({r.model for r in declined}))
                     raise SkillRefusedError(
                         skill=skill_name, model=tried,
-                        category=refusals[-1].category,
-                        iteration=refusals[-1].iteration,
+                        category=declined[-1].category,
+                        iteration=declined[-1].iteration,
                     ) from first_refusal
+                self._record_refusals(stage_key, skill_name, declined,
+                                      (provider, model_id))
         finally:
             if self._ledger is not None:
                 entry = self._ledger.record(
@@ -6082,6 +6247,13 @@ class PipelineRunner:
         # This runs after every stage so hallucinated DOIs are flagged before
         # the file is written to disk and before the next stage reads it.
         citation_note = self._verify_citations(output_text, skill_name)
+
+        # Model provenance goes in BEFORE the citation note, not after:
+        # `report_common.extract_citation_section` matches "## CITATION
+        # VERIFICATION" through to end-of-file, so anything appended after it
+        # is rendered inside the citation block in both HTML reports.
+        output_text = output_text + self._stage_provenance_note(
+            skill_name, provider, model_id, declined)
         if citation_note:
             output_text = output_text + citation_note
 

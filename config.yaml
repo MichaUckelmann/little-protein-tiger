@@ -124,17 +124,22 @@ models:
     # tokens and wall-clock. Ledger evidence from three separate interface-
     # stage refusals on one target (PD-L1): claude-sonnet-5 refused (category
     # "bio"), then claude-opus-5 ALSO refused (same category), every time,
-    # $0.13 spent for nothing each time, before claude-haiku-4-5 finally
-    # answered. Anthropic's safety classifiers are consistent across the
-    # Claude family for a given category, so a same-provider retry after a
-    # categorised refusal is a bet that has not once paid off here.
+    # $0.13 spent for nothing each time. Anthropic's safety classifiers are
+    # consistent across the Claude family for a given category, so a
+    # same-provider retry after a categorised refusal is a bet that has not
+    # once paid off here.
     #
-    # gemini-3.7-flash answers reliably and is ~4x cheaper on input than
-    # sonnet. claude-opus-5 / claude-haiku-4-5 remain as later fallbacks only
-    # for the rare case Gemini itself declines or errors (see the
-    # SkillRefusedError handling added to `_run_gemini` for that case) —
-    # reached only when switching provider does not resolve it either.
-    refusal_fallbacks: ["gemini:gemini-3.7-flash", "claude-opus-5", "claude-haiku-4-5"]
+    # THE CHAIN STOPS AT TWO FRONTIER MODELS, DELIBERATELY. It used to end in
+    # claude-haiku-4-5, which did answer the PD-L1 interface stage after
+    # sonnet and opus both declined — and that is exactly the shape this
+    # project does not want. Falling back across providers is a legitimate
+    # response to ONE inconsistently-calibrated classifier; continuing down
+    # to a smaller model until something answers is provider-shopping for a
+    # permissive verdict, and it cannot be distinguished from it by anyone
+    # reading the output. Two independent frontier models declining is a
+    # RESULT: the run raises SkillRefusedError and stops. If you believe the
+    # target is legitimate, raise it as an issue — do not add a rung.
+    refusal_fallbacks: ["gemini:gemini-3.7-flash", "claude-opus-5"]
     stages:
       # Sonnet-class models trigger a biosecurity refusal on the "review of
       # designed binders" task regardless of prompt wording; Haiku handles the
@@ -156,7 +161,12 @@ models:
     # that gemini is the default provider, mirroring the claude block's
     # own refusal_fallbacks above (which still leads with Gemini for the
     # `--provider claude` path).
-    refusal_fallbacks: ["claude-opus-5", "claude-haiku-4-5"]
+    #
+    # ONE rung, not two: gemini-3.7-flash plus claude-opus-5 is two
+    # independent frontier models, and if both decline the run stops rather
+    # than trying a smaller one. See the claude block above for why that
+    # boundary is where it is.
+    refusal_fallbacks: ["claude-opus-5"]
 
   openai:
     # Responses API (`/v1/responses`), reached with `requests` like gemini —

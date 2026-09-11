@@ -486,15 +486,28 @@ def test_refusal_fallback_chain_is_configured_and_excludes_the_default(config):
     """
     Refusals are model- AND query-dependent: claude-sonnet-5 refuses the
     structure-analysis prompt outright, claude-opus-5 answers for some targets
-    and declines for others. Hence a chain, and none of it may be the model that
+    and declines for others. Hence a fallback, and it may not be the model that
     already refused.
+
+    This used to assert `len(chain) >= 2`, which the two-models-then-stop
+    policy makes wrong: the default (gemini) chain is now ONE rung, because
+    gemini plus one fallback already is two independent frontier models, and
+    the run stops there rather than trying a smaller one. See
+    `MAX_REFUSALS_BEFORE_STOP` and docs/responsible-use.md.
     """
-    from src.pipeline_runner import _REFUSAL_FALLBACK_MODELS
+    from src.pipeline_runner import (
+        MAX_REFUSALS_BEFORE_STOP, _REFUSAL_FALLBACK_MODELS,
+    )
 
     r = PipelineRunner(config, workflow="binder")
     chain = r._models_cfg.get("refusal_fallbacks") or _REFUSAL_FALLBACK_MODELS
-    assert len(chain) >= 2
+    assert chain, "there must be at least one fallback"
     assert r._default_model not in chain
+    # However long the chain is, the number of models actually attempted is
+    # capped — and no rung may be a smaller model reached after two frontier
+    # models declined.
+    assert 1 + len(chain) >= MAX_REFUSALS_BEFORE_STOP
+    assert not any("haiku" in m.lower() for m in chain), chain
 
 
 def test_refusal_is_retried_on_the_fallback_model(config, tmp_path, monkeypatch):

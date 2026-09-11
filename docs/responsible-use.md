@@ -66,6 +66,85 @@ safety check is not, and pull requests doing it will be declined. If a stage is
 consistently refused for a target you believe is legitimate, that is worth
 raising as an issue rather than routing around.
 
+### Two models, then stop
+
+The fallback chain stops after **two** independent frontier models decline
+(`MAX_REFUSALS_BEFORE_STOP` in `src/pipeline_runner.py`, enforced in code so a
+longer configured chain cannot walk past it). The run then raises
+`SkillRefusedError` and fails.
+
+That boundary is deliberate, and it moved. The chain used to end in
+`claude-haiku-4-5`, which did answer a PD-L1 interface stage that
+`claude-sonnet-5` and `claude-opus-5` had both declined. Reaching that rung
+means the pipeline obtained content two better models refused to produce, and
+nobody reading the output could distinguish it from the legitimate case.
+
+So the line is:
+
+- **Crossing providers once is a probe**, and a justified one — these refusals
+  are demonstrably miscalibrated for structural-biology analysis. A single
+  cross-provider retry asks "is this one classifier wrong?"
+- **Continuing until something answers is shopping for a permissive verdict.**
+  Two frontier models agreeing is treated as a result, not an obstacle.
+
+Do not add a rung to get a stage through. Raise an issue instead.
+
+### A refusal is recorded where you can see it
+
+Every stage report ends with a `## MODEL PROVENANCE` block naming the model
+that wrote it — on the clean path too, because "written by the first model
+asked" is what makes "this one was not" meaningful. When a model declined
+first, that block names it and its category, both HTML reports show it in a
+"which model wrote which stage" table, and the project manifest gets a
+`refusal_fallback:<stage>` checkpoint so the record survives the process.
+
+A run that stopped because every model declined records that too — the
+manifest is the only account of why a run ended once the process is gone.
+
+## Select-agent screening
+
+Before any GPU stage, LPT name-screens the campaign — your query, the target
+complex, the RCSB entry title and chain descriptions — against the
+[Federal Select Agent Program list](https://www.selectagents.gov/sat/list.htm)
+(`src/select_agents.py`). A hit **warns, records a manifest checkpoint, and
+lets the run continue**; it never blocks.
+
+It is advisory on purpose. Designing a binder against a select agent is often
+legitimate countermeasure work; what it is not is unregulated, and the point
+of the check is to reach you *before* a multi-day campaign rather than after
+it. Confirm institutional approval before synthesising anything.
+
+**What it is not:**
+
+- **Not a clearance.** A clean result means no listed name appeared in the
+  text that was screened. It inspects no sequence and no structure, and a
+  target that does not name itself is not screened.
+- **Not a "viral targets" filter, and deliberately so.** That filter is
+  inverted relative to the risk — a binder against a viral protein is an
+  antiviral, and anti-spike nanobodies and nirsevimab are the beneficial
+  application class. "Viral protein" also does not partition cleanly
+  (host/virus complexes, viral mimicry of host folds), and since
+  `--workflow structure` accepts any local file, an input-side *block* is
+  bypassed by renaming one. A control that can be sidestepped that easily is
+  worse than none, because it invites reliance on it.
+- **Not current unless you check.** The list is amended by rule. LPT's copy
+  was transcribed from the 2025-01-14 revision, and the vintage it screened
+  against is recorded in the checkpoint payload.
+
+## What each run records
+
+Every report directory gets a `provenance.json` (`src/run_provenance.py`),
+regenerated whenever a report is: the project and query, the target identity
+the campaign settled on, which model wrote each stage and whether any model
+declined first, the select-agent screen result, the calibration verdict, and
+the API spend.
+
+For a dual-use tool, auditability is the control that is actually available —
+the generative models are public and `--workflow structure` takes any file, so
+prevention is not on offer. What a release can reasonably provide is that
+every campaign leaves a complete, mechanical account of what it targeted and
+who decided what. It is a record, not a clearance.
+
 ## No warranty
 
 LPT is released under PolyForm Noncommercial 1.0.0 and comes with no warranty

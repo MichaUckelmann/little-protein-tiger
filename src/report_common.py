@@ -163,6 +163,35 @@ def extract_citation_section(text: str) -> str | None:
 # numeric helpers
 # ---------------------------------------------------------------------
 
+def parse_provenance(text: str) -> dict | None:
+    """Read a ``## MODEL PROVENANCE`` block back out of a stage report.
+
+    Written by ``PipelineRunner._stage_provenance_note``. Returns
+    ``{"skill", "written_by", "declined": [{"model", "category"}], "asked"}``,
+    or None when the block is absent — which is the normal case for a stage
+    report written before this block existed, and for every deterministic
+    stage (there is no model to name).
+    """
+    m = re.search(r"##\s+MODEL PROVENANCE\s*\n(.*?)(?=\n##\s|\Z)",
+                  text or "", re.DOTALL | re.IGNORECASE)
+    if not m:
+        return None
+    body = m.group(1)
+    skill = re.search(r"-\s*skill:\s*`?([^`\n]+)`?", body)
+    who = re.search(r"-\s*written by:\s*\*\*([^*\n]+)\*\*", body)
+    declined = [
+        {"model": mm.group(1), "category": mm.group(2)}
+        for mm in re.finditer(
+            r"-\s*`([^`]+)`\s*—\s*safety classifier, category `([^`]+)`", body)
+    ]
+    return {
+        "skill": (skill.group(1).strip() if skill else None),
+        "written_by": (who.group(1).strip() if who else None),
+        "declined": declined,
+        "asked": len(declined) + 1,
+    }
+
+
 def as_float(row: dict, key: str) -> float | None:
     v = row.get(key)
     try:
