@@ -2,15 +2,18 @@
 
 <p align="center">
   <img src="docs/showcase/assets/hero_receptor.webp" width="380"
-       alt="A designed mini-protein binder, in green, sitting on the extracellular face of the full-length CGRP receptor; the receptor is grey with its transmembrane helices crossing a drawn membrane plane, and the CGRP peptide agonist is red.">
+       alt="A designed mini-protein binder, in green, occupying the cleft between RAMP1 and CALCRL on the extracellular face of the full-length CGRP receptor; the receptor is grey with its transmembrane helices crossing a drawn membrane plane, and the CGRP peptide agonist is red.">
 </p>
 
 <p align="center"><sub><b>One prompt about pain, and this came back.</b>
-LPT&rsquo;s lead CGRP-receptor binder (green) superposed onto the full-length
-receptor (PDB 6E3Y, grey) &mdash; 122 of its atoms within 4.5&nbsp;&Aring; of
-the CGRP agonist it would have to displace (red). The campaign designed
-against a 115-residue ectodomain crystal and never saw 6E3Y, which is what
-makes the overlap a check rather than a restatement.<br>
+LPT picked <b>RAMP1</b> &mdash; the subunit that makes CALCRL a CGRP receptor
+&mdash; and designed a mini-protein (green) against the face RAMP1 uses to
+hold that heterodimer together. Superposed onto the full-length receptor (PDB
+6E3Y, grey), it sits in exactly that cleft: <b>496</b> of its atoms within
+4.5&nbsp;&Aring; of CALCRL, and 122 of the CGRP agonist (red), whose pocket
+those same RAMP1 residues help roof. The campaign worked from an 84-residue
+ectodomain trim with no peptide and no membrane and never saw 6E3Y, which is
+what makes the overlap a check rather than a restatement.<br>
 <a href="https://michauckelmann.github.io/little-protein-tiger/">See the
 showcases &rarr;</a></sub></p>
 

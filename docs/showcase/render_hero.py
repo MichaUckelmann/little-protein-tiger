@@ -21,12 +21,23 @@ WHAT THIS IMAGE IS, AND IS NOT. It is a superposition, not a docking run and
 not a modelled ternary complex: 6E3Y took no part in the campaign, and the
 overlap it reveals is therefore an independent check rather than a restatement
 of the pipeline's own output — the same role PDB 4ZQK plays for PD-L1 on the
-campaign page. It is also not a surprise: the interface stage deliberately
-aimed at the CGRP-contacting epitope, so the site was CHOSEN. What is
-independently confirmed here is OCCUPANCY — that the binder the pipeline
-actually produced lands on that site with the agonist's own footprint, which
-the campaign, working on an ECD-only crystal form with no peptide present,
-had no way to score for.
+campaign page. It is also not a surprise: the site was CHOSEN.
+
+What the campaign actually aimed at, in its own words, is worth stating
+precisely, because the striking part of this picture is the wrong half of it.
+The target is RAMP1 (chain D of 3N7S, 84 residues after the trim) and the mode
+is DISRUPT: all ten hotspots are RAMP1 residues that contact CALCRL, and the
+intent is to occupy the cleft the heterodimer forms. The interface stage titled
+the region "RAMP1 Extracellular Core & CGRP-Contacting Epitope" because those
+same residues — F83, W84, P85 — also roof the pocket the peptide's C-terminus
+binds, so the epitope serves both. The contact counts keep the emphasis
+honest: 496 binder atoms within 4.5 A of CALCRL against 122 of CGRP, a 4:1
+split toward the interface the campaign set out to break.
+
+So what is independently confirmed here is OCCUPANCY — that the binder the
+pipeline actually produced lands in that cleft on the full-length receptor,
+which the campaign, working on an ECD-only crystal form with no peptide and no
+membrane present, had no way to score for.
 
 Conventions this script has to get right, each capable of a plausible wrong
 picture (see docs/showcase/README.md):
@@ -63,7 +74,7 @@ TURN_FRAMES = 90        # 3 s at 30 fps
 # Same palette as the showcase figures, plus one new hue for the agonist.
 BINDER_COL = "#2f8f74"     # the design
 TARGET_COL = "#9aa79d"     # CALCRL + RAMP1
-AGONIST_COL = "#b2503c"    # CGRP, the peptide the design has to displace
+AGONIST_COL = "#b2503c"    # CGRP, the agonist whose pocket this face roofs
 HOTSPOT_COL = "#c0872b"
 
 # 6E3Y chains. R is CALCRL (full length, 7TM included), E is RAMP1, P is the
