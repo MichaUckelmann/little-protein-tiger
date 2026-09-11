@@ -148,7 +148,7 @@ behind them, are LPT&rsquo;s.
 | Project | What LPT uses it for |
 |---|---|
 | **[foundry](https://github.com/RosettaCommons/foundry)** — RFdiffusion3, MPNN, RF3 (Institute for Protein Design, UW) | **The core of both design tracks.** RFD3 generates binder backbones against the chosen epitope, MPNN designs their sequences, RF3 refolds every candidate complex — and RF3's own confidence output is what every gate and ranking metric in LPT is computed from. `--workflow binder`, and `--workflow ppi` by default. |
-| **[BoltzGen](https://github.com/HannesStark/boltzgen)** (Hannes Stark *et al.*) | The alternative design backend, and the **only** path for cyclic peptides — RFD3 has none. `--design-engine boltzgen`, selected automatically by `--modality cyclic_peptide`. |
+| **[BoltzGen](https://github.com/HannesStark/boltzgen)** (Hannes Stärk *et al.*) | The alternative design backend, and the **only** path for cyclic peptides — RFD3 has none. `--design-engine boltzgen`, selected automatically by `--modality cyclic_peptide`. |
 | **[ProteinMPNN](https://github.com/dauparas/ProteinMPNN)** / **[LigandMPNN](https://github.com/dauparas/LigandMPNN)** (Justas Dauparas *et al.*) | The sequence-design family foundry's `mpnn` stage runs; LPT drives it with the `solublempnn` checkpoint. |
 | **[PyRosetta](https://www.pyrosetta.org)** (RosettaCommons) — *optional* | Relax + InterfaceAnalyzer on gate survivors, and per-design hotspot SASA. Used only *after* designs exist; both tracks run end-to-end without it. |
 | **[Protenix](https://github.com/bytedance/Protenix)** (ByteDance) — *optional* | Refold backend on the SLURM cluster path, in place of local RF3. |
@@ -1266,7 +1266,7 @@ Bundled third-party material — see
   against. Neither the IPD, the University of Washington, nor the foundry
   contributors endorse LPT.
 - **BoltzGen documentation and example spec**
-  (`skills/protein-design-script/boltzgen_*`) — MIT, © 2025 Hannes Stark.
+  (`skills/protein-design-script/boltzgen_*`) — MIT, © 2025 Hannes Stärk.
 
 Python dependencies are MIT/BSD/Apache, with one to be aware of: **PyMuPDF is
 AGPL-3.0-or-later**. It is imported at runtime by `src/text_extractor.py` for
