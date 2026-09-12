@@ -191,6 +191,16 @@ naming it.
   bar. `--success-metric ipsae_min` is refused on BoltzGen outright: it writes
   no PAE matrix, so its own ipsae column spans 0.0000-0.0289 against an
   RF3-calibrated bar of 0.5 and every campaign would size to STOP.
+- **One binder-track path is NOT dispatched: the multi-site trial.**
+  `_run_site_trials` calls `_stage_binder_spec`/`_stage_calibration`
+  unconditionally, so a BoltzGen run reaching it would build an RFD3 contig
+  JSON where a BoltzGen YAML was asked for and then wait for RF3 output that
+  never arrives. `_refuse_undispatched_site_trials` blocks `--trial-sites > 1`
+  and `--stop-after spec|trial` there and points at `--stop-after
+  calibration`, which takes the dispatched single-site route. The guard is
+  self-contained rather than trusting its caller's `if`, and runs BEFORE
+  `_binder_sites` — refusing after it would already have resolved chains and
+  logged a site header, which reads as though the trial had begun.
 - **`--project` is required on every track and every engine**, checked in
   both `run()` and the CLI. The GPU stages each track reaches are multi-hour
   to multi-day and checkpoint into the manifest, which is also what
@@ -325,15 +335,32 @@ against RAMP1, `3N7S` chain D), not by reading its docs.
   collapse a 64-hit `iptm >= 0.50` set to zero. Promoting it to a threshold
   would silently empty every cyclic campaign.
 - **Per-design cost scales with target AND binder size, and a small probe
-  over-costs.** Measured: 7.8 s/design at 98 tokens with a 12–15mer, 26.5
-  s/design at 161 tokens with a 70–83mer, 145 s/design at 817 tokens. A
-  24-design probe of the same cyclic campaign read 16.0 s/design — 2× the
-  at-scale rate — because fixed model-loading dominates, the same reason
-  `foundry_runner.sec_per_refold_observed` requires ≥50 samples. `protein-*`
-  protocols run six steps to `peptide-*`'s five (the extra one is
-  `design_folding`, a binder-alone refold), which is most of the per-design
-  difference. GPU utilisation drops to 0% during the CPU-bound `analysis` step,
-  so `nvidia-smi` is not a liveness signal.
+  over-costs by ~1.5–2×.** At-scale, end-to-end from each campaign's own
+  `campaign_timing.jsonl` over 970 designs: **7.8 s/design at 99 tokens**
+  (12–15mer, peptide protocol), **17.3 s/design at 160 tokens** (70–83mer,
+  protein protocol), 122 s/design at 817 tokens. The 24-design probes of those
+  same two campaigns read **16.0 and 26.5** — 2.05× and 1.53× their own
+  at-scale rates — because fixed model-loading dominates, the same reason
+  `foundry_runner.sec_per_refold_observed` requires ≥50 samples. Both probe
+  numbers were briefly taken for measurements, and the second is why
+  `PROTEIN_PROTOCOL_FACTOR` shipped at 1.8 before the campaign finished and
+  said **1.175**.
+- **The protein protocol's extra step is its cheapest.** `protein-*` runs six
+  steps to `peptide-*`'s five, the extra one being `design_folding` — a refold
+  of the BINDER ALONE, 70–83 residues against the complex's 160 — so the
+  measured end-to-end margin is ~18%, not the ~80% the probe implied. GPU
+  utilisation drops to 0% during the CPU-bound `analysis` step, so
+  `nvidia-smi` is not a liveness signal.
+- **The two modalities differ on the pieces and agree on the product.** Over
+  994 designs each against the same target (RAMP1, 3N7S chain D), the rate
+  that actually sizes a campaign — clearing the shipped gate AND the 0.50
+  iptm bar — is **1.11% mini (95% CI 0.62–1.97) against 1.21% cyclic
+  (0.69–2.10)**, i.e. within noise. The components are not: `pass_filters`
+  passes 20.3% of mini and 8.6% of cyclic, `ipae <= 10` keeps 83% of mini
+  passers and 100% of cyclic ones, `complex_plddt >= 0.70` 39% against 3.7%.
+  So `design.boltzgen_ranking`'s base block is right for both and
+  `modality.mini_protein` carries no overrides — which is a measurement, not
+  an inheritance by default.
 
 ## The operator can name the epitope
 

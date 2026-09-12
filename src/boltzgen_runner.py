@@ -86,13 +86,24 @@ DISK_EXPONENT = 0.97
 #:
 #: The laws above are fitted on peptide-protocol data only — all three points
 #: had 12-15mer binders — so a protein-protocol campaign needs this factor.
-#: 1.8 is a LOWER BOUND, not a fit: the RAMP1 mini campaign at 161 tokens shows
-#: 26.45 s/design of refold spacing against the peptide law's 14.86, a ratio of
-#: 1.78, and that spacing covers the `folding` step only. The extra
-#: `design_folding` step is not in it, so the true end-to-end factor is higher.
-#: Refine from a completed protein-protocol campaign's own end-to-end ledger
-#: rather than from refold mtimes.
-PROTEIN_PROTOCOL_FACTOR = 1.8
+#:
+#: 1.175 is the ratio at the ONE at-scale protein-protocol point there is: the
+#: RAMP1 mini campaign, 970 designs at a 154-167-token complex, END-TO-END
+#: 17.32 s/design from its own `campaign_timing.jsonl`, against the peptide
+#: law's 14.74 at the same size. The law reproduces that point to within 0.5%
+#: with this factor.
+#:
+#: It replaces a 1.8 derived from that campaign's 24-design PROBE, which was
+#: startup-dominated in exactly the way this module documents elsewhere — the
+#: probe read 26.52 s/design against the same campaign's at-scale 17.32, a
+#: 1.53x inflation, and the cyclic probe read 16.04 against 7.82 (2.05x). The
+#: old note called 1.8 a "lower bound"; it was an over-estimate, and the
+#: direction mattered less than it looks only because over-costing is the safe
+#: way to be wrong (a clamped `n_batches` and a pessimistic verdict, not an
+#: over-run). One at-scale point is still one point: treat this as calibrated
+#: rather than fitted, and prefer `sec_per_design_observed`, which already
+#: takes precedence everywhere it exists.
+PROTEIN_PROTOCOL_FACTOR = 1.175
 
 #: Below this many finished designs an observed rate is startup-dominated and
 #: is not reported. Same threshold and reasoning as foundry's.

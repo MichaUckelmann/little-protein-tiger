@@ -86,6 +86,10 @@ def test_an_unknown_size_falls_back_to_the_anchor():
 def test_the_protein_protocol_costs_more_at_the_same_size():
     """It runs SIX steps to peptide's five; the extra one refolds the binder
     alone. Confirmed live — the cyclic run logs [Step 3/5], the mini [Step 3/6].
+
+    The measured margin is ~18%, not the ~80% a probe suggested: the extra
+    step refolds the BINDER alone (70-83 residues against the complex's 160),
+    so it is the cheapest of the six.
     """
     for t in (99, 161, 817):
         pep = seconds_per_design(t, "peptide-anything")
@@ -96,11 +100,21 @@ def test_the_protein_protocol_costs_more_at_the_same_size():
     assert seconds_per_design(161) == seconds_per_design(161, "peptide-anything")
 
 
-def test_the_protein_factor_matches_the_ramp1_observation():
-    """At 161 tokens the RAMP1 mini campaign showed 26.45 s/design of refold
-    spacing. A lower bound (the extra step is not in that spacing), so the law
-    must be at least that, not less."""
-    assert seconds_per_design(161, "protein-anything") >= 26.0
+def test_the_protein_factor_reproduces_the_at_scale_mini_campaign():
+    """The one at-scale protein-protocol point there is: the RAMP1 mini
+    campaign, 970 designs at a 154-167-token complex, END-TO-END 17.32
+    s/design from its own `campaign_timing.jsonl`.
+
+    Its 24-design PROBE read 26.52 s/design, and a factor fitted to THAT
+    over-costs a campaign by ~53% — the same startup effect that made the
+    cyclic probe read 16.04 against an at-scale 7.82. A probe cannot set this
+    constant, which is the whole reason `MIN_DESIGNS_FOR_RATE` exists.
+    """
+    assert seconds_per_design(160, "protein-anything") == pytest.approx(
+        17.32, rel=0.02)
+    # And the peptide law at the same size, which the factor multiplies.
+    assert seconds_per_design(160, "peptide-anything") == pytest.approx(
+        14.74, rel=0.02)
 
 
 # ── progress, and the stale-metrics trap ────────────────────────────────────

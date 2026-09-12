@@ -731,12 +731,23 @@ design:
         # rate is the honest one.
         excellence_bar: 0.50
       mini_protein:
-        # PROVISIONAL -- inherits the base gate and the cyclic bar. The
-        # matching 994-design mini-protein campaign against the same target is
-        # what sets these, and at n=24 the probe showed iptm 0.123-0.448
-        # (median 0.215) with ZERO designs above 0.60, so the cyclic numbers
-        # are NOT assumed to transfer. Fill in from that campaign's own
-        # calibration rather than from the probe.
+        # NO OVERRIDES, and that is now a MEASUREMENT rather than an
+        # inheritance by default. The matching 994-design mini-protein
+        # campaign against the same target (RAMP1, 3N7S chain D, 70-83mer)
+        # lands within noise of the cyclic one on the rate that actually sizes
+        # a campaign: 11/994 = 1.11% (95% CI 0.62-1.97) clear the base gate
+        # AND the 0.50 bar, against cyclic's 12/994 = 1.21% (0.69-2.10). So
+        # 0.50 is the strictest defensible bar here too -- 0.55 gives 3 hits,
+        # below MIN_HITS_FOR_ESTIMATE.
+        #
+        # The two modalities differ on the pieces, not the product, which is
+        # why the base block is right for both:
+        #   pass_filters   20.32% mini  vs   8.55% cyclic
+        #   ipae <= 10     82.7% of passers  vs 100% (it does real work here)
+        #   plddt >= 0.70  39.3%            vs   3.7% (still no reason to gate)
+        # A 24-design probe of this same campaign had suggested otherwise
+        # (iptm 0.123-0.448, median 0.215); the at-scale distribution is
+        # 0.118-0.665, median 0.234. Probes size nothing.
         thresholds: {}
 
   # Hard filters — designs failing any of these are dropped before ranking.

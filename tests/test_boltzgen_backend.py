@@ -225,3 +225,63 @@ def test_an_empty_hotspot_table_is_refused(tmp_path):
         r._stage_boltzgen_spec(
             {}, json.dumps({"target_chain": "", "residues": []}), _Trim(),
             _dirs(tmp_path), PipelineResult(run_dir=tmp_path, pdb_id="3N7S"))
+
+
+# ── the one path that is NOT dispatched, refused rather than swapped ────────
+
+@pytest.mark.parametrize("trial_sites,stop_after,needle", [
+    (2, None, "--trial-sites > 1"),
+    (1, "spec", "--stop-after spec"),
+    (1, "trial", "--stop-after trial"),
+    (3, "spec", "--trial-sites > 1"),   # the more specific of the two wins
+])
+def test_the_multi_site_trial_path_is_refused_on_boltzgen(trial_sites,
+                                                          stop_after, needle):
+    """`_run_site_trials` calls `_stage_binder_spec` and `_stage_calibration`
+    unconditionally — the FOUNDRY stages — so on a BoltzGen run it would build
+    an RFD3 contig JSON where a BoltzGen YAML was asked for, then wait for RF3
+    output that never arrives. A silent backend swap, not an error. And
+    `--stop-after spec` is the documented first command for a new user, so it
+    is the one they would hit first."""
+    from src.pipeline_runner import PipelineBlockedError
+
+    r = _runner(design_engine="boltzgen")
+    r._trial_sites, r._stop_after = trial_sites, stop_after
+    with pytest.raises(PipelineBlockedError, match="does not support") as exc:
+        r._refuse_undispatched_site_trials()
+    assert needle in str(exc.value)
+    # It must name the way forward, not merely say no.
+    assert "--stop-after calibration" in str(exc.value)
+
+
+@pytest.mark.parametrize("trial_sites,stop_after", [
+    (1, None), (1, "calibration"),
+])
+def test_the_dispatched_stop_points_are_not_refused(trial_sites, stop_after):
+    """`calibration` and unset go through the single-site route, which IS
+    dispatched — refusing them would make the backend unusable. (The guard is
+    only reached for trial/spec, but it must be safe if that changes.)"""
+    r = _runner(design_engine="boltzgen")
+    r._trial_sites, r._stop_after = trial_sites, stop_after
+    r._refuse_undispatched_site_trials()      # must not raise
+
+
+@pytest.mark.parametrize("stop_after", ["spec", "trial"])
+def test_foundry_keeps_the_site_trial_path(stop_after):
+    """The guard is BoltzGen-only: foundry's multi-site comparison is a
+    shipped feature and `--stop-after spec` its recommended entry point."""
+    r = _runner(design_engine="foundry")
+    r._trial_sites, r._stop_after = 2, stop_after
+    r._refuse_undispatched_site_trials()      # must not raise
+
+
+def test_the_guard_runs_before_any_site_is_built():
+    """Refusing after `_binder_sites` would already have resolved chains and
+    logged a site header, which reads as though the trial had begun."""
+    import inspect
+
+    from src.pipeline_runner import PipelineRunner
+
+    src = inspect.getsource(PipelineRunner._run_binder_track)
+    assert (src.index("_refuse_undispatched_site_trials()")
+            < src.index("sites = self._binder_sites(intel"))

@@ -196,15 +196,23 @@ s/design against the same campaign's at-scale 7.8)
   three points**, because BoltzGen writes coordinates + SCALAR confidences and
   **no PAE matrix**. RF3's 1.49 exponent comes from that O(N²) matrix being
   half its bytes. Same fact is why `ipsae_min` is unrecoverable here.
-- `PROTEIN_PROTOCOL_FACTOR = 1.8` — **a LOWER BOUND, still provisional.**
-  `protein-anything` runs 6 steps to `peptide-anything`'s 5 (extra =
-  `design_folding`, a binder-alone refold; confirmed from `[Step 3/5]` vs
-  `[Step 3/6]`). Derived from the RAMP1 mini campaign's 26.45 s/design of
-  *refold spacing* vs the peptide law's 14.86 — and that spacing excludes the
-  extra step, so the true factor is higher. **Firm it up from that campaign's
-  finished ledger** (`outputs/bz_calib_ramp1_mini/campaign_timing.jsonl`).
+- `PROTEIN_PROTOCOL_FACTOR = 1.175` — **now calibrated, no longer
+  provisional.** `protein-anything` runs 6 steps to `peptide-anything`'s 5
+  (extra = `design_folding`, a binder-alone refold; confirmed from
+  `[Step 3/5]` vs `[Step 3/6]`). The mini campaign finished 2026-09-12 and its
+  own ledger gives **17.32 s/design end-to-end over 970 designs at 154-167
+  tokens**, against the peptide law's 14.74 at the same size — ratio 1.175,
+  and the law reproduces the point to 0.5%.
+  It REPLACED a 1.8 taken from that campaign's 24-design probe (26.52
+  s/design, a 1.53x startup inflation; the cyclic probe read 16.04 against
+  7.82, 2.05x). The old note called 1.8 a lower bound; it was a ~53%
+  over-estimate. Still ONE at-scale protein point — calibrated, not fitted,
+  and `sec_per_design_observed` still takes precedence.
 
-### The RAMP1 994-design cyclic campaign (`outputs/bz_calib_ramp1_cyclic`)
+### The RAMP1 994-design campaigns (`outputs/bz_calib_ramp1_{cyclic,mini}`)
+
+Cyclic below; the mini campaign's numbers are in "Open, deliberately" (now
+closed) and in CLAUDE.md's BoltzGen section.
 
 - `pass_filters`: 85/994 (8.55%, CI 6.97–10.45)
 - `iptm ≥ 0.50`: 64 · `≥ 0.55`: 13 · `≥ 0.60`: **3** (below
@@ -281,13 +289,30 @@ The reference snapshot for this machine lives in the session scratchpad
 
 ## Open, deliberately
 
-- **`mini_protein` thresholds in `design.boltzgen_ranking` are PROVISIONAL**
-  and inherit the base. The matching 994-design mini campaign
-  (`outputs/bz_calib_ramp1_mini`) is what sets them. Its n=24 probe showed iptm
-  0.123–0.448, median 0.215, **zero above 0.60** — so the cyclic numbers must
-  not be assumed to transfer. Run
-  `scripts/calibrate_boltzgen_thresholds.py outputs/bz_calib_ramp1_mini` when
-  it finishes.
+- **The multi-site trial path is NOT dispatched, and is refused rather than
+  silently swapped.** `_run_site_trials` calls `_stage_binder_spec` and
+  `_stage_calibration` unconditionally — the foundry stages — so a BoltzGen
+  run reaching it would build an RFD3 contig JSON where a BoltzGen YAML was
+  asked for and then wait for RF3 output that never arrives.
+  `_refuse_undispatched_site_trials` blocks `--trial-sites > 1` and
+  `--stop-after spec|trial` on BoltzGen and points at `--stop-after
+  calibration`, which takes the single-site route and IS dispatched. Found by
+  reading, not by running; `--stop-after spec` is the documented first command
+  for a new user, so it is the one they would have hit first. Wiring it is the
+  natural Phase D: it needs the spec call branched and `_backbones_to_batches`
+  / `count_rf3` replaced with their BoltzGen equivalents.
+
+- ~~`mini_protein` thresholds are PROVISIONAL~~ **CLOSED 2026-09-12.** The
+  994-design mini campaign finished, and `modality.mini_protein` carries no
+  overrides *as a measurement*: clearing the shipped gate AND the 0.50 iptm
+  bar is **11/994 = 1.11% (95% CI 0.62-1.97)** for mini against cyclic's
+  **12/994 = 1.21% (0.69-2.10)** — within noise, so 0.50 is the strictest
+  defensible bar for both (0.55 gives 3 hits, under `MIN_HITS_FOR_ESTIMATE`).
+  The COMPONENTS differ and the config comment says so: `pass_filters` 20.3%
+  vs 8.6%, `ipae <= 10` keeps 83% of mini passers vs 100% of cyclic ones,
+  `plddt >= 0.70` 39% vs 3.7%. Its n=24 probe had suggested otherwise (iptm
+  0.123-0.448, median 0.215); at scale it is 0.118-0.665, median 0.234.
+  Probes size nothing.
 - **`EXPOSED_HOTSPOT_CLEARANCE_A = 10.0`** was calibrated on a 19-complex
   MINI-PROTEIN benchmark. A 12–15mer spans ~10–12 Å, so a freshly-exposed
   hydrophobic patch exactly 10 Å from a hotspot is a plausible ALTERNATIVE site

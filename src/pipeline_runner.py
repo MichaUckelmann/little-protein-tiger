@@ -3660,6 +3660,38 @@ class PipelineRunner:
         """
         return self._design_engine in _BRIDGED_ENGINES
 
+    def _refuse_undispatched_site_trials(self) -> None:
+        """Refuse the ONE binder-track path that is not backend-dispatched.
+
+        `_run_site_trials` calls `_stage_binder_spec` and `_stage_calibration`
+        unconditionally — the FOUNDRY stages. On a BoltzGen run it would build
+        an RFD3 contig JSON where a BoltzGen YAML was asked for, then wait for
+        RF3 output that never arrives: a silent backend swap, not an error.
+        `--stop-after spec` is also the documented first command for a new
+        user, so it is the one they would hit first.
+
+        `--stop-after calibration` and an unset `--stop-after` take the plain
+        single-site route, which IS dispatched — and calibration is where a
+        campaign is sized, so the refusal has somewhere useful to point.
+        """
+        if not self._boltzgen_backend:
+            return
+        if self._trial_sites > 1:
+            what = "--trial-sites > 1"
+        elif self._stop_after in ("trial", "spec"):
+            what = f"--stop-after {self._stop_after}"
+        else:
+            # Self-contained rather than trusting the caller's `if`: the
+            # single-site route IS dispatched, and refusing it would make the
+            # backend unusable.
+            return
+        raise PipelineBlockedError(
+            f"--design-engine boltzgen does not support {what} yet: the "
+            f"multi-site trial path still builds foundry specs and would "
+            f"silently run RFD3 instead of BoltzGen. Use --stop-after "
+            f"calibration (which is dispatched, and is also where the "
+            f"campaign is SIZED), or --design-engine foundry.")
+
     def _boltzgen_stage_sizes(self, mode: str) -> tuple[int, int]:
         """`(num_designs, budget)` for one BoltzGen stage, from config."""
         block = ((self._binder_cfg().get("boltzgen") or {}).get(mode)) or {}
@@ -5386,6 +5418,7 @@ class PipelineRunner:
             # Reasoning cannot settle which of two defensible sites is more
             # designable; a few hundred backbones each can.
             if self._trial_sites > 1 or self._stop_after in ("trial", "spec"):
+                self._refuse_undispatched_site_trials()
                 sites = self._binder_sites(intel, limit=self._trial_sites)
                 trials = self._run_site_trials(
                     intel, sites, dirs, result, attach=attach,
