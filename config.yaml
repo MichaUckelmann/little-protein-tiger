@@ -647,6 +647,28 @@ design:
     budget: 100
 
   # Stage 5 (analysis + ranking).
+  # Campaign sizes for BoltzGen on the BINDER track, mirroring
+  # design.foundry's {pilot, calibration, production} shape. Counts are DESIGNS
+  # (BoltzGen's own unit) rather than RFD3 batches — there is no funnel here,
+  # so one unit of work is one scored design.
+  boltzgen:
+    # Proves the spec runs before anything big. 24 is enough to catch a
+    # malformed spec and to sample several binder lengths, which is what
+    # surfaced BoltzGen's equal-length crash (2 of 24 designs hit it).
+    pilot:       {num_designs: 24,    budget: 8}
+    # Must produce >= MIN_HITS_FOR_ESTIMATE (5) designs above the bar or the
+    # verdict is "enlarge the sample" every time. Measured on RAMP1 cyclic: at
+    # the gated 1.21% rate, 994 designs gave 12 hits, so ~1000 is the smallest
+    # size that reliably clears 5. Cheap for a macrocycle (2.2 GPU-h at 99
+    # tokens) and the dominant cost for a mini-protein (~1.8x that per design,
+    # see boltzgen_runner.PROTEIN_PROTOCOL_FACTOR) — lower it only knowing the
+    # interval widens and most verdicts become ITERATE.
+    calibration: {num_designs: 1000,  budget: 100}
+    # A CEILING, not the plan: `_resolve_boltzgen_production` sizes production
+    # from the calibration's measured rate and clamps to this and to the disk
+    # budget. 10,000 designs is ~22 GPU-h of macrocycle at 99 tokens.
+    production:  {num_designs: 10000, budget: 200}
+
   # ── BoltzGen as a BINDER-TRACK backend ────────────────────────────────────
   # Distinct from the `thresholds` / `ranking` blocks below, which belong to the
   # LEGACY PPI BoltzGen stages (design -> execution -> analysis) and gate

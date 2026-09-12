@@ -503,11 +503,17 @@ def main() -> int:
                 "foundry: RFD3 has no cyclic-peptide path. Drop "
                 "--design-engine to let the modality pick boltzgen, or design "
                 "a mini_protein instead.")
-        if is_binder:
+        # The binder track USED to be foundry-only by construction, so this
+        # combination was refused outright. It now dispatches its generator
+        # stages (spec / pilot / calibration / production / scoring) to
+        # BoltzGen, which is the only backend that can build a macrocycle --
+        # so the combination is legal, and the modality selects the engine
+        # exactly as it does on the PPI track.
+        if is_binder and args.design_engine == "foundry":
             parser.error(
-                "--workflow binder always runs foundry, which cannot build "
-                "cyclic peptides. Use --workflow ppi for a cyclic-peptide "
-                "campaign.")
+                "--workflow binder --modality cyclic_peptide cannot run on "
+                "--design-engine foundry: RFD3 has no cyclic-peptide path. "
+                "Drop --design-engine to let the modality pick boltzgen.")
         if design_engine != "boltzgen":
             logger.info(
                 "--modality cyclic_peptide: using the boltzgen design engine "

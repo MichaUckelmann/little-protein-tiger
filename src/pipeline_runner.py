@@ -3560,6 +3560,474 @@ class PipelineRunner:
         result.stages_completed.append(mode)
         return {"paths": paths, "plan": plan, "cluster": True, "cluster_cfg": ccfg}
 
+    # ------------------------------------------------------------------
+    # BoltzGen as a binder-track backend
+    # ------------------------------------------------------------------
+
+    @property
+    def _boltzgen_backend(self) -> bool:
+        """Whether the binder-track GPU stages should run BoltzGen.
+
+        The binder track was foundry-only by construction (`config.yaml` said
+        so outright), so this is the seam that did not exist. It is read once
+        per stage rather than threaded through, and foundry remains the branch
+        that does not change.
+        """
+        return self._design_engine == "boltzgen"
+
+    def _boltzgen_stage_sizes(self, mode: str) -> tuple[int, int]:
+        """`(num_designs, budget)` for one BoltzGen stage, from config."""
+        block = ((self._binder_cfg().get("boltzgen") or {}).get(mode)) or {}
+        defaults = {"pilot": (24, 8), "calibration": (1000, 100),
+                    "production": (10000, 200)}[mode]
+        return (int(block.get("num_designs", defaults[0])),
+                int(block.get("budget", defaults[1])))
+
+    def _boltzgen_tokens(self, trim, intel: dict | None = None) -> int | None:
+        """Complex size in residues — target kept + binder midpoint.
+
+        Both cost laws key on this, and taking the target from the TRIM rather
+        than the deposited chain matters: `res_index` is what BoltzGen actually
+        builds against, so a trimmed target is genuinely smaller and cheaper.
+
+        `_binder_midpoint`'s own fallback is 78, a mini-protein midpoint, which
+        would over-state a macrocycle complex by ~65 residues if the contig
+        were ever malformed — and the cost laws are superlinear in this number.
+        So the fallback is taken from the resolved binder window instead.
+        """
+        try:
+            target = int(getattr(trim, "n_residues_after", 0) or 0)
+        except (TypeError, ValueError):
+            target = 0
+        if not target:
+            return None
+        lo, hi = self._binder_length_range(intel or {})
+        binder = _binder_midpoint(getattr(trim, "contig", "") or "",
+                                  default=(lo + hi) // 2)
+        return target + int(binder or 0)
+
+    def _stage_boltzgen_spec(self, intel: dict[str, str], hotspots_json: str,
+                             trim, dirs: dict[str, Path],
+                             result: PipelineResult) -> Path:
+        """Write the BoltzGen design YAML. The `binder_spec` stage's other half.
+
+        Two deliberate differences from `_stage_binder_spec`:
+
+        * It points at the DEPOSITED structure, not `trim.trimmed_path`. Gemmi's
+          `make_mmcif_document()` writes no `_entity_poly_seq` loop and
+          BoltzGen's parser requires one, so our trimmed CIF is unparseable to
+          it; the `.pdb` twin parses but puts `binding:` in a third numbering.
+          The trim travels as `res_index` instead — see `src/boltzgen_spec.py`.
+        * The modality reaches it through `_resolve_modality`, because it
+          decides both the binder length window and the protocol, and the
+          operator's `--modality` is what settles that.
+        """
+        from src.boltzgen_spec import SpecError, build_boltzgen_spec
+
+        hs = json.loads(hotspots_json)
+        target_chain = str(hs.get("target_chain") or "").strip()
+        residues = hs.get("residues") or []
+        if not target_chain or not residues:
+            raise PipelineError(
+                "the interface stage's MODEL-READY HOTSPOTS table gave no "
+                "target chain or no residues; a BoltzGen spec cannot be built")
+
+        modality = self._resolve_modality(intel.get("modality"),
+                                          source="the target-intel stage")
+        structure = self._binder_structure_path(result.pdb_id)
+        raw = (intel.get("target_gene") or result.pdb_id or "target").lower()
+        slug = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "target"
+        out = dirs["spec"] / f"{slug}_boltzgen.yaml"
+
+        kept = list(getattr(trim, "kept_segments", None) or [])
+        try:
+            spec = build_boltzgen_spec(
+                name=slug, structure_path=structure, target_chain=target_chain,
+                hotspots=residues, out_path=out, modality=modality,
+                kept_segments=kept or None)
+        except SpecError as exc:
+            # A spec that cannot be built is a hard stop: every SpecError here
+            # corresponds to a failure that is SILENT downstream (a binding
+            # index outside the trim is ignored with no error, an equal-length
+            # binder aborts the run two steps later naming neither cause).
+            raise PipelineError(f"BoltzGen spec refused: {exc}") from exc
+
+        body = [
+            "# BoltzGen design specification", "",
+            f"- target: `{structure.name}` chain `{spec.target_chain}`",
+            f"- modality: `{spec.modality}`  protocol: `{spec.protocol}`",
+            f"- binder: chain `{spec.binder_chain}`, "
+            f"{spec.binder_min}-{spec.binder_max} residues",
+            f"- hotspots ({len(spec.binding)}), as deposited label_seq: "
+            f"`{','.join(str(b) for b in spec.binding)}`",
+        ]
+        if spec.res_index:
+            spans = ", ".join(f"{lo}-{hi}" for lo, hi in spec.res_index)
+            body.append(f"- target restricted to label_seq `{spans}` "
+                        f"(the trim, expressed as res_index)")
+        else:
+            body.append("- target: whole chain (the trim kept everything)")
+        for w in spec.warnings:
+            body.append(f"- **warning**: {w}")
+        body += ["", "### PIPELINE HANDOFF", "",
+                 f"- spec_path: {spec.path}",
+                 f"- design_name: {spec.name}",
+                 f"- modality: {spec.modality}",
+                 f"- protocol: {spec.protocol}",
+                 f"- binder_chain: {spec.binder_chain}"]
+        report = dirs["binder"] / self._BINDER_STAGE_FILES["binder_spec"]
+        report.write_text("\n".join(body) + "\n", encoding="utf-8")
+        result.stage_files["binder_spec"] = report
+        result.stages_completed.append("binder_spec")
+        self._record_stage("binder_spec", "complete", artifacts=[spec.path])
+        return spec.path
+
+    def _run_boltzgen_stage(self, mode: str, spec_path: Path, trim,
+                            dirs: dict[str, Path], result: PipelineResult, *,
+                            attach: bool,
+                            num_designs: int | None = None) -> dict:
+        """Launch (or re-attach to) one BoltzGen stage, optionally waiting.
+
+        Detached for the same reason the foundry stages are: a production
+        campaign runs for hours, and a blocking call inside a Celery task would
+        hit the visibility timeout and be redelivered — two BoltzGens racing one
+        GPU. `src/boltzgen_runner.py` supplies the plumbing; this method is the
+        stage's bookkeeping.
+        """
+        from src.boltzgen_runner import (
+            BoltzGenPaths, build_argv, plan_campaign, progress, resume,
+            sec_per_design_observed,
+        )
+        from src.boltzgen_spec import PROTOCOL_BY_MODALITY
+        from src.env_config import resolve_env_path
+        from src.job_registry import JobRegistry
+
+        cfg = self._binder_cfg()
+        ws = cfg.get("workstation") or {}
+        paths = BoltzGenPaths.under(dirs["campaign"], mode)
+        paths.mkdirs()
+
+        default_n, budget = self._boltzgen_stage_sizes(mode)
+        n_designs = int(num_designs or default_n)
+        modality = self._resolve_modality(None, source="the campaign")
+        protocol = PROTOCOL_BY_MODALITY[modality]
+
+        # Prefer a rate this campaign's EARLIER stages actually achieved over
+        # the size law — the same precedence foundry uses, and for the same
+        # reason: the law has real scatter (+39% on one of three fitted points)
+        # while an observed rate tracked production closely.
+        measured = 0.0
+        for prior in ("pilot", "calibration", "production"):
+            if prior == mode:
+                break
+            r = sec_per_design_observed(BoltzGenPaths.under(dirs["campaign"], prior))
+            if r > 0:
+                measured = r
+        plan = plan_campaign(
+            paths, num_designs=n_designs, budget=budget,
+            n_tokens=self._boltzgen_tokens(trim), protocol=protocol,
+            sec_per_design=measured or None,
+            disk_budget_gb=float(cfg.get("foundry", {}).get("disk_budget_gb", 120.0)),
+        )
+        for w in plan.warnings:
+            logger.warning(f"  {w}")
+        paths.plan_path.write_text(json.dumps(plan.as_dict(), indent=2),
+                                   encoding="utf-8")
+        logger.info(
+            f"BoltzGen {mode}: {plan.num_designs:,} designs ({protocol}), "
+            f"{plan.est_gpu_hours:.1f} GPU-h / {plan.est_disk_gb:.1f} GB "
+            f"via {plan.rate_source}")
+
+        exe = (resolve_env_path("LPT_BOLTZGEN_EXECUTABLE",
+                                ws.get("boltzgen_executable")) or "boltzgen")
+        argv = build_argv(exe, spec_path, paths, protocol=protocol,
+                          num_designs=plan.num_designs, budget=plan.budget)
+        rec = resume(paths, argv, cuda_device=ws.get("cuda_device", 0),
+                     note=f"{mode}: {plan.num_designs} designs")
+
+        self._binder_checkpoint(f"{mode}_running", mode, "job", {
+            "backend": "boltzgen", "job_id": rec.job_id, "pid": rec.pid,
+            "campaign_dir": str(paths.campaign_dir),
+            "num_designs": plan.num_designs,
+            "est_gpu_hours": plan.est_gpu_hours,
+            "resume_stage": mode,
+        })
+
+        report = dirs["binder"] / self._BINDER_STAGE_FILES[mode]
+
+        if not attach:
+            prog = progress(paths, plan.num_designs)
+            report.write_text(
+                f"# BoltzGen {mode} (detached)\n\n"
+                f"- {plan.num_designs:,} designs, {protocol}\n"
+                f"- estimate: {plan.est_gpu_hours:.1f} GPU-h, "
+                f"{plan.est_disk_gb:.1f} GB ({plan.rate_source})\n"
+                f"- progress: {prog.render()}\n"
+                f"- log: `{paths.log_path}`\n",
+                encoding="utf-8")
+            result.stage_files[mode] = report
+            self._record_stage(mode, "awaiting_user")
+            raise PipelinePausedError(f"{mode}_running", {
+                "backend": "boltzgen", "campaign_dir": str(paths.campaign_dir),
+                "num_designs": plan.num_designs,
+                "est_gpu_hours": plan.est_gpu_hours,
+                "resume": f"--start-from {mode}",
+            })
+
+        # Attached: poll DISK, never process state. A BoltzGen campaign spends
+        # real time off-GPU in its CPU-bound `analysis` step, so neither
+        # nvidia-smi nor "is the pid alive" distinguishes working from stuck.
+        poll = float(cfg.get("foundry", {}).get("poll_interval_s", 60))
+        reg = JobRegistry(paths.registry_path)
+        reg.poll_until(rec.job_id,
+                       until=lambda: progress(paths, plan.num_designs).complete,
+                       tick_s=poll,
+                       on_tick=lambda _rec: logger.info(
+                           f"  {progress(paths, plan.num_designs).render()}"))
+        final = progress(paths, plan.num_designs)
+        if final.n_metrics == 0:
+            raise PipelineError(
+                f"BoltzGen {mode} produced no scored designs. "
+                f"{final.render()}. The log is at {paths.log_path}; a crash in "
+                f"the folding step is usually a corrupt design (see "
+                f"boltzgen_spec.safe_binder_range).")
+        report.write_text(
+            f"# BoltzGen {mode}\n\n"
+            f"- {protocol}, {plan.num_designs:,} designs requested\n"
+            f"- {final.render()}\n"
+            f"- estimate was {plan.est_gpu_hours:.1f} GPU-h "
+            f"({plan.rate_source}); observed "
+            f"{sec_per_design_observed(paths):.2f} s/design\n"
+            f"- metrics: `{paths.metrics_csv}`\n",
+            encoding="utf-8")
+        result.stage_files[mode] = report
+        result.stages_completed.append(mode)
+        self._record_stage(mode, "complete", artifacts=[paths.metrics_csv])
+        return {"paths": paths, "plan": plan, "progress": final}
+
+    def _boltzgen_records(self, paths) -> list[dict]:
+        """BoltzGen's metrics table, shaped for `calibrate`.
+
+        `iptm` is aliased from `design_to_target_iptm` because that is the
+        column `SUCCESS_METRICS` names, and `design_family` is the design's own
+        id: BoltzGen is single-stage, so each design is its own family and
+        k_backbone == k_refold. The native columns are kept alongside, because
+        the injected gate reads them.
+        """
+        from src.design_metrics import parse_boltzgen_outputs
+
+        out = []
+        for rec in parse_boltzgen_outputs(paths.campaign_dir):
+            name = str(rec.get("design_id") or rec.get("id") or "")
+            out.append({**rec, "name": name, "design_family": name,
+                        "error": "", "iptm": rec.get("design_to_target_iptm")})
+        return out
+
+    def _stage_boltzgen_calibration(self, spec_path: Path, trim,
+                                    dirs: dict[str, Path],
+                                    result: PipelineResult, *, attach: bool,
+                                    num_designs: int | None = None) -> dict:
+        """Measure the hit rate, then size production from it.
+
+        Reuses `campaign_calibration` wholesale — the Wilson interval, the bar
+        ladder, `MIN_HITS_FOR_ESTIMATE`, the SCALE_UP/ITERATE/STOP tree — with
+        BoltzGen's own gate and cost model injected. What "excellent" means
+        comes from `design.boltzgen_ranking`, per modality, because one scalar
+        demonstrably cannot serve both.
+        """
+        from src.boltzgen_runner import (
+            design_bytes, sec_per_design_observed, seconds_per_design,
+        )
+        from src.boltzgen_spec import PROTOCOL_BY_MODALITY
+        from src.campaign_calibration import CostModel, calibrate, render_report
+        from src.design_ranking import (
+            gate_boltzgen_records, resolve_boltzgen_ranking,
+        )
+
+        run = self._run_boltzgen_stage("calibration", spec_path, trim, dirs,
+                                       result, attach=attach,
+                                       num_designs=num_designs)
+        paths = run["paths"]
+        records = self._boltzgen_records(paths)
+        modality = self._resolve_modality(None, source="the campaign")
+        rank = resolve_boltzgen_ranking(self.config, modality)
+        n_tokens = self._boltzgen_tokens(trim)
+        rate = (sec_per_design_observed(paths)
+                or seconds_per_design(n_tokens, PROTOCOL_BY_MODALITY[modality]))
+        cfg = self._binder_cfg()
+
+        res = calibrate(
+            records, thresholds=rank.thresholds,
+            success_metric=rank.success_metric,
+            excellence_bar=rank.excellence_bar,
+            target_designs=rank.target_designs,
+            gate=gate_boltzgen_records,
+            cost=CostModel.boltzgen(sec_per_design=rate,
+                                    bytes_per_design=design_bytes(n_tokens)),
+            disk_budget_gb=float((cfg.get("foundry") or {}).get("disk_budget_gb", 120.0)),
+            max_campaign_days=float((cfg.get("foundry") or {}).get("max_campaign_days", 5.0)),
+            adaptive_bar=bool((cfg.get("binder_ranking") or {})
+                              .get("adaptive_bar", True)),
+        )
+
+        # Production is sized in DESIGNS and clamped to the configured ceiling.
+        ceiling, _ = self._boltzgen_stage_sizes("production")
+        needed = int(res.pessimistic.required_refolds or 0)
+        n_production = max(1, min(needed, ceiling)) if needed else ceiling
+        if needed > ceiling:
+            logger.warning(
+                f"  calibration asks for {needed:,} designs; "
+                f"design.boltzgen.production.num_designs caps it at "
+                f"{ceiling:,}. Expect proportionally fewer excellent designs.")
+
+        report = dirs["binder"] / self._BINDER_STAGE_FILES["calibration"]
+        report.write_text(
+            f"# BoltzGen calibration\n\n"
+            f"- modality: `{modality}`  bar: {rank.success_metric} > "
+            f"{rank.excellence_bar:g}  target: {rank.target_designs}\n"
+            f"- rate used: {rate:.2f} s/design\n"
+            f"- production sized at {n_production:,} designs "
+            f"(ceiling {ceiling:,})\n\n"
+            + render_report(res), encoding="utf-8")
+        result.stage_files["calibration"] = report
+        result.stages_completed.append("calibration")
+
+        (dirs["calibration"]).mkdir(parents=True, exist_ok=True)
+        (dirs["calibration"] / "calibration.json").write_text(
+            json.dumps({**res.as_dict(), "backend": "boltzgen",
+                        "n_production": n_production,
+                        "sec_per_design": rate, "modality": modality},
+                       indent=2, default=str), encoding="utf-8")
+        self._binder_checkpoint("calibration_verdict", "calibration", "gate", {
+            "backend": "boltzgen", "verdict": res.verdict,
+            "reason": res.verdict_reason,
+            "est_gpu_hours": res.pessimistic.est_gpu_hours,
+            "est_disk_gb": res.pessimistic.est_disk_gb,
+            "n_production": n_production,
+        })
+        self._record_stage("calibration", "complete", artifacts=[report])
+        return {"result": res, "n_designs": n_production, "compute": "local",
+                "backend": "boltzgen"}
+
+    def _resolve_boltzgen_production(self, calib: dict | None,
+                                     dirs: dict[str, Path]) -> int:
+        """How many designs production should run, surviving a restart.
+
+        The same hazard `_resolve_production_plan` exists for, and it bit the
+        foundry track once: the calibration's recommendation only lived in the
+        process that measured it, so resuming `--start-from production` in a
+        fresh process — the NORMAL case for a multi-hour campaign — silently
+        fell back to the config default and ran at the wrong scale. So the
+        number is re-read from `calibration.json`.
+
+        A verdict of ITERATE or STOP never reaches here: `_run_binder_track`
+        returns at the gate. Refusing rather than guessing is still right if it
+        somehow does, because scaling up a campaign the measurement said not to
+        scale is the one mistake this stage can make that costs GPU-days.
+        """
+        ceiling, _ = self._boltzgen_stage_sizes("production")
+        if calib and calib.get("n_designs"):
+            return int(calib["n_designs"])
+
+        path = dirs["calibration"] / "calibration.json"
+        if not path.is_file():
+            logger.warning(
+                f"  no calibration.json in {dirs['calibration']} — sizing "
+                f"production from config ({ceiling:,} designs) rather than "
+                f"from a measurement. Run the calibration stage first if that "
+                f"is not what you want.")
+            return ceiling
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PipelineError(
+                f"could not read {path}: {exc}. It carries the measured "
+                f"production size; re-run --start-from calibration.") from exc
+        verdict = str(data.get("verdict") or "")
+        if verdict and verdict not in ("SCALE_UP", "SCALE_UP_PARTIAL"):
+            raise PipelineError(
+                f"calibration recorded {verdict} for this campaign — "
+                f"production is not what it recommends. Re-gate at a softer "
+                f"bar or re-run the calibration; do not scale a campaign the "
+                f"measurement said to stop.")
+        n = int(data.get("n_production") or 0)
+        if n <= 0:
+            logger.warning(f"  {path.name} records no production size; using "
+                           f"the config ceiling ({ceiling:,}).")
+            return ceiling
+        logger.info(f"  production sized at {n:,} designs, recovered from "
+                    f"{path.name} (verdict {verdict or 'unrecorded'})")
+        return n
+
+    def _stage_boltzgen_scoring(self, dirs: dict[str, Path],
+                                result: PipelineResult, *,
+                                calib: dict | None = None) -> dict:
+        """Rank with BOLTZGEN'S OWN ranking, and gate with the resolved config.
+
+        Deliberately not `binder_metrics` + `binder_ranking`. BoltzGen's ranker
+        is a MAXIMIN over six per-metric ranks — a design is judged by its
+        WORST — and measured on a 994-design campaign that is a strong
+        selector: its top-100 had a median design-vs-refold dock RMSD of 3.12 A
+        with 94% under 5 A, against 8.89 A / 16.3% over the full set and
+        8.01 A / 29% for iPTM-ranking. Re-scoring with the binder track's
+        metrics is a separate, later question (and is possible — see
+        `scripts/measure_boltzgen_binder_gates.py`).
+        """
+        import csv as _csv
+
+        from src.boltzgen_runner import BoltzGenPaths
+        from src.design_ranking import (
+            gate_boltzgen_records, resolve_boltzgen_ranking,
+        )
+
+        for mode in ("production", "calibration", "pilot"):
+            paths = BoltzGenPaths.under(dirs["campaign"], mode)
+            if paths.metrics_csv.is_file():
+                break
+        else:
+            raise PipelineError(
+                f"no BoltzGen metrics table under {dirs['campaign']} — no "
+                f"stage has produced scored designs yet")
+
+        modality = self._resolve_modality(None, source="the campaign")
+        rank = resolve_boltzgen_ranking(self.config, modality)
+        records = self._boltzgen_records(paths)
+        survivors, stats = gate_boltzgen_records(records, rank.thresholds)
+        # BoltzGen already ordered them; `final_rank` is that order.
+        survivors.sort(key=lambda r: float(r.get("final_rank") or 1e9))
+        top_k = survivors[:int((self.config.get("design", {})
+                                .get("ranking", {}) or {}).get("top_k", 20))]
+
+        dirs["scoring"].mkdir(parents=True, exist_ok=True)
+        cols = ["design_id", "final_rank", "design_to_target_iptm",
+                "min_design_to_target_pae", "complex_plddt", "pass_filters",
+                "designed_chain_sequence", "quality_score", "cif_path"]
+        for rows, name in ((survivors, "ranked.csv"), (top_k, "top_k.csv")):
+            path = dirs["scoring"] / name
+            with path.open("w", newline="", encoding="utf-8") as fh:
+                w = _csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+                w.writeheader()
+                w.writerows(rows)
+        (dirs["scoring"] / "filter_stats.txt").write_text(
+            stats.render() + f"\n\nranked by BoltzGen's own final_rank "
+            f"(maximin over six per-metric ranks)\n", encoding="utf-8")
+
+        report = dirs["binder"] / self._BINDER_STAGE_FILES["binder_scoring"]
+        report.write_text(
+            f"# BoltzGen scoring\n\n"
+            f"- modality `{modality}`, gate "
+            f"`{ {k: v for k, v in rank.thresholds.items() if v is not None} }`\n"
+            f"- {stats.n_survivors:,} of {stats.n_input:,} designs pass; "
+            f"top {len(top_k)} kept\n"
+            f"- ranked by BoltzGen's own `final_rank`\n\n```\n"
+            + stats.render() + "\n```\n", encoding="utf-8")
+        result.stage_files["binder_scoring"] = report
+        result.stages_completed.append("binder_scoring")
+        self._record_stage("binder_scoring", "complete",
+                           artifacts=[dirs["scoring"] / "top_k.csv"])
+        return {"top_k": dirs["scoring"] / "top_k.csv", "ranking": None,
+                "filter_stats": stats}
+
     def _run_gpu_stage(self, mode: str, spec_path: Path, trim, dirs: dict[str, Path],
                        result: PipelineResult, *, attach: bool,
                        n_batches: int | None = None,
@@ -4920,27 +5388,48 @@ class PipelineRunner:
             else:
                 trim = _TrimFromDisk(load_mapping(dirs["trim"] / "trim_map.json"))
 
-            # ── B3: RFD3 spec ───────────────────────────────────────────────
+            # ── B3: generator spec ──────────────────────────────────────────
+            # The backend seam. Everything above (target_intel, interface,
+            # trim) is generator-neutral and unchanged; everything below is
+            # dispatched, with foundry as the branch that does not move.
+            bg = self._boltzgen_backend
             if start_idx <= 3:
-                spec_path = self._stage_binder_spec(
-                    intel, hotspots_json, trim, dirs, result)
+                spec_path = (
+                    self._stage_boltzgen_spec(intel, hotspots_json, trim,
+                                              dirs, result)
+                    if bg else
+                    self._stage_binder_spec(intel, hotspots_json, trim,
+                                            dirs, result))
             else:
-                specs = sorted(dirs["spec"].glob("*.json"))
+                pattern = "*.yaml" if bg else "*.json"
+                specs = sorted(dirs["spec"].glob(pattern))
                 if not specs:
-                    raise PipelineError(f"no RFD3 spec in {dirs['spec']}")
+                    raise PipelineError(
+                        f"no {'BoltzGen' if bg else 'RFD3'} spec ({pattern}) "
+                        f"in {dirs['spec']}")
                 spec_path = specs[0]
 
             # ── B4: pilot — proves the spec runs before anything big ────────
             if start_idx <= 4:
-                self._run_gpu_stage("pilot", spec_path, trim, dirs, result,
-                                    attach=attach, n_batches=n_batches)
+                if bg:
+                    self._run_boltzgen_stage("pilot", spec_path, trim, dirs,
+                                             result, attach=attach,
+                                             num_designs=n_batches)
+                else:
+                    self._run_gpu_stage("pilot", spec_path, trim, dirs, result,
+                                        attach=attach, n_batches=n_batches)
 
             # ── B5: calibration — MEASURE the scale production needs ────────
             calib = locals().get("calib")
             if start_idx <= 5:
-                calib = self._stage_calibration(spec_path, trim, dirs, result,
-                                                attach=attach,
-                                                n_batches=n_batches)
+                calib = (
+                    self._stage_boltzgen_calibration(
+                        spec_path, trim, dirs, result, attach=attach,
+                        num_designs=n_batches)
+                    if bg else
+                    self._stage_calibration(spec_path, trim, dirs, result,
+                                            attach=attach,
+                                            n_batches=n_batches))
                 verdict = calib["result"].verdict
                 if verdict in ("ITERATE", "STOP"):
                     result.go_recommendation = "NO_GO"
@@ -4950,7 +5439,11 @@ class PipelineRunner:
                         f"{calib['result'].verdict_reason}")
                     # Still score and rank what the calibration produced — an
                     # ITERATE round has real designs worth looking at.
-                    scored = self._stage_binder_scoring(dirs, result, calib=calib)
+                    scored = (self._stage_boltzgen_scoring(dirs, result,
+                                                           calib=calib)
+                              if bg else
+                              self._stage_binder_scoring(dirs, result,
+                                                         calib=calib))
                     self._stage_binder_summary(
                         scored["top_k"], intel, dirs, result,
                         ranking=scored.get("ranking"), calib=calib)
@@ -4967,15 +5460,30 @@ class PipelineRunner:
 
             # ── B6: production, sized by the calibration ────────────────────
             if start_idx <= 6:
-                prod_n_batches, prod_compute = self._resolve_production_plan(
-                    calib, dirs, n_batches)
-                self._run_gpu_stage(
-                    "production", spec_path, trim, dirs, result, attach=attach,
-                    n_batches=prod_n_batches, compute_override=prod_compute)
+                if bg:
+                    # Sized by the calibration, recovered from calibration.json
+                    # on a fresh-process resume for the same reason
+                    # `_resolve_production_plan` exists: the recommendation
+                    # only lived in the process that measured it, and falling
+                    # back to the config default silently ran a campaign at the
+                    # wrong scale.
+                    n_prod = self._resolve_boltzgen_production(calib, dirs)
+                    self._run_boltzgen_stage(
+                        "production", spec_path, trim, dirs, result,
+                        attach=attach, num_designs=n_prod)
+                else:
+                    prod_n_batches, prod_compute = self._resolve_production_plan(
+                        calib, dirs, n_batches)
+                    self._run_gpu_stage(
+                        "production", spec_path, trim, dirs, result,
+                        attach=attach, n_batches=prod_n_batches,
+                        compute_override=prod_compute)
 
             # ── B7: score + rank ────────────────────────────────────────────
             if start_idx <= 7:
-                scored = self._stage_binder_scoring(dirs, result, calib=calib)
+                scored = (self._stage_boltzgen_scoring(dirs, result, calib=calib)
+                          if bg else
+                          self._stage_binder_scoring(dirs, result, calib=calib))
             else:
                 scored = {"top_k": dirs["scoring"] / "top_k.csv"}
 
