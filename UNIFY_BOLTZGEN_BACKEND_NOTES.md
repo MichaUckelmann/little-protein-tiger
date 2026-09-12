@@ -4,9 +4,9 @@ Sibling of `UNIFY_DESIGN_BACKEND_NOTES.md`, which scoped the other direction
 (PPI → foundry). This one scopes BoltzGen as an alternative backend for the
 **binder** track, and records what was measured getting there.
 
-**Status: phases A and B complete and committed (unpushed). Phase C is next.
-The acceptance runs have NOT been done yet — they are deliberately deferred so
-they test the final implementation rather than an intermediate one.**
+**Status: phases A, B and C complete and committed (unpushed). The acceptance
+runs are next — they were deliberately deferred so they test the final
+implementation rather than an intermediate one.**
 
 ---
 
@@ -18,8 +18,9 @@ they test the final implementation rather than an intermediate one.**
 2. **The legacy PPI BoltzGen stages stay alive** until the new path is proven
    unnecessary. So `design/execution/analysis` and the
    `protein-design-script` skill are not retired yet.
-3. **`--project` should be required everywhere**, for consistency. **NOT YET
-   IMPLEMENTED** — see Phase C.
+3. **`--project` should be required everywhere**, for consistency. **DONE in
+   Phase C** — one check in `run()` and one in the CLI, every track, every
+   engine.
 4. **The trim was reviewed for macrocycles** and needed one fix (done, commit
    `5c17881`). One item was deliberately left open — see "Open, deliberately".
 
@@ -66,37 +67,86 @@ original calls are visibly unchanged.
 
 ---
 
-## Phase C — what is left to build
+## Phase C — what was built
 
-**C1. Route PPI + BoltzGen through the bridge into the new backend.**
-Today `--workflow ppi --design-engine boltzgen` still reaches the LEGACY
-stages: the PPI dispatch at `src/pipeline_runner.py:891` returns
-`_bridge_ppi_to_foundry` only for `foundry`, and everything else falls through
-to `_stage_design`. The bridge already composes a synthetic `20_target_intel.md`
-and copies `02_structure.md` to `21_interface.md`, then enters
-`_run_binder_track(start_from="trim")` — where the B4 dispatch is waiting. So
-C1 is mostly: make the bridge backend-agnostic (rename intent, not behaviour)
-and let BoltzGen take the same route.
+**C1. PPI + BoltzGen now takes the bridge.** The hand-off after go/no-go asked
+`self._design_engine == "foundry"`, so `--design-engine boltzgen` reached the
+LEGACY stages for its whole first release. Nothing failed; the run just
+silently had no trim, no measured production size, no `--stop-after` and no
+per-stage manifest, and reported NO_GO off ten designs.
 
-**C2. `--project` required everywhere** (decision 3). Currently
-`pipeline_runner.py:567` requires it for `ppi + foundry` only; the binder track
-requires it separately; `ppi + boltzgen` requires nothing. Making it universal
-is a small CLI/constructor change plus a test.
+The fix is one predicate, not a second bridge:
 
-**C3. Decide what `--stop-after` means off the binder track.** It is honoured
-only there (4 call sites, all binder-track). Once C1 lands, PPI + BoltzGen
-inherits it for free — which is most of the reason C1 is worth doing before the
-acceptance runs.
+- `_DESIGN_ENGINES = ("foundry", "boltzgen", "boltzgen_legacy")` and
+  `_BRIDGED_ENGINES = ("foundry", "boltzgen")`, module-level in
+  `src/pipeline_runner.py`. Written as the positive set so adding a generator
+  opts it IN rather than silently leaving it on the legacy path.
+- `_bridges_to_binder_track` (new property) is read by the three places that
+  ask: the resume dispatch, the hand-off after go/no-go, and
+  `_stage_structure`'s designable-size hint (which was gated on foundry and
+  therefore quoted a raw 574-residue GPCR at a BoltzGen run that WILL trim it
+  to 167).
+- It is a DIFFERENT question from `_boltzgen_backend`, which selects the
+  generator a binder-track stage dispatches to. `boltzgen_legacy` is False for
+  both — it neither bridges nor dispatches — and conflating them would send it
+  into the new stages under the old name. A test pins all six combinations.
+- `_bridge_ppi_to_foundry` → **`_bridge_ppi_to_binder_track`**, and its
+  internals now read no engine at all beyond naming it in a log line and two
+  error messages. A test asserts the absence of `_boltzgen_backend`,
+  `== "foundry"` and `== "boltzgen"` inside it: a backend-specific line there
+  would be a second dispatch waiting to disagree with `_run_binder_track`'s.
+- The bridge's hardcoded `size.get("min", 70)` is gone — both handoff
+  composers (the bridge and the structure-first track) now go through
+  `_binder_length_range`. That is a 5.8x error for a macrocycle, it is the
+  mistake commit `5c17881` fixed one level up, and BoltzGen is precisely the
+  engine that can be asked for one.
 
-**C4. Legacy retirement is NOT in scope** (decision 2). Keep both paths; the
-e2e driver exists to regression-check the old one.
+**`boltzgen_legacy` is a real engine name, not a deprecation marker.**
+Decision 2 keeps that path alive, so it has to stay genuinely reachable, and
+the only honest way to reach it once `boltzgen` means the bridged backend is
+to name it. It is refused off the PPI track (both in the CLI and in
+`__init__`), because accepting it on the binder track would silently run the
+NEW backend — `_boltzgen_backend` is false for it.
+`scripts/e2e_ppi_boltzgen.py` now names it explicitly.
 
----
+**C2. `--project` on every track and every engine.** One check at the top of
+`run()` (before a run dir exists or a token is spent) replacing the
+foundry-only one, and one in the CLI replacing three per-track ones. Widens
+the requirement to `boltzgen_legacy`, which was the single combination that
+ran without a project — and the one whose multi-hour campaign had nowhere to
+record that it had started.
 
-## The acceptance runs (deferred until after Phase C)
+**C3. `--stop-after` is inherited by PPI + BoltzGen for free** (it is a
+binder-track flag and that is now the route), and **REFUSED on
+`boltzgen_legacy`** rather than ignored. That matters: the legacy stages run
+design → execution → analysis → summary unconditionally, and at the shipped
+`design.production.num_designs` that is 332 GPU-h / ~13 days at YAP1/TEAD1
+size — for an operator who believed they had capped it.
 
-All three verified to parse. `auto_mode` defaults to `True`; there is no
-`--auto` flag.
+Three more flags were refused rather than left to do nothing:
+
+- `--compute cluster` / `--n-gpus` on **either** BoltzGen engine.
+  `_run_boltzgen_stage` has no cluster path; only the foundry stages stage
+  onto shared storage. Accepting it would run the whole campaign on the local
+  GPU while the operator waited for a submission script.
+- `--success-metric ipsae_min` on BoltzGen. No PAE matrix, so its own ipsae
+  column spans 0.0000–0.0289 against an RF3-calibrated bar of 0.5 — every
+  campaign sizes to STOP.
+- `--success-metric` generally now writes **the block its engine reads**:
+  `design.boltzgen_ranking` for BoltzGen, `design.binder_ranking` for
+  foundry. Writing into the wrong one is silent; the campaign is simply sized
+  at the default bar.
+
+**C4. Legacy retirement remains out of scope** (decision 2).
+
+New tests: `tests/test_ppi_backend_routing.py` (19), plus the `--project`
+parametrisations in `tests/test_pipeline_stages.py` and a broadened
+designable-size gate test in `tests/test_audit_fixes.py`.
+
+## The acceptance runs (next)
+
+All verified to parse. `auto_mode` defaults to `True`; there is no `--auto`
+flag.
 
     # 1. the B1-B4 acceptance test AND the showcase addition
     python scripts/run_pipeline.py --workflow binder --target PD-L1 \
@@ -113,14 +163,24 @@ All three verified to parse. `auto_mode` defaults to `True`; there is no
     python scripts/e2e_ppi_boltzgen.py --designs 200 --budget-usd 5
                                                      # ~3.5 GPU-h
 
-**Do not replace run 3 with a plain CLI invocation.** `--stop-after` is
-binder-track only and the legacy path cannot be sized from the CLI, so
-`run_pipeline.py --workflow ppi --design-engine boltzgen --stop-after
-calibration` would run to completion at the shipped 1,000 / 20,000 counts:
-**332 GPU-h (~13 days)** at YAP1/TEAD1 size. I nearly launched that.
+    # 4. PPI e2e, BoltzGen through the NEW backend — what C1 exists for
+    python scripts/run_pipeline.py --workflow ppi \
+        --query "Design cancer therapeutics to target key nodes in mesothelioma." \
+        --design-engine boltzgen --project e2e_boltzgen \
+        --budget 5 --stop-after calibration          # ~1 GPU-h at 24+1000
 
-After C1, run 3 should probably become a *fourth* run (PPI + BoltzGen through
-the new backend), with the driver kept as the legacy regression check.
+**Run 3 must stay the driver, not a CLI invocation.** The legacy path cannot
+be sized from the CLI (no `--config`), so
+`run_pipeline.py --design-engine boltzgen_legacy` would run to completion at
+the shipped 1,000 / 20,000 counts: **332 GPU-h (~13 days)** at YAP1/TEAD1
+size. I nearly launched that. The CLI now refuses `--stop-after` there, which
+makes the trap loud rather than silent, but it still cannot make that path
+small — only the driver can.
+
+Run 4 is the one that exercises `boltzgen_spec` / `boltzgen_runner` / the
+per-modality gate on a PPI-discovered target. Size it with `--n-batches`
+(BoltzGen reads it as `num_designs`) if the calibration default of 1,000 is
+more than the check needs.
 
 ---
 

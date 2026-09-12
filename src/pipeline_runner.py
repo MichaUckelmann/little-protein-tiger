@@ -58,6 +58,20 @@ from src.skill_runner import SkillRefusedError, SkillRunner
 from src.campaign_calibration import MIN_HITS_FOR_ESTIMATE
 from src.token_budget import BudgetExceeded, TokenLedger, Usage, load_pricing
 
+#: The design generators, and which of them share the binder track's stage
+#: machine. `foundry` and `boltzgen` both go through
+#: `_bridge_ppi_to_binder_track` on the PPI track and both dispatch inside
+#: `_run_binder_track`; `boltzgen_legacy` is the older PPI-only
+#: design/execution/analysis path, kept until the bridged one is proven to
+#: cover it. Ordered so error messages list the default first.
+_DESIGN_ENGINES = ("foundry", "boltzgen", "boltzgen_legacy")
+
+#: Engines whose PPI runs bridge into the binder-track stage machine. The
+#: complement is exactly `boltzgen_legacy`, and writing it this way round
+#: means adding a generator opts it IN rather than silently leaving it on the
+#: legacy path.
+_BRIDGED_ENGINES = ("foundry", "boltzgen")
+
 _DEFAULT_MODELS = {
     "claude": "claude-sonnet-5",
     "gemini": "gemini-3.7-flash",
@@ -471,27 +485,51 @@ class PipelineRunner:
                 f"'standard' or 'wildcard'."
             )
         self._pathway_mode: str = resolved_mode
-        # "foundry" (default) | "boltzgen" — PPI-track only (the binder
-        # track always runs foundry regardless of this key). Flipped to
-        # foundry once a real KRAS/RAF1 campaign validated the bridge
-        # end-to-end on GPU; UNIFY_DESIGN_BACKEND_NOTES.md predates that
-        # flip. --design-engine foundry hands a
-        # PPI-discovered target off to the same RFD3->solubleMPNN->RF3 stage
-        # machine --workflow binder uses, right after PPI's own structure
-        # stage (see `_bridge_ppi_to_foundry`). `design.backend` in
-        # config.yaml was a dead key before this — read here now, the same
-        # override-precedence pattern as `pathway_mode` above: an explicit
-        # non-default kwarg (i.e. what the CLI's --design-engine passed) wins;
-        # otherwise config.yaml sets the project-wide default.
+        # Which generator builds the designs: "foundry" (default) |
+        # "boltzgen" | "boltzgen_legacy".
+        #
+        # The first two are the SAME stage machine — target_intel/interface/
+        # trim are generator-neutral, and only spec/pilot/calibration/
+        # production/scoring dispatch (see `_boltzgen_backend`). A PPI run on
+        # either one therefore takes the same route: PPI's own pathway/
+        # literature/structure stages, then `_bridge_ppi_to_binder_track`.
+        # That is what gives BoltzGen a measured calibration, a resumable
+        # manifest, `--stop-after` and a trim, none of which the older path
+        # had.
+        #
+        # `boltzgen_legacy` is the older PPI-only design/execution/analysis
+        # path, kept alive deliberately (see UNIFY_BOLTZGEN_BACKEND_NOTES.md's
+        # decision 2) until the bridged one is proven to cover it, and
+        # reachable only by naming it. It is NOT a synonym for "boltzgen": it
+        # runs the `protein-design-script` skill, reads
+        # `design.pilot`/`design.production` rather than `design.boltzgen`,
+        # and honours neither `--stop-after` nor a calibration verdict.
+        #
+        # `design.backend` in config.yaml sets the project-wide default, with
+        # the same override-precedence pattern as `pathway_mode` above: an
+        # explicit kwarg (what the CLI's --design-engine passed) wins.
         # None means "not specified" — config decides. Using a real engine
         # name as the default made an EXPLICIT choice of that engine
         # indistinguishable from silence, so config could override the caller.
         cfg_design_engine = (config.get("design") or {}).get("backend", "foundry")
         resolved_engine = design_engine or cfg_design_engine
-        if resolved_engine not in {"boltzgen", "foundry"}:
+        if resolved_engine not in _DESIGN_ENGINES:
             raise ValueError(
-                f"Invalid design_engine={resolved_engine!r}; expected "
-                f"'boltzgen' or 'foundry'."
+                f"Invalid design_engine={resolved_engine!r}; expected one of "
+                f"{', '.join(repr(e) for e in _DESIGN_ENGINES)}."
+            )
+        if resolved_engine == "boltzgen_legacy" and self._workflow != "ppi":
+            # The legacy stages are PPI-only by construction — they read the
+            # literature handoff and run the `protein-design-script` skill,
+            # neither of which exists on a track that starts from a named
+            # target or a local file. Accepting the value there would silently
+            # run the NEW BoltzGen backend instead (`_boltzgen_backend` is
+            # false for it), i.e. quietly not what was asked for.
+            raise ValueError(
+                f"design_engine='boltzgen_legacy' is --workflow ppi only; "
+                f"got workflow={self._workflow!r}. Use 'boltzgen' — the "
+                f"binder and structure tracks dispatch their generator "
+                f"stages to it directly."
             )
         self._design_engine = resolved_engine
         # What the operator asked to design. LLM stages PROPOSE a modality;
@@ -564,15 +602,22 @@ class PipelineRunner:
         if pdb_id and start_from == "pathway":
             start_from = "structure"
 
-        if self._workflow == "ppi" and self._design_engine == "foundry" and self._project is None:
-            # Fail before creating a run dir or spending any tokens — a
-            # foundry hand-off is multi-day GPU work that needs the same
-            # round-based, resumable manifest --workflow binder requires.
+        if self._project is None:
+            # Fail before creating a run dir or spending any tokens. Every
+            # track now ends in the same GPU stages — the binder and structure
+            # tracks enter them directly, and a PPI run bridges into them on
+            # either generator — so every track needs the round-based,
+            # resumable manifest those stages checkpoint into. The binder and
+            # structure tracks were already refused here by the CLI and the
+            # foundry bridge by the runner; `boltzgen_legacy` was the one
+            # combination that ran without one, which is also the one whose
+            # multi-hour campaign had nowhere to record that it had started.
             raise PipelineBlockedError(
-                "--design-engine foundry requires --project: the foundry "
-                "stages this hands off to (pilot/calibration/production) are "
-                "multi-day GPU campaigns that need the manifest to be "
-                "resumable, exactly like --workflow binder."
+                f"--workflow {self._workflow} requires --project: the GPU "
+                f"stages every track reaches (pilot/calibration/production) "
+                f"are multi-hour to multi-day campaigns, and the project "
+                f"manifest is what makes them resumable and what "
+                f"--start-from reads."
             )
 
         safe_slug = re.sub(r"[^a-zA-Z0-9]+", "_", query[:40]).strip("_").lower()
@@ -623,14 +668,17 @@ class PipelineRunner:
                 attach=not self._detach, n_batches=self._n_batches,
             )
 
-        # ── PPI-track run resuming INSIDE the foundry hand-off ────────────────
+        # ── PPI-track run resuming INSIDE the hand-off ───────────────────────
         # A fresh run always enters below at pathway/literature/structure and
-        # reaches `_bridge_ppi_to_foundry` after the go/no-go decision (see
-        # that block further down). Resuming a later foundry stage in a new
+        # reaches `_bridge_ppi_to_binder_track` after the go/no-go decision
+        # (see that block further down). Resuming a later GPU stage in a new
         # process (e.g. --start-from production) has no PPI stage to
         # re-enter — go straight into the binder-track stage machine that the
         # earlier bridge call already handed off to and wrote checkpoints for.
-        if self._workflow == "ppi" and self._design_engine == "foundry" \
+        # Both bridged generators resume this way; `boltzgen_legacy` has no
+        # binder stage to resume into and falls through to the stage-index
+        # lookup below, which rejects the name.
+        if self._workflow == "ppi" and self._bridges_to_binder_track \
                 and start_from in self.BINDER_STAGE_ORDER:
             return self._run_binder_track(
                 query, run_dir, result,
@@ -882,14 +930,20 @@ class PipelineRunner:
             else:
                 logger.warning("go_recommendation not in mol-bio handoff — proceeding to design anyway")
 
-            # ── Opt-in hand-off: foundry instead of BoltzGen ─────────────────
+            # ── Hand-off: the binder track's stage machine ───────────────────
             # PPI's own pathway/literature/structure stages above are
-            # unchanged; from here a foundry-engine run skips BoltzGen's
-            # design/execution/analysis stages entirely and continues inside
-            # the binder track's own stage machine. See
-            # `_bridge_ppi_to_foundry` and UNIFY_DESIGN_BACKEND_NOTES.md.
-            if self._design_engine == "foundry":
-                return self._bridge_ppi_to_foundry(
+            # unchanged; from here the run continues inside the binder track's
+            # own stage machine, which dispatches its generator stages to
+            # whichever backend was chosen. See
+            # `_bridge_ppi_to_binder_track`, UNIFY_DESIGN_BACKEND_NOTES.md
+            # (foundry) and UNIFY_BOLTZGEN_BACKEND_NOTES.md (BoltzGen).
+            #
+            # Only `boltzgen_legacy` falls through to the stages below, and
+            # only by being named. What it gives up by doing so: a trim, a
+            # MEASURED production size, `--stop-after`, a resumable
+            # per-stage manifest, and the per-modality gate.
+            if self._bridges_to_binder_track:
+                return self._bridge_ppi_to_binder_track(
                     query, run_dir, result, auto_mode=auto_mode)
 
             # ── Stage 3 skill: protein-design-script ─────────────────────────
@@ -1337,7 +1391,7 @@ class PipelineRunner:
         only things left to decide are which chain is the target and which
         interface to aim at — both of which can be MEASURED.
 
-        Same manoeuvre as `_bridge_ppi_to_foundry`: compose the handoff
+        Same manoeuvre as `_bridge_ppi_to_binder_track`: compose the handoff
         `_run_binder_track` would have got from `binder-target-intel`, write it
         to the artifact path the stage machine reads, and enter one stage
         later. The difference is where it enters — the bridge starts at `trim`
@@ -1411,8 +1465,12 @@ class PipelineRunner:
 
         design_intent = "disrupt" if partner_chain else "inhibit_active_site"
         modality = self._resolve_modality(None, source="the structure-first track")
-        sizes = (self._binder_cfg().get("constraints") or {}).get("binder_sizes") or {}
-        size = sizes.get(modality) or sizes.get("mini_protein") or {}
+        # Through `_binder_length_range` rather than reading `binder_sizes`
+        # here: a cyclic-peptide campaign is 12-15 residues and a mini-protein
+        # one 70-86, so a second copy of that lookup is a 5.8x error waiting
+        # to drift (the mistake commit 5c17881 fixed once already). Same
+        # table, same modality-aware fallback every other site uses.
+        length_min, length_max = self._binder_length_range({"modality": modality})
         label = self._local_structure_stem(pdb_id) or pdb_id.upper()
 
         handoff = {
@@ -1424,8 +1482,8 @@ class PipelineRunner:
             "partner_chain": partner_chain,
             "design_intent": design_intent,
             "modality": modality,
-            "binder_length_min": size.get("min", 70),
-            "binder_length_max": size.get("max", 86),
+            "binder_length_min": length_min,
+            "binder_length_max": length_max,
             "interface_rationale": note,
             # Without this the interface stage falls back to its generic
             # "select model-ready hotspots for a ..." sentence and the
@@ -3105,15 +3163,22 @@ class PipelineRunner:
             logger.debug(f"could not order names by chain: {exc}")
         return primary, partner
 
-    def _bridge_ppi_to_foundry(
+    def _bridge_ppi_to_binder_track(
         self, query: str, run_dir: Path, result: PipelineResult, *,
         auto_mode: bool,
     ) -> PipelineResult:
         """
-        Hand a PPI-discovered target off to foundry instead of continuing
-        into BoltzGen's design/execution/analysis stages. Opt-in via
-        --design-engine foundry (config.yaml design.backend); see
-        UNIFY_DESIGN_BACKEND_NOTES.md for the design rationale.
+        Hand a PPI-discovered target off to the binder track's stage machine,
+        whichever generator is going to build the designs.
+
+        Backend-agnostic on purpose. Nothing below reads `_design_engine`:
+        the bridge composes a target_intel handoff and an interface artifact,
+        and `_run_binder_track` dispatches spec/pilot/calibration/production/
+        scoring to foundry or BoltzGen from there. So a BoltzGen PPI run gets
+        the trim, the measured production size, `--stop-after` and the
+        resumable manifest for free, rather than needing a second bridge.
+        See UNIFY_DESIGN_BACKEND_NOTES.md (foundry, which came first) and
+        UNIFY_BOLTZGEN_BACKEND_NOTES.md (BoltzGen).
 
         PPI's own pathway + literature + structure stages already ran
         unchanged before this is called. `_stage_structure` calls the SAME
@@ -3136,14 +3201,15 @@ class PipelineRunner:
         structure_file = result.stage_files.get("structure")
         if structure_file is None or not structure_file.exists():
             raise PipelineError(
-                "design_engine=foundry needs a completed structure stage "
-                "before it can hand off to foundry — resume from an earlier "
-                "PPI stage first.")
+                f"design_engine={self._design_engine} needs a completed "
+                f"structure stage before it can hand off to the binder "
+                f"track — resume from an earlier PPI stage first.")
         if not result.hotspot_residues_json:
             raise PipelineError(
                 "the structure stage produced no MODEL-READY HOTSPOTS table; "
-                "foundry cannot build an RFD3 spec without atom-level "
-                "hotspots (this should already have failed inside "
+                "neither generator can build a spec without atom-level "
+                "hotspots — RFD3 needs them as contigs and BoltzGen as its "
+                "`binding:` list (this should already have failed inside "
                 "_stage_structure — check 02_structure.md).")
 
         lit = result.literature_handoff or {}
@@ -3180,8 +3246,12 @@ class PipelineRunner:
             structure_handoff.get("modality") or lit.get("modality"),
             source="the PPI structure/literature stages")
 
-        sizes = (self._binder_cfg().get("constraints") or {}).get("binder_sizes") or {}
-        size = sizes.get(modality) or sizes.get("mini_protein") or {}
+        # Through `_binder_length_range` rather than reading `binder_sizes`
+        # here: a cyclic-peptide campaign is 12-15 residues and a mini-protein
+        # one 70-86, so a second copy of that lookup is a 5.8x error waiting
+        # to drift (the mistake commit 5c17881 fixed once already). Same
+        # table, same modality-aware fallback every other site uses.
+        length_min, length_max = self._binder_length_range({"modality": modality})
 
         # The chain assignment lives in the INTERFACE handoff (PPI's structure
         # stage chose it). `_binder_sites` reads it from the TARGET-INTEL
@@ -3199,8 +3269,8 @@ class PipelineRunner:
             "partner_chain": structure_handoff.get("partner_chain", ""),
             "design_intent": design_intent,
             "modality": modality,
-            "binder_length_min": size.get("min", 70),
-            "binder_length_max": size.get("max", 86),
+            "binder_length_min": length_min,
+            "binder_length_max": length_max,
             "interface_rationale": (lit.get("go_rationale")
                                     or structure_handoff.get("interface_summary", "")),
             "go_recommendation": result.go_recommendation or "GO",
@@ -3217,8 +3287,8 @@ class PipelineRunner:
             f"Bridged from the PPI track's pathway/literature/structure stages "
             f"for {target_complex} — see 00_pathway.md / 01_literature.md / "
             f"02_structure.md for the full reasoning. This file exists only "
-            f"so foundry's own stage machine has a target_intel artifact to "
-            f"resume from; no LLM call was made to produce it.",
+            f"so the binder track's stage machine has a target_intel artifact "
+            f"to resume from; no LLM call was made to produce it.",
             intel_handoff)
         result.stage_files["target_intel"] = target_intel_out
         result.stages_completed.append("target_intel")
@@ -3230,8 +3300,8 @@ class PipelineRunner:
         result.stages_completed.append("interface")
 
         logger.info(
-            f"design_engine=foundry: handing {target_complex} ({result.pdb_id}) "
-            f"off to foundry at the trim stage")
+            f"design_engine={self._design_engine}: handing {target_complex} "
+            f"({result.pdb_id}) off to the binder track at the trim stage")
         return self._run_binder_track(
             query, run_dir, result, start_from="trim", context_file=None,
             auto_mode=auto_mode, target=None, attach=not self._detach,
@@ -3572,8 +3642,23 @@ class PipelineRunner:
         so outright), so this is the seam that did not exist. It is read once
         per stage rather than threaded through, and foundry remains the branch
         that does not change.
+
+        False for `boltzgen_legacy`, which is correct and is the point: that
+        engine never reaches these stages at all.
         """
         return self._design_engine == "boltzgen"
+
+    @property
+    def _bridges_to_binder_track(self) -> bool:
+        """Whether a PPI run hands its target to the binder-track machine.
+
+        True for both generators that share that machine, so the three places
+        that ask — the resume dispatch, the hand-off after go/no-go, and the
+        structure stage's designable-size hint — cannot drift apart or answer
+        the question for only one backend, which is how `--design-engine
+        boltzgen` spent its first release on the legacy path.
+        """
+        return self._design_engine in _BRIDGED_ENGINES
 
     def _boltzgen_stage_sizes(self, mode: str) -> tuple[int, int]:
         """`(num_designs, budget)` for one BoltzGen stage, from config."""
@@ -5581,11 +5666,15 @@ class PipelineRunner:
         max_target = int(constraints_cfg.get("max_target_residues", 500))
         warn_target = int(constraints_cfg.get("target_residues_warn", 250))
 
-        # Only when a trim will actually follow. `--design-engine boltzgen` has
-        # no trim stage, so there the raw length IS the operative number and
-        # the existing refusal is correct.
+        # Only when a trim will actually follow. `--design-engine
+        # boltzgen_legacy` has no trim stage, so there the raw length IS the
+        # operative number and the existing refusal is correct. Both bridged
+        # generators DO trim — `_stage_trim` is generator-neutral and runs
+        # before the spec on either — so quoting a raw 574-residue GPCR at
+        # them would have the stage reject a chain that is 167 designable
+        # residues by the time anything builds against it.
         designable: dict[str, int] = {}
-        if self._design_engine == "foundry":
+        if self._bridges_to_binder_track:
             designable = self._designable_chain_sizes(pdb_id, chain_counts, max_target)
 
         chain_hint = ""

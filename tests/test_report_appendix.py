@@ -9,7 +9,7 @@ excerpts. Two things it has to get right are easy to regress silently:
     column alignment. Rendered as plain markdown both collapse — the ladder
     into an unreadable run-on sentence of numbers.
   - a PPI-bridged campaign has two stage files with identical bytes
-    (`_bridge_ppi_to_foundry` copies 02_structure.md as 21_interface.md
+    (`_bridge_ppi_to_binder_track` copies 02_structure.md as 21_interface.md
     rather than paying for a second call to the same skill), which read as
     the interface stage having repeated the structure stage.
 

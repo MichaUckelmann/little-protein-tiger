@@ -1333,7 +1333,7 @@ def test_bridge_carries_the_chain_assignment_into_target_intel():
 
     from src.pipeline_runner import PipelineRunner
 
-    src = inspect.getsource(PipelineRunner._bridge_ppi_to_foundry)
+    src = inspect.getsource(PipelineRunner._bridge_ppi_to_binder_track)
     assert '"target_chain": structure_handoff.get("target_chain"' in src
     assert '"partner_chain": structure_handoff.get("partner_chain"' in src
 
@@ -1364,7 +1364,7 @@ def test_bridge_coerces_a_modality_rfd3_cannot_build():
     # the bridge no longer carries its own copy.
     src = inspect.getsource(PipelineRunner._resolve_modality)
     assert "cyclic_peptide" in src and "opt-in" in src
-    bridge = inspect.getsource(PipelineRunner._bridge_ppi_to_foundry)
+    bridge = inspect.getsource(PipelineRunner._bridge_ppi_to_binder_track)
     assert "_resolve_modality" in bridge, "the bridge must go through it"
 
 

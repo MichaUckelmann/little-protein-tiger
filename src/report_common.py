@@ -348,7 +348,7 @@ def stage_documents(entries: list[tuple[str, str, Path]],
             except ValueError:
                 pass
         # A PPI-bridged campaign has two stage files with identical bytes:
-        # `_bridge_ppi_to_foundry` copies 02_structure.md verbatim as the
+        # `_bridge_ppi_to_binder_track` copies 02_structure.md verbatim as the
         # binder track's 21_interface.md rather than paying for a second,
         # redundant call to the same skill. Rendering both twice reads as
         # the interface stage having repeated the structure stage. Show it

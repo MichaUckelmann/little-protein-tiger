@@ -348,30 +348,46 @@ def test_design_engine_rejects_an_unknown_value(config):
         PipelineRunner(config, workflow="ppi", design_engine="nonsense")
 
 
-def test_design_engine_foundry_requires_a_project(config, tmp_path):
+@pytest.mark.parametrize("engine",
+                         ["foundry", "boltzgen", "boltzgen_legacy"])
+def test_every_engine_requires_a_project(config, tmp_path, engine):
     """
-    Fails before creating a run dir or spending any tokens — a foundry
-    hand-off is multi-day GPU work that needs the same round-based,
-    resumable manifest --workflow binder requires (see
-    UNIFY_DESIGN_BACKEND_NOTES.md's --project decision).
+    Fails before creating a run dir or spending any tokens — every track now
+    ends in the same multi-hour-to-multi-day GPU stages, which checkpoint into
+    the project manifest and are resumed by reading it (see
+    UNIFY_DESIGN_BACKEND_NOTES.md's --project decision, widened to all three
+    engines by UNIFY_BOLTZGEN_BACKEND_NOTES.md's decision 3).
+
+    `boltzgen_legacy` is the combination that used to run WITHOUT one, which
+    is also the one whose multi-hour campaign had nowhere to record that it
+    had started.
     """
-    r = PipelineRunner(config, workflow="ppi", design_engine="foundry",
+    r = PipelineRunner(config, workflow="ppi", design_engine=engine,
                        output_dir=tmp_path / "should_not_be_created")
     with pytest.raises(PipelineBlockedError, match="requires --project"):
         r.run("design binders against KRAS")
     assert not (tmp_path / "should_not_be_created").exists()
 
 
-def test_design_engine_foundry_requires_a_project_via_the_cli():
+@pytest.mark.parametrize("argv", [
+    ["--workflow", "ppi", "--query", "x", "--design-engine", "foundry"],
+    ["--workflow", "ppi", "--query", "x", "--design-engine", "boltzgen"],
+    ["--workflow", "ppi", "--query", "x", "--design-engine", "boltzgen_legacy"],
+    ["--workflow", "ppi", "--query", "x"],
+    ["--workflow", "binder", "--target", "KRAS"],
+    ["--workflow", "structure", "--pdb", "3KYS"],
+])
+def test_the_cli_requires_a_project_on_every_track(argv):
+    """The CLI refuses the same thing the runner does, so neither an operator
+    nor a library caller can slip past it."""
     import subprocess
     import sys
 
     proc = subprocess.run(
-        [sys.executable, str(_ROOT / "scripts" / "run_pipeline.py"),
-         "--workflow", "ppi", "--query", "x", "--design-engine", "foundry"],
+        [sys.executable, str(_ROOT / "scripts" / "run_pipeline.py")] + argv,
         capture_output=True, text=True)
     assert proc.returncode != 0
-    assert "requires --project" in proc.stderr
+    assert "requires --project" in proc.stderr, proc.stderr
 
 
 def test_config_backend_key_is_no_longer_dead(config):
@@ -388,7 +404,7 @@ def test_config_backend_key_is_no_longer_dead(config):
 @pytest.mark.network
 def test_bridge_writes_target_intel_and_interface_then_hands_off_at_trim(config, tmp_path, monkeypatch, reference_data):
     """
-    Unit-level check on `_bridge_ppi_to_foundry`'s field mapping and file
+    Unit-level check on `_bridge_ppi_to_binder_track`'s field mapping and file
     writes, with `_run_binder_track` stubbed out — this is not a GPU
     integration test. Confirms: (1) a synthetic target_intel artifact is
     written with fields the trim/spec/summary stages actually read, (2) the
@@ -428,7 +444,7 @@ def test_bridge_writes_target_intel_and_interface_then_hands_off_at_trim(config,
         return result
     monkeypatch.setattr(pr.PipelineRunner, "_run_binder_track", fake_run_binder_track)
 
-    out = r._bridge_ppi_to_foundry("design inhibitors of YAP/TEAD", run_dir,
+    out = r._bridge_ppi_to_binder_track("design inhibitors of YAP/TEAD", run_dir,
                                    result, auto_mode=True)
     assert out is result
     assert captured["start_from"] == "trim"
@@ -453,7 +469,7 @@ def test_bridge_refuses_without_a_completed_structure_stage(config, tmp_path):
     run_dir.mkdir()
     result = pr.PipelineResult(run_dir=run_dir)
     with pytest.raises(PipelineError, match="structure stage"):
-        r._bridge_ppi_to_foundry("q", run_dir, result, auto_mode=True)
+        r._bridge_ppi_to_binder_track("q", run_dir, result, auto_mode=True)
 
 
 def test_bridge_refuses_without_hotspots(config, tmp_path):
@@ -467,7 +483,7 @@ def test_bridge_refuses_without_hotspots(config, tmp_path):
     result = pr.PipelineResult(run_dir=run_dir)
     result.stage_files["structure"] = structure_md
     with pytest.raises(PipelineError, match="MODEL-READY HOTSPOTS"):
-        r._bridge_ppi_to_foundry("q", run_dir, result, auto_mode=True)
+        r._bridge_ppi_to_binder_track("q", run_dir, result, auto_mode=True)
 
 
 def test_resuming_a_binder_stage_under_ppi_foundry_dispatches_to_run_binder_track(
@@ -475,7 +491,7 @@ def test_resuming_a_binder_stage_under_ppi_foundry_dispatches_to_run_binder_trac
     """
     A second process resuming --start-from production after the bridge
     already ran once has no PPI stage to re-enter — it must go straight into
-    the binder-track stage machine `_bridge_ppi_to_foundry` already handed
+    the binder-track stage machine `_bridge_ppi_to_binder_track` already handed
     off to and wrote checkpoints for. `project` only needs to be non-None
     here (the --project requirement check and the resume dispatch both only
     test identity); `_run_binder_track` is stubbed so no real project

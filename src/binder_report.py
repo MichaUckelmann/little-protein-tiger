@@ -63,7 +63,7 @@ _TEMPLATE_DIR = Path(__file__).resolve().parent / "report_templates" / "binder_r
 _SHARED_DIR = Path(__file__).resolve().parent / "report_templates" / "_shared"
 
 # Every stage report the appendix renders whole, in run order. The 0* files
-# only exist for a PPI-bridged campaign (`_bridge_ppi_to_foundry` wrote the
+# only exist for a PPI-bridged campaign (`_bridge_ppi_to_binder_track` wrote the
 # binder track's own 20/21 from them) and are found by walking up from
 # `binder_dir`; the 2* files are the binder track's own. Missing entries are
 # skipped, so a campaign paused at calibration simply has no production or

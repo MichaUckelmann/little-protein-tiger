@@ -143,15 +143,60 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
   stage's own HTML comment reaches the blob. The shared version uses `\/` and
   `\u003c`, which are valid in both.
 
-## The PPI -> foundry bridge (`design_engine`, foundry by default)
+## One bridge, three engines (`design_engine`, foundry by default)
 
-Scoped in `UNIFY_DESIGN_BACKEND_NOTES.md`, unification work started there.
-`design.backend` is now **`foundry` by default**, so `--workflow ppi` hands a
-PPI-discovered target off to the SAME RFD3->solubleMPNN->RF3 stage machine
-`--workflow binder` uses, instead of continuing into BoltzGen's
-design/execution/analysis stages. Flipped after a real KRAS/RAF1 campaign
-validated the bridge end-to-end on GPU (82 min, top design iPTM 0.923 /
-dock-RMSD 0.39 A). `--design-engine boltzgen` selects the old path.
+Scoped in `UNIFY_DESIGN_BACKEND_NOTES.md` (foundry) and
+`UNIFY_BOLTZGEN_BACKEND_NOTES.md` (BoltzGen). `design.backend` is
+**`foundry` by default**, and `--workflow ppi` hands a PPI-discovered target
+off to the SAME stage machine `--workflow binder` uses. Flipped after a real
+KRAS/RAF1 campaign validated the bridge end-to-end on GPU (82 min, top design
+iPTM 0.923 / dock-RMSD 0.39 A).
+
+**`--design-engine` names three engines, and only one of them is off the
+bridge.** `foundry` (RFD3->solubleMPNN->RF3) and `boltzgen` both take the
+bridged route and differ only in which generator
+spec/pilot/calibration/production/scoring dispatch to
+(`_boltzgen_backend`); `boltzgen_legacy` is the older PPI-only
+design/execution/analysis path, kept as the regression check for what the
+bridge replaced (decision 2 in the BoltzGen notes) and reachable ONLY by
+naming it.
+
+- **`_bridges_to_binder_track` and `_boltzgen_backend` answer different
+  questions**, and conflating them sends the legacy engine into the new
+  stages under the old name. The first decides whether a PPI run reaches the
+  binder-track stages at all; the second decides which generator those stages
+  use. `boltzgen_legacy` is False for both. Three places ask the first — the
+  resume dispatch, the hand-off after go/no-go, and the structure stage's
+  designable-size hint — and they go through the property rather than
+  re-spelling the comparison, because `== "foundry"` in the hand-off is
+  exactly what left `--design-engine boltzgen` on the legacy path for its
+  first release: nothing failed, the run just silently had no trim, no
+  measured production size, no `--stop-after` and no per-stage manifest.
+- **The bridge itself reads no engine at all** (a test pins this): it composes
+  a target_intel handoff and an interface artifact, and `_run_binder_track`
+  dispatches from there. A backend-specific line in it would be a second
+  dispatch waiting to disagree with the first.
+- **`boltzgen_legacy` REFUSES the flags it cannot honour** rather than
+  accepting them. `--stop-after` was binder-track-only, so the legacy path
+  took the flag and ran design -> execution -> analysis -> summary anyway —
+  332 GPU-h at YAP1/TEAD1 size on the shipped `design.production` counts, for
+  an operator who believed they had capped it. `--compute`/`--n-gpus` are
+  refused there and on `boltzgen` too, since `_run_boltzgen_stage` has no
+  cluster path and would run the whole campaign locally while the operator
+  waited for a submission script.
+- **`--success-metric` writes the block its engine reads.** BoltzGen's gate
+  and bar live in `design.boltzgen_ranking` (BoltzGen-native columns, via
+  `resolve_boltzgen_ranking`), foundry's in `design.binder_ranking`; writing
+  into the wrong one is silent — the campaign is simply sized at the default
+  bar. `--success-metric ipsae_min` is refused on BoltzGen outright: it writes
+  no PAE matrix, so its own ipsae column spans 0.0000-0.0289 against an
+  RF3-calibrated bar of 0.5 and every campaign would size to STOP.
+- **`--project` is required on every track and every engine**, checked in
+  both `run()` and the CLI. The GPU stages each track reaches are multi-hour
+  to multi-day and checkpoint into the manifest, which is also what
+  `--start-from` reads. `boltzgen_legacy` was the one combination that ran
+  without one — and the one whose campaign had nowhere to record that it had
+  started.
 
 **Modality is the operator's choice, not the model's.** `--modality` defaults
 to `mini_protein`; `cyclic_peptide` is opt-in and automatically selects
@@ -162,12 +207,13 @@ place that reconciles what a stage PROPOSED against what the operator CHOSE;
 every consumer goes through it, and the skill prompts no longer present
 modality as a menu. Requires `--project` — same reasoning as
 the binder track's own requirement: the foundry stages downstream are
-multi-day GPU campaigns that need a resumable manifest. `design.backend` was
+multi-day GPU campaigns that need a resumable manifest — now required on
+every track, see above. `design.backend` was
 a dead config key before this (nothing read it — confirmed by grep); do not
 assume any *other* currently-unread config key in this file does something
 just because it looks wired.
 
-`_bridge_ppi_to_foundry` (`src/pipeline_runner.py`) is entered right after
+`_bridge_ppi_to_binder_track` (`src/pipeline_runner.py`) is entered right after
 the go/no-go decision, once PPI's own pathway/literature/structure stages
 have already run unchanged. It does NOT re-run `_run_binder_track` from its
 own `"interface"` stage — PPI's `_stage_structure` already calls the
@@ -188,7 +234,7 @@ summary) runs completely unmodified, inheriting every non-obvious fact in
 the next section for free. A process resuming a later stage
 (`--start-from production`) has no PPI stage to re-enter, so `run()`
 dispatches a binder-stage `--start-from` straight into `_run_binder_track`
-when `design_engine == "foundry"`, exactly like `--workflow binder` resumes.
+for either bridged engine, exactly like `--workflow binder` resumes.
 
 **Two guards were binder-only until this change, and PPI-track chain
 assignment has no single pre-declared answer to check against the way
@@ -338,7 +384,7 @@ operator believes otherwise.
 `--workflow structure` (`_stage_structure_intel`) exists because the other two
 tracks both spend LLM stages answering "what should we design against?", and
 that is already answered when the operator hands you a structure. It is the
-same manoeuvre `_bridge_ppi_to_foundry` uses — compose the handoff
+same manoeuvre `_bridge_ppi_to_binder_track` uses — compose the handoff
 `binder-target-intel` would have produced, write it to
 `_BINDER_STAGE_FILES["target_intel"]`, and enter `_run_binder_track` mid-stream
 — with one deliberate difference: the bridge enters at `trim` because PPI's
@@ -1228,7 +1274,8 @@ deterministic steps now sit between the pathway stage and the structure stage:
   `_note_structure_switch`'s correction is appended, so it lands after all of
   them). It duly emitted 6E3Y while the structure stage analysed 3N7S, and
   `_stage_design` passes `design_query` VERBATIM to the design-script skill, so
-  on `--design-engine boltzgen` the designer was handed the wrong entry.
+  on `--design-engine boltzgen_legacy` (then spelt `boltzgen`) the designer was
+  handed the wrong entry.
   `_retarget_stale_structure` now runs on the literature handoff too. It rewrites
   only `_STRUCTURE_INSTRUCTION_FIELDS` — the `*_query` fields that are
   instructions to a later stage — and deliberately NOT `go_rationale` or
@@ -1273,7 +1320,7 @@ production` for ten days, the documented normal case after a multi-day campaign.
 `tests/test_audit_fixes.py` checks it by reflection over every `trim.<attr>` in
 the module, so the next field added to `TrimResult` cannot reintroduce it.
 
-- `_bridge_ppi_to_foundry` ⇄ `_run_binder_track`'s `"target_intel"`/`"interface"` stage-file
+- `_bridge_ppi_to_binder_track` ⇄ `_run_binder_track`'s `"target_intel"`/`"interface"` stage-file
   loading (`_load_binder_handoff`) — the bridge writes synthetic/copied artifacts at those
   exact paths (`_BINDER_STAGE_FILES`) because `_run_binder_track` always reads them off disk
   regardless of `start_from`; changing that stage-file format on one side without the other

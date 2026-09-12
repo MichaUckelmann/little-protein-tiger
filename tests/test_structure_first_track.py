@@ -214,7 +214,11 @@ def test_the_track_enters_the_binder_machine_at_interface(tmp_path, monkeypatch)
     epitope is still unchosen)."""
     if not PDL1.is_file():
         pytest.skip("7CZD not in this checkout")
-    runner = _runner()
+    # `project` only needs to be non-None: `run()` requires one on every
+    # track (the GPU stages downstream checkpoint into the manifest) and the
+    # check tests identity, while `_run_binder_track` is stubbed so no real
+    # project machinery runs.
+    runner = _runner(project=object())
     src = tmp_path / "entry_check.cif"
     shutil.copy(PDL1, src)
     pdb_id = runner.ingest_local_structure(src)
@@ -227,6 +231,9 @@ def test_the_track_enters_the_binder_machine_at_interface(tmp_path, monkeypatch)
 
     monkeypatch.setattr(runner, "_run_binder_track", fake_track)
     monkeypatch.setattr(runner, "_output_dir_override", tmp_path / "out")
+    # The ledger writes into the project root, which the placeholder has not
+    # got; nothing here is metered.
+    monkeypatch.setattr(runner, "_init_ledger", lambda run_dir: None)
     try:
         runner.run("Design a binder.", pdb_id=pdb_id)
     finally:

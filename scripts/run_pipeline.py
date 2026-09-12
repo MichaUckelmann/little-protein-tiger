@@ -4,10 +4,14 @@ CLI entry point for the LittleProteinTiger programmatic design pipeline.
 
 Chains the stages automatically, in PipelineRunner.STAGE_ORDER order:
   pathway-expert -> molecular-biology-expert -> complex-structure-analysis
-    -> the design backend selected by design.backend / --design-engine
-       (foundry by default: bridges into the binder track's RFD3 ->
-       solubleMPNN -> RF3 stages; boltzgen: protein-design-script ->
-       design_runner -> ranking -> design-analyst)
+    -> the binder track's own stages (trim -> spec -> pilot -> calibration ->
+       production -> scoring -> design-analyst), with the generator stages
+       dispatched to the backend selected by design.backend /
+       --design-engine: foundry (default, RFD3 -> solubleMPNN -> RF3) or
+       boltzgen.
+  --design-engine boltzgen_legacy instead runs the older PPI-only path
+    (protein-design-script -> design_runner -> ranking -> design-analyst),
+    kept as a regression check.
 
 Each stage writes a report to the run directory and passes a machine-readable
 '### PIPELINE HANDOFF' block to the next stage.
@@ -160,10 +164,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default="ppi",
         help="Workflow track. 'ppi' (default) = literature-driven binder design; "
              "'binder' = target-name-first binder design on the local GPU "
-             "(skips discovery, runs foundry, requires --project); "
-             "'structure' = you already have the structure — skips discovery "
-             "AND target selection, measures the interface, and starts at "
-             "hotspot analysis (requires --project and --structure/--pdb).",
+             "(skips discovery); 'structure' = you already have the "
+             "structure — skips discovery AND target selection, measures the "
+             "interface, and starts at hotspot analysis (needs --structure or "
+             "--pdb). Every track requires --project.",
     )
     p.add_argument(
         "--structure",
@@ -243,20 +247,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--design-engine",
-        choices=["boltzgen", "foundry"],
+        choices=["foundry", "boltzgen", "boltzgen_legacy"],
         default=None,
         dest="design_engine",
         help=(
-            "--workflow ppi only (--workflow binder always runs foundry "
-            "regardless of this). 'foundry' (the default) hands the "
-            "PPI-discovered target off to the same RFD3->solubleMPNN->RF3 "
-            "stage machine --workflow binder uses, right after the PPI "
-            "structure stage — it requires --project, since it enters "
-            "multi-day GPU stages. 'boltzgen' selects the older PPI design/"
-            "execution/analysis path unchanged, and is selected automatically "
-            "by --modality cyclic_peptide, which RFD3 cannot build. Default "
-            "without this flag: design.backend in config.yaml (itself "
-            "'foundry' unless changed)."
+            "Which generator builds the designs. 'foundry' (the default) is "
+            "RFD3->solubleMPNN->RF3; 'boltzgen' is BoltzGen. Both run the "
+            "SAME stage machine — a --workflow ppi run on either one hands "
+            "its discovered target off right after the structure stage, so "
+            "both get the trim, a MEASURED production size, --stop-after and "
+            "a resumable manifest. 'boltzgen' is selected automatically by "
+            "--modality cyclic_peptide, which RFD3 cannot build. "
+            "'boltzgen_legacy' is the older --workflow ppi design/execution/"
+            "analysis path, kept as a regression check until the bridged one "
+            "is proven to cover it: it honours neither --stop-after nor a "
+            "calibration verdict, and is sized only by design.pilot / "
+            "design.production in config.yaml. Default without this flag: "
+            "design.backend in config.yaml (itself 'foundry' unless changed)."
         ),
     )
     p.add_argument(
@@ -364,13 +371,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--stop-after",
         choices=["spec", "trial", "calibration"], default=None, dest="stop_after",
         help=(
-            "Binder workflow: 'spec' prepares and validates everything up to "
-            "the GPU and stops, so specs can be reviewed before committing "
-            "days of compute; 'trial' stops after the design trial and site "
+            "'spec' prepares and validates everything up to the GPU and "
+            "stops, so specs can be reviewed before committing days of "
+            "compute; 'trial' stops after the design trial and site "
             "comparison, before a production campaign; 'calibration' stops "
             "after the calibration verdict (SCALE_UP/SCALE_UP_PARTIAL) on a "
             "plain single-target run — resume with --start-from production "
-            "once the verdict and estimated GPU-hours/disk look right."
+            "once the verdict and estimated GPU-hours/disk look right. "
+            "Honoured on every track that runs the binder-track stages, "
+            "i.e. everything except --design-engine boltzgen_legacy, which "
+            "refuses the flag rather than ignoring it."
         ),
     )
     p.add_argument(
@@ -498,29 +508,71 @@ def main() -> int:
     # modality selects the engine that can actually do it.
     if args.modality == "cyclic_peptide":
         if args.design_engine == "foundry":
+            # The binder track USED to be foundry-only by construction, so
+            # this combination was refused outright there as well. It now
+            # dispatches its generator stages (spec / pilot / calibration /
+            # production / scoring) to BoltzGen, which is the only backend
+            # that can build a macrocycle -- so the combination is legal on
+            # every track, and the modality selects the engine.
             parser.error(
                 "--modality cyclic_peptide cannot run on --design-engine "
                 "foundry: RFD3 has no cyclic-peptide path. Drop "
                 "--design-engine to let the modality pick boltzgen, or design "
                 "a mini_protein instead.")
-        # The binder track USED to be foundry-only by construction, so this
-        # combination was refused outright. It now dispatches its generator
-        # stages (spec / pilot / calibration / production / scoring) to
-        # BoltzGen, which is the only backend that can build a macrocycle --
-        # so the combination is legal, and the modality selects the engine
-        # exactly as it does on the PPI track.
-        if is_binder and args.design_engine == "foundry":
-            parser.error(
-                "--workflow binder --modality cyclic_peptide cannot run on "
-                "--design-engine foundry: RFD3 has no cyclic-peptide path. "
-                "Drop --design-engine to let the modality pick boltzgen.")
-        if design_engine != "boltzgen":
+        # An explicit --design-engine boltzgen_legacy is honoured: the legacy
+        # path builds macrocycles too (both shipped cyclic campaigns ran on
+        # it). Only silence gets coerced.
+        if design_engine not in ("boltzgen", "boltzgen_legacy"):
             logger.info(
                 "--modality cyclic_peptide: using the boltzgen design engine "
                 "(foundry/RFD3 has no cyclic-peptide path)")
-        design_engine = "boltzgen"
+            design_engine = "boltzgen"
 
-    is_foundry_bridge = (not is_binder) and design_engine == "foundry"
+    is_legacy = design_engine == "boltzgen_legacy"
+    #: True whenever this invocation will run the binder-track stage machine,
+    #: on either generator: --workflow binder and --workflow structure enter
+    #: it directly, and --workflow ppi bridges into it after its structure
+    #: stage. `boltzgen_legacy` is the only path that does not, so every
+    #: binder-track flag below applies unless that engine was named.
+    #: Formerly `runs_foundry`, which stopped being the question once
+    #: BoltzGen dispatched into the same stages.
+    runs_binder_stages = not is_legacy
+
+    if is_legacy:
+        if is_binder or is_structure:
+            parser.error(
+                f"--design-engine boltzgen_legacy is --workflow ppi only: it "
+                f"runs the PPI design/execution/analysis stages, which read "
+                f"the literature handoff. For --workflow "
+                f"{args.workflow} use --design-engine boltzgen, which "
+                f"dispatches that track's own generator stages to BoltzGen.")
+        if args.stop_after:
+            # Refused rather than ignored. The legacy stages run design ->
+            # execution -> analysis -> summary unconditionally, and at the
+            # shipped design.production.num_designs that is a multi-day run
+            # the operator believed they had capped.
+            parser.error(
+                "--stop-after is not honoured on --design-engine "
+                "boltzgen_legacy: those stages run to completion, sized only "
+                "by design.pilot / design.production in config.yaml. Use "
+                "--design-engine boltzgen to get the calibrated, "
+                "stoppable path.")
+        if args.compute != "auto" or args.n_gpus:
+            parser.error(
+                "--compute / --n-gpus apply to the binder-track stages; "
+                "--design-engine boltzgen_legacy runs on the local GPU only.")
+
+    if design_engine == "boltzgen" and (args.compute == "cluster" or args.n_gpus):
+        # `_run_boltzgen_stage` has no cluster path — only the foundry stages
+        # stage onto shared storage (src/cluster_runner.py). Accepting
+        # --compute cluster here would run the whole campaign on the local GPU
+        # while the operator waited for a submission script, and a BoltzGen
+        # production campaign is hours to days.
+        parser.error(
+            "--compute cluster / --n-gpus are foundry-only: the cluster "
+            "staging path (src/cluster_runner.py) drives RFD3->MPNN->refold, "
+            "not BoltzGen. Run BoltzGen with --compute local (or auto, which "
+            "is local for it), or use --design-engine foundry.")
 
     if args.hotspots and args.workflow == "ppi":
         parser.error(
@@ -530,11 +582,6 @@ def main() -> int:
             "for an override yet.")
 
     if is_structure:
-        if not args.project:
-            parser.error(
-                "--workflow structure requires --project: it enters the same "
-                "foundry stage machine as --workflow binder, and a multi-day "
-                "GPU campaign needs the manifest to be resumable.")
         if not args.structure and not args.pdb:
             parser.error(
                 "--workflow structure needs --structure <file> or --pdb <ID> "
@@ -549,11 +596,6 @@ def main() -> int:
                 f"choose one of {', '.join(_BINDER_STAGES)}.")
 
     if is_binder:
-        if not args.project:
-            parser.error(
-                "--workflow binder requires --project: the track iterates in "
-                "rounds, and the manifest is what makes a multi-day GPU campaign "
-                "resumable.")
         if args.start_from == "pathway":
             args.start_from = "target_intel"
         if args.start_from not in _BINDER_STAGES:
@@ -563,11 +605,20 @@ def main() -> int:
     elif args.target:
         parser.error("--target applies to --workflow binder only.")
 
-    if is_foundry_bridge and not args.project:
+    # Checked AFTER the per-track flag validation above, so a misused
+    # flag is reported as itself rather than as a missing --project.
+    # Every track ends in the same GPU stages — binder and structure enter
+    # them directly, a PPI run bridges into them on either generator, and the
+    # legacy path runs a multi-day BoltzGen campaign of its own — so every
+    # track needs the round-based manifest those stages checkpoint into and
+    # that --start-from reads. `PipelineRunner.run` refuses the same thing, so
+    # a library caller cannot slip past this.
+    if not args.project:
         parser.error(
-            "--design-engine foundry requires --project: the foundry stages "
-            "it hands off to are multi-day GPU campaigns that need the same "
-            "round-based, resumable manifest --workflow binder requires.")
+            f"--workflow {args.workflow} requires --project: the GPU stages "
+            f"this reaches (pilot/calibration/production) are multi-hour to "
+            f"multi-day campaigns, and the project manifest is what makes "
+            f"them resumable and what --start-from reads.")
 
     if args.site:
         if not is_binder:
@@ -592,7 +643,7 @@ def main() -> int:
     # --pdb nor --context regardless of workflow: --workflow binder always
     # resumes this way, and a --design-engine foundry ppi run resumes the
     # same way once the bridge has already handed off once (see
-    # PipelineRunner._bridge_ppi_to_foundry / _run_binder_track).
+    # PipelineRunner._bridge_ppi_to_binder_track / _run_binder_track).
     if (not is_binder and args.start_from not in _BINDER_STAGES
             and args.start_from != "pathway" and not args.pdb and not args.context):
         parser.error(
@@ -600,14 +651,31 @@ def main() -> int:
             "(a path to a prior stage output file)."
         )
 
-    # A --workflow ppi run with design.backend: foundry bridges into the
-    # binder track, so these two reach the same stages a binder run does.
-    # Every other binder-track flag below is already passed unconditionally.
-    runs_foundry = is_binder or design_engine == "foundry"
-    if runs_foundry and args.success_metric:
+    # A --workflow ppi run on either bridged generator reaches the same
+    # stages a binder run does, so these apply there too. Every other
+    # binder-track flag below is already passed unconditionally.
+    if runs_binder_stages and args.success_metric:
+        # Two ranking blocks, not one: BoltzGen reads
+        # `design.boltzgen_ranking` (its gate is BoltzGen-native columns,
+        # `resolve_boltzgen_ranking`), foundry `design.binder_ranking`.
+        # Writing the flag into the wrong one is silent — the campaign is
+        # simply sized at the default bar.
+        block = ("boltzgen_ranking" if design_engine == "boltzgen"
+                 else "binder_ranking")
+        if design_engine == "boltzgen" and args.success_metric == "ipsae_min":
+            # ipSAE needs the PAE matrix, which BoltzGen does not persist.
+            # Its own `design_ipsae_min` column spans 0.0000-0.0289 against
+            # an RF3-calibrated bar of 0.5, so sizing on it would measure a
+            # 0% hit rate and STOP every campaign.
+            parser.error(
+                "--success-metric ipsae_min is foundry-only: BoltzGen writes "
+                "no PAE matrix, so ipSAE cannot be computed from its output "
+                "(its own ipsae column spans 0.0000-0.0289 against a bar of "
+                "0.5 — every campaign would size to STOP). Use "
+                "--success-metric iptm, which is BoltzGen's default.")
         config.setdefault("design", {}).setdefault(
-            "binder_ranking", {})["success_metric"] = args.success_metric
-    if runs_foundry and args.n_gpus:
+            block, {})["success_metric"] = args.success_metric
+    if runs_binder_stages and args.n_gpus:
         config.setdefault("design", {}).setdefault(
             "cluster", {})["n_gpus"] = args.n_gpus
 

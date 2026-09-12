@@ -151,7 +151,7 @@ behind them, are LPT&rsquo;s.
 | Project | What LPT uses it for |
 |---|---|
 | **[foundry](https://github.com/RosettaCommons/foundry)** — RFdiffusion3, MPNN, RF3 (Institute for Protein Design, UW) | **The core of both design tracks.** RFD3 generates binder backbones against the chosen epitope, MPNN designs their sequences, RF3 refolds every candidate complex — and RF3's own confidence output is what every gate and ranking metric in LPT is computed from. `--workflow binder`, and `--workflow ppi` by default. |
-| **[BoltzGen](https://github.com/HannesStark/boltzgen)** (Hannes Stärk *et al.*) | The alternative design backend, and the **only** path for cyclic peptides — RFD3 has none. `--design-engine boltzgen`, selected automatically by `--modality cyclic_peptide`. |
+| **[BoltzGen](https://github.com/HannesStark/boltzgen)** (Hannes Stärk *et al.*) | The alternative design backend, and the **only** path for cyclic peptides — RFD3 has none. `--design-engine boltzgen` on any track, selected automatically by `--modality cyclic_peptide`. |
 | **[ProteinMPNN](https://github.com/dauparas/ProteinMPNN)** / **[LigandMPNN](https://github.com/dauparas/LigandMPNN)** (Justas Dauparas *et al.*) | The sequence-design family foundry's `mpnn` stage runs; LPT drives it with the `solublempnn` checkpoint. |
 | **[PyRosetta](https://www.pyrosetta.org)** (RosettaCommons) — *optional* | Relax + InterfaceAnalyzer on gate survivors, and per-design hotspot SASA. Used only *after* designs exist; both tracks run end-to-end without it. |
 | **[Protenix](https://github.com/bytedance/Protenix)** (ByteDance) — *optional* | Refold backend on the SLURM cluster path, in place of local RF3. |
@@ -365,13 +365,24 @@ PipelineRunner.run(query="Design therapeutics for ...")
   is what makes them resumable. See **[Usage](#usage)** below.
 
   boltzgen (`--design-engine boltzgen`; also selected automatically by
-  `--modality cyclic_peptide`, which RFD3 cannot build):
+  `--modality cyclic_peptide`, which RFD3 cannot build) — the SAME stage
+  machine, with the generator stages dispatched to BoltzGen:
+      trim → binder_spec → pilot → calibration → production
+           → binder_scoring → binder_summary       (BoltzGen)
+  So a BoltzGen campaign is trimmed, MEASURED before it scales, stoppable at
+  the calibration gate, and resumable — none of which the older path had.
+
+  boltzgen_legacy (`--design-engine boltzgen_legacy`) — the older PPI-only
+  path, kept as the regression check for what the bridge replaced:
   stage 3  protein-design-script      → BoltzGen YAML + RFD3 JSON
   stage 4  design_runner              → BoltzGen pilot → gate → production
                                           (workstation GPU subprocess)
   stage 5  design_metrics + ranking   → enrich top-K with pyrosetta hotspot
                                           SASA, MMR-rank by composite score
   stage 6  design-analyst             → final candidate review + FASTA
+  It honours neither `--stop-after` nor a calibration verdict, and is sized
+  only by `design.pilot` / `design.production` in config.yaml — so the CLI
+  refuses those flags there rather than accepting them.
 ```
 
 Stage 0 has two modes (`--pathway-mode`, or `design.pathway.mode` in
@@ -678,11 +689,13 @@ Restart Claude Desktop to pick up the new fingerprints via MCP.
 ### 7. Run the binder design pipeline end-to-end
 
 The design pipeline drives `PipelineRunner` (see `src/pipeline_runner.py`)
-from a free-text prompt: pathway → literature → structure discovery, then the
-design backend selected by `design.backend` / `--design-engine`. On the
-default (`foundry`) it bridges into the binder track's RFD3 → solubleMPNN →
-RF3 stages and **`--project` is required**; on `--design-engine boltzgen` it
-continues into BoltzGen design/execution/analysis instead.
+from a free-text prompt: pathway → literature → structure discovery, then a
+hand-off into the binder track's own stage machine, whose generator stages go
+to the backend selected by `design.backend` / `--design-engine` — `foundry`
+(the default: RFD3 → solubleMPNN → RF3) or `boltzgen`. **`--project` is
+required** on every track. `--design-engine boltzgen_legacy` instead continues
+into the older PPI-only BoltzGen design/execution/analysis stages, kept as a
+regression check.
 
 ```bash
 # Standard run (pathway-expert, validated-target-biased — picks YAP1/TEAD1-class
@@ -1238,7 +1251,7 @@ redistribute keep their own licences, reproduced in
 | Tool | Needed for | Licence — check before commercial use |
 |---|---|---|
 | [RFdiffusion3 / solubleMPNN / RF3 (foundry)](https://github.com/RosettaCommons/foundry) | `--workflow binder`, and `--workflow ppi` by default | **BSD 3-Clause** (repository, verified 2026-08-27). Model weights are a separate download through foundry's own checkpoint registry (`~/pip_rcfoundry_ckpt` by default; point LPT elsewhere with `LPT_FOUNDRY_CKPT_DIR`) — confirm their terms yourself |
-| [BoltzGen](https://github.com/HannesStark/boltzgen) | `--workflow ppi --design-engine boltzgen`; also `--modality cyclic_peptide` | **MIT** (repository, verified 2026-08-27). Model weights download separately — confirm their terms yourself |
+| [BoltzGen](https://github.com/HannesStark/boltzgen) | `--design-engine boltzgen` on any track; also `--modality cyclic_peptide` | **MIT** (repository, verified 2026-08-27). Model weights download separately — confirm their terms yourself |
 | PyRosetta (**optional**) | hotspot SASA, Rosetta composite terms — see below | **free for academic / non-commercial only**; commercial licence via `license@uw.edu` — see [docs/pyrosetta_setup.md](docs/pyrosetta_setup.md) |
 | Protenix | cluster refold backend (optional) | see upstream repository |
 | ChimeraX / PyMOL | optional visualisation | separate licences |

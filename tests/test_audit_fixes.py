@@ -690,20 +690,32 @@ def test_an_unresolvable_partner_name_fails_open(config, monkeypatch, tmp_path):
 # 10. Size policy judged on what will actually be designed
 # ----------------------------------------------------------------------
 
-def test_designable_size_is_gated_on_the_foundry_engine():
+def test_designable_size_is_gated_on_the_engines_that_trim(config):
     """
-    `--design-engine boltzgen` has no trim stage, so there the RAW chain length
-    is the operative number and refusing an oversized chain is correct. The
-    designable count may only relax the policy when a trim will actually follow.
+    `--design-engine boltzgen_legacy` has no trim stage, so there the RAW chain
+    length is the operative number and refusing an oversized chain is correct.
+    The designable count may only relax the policy when a trim will actually
+    follow — which is now BOTH bridged generators, since `_stage_trim` is
+    generator-neutral and runs before either spec.
     """
     import inspect
 
     from src.pipeline_runner import PipelineRunner
 
     src = inspect.getsource(PipelineRunner._stage_structure)
-    i_gate = src.index('self._design_engine == "foundry"')
+    i_gate = src.index("self._bridges_to_binder_track")
     i_call = src.index("_designable_chain_sizes(")
     assert i_gate < i_call, "the designable-size lookup must sit behind the engine gate"
+
+    # And the gate must answer the question for the right set of engines: the
+    # BoltzGen backend trims, the legacy PPI path does not.
+    def bridges(engine: str) -> bool:
+        return PipelineRunner(config, workflow="ppi",
+                              design_engine=engine)._bridges_to_binder_track
+
+    assert bridges("foundry") is True
+    assert bridges("boltzgen") is True
+    assert bridges("boltzgen_legacy") is False
 
 
 def test_no_oversized_chain_means_no_lookup(config, monkeypatch):

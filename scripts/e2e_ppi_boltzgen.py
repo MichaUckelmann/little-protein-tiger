@@ -11,8 +11,10 @@ the code rather than preferences:
   by `boltzgen_runner.seconds_per_design`) they are 15.8 and 316 GPU-h — about
   thirteen days for one validation run.
 * **`--stop-after` would not have stopped it.** That flag is honoured only on
-  the binder track; the legacy PPI path runs design -> execution -> analysis ->
-  summary regardless.
+  the binder-track stages; the legacy PPI path runs design -> execution ->
+  analysis -> summary regardless. The CLI now REFUSES the flag against
+  `boltzgen_legacy` rather than accepting it and running to completion, which
+  is what made this driver necessary in the first place.
 
 So this run is deliberately small. It is a PATH test, not a campaign: the point
 is that pathway -> literature -> structure -> design -> execution -> analysis ->
@@ -21,10 +23,14 @@ thresholds now actually gating (every historical e2e driver overrode all four,
 which is how they went unexercised).
 
 Note what this does NOT test: the new `boltzgen_spec` / `boltzgen_runner` /
-per-modality gate. Those are reached only through the BINDER track
-(`--workflow binder --design-engine boltzgen`), because the PPI dispatch still
-sends BoltzGen to the legacy stages. Routing PPI through the bridge to the new
-backend is a separate change.
+per-modality gate. Since Phase C, `--design-engine boltzgen` on the PPI track
+bridges into the binder-track stage machine and reaches all of that, so this
+driver names `boltzgen_legacy` explicitly — it is the regression check for the
+path the bridge replaced, and the ONLY way that path is still reachable. For
+the bridged one, use the CLI, which can size and stop it:
+
+    python scripts/run_pipeline.py --workflow ppi --query "..." \
+        --design-engine boltzgen --project <slug> --stop-after calibration
 
 Usage:
     python scripts/e2e_ppi_boltzgen.py [--designs 200] [--budget-usd 5]
@@ -83,14 +89,16 @@ def main(argv: list[str] | None = None) -> int:
     est = ((args.pilot_designs + args.designs)
            * seconds_per_design(285, "protein-anything") / 3600)
     logger.info(
-        f"PPI e2e on the legacy BoltzGen stages: pilot {args.pilot_designs}, "
+        f"PPI e2e on the LEGACY BoltzGen stages (design_engine="
+        f"boltzgen_legacy; --design-engine boltzgen now takes the bridged "
+        f"path instead): pilot {args.pilot_designs}, "
         f"production {args.designs} — roughly {est:.1f} GPU-h at YAP1/TEAD1 "
         f"size, against {(1000 + 20000) * seconds_per_design(285, 'protein-anything') / 3600:.0f} "
         f"GPU-h for the shipped counts.")
 
     runner = PipelineRunner(
         config=cfg, provider=args.provider, project=args.project,
-        design_engine="boltzgen", budget_usd=args.budget_usd,
+        design_engine="boltzgen_legacy", budget_usd=args.budget_usd,
     )
     t0 = time.time()
     try:
