@@ -465,3 +465,111 @@ class TestChooseCompute:
                         disk_budget_gb=10_000, max_campaign_days=100)
         report = render_report(res)
         assert "Where to run it" not in report
+
+
+# ── the cost model, and why it is pluggable ─────────────────────────────────
+#
+# The statistics here are generator-agnostic given k and n; the COST is not.
+# Foundry's numbers encode a three-stage funnel (RFD3 -> prefilter -> MPNN
+# x n_seq -> RF3), and `required_refolds / n_seq / prefilter_rate` inverts
+# exactly that. A single-stage generator has no funnel, so the funnel has to
+# become a parameter rather than an assumption — without moving foundry's
+# numbers by a single digit, which is what these tests pin.
+
+def test_the_default_cost_model_is_the_foundry_funnel():
+    from src.campaign_calibration import (
+        BYTES_PER_REFOLD, CostModel, SEC_PER_MPNN_SEQ, SEC_PER_RF3_REFOLD,
+        SEC_PER_RFD3_DESIGN,
+    )
+
+    c = CostModel()
+    assert (c.n_seq, c.prefilter_rate) == (4, 0.59)
+    assert c.sec_per_unit == SEC_PER_RF3_REFOLD
+    assert c.bytes_per_unit == BYTES_PER_REFOLD
+    assert c.sec_per_backbone == SEC_PER_RFD3_DESIGN
+    assert c.sec_per_seq == SEC_PER_MPNN_SEQ
+
+
+def test_the_boltzgen_cost_model_has_no_funnel():
+    """One design in, one scored design out. `n_seq` and `prefilter_rate` are
+    not merely different — they are meaningless, so they must be identities."""
+    from src.campaign_calibration import CostModel
+
+    c = CostModel.boltzgen(sec_per_design=7.82, bytes_per_design=0.348e6)
+    assert c.n_seq == 1 and c.prefilter_rate == 1.0
+    assert c.sec_per_backbone == 0.0 and c.sec_per_seq == 0.0
+    assert c.sec_per_unit == 7.82 and c.bytes_per_unit == 0.348e6
+
+
+def test_a_single_stage_campaign_costs_designs_not_refolds():
+    """With no fan-out and no prefilter, backbones and scored units are the
+    same population — which is also why k_backbone == k_refold there."""
+    from src.campaign_calibration import CostModel, _cost
+
+    c = CostModel.boltzgen(sec_per_design=10.0, bytes_per_design=1e6)
+    backbones, hours, disk = _cost(1000, cost=c)
+    assert backbones == 1000
+    assert hours == pytest.approx(1000 * 10.0 / 3600)
+    assert disk == pytest.approx(1000 * 1e6 / 1e9)
+
+
+def test_the_foundry_funnel_still_inverts_the_way_it_did():
+    from src.campaign_calibration import (
+        CostModel, SEC_PER_MPNN_SEQ, SEC_PER_RF3_REFOLD, SEC_PER_RFD3_DESIGN,
+        _cost,
+    )
+
+    c = CostModel(n_seq=4, prefilter_rate=0.5, sec_per_unit=10.0,
+                  bytes_per_unit=1e6)
+    backbones, hours, disk = _cost(1000, cost=c)
+    assert backbones == pytest.approx(1000 / 4 / 0.5)      # 500 backbones
+    expected = (500 * SEC_PER_RFD3_DESIGN + 1000 * SEC_PER_MPNN_SEQ
+                + 1000 * 10.0) / 3600
+    assert hours == pytest.approx(expected)
+    assert SEC_PER_RF3_REFOLD > 0        # imported anchor still in use
+
+
+def test_an_explicit_cost_model_is_reported_not_the_funnel_arguments():
+    """`calibration.json` must not claim a funnel the campaign never had."""
+    from src.campaign_calibration import CostModel, calibrate
+
+    recs = [dict(name=f"d{i}", design_family=f"d{i}", error="",
+                 iptm=0.9 if i < 20 else 0.1) for i in range(200)]
+    off = {k: None for k in ("binder_rmsd_dock_max", "epitope_recall_min",
+                             "hotspot_engagement_min", "binder_rmsd_fold_max",
+                             "binder_plddt_min", "ipsae_min_min", "iptm_min",
+                             "iface_pae_max")}
+    off["require_no_clash"] = False
+    res = calibrate(recs, thresholds=off, success_metric="iptm",
+                    excellence_bar=0.5, target_designs=50, adaptive_bar=False,
+                    n_seq=4, prefilter_rate=0.59,   # must be overridden
+                    cost=CostModel.boltzgen(sec_per_design=7.82,
+                                            bytes_per_design=0.348e6))
+    assert res.n_seq == 1 and res.prefilter_rate == 1.0
+    assert res.backbone_rate.k == 20 and res.backbone_rate.n == 200
+
+
+def test_a_supplied_cost_model_suppresses_the_rf3_anchor_warning():
+    """A false cost warning is worse than none: the real ones are how a
+    3-hour estimate was caught being an 8.8-hour run."""
+    from loguru import logger
+
+    from src.campaign_calibration import CostModel, calibrate
+
+    recs = [dict(name=f"d{i}", design_family=f"d{i}", error="",
+                 iptm=0.9 if i < 10 else 0.1) for i in range(100)]
+    off = {k: None for k in ("binder_rmsd_dock_max", "epitope_recall_min",
+                             "hotspot_engagement_min", "binder_rmsd_fold_max",
+                             "binder_plddt_min", "ipsae_min_min", "iptm_min",
+                             "iface_pae_max")}
+    off["require_no_clash"] = False
+    messages: list[str] = []
+    handler_id = logger.add(lambda m: messages.append(m), level="WARNING")
+    try:
+        calibrate(recs, thresholds=off, success_metric="iptm",
+                  excellence_bar=0.5, target_designs=10, adaptive_bar=False,
+                  cost=CostModel.boltzgen(sec_per_design=7.82,
+                                          bytes_per_design=0.348e6))
+    finally:
+        logger.remove(handler_id)
+    assert not any("anchor" in m for m in messages), messages

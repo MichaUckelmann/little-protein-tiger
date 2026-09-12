@@ -244,36 +244,80 @@ def choose_compute(res: CalibrationResult, *, max_local_hours: float = 48.0,
 # Core
 # ----------------------------------------------------------------------
 
-def _cost(required_refolds: float, *, n_seq: int, prefilter_rate: float,
-          sec_per_rf3_refold: float = SEC_PER_RF3_REFOLD,
-          bytes_per_refold: float = BYTES_PER_REFOLD
+@dataclass(frozen=True)
+class CostModel:
+    """What one campaign's worth of work costs, per generator.
+
+    The statistics in this module — Wilson, rule of three, the bar ladder, the
+    verdict tree — are generator-agnostic given `k` and `n`. The COST is not,
+    and the foundry numbers encode a three-stage funnel: RFD3 emits backbones,
+    a geometric prefilter keeps `prefilter_rate` of them, MPNN threads `n_seq`
+    sequences onto each survivor, and RF3 refolds every one. `required_refolds
+    / n_seq / prefilter_rate` inverts exactly that.
+
+    A single-stage generator has no such funnel: BoltzGen produces one scored
+    design per unit of work, so `n_seq = 1`, `prefilter_rate = 1.0`, and the
+    per-backbone and per-sequence terms are zero. Expressing both as one object
+    keeps the arithmetic — and its rounding order — identical for foundry while
+    making the single-stage case expressible rather than a special branch.
+
+    All four rate/size numbers are per-UNIT, where a unit is whatever the
+    generator scores: an RF3 refold, or a BoltzGen design.
+    """
+    #: Scored units produced per generated backbone (MPNN sequences, or 1).
+    n_seq: int = 4
+    #: Fraction of generated backbones that survive a pre-scoring filter.
+    prefilter_rate: float = 0.59
+    #: Seconds to score one unit (RF3 refold, or one BoltzGen design).
+    sec_per_unit: float = SEC_PER_RF3_REFOLD
+    #: Bytes one scored unit leaves on disk.
+    bytes_per_unit: float = BYTES_PER_REFOLD
+    #: Seconds to GENERATE one backbone, before scoring. Zero single-stage.
+    sec_per_backbone: float = SEC_PER_RFD3_DESIGN
+    #: Seconds per sequence threaded onto a backbone. Zero single-stage.
+    sec_per_seq: float = SEC_PER_MPNN_SEQ
+
+    @classmethod
+    def boltzgen(cls, *, sec_per_design: float, bytes_per_design: float
+                 ) -> "CostModel":
+        """BoltzGen: one design in, one scored design out, no funnel.
+
+        Rates come from `src.boltzgen_runner` (`seconds_per_design` /
+        `design_bytes`, or a rate observed from the campaign itself) rather
+        than being restated here, for the same reason
+        `campaign_calibration` imports foundry's anchors instead of keeping
+        its own -- it kept a stale flat 8.4 once, and because this is the
+        GATE's budget check it costed 22,197 refolds at 63 GPU-h while the
+        planner costed the same work at 138.
+        """
+        return cls(n_seq=1, prefilter_rate=1.0, sec_per_unit=sec_per_design,
+                   bytes_per_unit=bytes_per_design, sec_per_backbone=0.0,
+                   sec_per_seq=0.0)
+
+
+def _cost(required_refolds: float, *, cost: CostModel
           ) -> tuple[float, float, float]:
-    """(required RFD3 designs, GPU hours, disk GB) for a refold count."""
-    prefilter_rate = max(prefilter_rate, 1e-6)
-    required_designs = required_refolds / max(n_seq, 1) / prefilter_rate
-    seconds = (required_designs * SEC_PER_RFD3_DESIGN
-               + required_refolds * SEC_PER_MPNN_SEQ
-               + required_refolds * (sec_per_rf3_refold or SEC_PER_RF3_REFOLD))
-    disk = required_refolds * (bytes_per_refold or BYTES_PER_REFOLD) / 1e9
+    """(required backbones, GPU hours, disk GB) for a scored-unit count."""
+    prefilter_rate = max(cost.prefilter_rate, 1e-6)
+    required_designs = required_refolds / max(cost.n_seq, 1) / prefilter_rate
+    seconds = (required_designs * cost.sec_per_backbone
+               + required_refolds * cost.sec_per_seq
+               + required_refolds * (cost.sec_per_unit or SEC_PER_RF3_REFOLD))
+    disk = required_refolds * (cost.bytes_per_unit or BYTES_PER_REFOLD) / 1e9
     return required_designs, seconds / 3600.0, disk
 
 
 def _scale(rate: RateEstimate, p: float, *, basis: str, target: int,
-           n_seq: int, prefilter_rate: float, lower_bound: bool,
-           sec_per_rf3_refold: float = SEC_PER_RF3_REFOLD,
-           bytes_per_refold: float = BYTES_PER_REFOLD) -> ScaleEstimate:
+           cost: CostModel, lower_bound: bool) -> ScaleEstimate:
     if p <= 0:
         return ScaleEstimate(basis, None, None, None, None, is_lower_bound=True)
     if rate.unit == "backbone":
         required_backbones = target / p
-        required_refolds = required_backbones * n_seq
+        required_refolds = required_backbones * cost.n_seq
     else:
         required_refolds = target / p
-        required_backbones = required_refolds / max(n_seq, 1)
-    designs, hours, disk = _cost(required_refolds, n_seq=n_seq,
-                                 prefilter_rate=prefilter_rate,
-                                 sec_per_rf3_refold=sec_per_rf3_refold,
-                         bytes_per_refold=bytes_per_refold)
+        required_backbones = required_refolds / max(cost.n_seq, 1)
+    designs, hours, disk = _cost(required_refolds, cost=cost)
     return ScaleEstimate(
         basis=basis,
         required_backbones=round(designs, 0),
@@ -326,6 +370,7 @@ def calibrate(
     disk_budget_gb: float = 120.0,
     max_campaign_days: float = 5.0,
     adaptive_bar: bool = True,
+    cost: "CostModel | None" = None,
 ) -> CalibrationResult:
     """
     Estimate the production scale needed for `target_designs` excellent designs.
@@ -356,21 +401,41 @@ def calibrate(
        `REF_TOKENS` (195) and is warned about, because costing a ~300-token
        target at the anchor under-calls it by ~2x.
     """
-    if sec_per_rf3_refold is None and n_tokens:
-        sec_per_rf3_refold = rf3_seconds_per_refold(n_tokens)
-    if not sec_per_rf3_refold:
-        logger.warning(
-            f"calibrate(): no measured refold rate and no n_tokens — costing at "
-            f"the {SEC_PER_RF3_REFOLD} s anchor, which is only right near "
-            f"{REF_TOKENS} tokens. A larger complex will be under-costed and "
-            f"the SCALE_UP / budget decision made on it is not trustworthy.")
-        sec_per_rf3_refold = SEC_PER_RF3_REFOLD
+    # Foundry's rate resolution, and it must not run when a caller brought its
+    # own `cost`: the RF3 anchor is then never consulted, so warning that the
+    # campaign is "costed at the 9.1 s anchor" would be simply false — and a
+    # false cost warning is worse than none, because the real ones are how a
+    # 3-hour estimate got caught being an 8.8-hour run.
+    if cost is None:
+        if sec_per_rf3_refold is None and n_tokens:
+            sec_per_rf3_refold = rf3_seconds_per_refold(n_tokens)
+        if not sec_per_rf3_refold:
+            logger.warning(
+                f"calibrate(): no measured refold rate and no n_tokens — "
+                f"costing at the {SEC_PER_RF3_REFOLD} s anchor, which is only "
+                f"right near {REF_TOKENS} tokens. A larger complex will be "
+                f"under-costed and the SCALE_UP / budget decision made on it is "
+                f"not trustworthy.")
+            sec_per_rf3_refold = SEC_PER_RF3_REFOLD
     # Disk scales with the complex too, and unlike the rate there is nothing
     # measured to prefer: `refold_bytes` is deterministic to within 1.6% across
     # the six fitted campaigns, so the size law IS the best estimate. Falling
     # back to the bare anchor needs no warning of its own — the rate warning
     # above already fires on the same missing `n_tokens`.
-    bytes_per_refold = refold_bytes(n_tokens)
+    bytes_per_refold = refold_bytes(n_tokens) if cost is None else 0.0
+    # Everything above resolves the FOUNDRY funnel's rates. A caller with a
+    # different generator passes its own `cost` and those are ignored — see
+    # `CostModel`. Building the default here (rather than defaulting the
+    # parameter) keeps the rate-precedence logic and its warnings in one place.
+    if cost is None:
+        cost = CostModel(n_seq=n_seq, prefilter_rate=prefilter_rate,
+                         sec_per_unit=sec_per_rf3_refold,
+                         bytes_per_unit=bytes_per_refold)
+    else:
+        # A single-stage model makes n_seq/prefilter_rate meaningless; report
+        # what was actually used so `calibration.json` cannot claim a funnel
+        # the campaign never had.
+        n_seq, prefilter_rate = cost.n_seq, cost.prefilter_rate
     if success_metric not in SUCCESS_METRICS:
         raise ValueError(
             f"success_metric must be one of {sorted(SUCCESS_METRICS)}, "
@@ -410,23 +475,14 @@ def calibrate(
         # Nothing to extrapolate from. The rule-of-three bound on the RATE
         # becomes a LOWER bound on the required scale.
         central = _scale(backbone_rate, backbone_rate.p_high, basis="rule-of-three",
-                         target=target_designs, n_seq=n_seq,
-                         prefilter_rate=prefilter_rate,
-                         sec_per_rf3_refold=sec_per_rf3_refold,
-                         bytes_per_refold=bytes_per_refold, lower_bound=True)
+                         target=target_designs, cost=cost, lower_bound=True)
         pessimistic = central
     else:
         central = _scale(backbone_rate, backbone_rate.p_hat, basis="point estimate",
-                         target=target_designs, n_seq=n_seq,
-                         prefilter_rate=prefilter_rate,
-                         sec_per_rf3_refold=sec_per_rf3_refold,
-                         bytes_per_refold=bytes_per_refold, lower_bound=False)
+                         target=target_designs, cost=cost, lower_bound=False)
         pessimistic = _scale(backbone_rate, backbone_rate.p_pessimistic,
                              basis="Wilson 95% lower bound", target=target_designs,
-                             n_seq=n_seq, prefilter_rate=prefilter_rate,
-                         sec_per_rf3_refold=sec_per_rf3_refold,
-                         bytes_per_refold=bytes_per_refold,
-                             lower_bound=False)
+                             cost=cost, lower_bound=False)
 
     best_ipsae = max(
         (_as_float(r.get(column)) or 0.0 for r in survivors), default=0.0)
@@ -473,19 +529,13 @@ def calibrate(
             rate_b = make_rate(k_b, n_backbones, "backbone")
             pessimistic_b = _scale(
                 rate_b, rate_b.p_pessimistic, basis="Wilson 95% lower bound",
-                target=target_designs, n_seq=n_seq, prefilter_rate=prefilter_rate,
-                         sec_per_rf3_refold=sec_per_rf3_refold,
-                         bytes_per_refold=bytes_per_refold,
-                lower_bound=False)
+                target=target_designs, cost=cost, lower_bound=False)
             if _fits_plain(pessimistic_b):
                 bar_raised_to = b
                 excellence_bar = b
                 backbone_rate = rate_b
                 central = _scale(rate_b, rate_b.p_hat, basis="point estimate",
-                                 target=target_designs, n_seq=n_seq,
-                                 prefilter_rate=prefilter_rate,
-                         sec_per_rf3_refold=sec_per_rf3_refold,
-                         bytes_per_refold=bytes_per_refold, lower_bound=False)
+                                 target=target_designs, cost=cost, lower_bound=False)
                 pessimistic = pessimistic_b
                 break
 
