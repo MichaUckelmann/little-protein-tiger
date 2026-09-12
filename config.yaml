@@ -659,10 +659,15 @@ design:
     # Must produce >= MIN_HITS_FOR_ESTIMATE (5) designs above the bar or the
     # verdict is "enlarge the sample" every time. Measured on RAMP1 cyclic: at
     # the gated 1.21% rate, 994 designs gave 12 hits, so ~1000 is the smallest
-    # size that reliably clears 5. Cheap for a macrocycle (2.2 GPU-h at 99
-    # tokens) and the dominant cost for a mini-protein (~1.8x that per design,
-    # see boltzgen_runner.PROTEIN_PROTOCOL_FACTOR) — lower it only knowing the
-    # interval widens and most verdicts become ITERATE.
+    # size that reliably clears 5. Cheap for a macrocycle (3.1 GPU-h at 130
+    # tokens) and much more for a mini-protein — but the driver there is
+    # COMPLEX SIZE, not the protocol. The protein protocol adds only ~18%
+    # (boltzgen_runner.PROTEIN_PROTOCOL_FACTOR = 1.175); going from a
+    # 130-token macrocycle complex to a 285-token YAP1/TEAD1 one takes
+    # 11 s/design to 37, i.e. 10.3 GPU-h for the same 1000 designs. Lower it
+    # only knowing the interval widens and most verdicts become ITERATE — at
+    # the measured ~1.1% gated rate, 450 designs is where 5 hits stops being
+    # expected.
     calibration: {num_designs: 1000,  budget: 100}
     # A CEILING, not the plan: `_resolve_boltzgen_production` sizes production
     # from the calibration's measured rate and clamps to this and to the disk
