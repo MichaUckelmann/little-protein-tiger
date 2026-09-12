@@ -647,6 +647,66 @@ design:
     budget: 100
 
   # Stage 5 (analysis + ranking).
+  # ── BoltzGen as a BINDER-TRACK backend ────────────────────────────────────
+  # Distinct from the `thresholds` / `ranking` blocks below, which belong to the
+  # LEGACY PPI BoltzGen stages (design -> execution -> analysis) and gate
+  # LPT-computed `lpt_*` columns as well as BoltzGen's own.
+  #
+  # This block gates BoltzGen's OWN scoring only, and exists because that
+  # scoring turned out to be good: BoltzGen ranks by MAXIMIN over six
+  # per-metric ranks (a design is judged by its WORST), and measured on a
+  # 994-design cyclic campaign its top-100 had a median design-vs-refold dock
+  # RMSD of 3.12 A with 94% under 5 A, against 8.89 A / 16.3% over the full set
+  # and 8.01 A / 29% for iPTM-ranking. So the backend keeps its own ranking and
+  # LPT supplies only the gate and the sizing bar.
+  #
+  # PER-MODALITY, because one scalar demonstrably cannot serve both: across
+  # archived cyclic runs `lpt_hotspot_sasa_delta` spans 0-24.7 A^2 against
+  # 190-430 for mini-proteins, and `complex_plddt >= 0.70` passes 3.7% of
+  # cyclic designs against essentially all mini-protein ones. `modality:`
+  # entries are merged OVER `thresholds:`; an absent key inherits.
+  boltzgen_ranking:
+    # Applied to every modality.
+    thresholds:
+      # BoltzGen's own composite filter, and the single most informative column
+      # it writes: it is dominated by `filter_rmsd <= 2.0 A` (886 of 909
+      # rejections on the 994-design run), which is a design-vs-refold
+      # self-consistency check -- its version of `binder_rmsd_fold`. On the
+      # archived cyclic run 82 of the 85 designs passing it were ALSO docked
+      # within 5 A, i.e. it is very nearly a pure dock-correctness gate.
+      require_boltzgen_pass: true
+      # min_design_to_target_pae. TARGET-DEPENDENT rather than loose or strict:
+      # passes 99.7% on RAMP1 cyclic and dropped 57% on the mesothelioma run.
+      # Kept as a ceiling that bites only where it is meaningful.
+      ipae_max: 10.0
+      # complex_plddt. Deliberately OFF: >= 0.70 passes only 3.7% of cyclic
+      # designs and collapses a 64-hit `iptm >= 0.50` set to ZERO, so promoting
+      # it to a gate would silently empty every macrocycle campaign.
+      plddt_min: null
+    # How a campaign is SIZED, mirroring design.binder_ranking's vocabulary.
+    success_metric: iptm      # design_to_target_iptm
+    target_designs: 50
+
+    modality:
+      cyclic_peptide:
+        # MEASURED on 994 designs against RAMP1 (3N7S chain D): iptm >= 0.50
+        # gives 64 hits (6.44%, 95% CI 5.07-8.14) -- comfortably measurable;
+        # 0.55 gives 13; 0.60 gives 3, which is below MIN_HITS_FOR_ESTIMATE and
+        # so unmeasurable even at n=1000. 0.50 is the strictest defensible bar
+        # for this modality. Sizing 50 excellent designs at the Wilson-
+        # pessimistic 5.07% needs ~990 designs, about 2.2 GPU-h.
+        thresholds:
+          iptm_min: 0.50
+        excellence_bar: 0.50
+      mini_protein:
+        # PROVISIONAL -- inherits the base gate and the cyclic bar. The
+        # matching 994-design mini-protein campaign against the same target is
+        # what sets these, and at n=24 the probe showed iptm 0.123-0.448
+        # (median 0.215) with ZERO designs above 0.60, so the cyclic numbers
+        # are NOT assumed to transfer. Fill in from that campaign's own
+        # calibration rather than from the probe.
+        thresholds: {}
+
   # Hard filters — designs failing any of these are dropped before ranking.
   # Columns refer to entries on the enriched design records (boltzgen-native
   # or lpt_-prefixed; see src/design_metrics.py).

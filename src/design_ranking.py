@@ -30,7 +30,7 @@ import csv
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 from loguru import logger
@@ -466,3 +466,128 @@ def _write_records_csv(records: list[DesignRecord], path: Path) -> None:
                 else:
                     row[col] = v
             writer.writerow(row)
+
+
+# ---------------------------------------------------------------------------
+# BoltzGen-as-a-binder-backend: resolving its gate and sizing bar
+# ---------------------------------------------------------------------------
+
+#: Fallbacks for `design.boltzgen_ranking`, so a config without the block still
+#: gates a campaign rather than passing everything. Kept deliberately thin:
+#: BoltzGen does its own ranking (a MAXIMIN over six per-metric ranks, measured
+#: to be a strong dock-correctness selector), so LPT supplies only the gate and
+#: the bar a campaign is sized at.
+DEFAULT_BOLTZGEN_THRESHOLDS: dict[str, Any] = {
+    "require_boltzgen_pass": True,
+    "iptm_min": 0.50,
+    "ipae_max": 10.0,
+    "plddt_min": None,
+}
+DEFAULT_BOLTZGEN_SUCCESS_METRIC = "iptm"
+DEFAULT_BOLTZGEN_EXCELLENCE_BAR = 0.50
+DEFAULT_BOLTZGEN_TARGET_DESIGNS = 50
+
+#: BoltzGen's own column for each threshold key. The keys mirror
+#: `design.binder_ranking`'s vocabulary so the two blocks read alike; the
+#: columns are BoltzGen-native.
+BOLTZGEN_GATE_COLUMNS: dict[str, str] = {
+    "iptm_min": "design_to_target_iptm",
+    "ipae_max": "min_design_to_target_pae",
+    "plddt_min": "complex_plddt",
+}
+
+
+@dataclass(frozen=True)
+class BoltzGenRankingConfig:
+    thresholds: dict[str, Any]
+    success_metric: str
+    excellence_bar: float
+    target_designs: int
+    modality: str
+
+
+def resolve_boltzgen_ranking(config: dict, modality: str,
+                             ) -> BoltzGenRankingConfig:
+    """Merge `design.boltzgen_ranking`'s base block with a modality's overrides.
+
+    One scalar cannot serve both modalities, and that is measured rather than
+    assumed: across archived cyclic runs `lpt_hotspot_sasa_delta` spans
+    0-24.7 A^2 against 190-430 for mini-proteins, and `complex_plddt >= 0.70`
+    passes 3.7% of cyclic designs against nearly all mini-protein ones. So a
+    modality's entry is merged OVER the base, key by key, and an absent key
+    inherits rather than resetting to a default.
+
+    A `None` value is meaningful and is preserved: it DISABLES that criterion,
+    which is how `plddt_min` stays off. So this cannot filter falsy values out
+    of the merge.
+    """
+    block = ((config.get("design") or {}).get("boltzgen_ranking")) or {}
+    base = {**DEFAULT_BOLTZGEN_THRESHOLDS, **(block.get("thresholds") or {})}
+    per_mod = ((block.get("modality") or {}).get(modality)) or {}
+    thresholds = {**base, **(per_mod.get("thresholds") or {})}
+
+    def pick(key: str, fallback):
+        if key in per_mod:
+            return per_mod[key]
+        if key in block:
+            return block[key]
+        return fallback
+
+    return BoltzGenRankingConfig(
+        thresholds=thresholds,
+        success_metric=str(pick("success_metric",
+                                DEFAULT_BOLTZGEN_SUCCESS_METRIC)),
+        excellence_bar=float(pick("excellence_bar",
+                                  DEFAULT_BOLTZGEN_EXCELLENCE_BAR)),
+        target_designs=int(pick("target_designs",
+                                DEFAULT_BOLTZGEN_TARGET_DESIGNS)),
+        modality=modality,
+    )
+
+
+def gate_boltzgen_records(
+    records: Sequence[DesignRecord], thresholds: dict[str, Any],
+) -> tuple[list[DesignRecord], FilterStats]:
+    """Apply the BoltzGen-native gate, attributing each drop to one criterion.
+
+    `require_boltzgen_pass` is tested FIRST on purpose: it is the most
+    informative column BoltzGen writes, being dominated by its own
+    design-vs-refold RMSD check, so a design failing it should be reported as
+    such rather than as an iPTM failure. A `None` threshold disables its
+    criterion; a record missing a column a criterion needs FAILS it, because a
+    missing metric is not a pass.
+    """
+    stats = FilterStats(n_input=len(records))
+    survivors: list[DesignRecord] = []
+    checks: list[tuple[str, str, str]] = [
+        ("iptm_min", "design_to_target_iptm", "ge"),
+        ("ipae_max", "min_design_to_target_pae", "le"),
+        ("plddt_min", "complex_plddt", "ge"),
+    ]
+    for rec in records:
+        if rec.get("error"):
+            stats.record_drop("error")
+            continue
+        if thresholds.get("require_boltzgen_pass", True):
+            if _as_bool(rec.get("pass_filters")) is not True:
+                stats.record_drop("boltzgen_pass")
+                continue
+        dropped = False
+        for key, column, sense in checks:
+            limit = thresholds.get(key)
+            if limit is None:
+                continue
+            value = _as_float(rec.get(column))
+            if value is None:
+                stats.record_drop(f"missing_{column}")
+                dropped = True
+                break
+            ok = value >= limit if sense == "ge" else value <= limit
+            if not ok:
+                stats.record_drop(key)
+                dropped = True
+                break
+        if not dropped:
+            survivors.append(rec)
+    stats.n_survivors = len(survivors)
+    return survivors, stats

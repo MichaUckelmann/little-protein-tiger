@@ -179,3 +179,144 @@ def test_every_shipped_threshold_is_reachable_for_the_modality_it_gates():
     assert max(sasa) >= t["hotspot_sasa_delta_min"], (
         f"no design reaches the gate: max {max(sasa):.1f} < "
         f"{t['hotspot_sasa_delta_min']}")
+
+
+# ── design.boltzgen_ranking: BoltzGen as a binder-track backend ─────────────
+#
+# A separate block from `design.thresholds` above, which belongs to the legacy
+# PPI stages and gates LPT-computed `lpt_*` columns too. This one gates
+# BoltzGen's OWN scoring, because that scoring measured well: it ranks by
+# MAXIMIN over six per-metric ranks, and on the 994-design cyclic campaign its
+# top-100 had a median dock RMSD of 3.12 A with 94% under 5 A, against
+# 8.89 A / 16.3% over the full set.
+
+def _cfg() -> dict:
+    return yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
+
+
+def test_the_block_exists_and_gates_boltzgens_own_filter():
+    from src.design_ranking import resolve_boltzgen_ranking
+
+    r = resolve_boltzgen_ranking(_cfg(), "cyclic_peptide")
+    assert r.thresholds["require_boltzgen_pass"] is True
+    assert r.success_metric == "iptm"
+
+
+def test_the_cyclic_bar_is_the_measured_one():
+    """0.50 gives 64 hits on 994 designs (6.44%, CI 5.07-8.14); 0.55 gives 13;
+    0.60 gives 3, below MIN_HITS_FOR_ESTIMATE and so unmeasurable even at
+    n=1000. 0.50 is the strictest defensible bar for this modality."""
+    from src.design_ranking import resolve_boltzgen_ranking
+
+    r = resolve_boltzgen_ranking(_cfg(), "cyclic_peptide")
+    assert r.thresholds["iptm_min"] == 0.50
+    assert r.excellence_bar == 0.50
+
+
+def test_a_modality_override_merges_over_the_base_rather_than_replacing_it():
+    from src.design_ranking import resolve_boltzgen_ranking
+
+    cfg = {"design": {"boltzgen_ranking": {
+        "thresholds": {"require_boltzgen_pass": True, "ipae_max": 10.0,
+                       "iptm_min": 0.50},
+        "modality": {"cyclic_peptide": {"thresholds": {"iptm_min": 0.7}}},
+    }}}
+    r = resolve_boltzgen_ranking(cfg, "cyclic_peptide")
+    assert r.thresholds["iptm_min"] == 0.7           # overridden
+    assert r.thresholds["ipae_max"] == 10.0          # inherited
+    assert r.thresholds["require_boltzgen_pass"] is True
+
+
+def test_a_none_threshold_survives_the_merge_because_it_disables_a_gate():
+    """The subtle one. `plddt_min: null` is not an absent value to be filled in
+    — it is how that criterion stays OFF, and it must stay off: >= 0.70 passes
+    only 3.7% of cyclic designs and collapses a 64-hit set to ZERO."""
+    from src.design_ranking import resolve_boltzgen_ranking
+
+    r = resolve_boltzgen_ranking(_cfg(), "cyclic_peptide")
+    assert "plddt_min" in r.thresholds
+    assert r.thresholds["plddt_min"] is None
+
+
+def test_an_absent_block_still_gates_rather_than_passing_everything():
+    from src.design_ranking import (
+        DEFAULT_BOLTZGEN_THRESHOLDS, resolve_boltzgen_ranking,
+    )
+
+    r = resolve_boltzgen_ranking({}, "cyclic_peptide")
+    assert r.thresholds == DEFAULT_BOLTZGEN_THRESHOLDS
+    assert r.thresholds["require_boltzgen_pass"] is True
+
+
+def test_boltzgens_own_filter_is_tested_first_in_the_native_gate():
+    from src.design_ranking import gate_boltzgen_records
+
+    recs = [{"pass_filters": "False", "design_to_target_iptm": 0.01,
+             "min_design_to_target_pae": 99.0}]
+    _, stats = gate_boltzgen_records(
+        recs, {"require_boltzgen_pass": True, "iptm_min": 0.5,
+               "ipae_max": 10.0, "plddt_min": None})
+    assert stats.dropped == {"boltzgen_pass": 1}
+
+
+def test_a_missing_column_fails_its_criterion(tmp_path):
+    from src.design_ranking import gate_boltzgen_records
+
+    recs = [{"pass_filters": "True"}]          # no iptm column at all
+    surv, stats = gate_boltzgen_records(
+        recs, {"require_boltzgen_pass": True, "iptm_min": 0.5})
+    assert not surv and "missing_design_to_target_iptm" in stats.dropped
+
+
+def test_the_native_gate_accounts_for_every_input():
+    from src.design_ranking import gate_boltzgen_records
+
+    recs = [
+        {"pass_filters": "True", "design_to_target_iptm": 0.9,
+         "min_design_to_target_pae": 4.0},
+        {"pass_filters": "False", "design_to_target_iptm": 0.9,
+         "min_design_to_target_pae": 4.0},
+        {"pass_filters": "True", "design_to_target_iptm": 0.1,
+         "min_design_to_target_pae": 4.0},
+        {"pass_filters": "True", "design_to_target_iptm": 0.9,
+         "min_design_to_target_pae": 40.0},
+    ]
+    th = {"require_boltzgen_pass": True, "iptm_min": 0.5, "ipae_max": 10.0,
+          "plddt_min": None}
+    surv, stats = gate_boltzgen_records(recs, th)
+    assert len(surv) == 1
+    assert stats.n_survivors + sum(stats.dropped.values()) == stats.n_input == 4
+
+
+@pytest.mark.skipif(not (_ROOT / "outputs" / "bz_calib_ramp1_cyclic").exists(),
+                    reason="the 994-design RAMP1 cyclic campaign is not present")
+def test_the_resolved_cyclic_gate_reproduces_the_measured_survivor_count():
+    """12 of 994 — `iptm >= 0.50` AND `pass_filters`, counted by hand off the
+    same campaign. A change in either the config or the gate moves this."""
+    from src.design_ranking import gate_boltzgen_records, resolve_boltzgen_ranking
+
+    csv_path = (_ROOT / "outputs" / "bz_calib_ramp1_cyclic"
+                / "final_ranked_designs" / "all_designs_metrics.csv")
+    with csv_path.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    r = resolve_boltzgen_ranking(_cfg(), "cyclic_peptide")
+    surv, stats = gate_boltzgen_records(rows, r.thresholds)
+    assert stats.n_input == 994
+    assert len(surv) == 12
+    assert stats.dropped["boltzgen_pass"] == 909
+
+
+@pytest.mark.skipif(not (_ROOT / "outputs" / "bz_calib_ramp1_cyclic").exists(),
+                    reason="the 994-design RAMP1 cyclic campaign is not present")
+def test_enabling_the_plddt_gate_would_empty_a_cyclic_campaign():
+    """Why `plddt_min` ships as null, stated as a test rather than a comment."""
+    from src.design_ranking import gate_boltzgen_records
+
+    csv_path = (_ROOT / "outputs" / "bz_calib_ramp1_cyclic"
+                / "final_ranked_designs" / "all_designs_metrics.csv")
+    with csv_path.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    th = {"require_boltzgen_pass": True, "iptm_min": 0.50, "ipae_max": 10.0,
+          "plddt_min": 0.70}
+    surv, _ = gate_boltzgen_records(rows, th)
+    assert surv == [], "a 0.70 pLDDT gate leaves a macrocycle campaign nothing"
