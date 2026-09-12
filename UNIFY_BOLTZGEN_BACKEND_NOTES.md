@@ -289,6 +289,27 @@ The reference snapshot for this machine lives in the session scratchpad
 
 ## Open, deliberately
 
+- **The time law over-costs its interior points, and is DELIBERATELY NOT
+  refitted.** Operator decision, 2026-09-12: an over-estimate is the right way
+  to be wrong. Four at-scale peptide-protocol points now exist —
+
+      tokens   s/design   local exponent to the next point
+         99      7.82      ~0.0
+        130      7.77      1.39      (PD-L1 macrocycle calibration, 1000 designs)
+        229     17.00      1.55
+        817    122.30      —
+
+  so cost is nearly FLAT below ~130 tokens and then steepens toward quadratic,
+  which a single power law anchored at 99 and 817 cannot represent: it
+  over-costs 130 by 44% and 229 by 39%. The 229 discrepancy was filed as
+  scatter and is structural. A fixed-overhead-plus-power form (`a + b*N^c`)
+  would fit all four.
+  **Do not refit it anyway** without asking. It is only an estimate, an
+  observed rate supersedes it wherever one exists (>= 50 designs), and the one
+  place the over-estimate is not free — `calibrate()`'s budget check, where an
+  inflated cost can turn SCALE_UP into STOP — costs recall rather than a blown
+  budget or an over-run.
+
 - **The multi-site trial path is NOT dispatched, and is refused rather than
   silently swapped.** `_run_site_trials` calls `_stage_binder_spec` and
   `_stage_calibration` unconditionally — the foundry stages — so a BoltzGen
