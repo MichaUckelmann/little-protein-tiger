@@ -305,10 +305,14 @@ The reference snapshot for this machine lives in the session scratchpad
   scatter and is structural. A fixed-overhead-plus-power form (`a + b*N^c`)
   would fit all four.
   **Do not refit it anyway** without asking. It is only an estimate, an
-  observed rate supersedes it wherever one exists (>= 50 designs), and the one
-  place the over-estimate is not free — `calibrate()`'s budget check, where an
-  inflated cost can turn SCALE_UP into STOP — costs recall rather than a blown
-  budget or an over-run.
+  observed rate supersedes it wherever one exists (>= 50 designs), and where
+  the over-estimate is not free it costs only RECALL: a SCALE_UP that reads
+  SCALE_UP_PARTIAL, or `calibrate()` declining to raise the adaptive bar
+  (which requires the stricter rung to fit the NON-slack budget). It cannot
+  produce a false STOP — `_decide` reaches STOP from exactly one branch, zero
+  hits with nothing clearing any rung of the bar ladder, which is a pure yield
+  condition with no cost term in it. `BUDGET_SLACK = 1.5` exists to keep a
+  budget overshoot from flipping a viable plan, and its own comment says so.
 
 - **The multi-site trial path is NOT dispatched, and is refused rather than
   silently swapped.** `_run_site_trials` calls `_stage_binder_spec` and
