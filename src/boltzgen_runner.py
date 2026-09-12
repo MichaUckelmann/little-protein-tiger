@@ -126,9 +126,13 @@ def seconds_per_design(n_tokens: int | None,
                        protocol: str | None = None) -> float:
     """Per-design wall clock at a given complex size and protocol.
 
-    `protocol` matters: see `PROTEIN_PROTOCOL_FACTOR`. Omitting it costs the
-    campaign at the peptide rate, which UNDER-costs a mini-protein run by
-    roughly a factor of two — so callers that know the protocol should pass it.
+    `protocol` matters, though less than the size does: see
+    `PROTEIN_PROTOCOL_FACTOR`. Omitting it costs the campaign at the peptide
+    rate, which under-costs a mini-protein run by ~18% — the protocol's extra
+    step refolds the BINDER ALONE and is the cheapest of the six. Complex size
+    is the dominant term by far (11 s/design at 130 tokens against 37 at 285),
+    so a caller that knows the protocol should still pass it, but a wrong
+    `n_tokens` is the error that matters.
     """
     base = SEC_PER_DESIGN_REF
     if n_tokens and n_tokens > 0:
