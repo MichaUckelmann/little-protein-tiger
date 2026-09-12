@@ -63,6 +63,13 @@ def main() -> int:
     # design-vs-refold RMSD check (<= 2 A), and on e2e_cgas_sting 0 of the 20
     # designs this pipeline reported had passed it -- BoltzGen was signalling
     # "none of these are acceptable" and the override suppressed it.
+    #
+    # EXPECTED CONSEQUENCE, not a regression: on this target only 1 of 100
+    # designs passes, so the ranking path downstream runs with n=1 and MMR /
+    # the backbone cap / the top-K are all degenerate. That is a weaker smoke
+    # test than the old 100-survivor run, and the right place to exercise the
+    # shipped thresholds properly is a CPU-only regression over an archived
+    # campaign, not a GPU e2e.
 
     runner = PipelineRunner(
         config=cfg,

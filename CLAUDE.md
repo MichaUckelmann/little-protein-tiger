@@ -227,6 +227,68 @@ kept 86%. BoltzGen's own `design_metrics`/
 `design_ranking` path is untouched and stays fully live as a deliberate
 escape hatch, not oversight.
 
+## Non-obvious facts the BoltzGen backend depends on
+
+Established by running BoltzGen at scale (a 994-design cyclic-peptide campaign
+against RAMP1, `3N7S` chain D), not by reading its docs.
+
+- **A binder whose residue count exactly equals the target chain's kills the
+  whole run.** The `design` step writes both chains correctly, then
+  `inverse_folding` drops the binder chain from the CIF while leaving its
+  `.npz` design_mask at the full token count, and `folding` dies in
+  `data_from_generated.get_feat` with `IndexError: boolean index did not match
+  indexed array along axis 0; size of axis is 84 but ... 168`. It aborts the
+  ENTIRE campaign, not the one design, two steps after the design that caused
+  it, naming neither. Measured on RAMP1 (84 residues) with a 70..86 range: 2 of
+  24 designs sampled 84 and both failed; all 22 at other lengths were clean. So
+  the incidence is ~`1/(hi-lo+1)` per design — a near-certainty at campaign
+  scale, and invisible on a small probe unless it happens to sample the number.
+  Upstream bug; `build_boltzgen_spec.safe_binder_range` narrows the range from
+  whichever end loses least rather than working around it after the fact. The
+  two shipped cyclic campaigns never hit it only because 12–15 cannot collide
+  with an 84- or 817-residue target.
+- **`pass_filters` is the most informative column BoltzGen writes, and it is
+  dominated by one check.** It is the AND of nine booleans, of which
+  `filter_rmsd <= 2.0 Å` (`refolding_rmsd_threshold` in the generated
+  `filtering.yaml`) accounts for 886 of 909 rejections; the amino-acid-fraction
+  filters pass 98–100% and are effectively inert. It is a **design-vs-refold
+  self-consistency** check, i.e. BoltzGen's own version of `binder_rmsd_fold` —
+  not an opaque black box. Every e2e driver used to override
+  `require_boltzgen_pass` to False, which is how the shipped
+  `design.thresholds` block went years without ever gating a real run.
+- **BoltzGen ranks by MAXIMIN, not by a weighted sum.** `max_rank` is the
+  **worst** of six per-metric ranks (iptm, design_ptm, neg_ipae, PLIP H-bonds,
+  PLIP salt bridges, delta_SASA) — verified 994/994 — and passers are sorted by
+  it ascending, with non-passers pushed below every passer. So a design must be
+  decent on all six; excellence at one buys nothing.
+- **It deliberately does not rank by iPTM, and it is right not to.** Overlap
+  between its top-100 and the iPTM-top-100 is 20/100, and the single
+  highest-iPTM design in the run (0.633) ranks 126th because it fails
+  `filter_rmsd`. Measured dock quality: its top-100 has a median
+  design-vs-refold dock RMSD of 3.12 Å with 94% under 5 Å, against 8.89 Å /
+  16.3% over the full set and 8.01 Å / 29% for iPTM-ranking. This is what
+  `binder_ranking.DEFAULT_Z_CLIP` was learned from.
+- **`quality_score` is not a score.** It is 994 evenly-spaced distinct values,
+  i.e. `1 - (final_rank-1)/(n-1)` — a rank percentile carrying no information
+  beyond the ordering. Fine for sorting (`design.ranking.enrich_top_k` does
+  exactly that), meaningless as a quality threshold.
+- **`ipae` is target-dependent, not universally too loose or too strict.** The
+  shipped `ipae_max: 10.0` passes 99.7% on RAMP1 cyclic and dropped 57% on the
+  archived mesothelioma run. And `complex_plddt >= 0.70` — currently only a
+  composite weight, not a gate — would pass just 3.7% of cyclic designs and
+  collapse a 64-hit `iptm >= 0.50` set to zero. Promoting it to a threshold
+  would silently empty every cyclic campaign.
+- **Per-design cost scales with target AND binder size, and a small probe
+  over-costs.** Measured: 7.8 s/design at 98 tokens with a 12–15mer, 26.5
+  s/design at 161 tokens with a 70–83mer, 145 s/design at 817 tokens. A
+  24-design probe of the same cyclic campaign read 16.0 s/design — 2× the
+  at-scale rate — because fixed model-loading dominates, the same reason
+  `foundry_runner.sec_per_refold_observed` requires ≥50 samples. `protein-*`
+  protocols run six steps to `peptide-*`'s five (the extra one is
+  `design_folding`, a binder-alone refold), which is most of the per-design
+  difference. GPU utilisation drops to 0% during the CPU-bound `analysis` step,
+  so `nvidia-smi` is not a liveness signal.
+
 ## The operator can name the epitope
 
 `--hotspots B74,B83,B84` (or bare `74,83,84` for the target chain) makes the
@@ -371,6 +433,32 @@ them without re-reading this list is how they get silently reverted.
   bar (`bar_raised_to` or `requested_bar`) a campaign was actually sized at, not
   the static config default, so the report's "excellent" highlighting always
   matches the verdict that was made.
+- **No single metric may carry a design.** The composite is a weighted z-sum, so
+  it was unbounded: a design 3 SD clear on `ipsae_min` banked +6.0 at weight 2.0
+  and no realistic deficit elsewhere could offset it, filling the top-K with
+  one-metric specialists. `design.binder_ranking.z_clip` (2.0, on by default;
+  `null` disables) caps each column's contribution at ±2 SD — roughly the
+  2.3/97.7 percentile, so outliers only. Learned from BoltzGen's maximin ranker
+  (see that section above for the measurement). Measured over all 13 real
+  foundry campaigns: **survivor counts identical everywhere** — it is a ranking
+  control and `filter_records` never sees it — Spearman on composite rank
+  0.988–1.000, top-20 membership 13/20–20/20 retained, rank-1 changed on 5 of
+  13. On two inspected, the old rank-1 was a `binder_plddt` outlier (z = +3.07,
+  +2.91) and clipping promoted designs docking 42% and 54% better with equal or
+  perfect epitope recall. It **bounds** dominance without overriding the
+  weighting: at weight 2.0 with a 2.0 clip the ipSAE term still tops out at 4.0,
+  exactly equal to `iptm` + `epitope_recall` maxed together — so if you want
+  ipSAE to stop being able to tie two metrics single-handedly, that is a weight
+  change, not a clip change.
+- **A liability we trust outranks a reward we do not.** `neg_rosetta_vbuns` is
+  1.0 (was 0.5): `vbuns` counts polars the interface buries WITHOUT satisfying
+  (complex − binder − target, clamped ≥ 0), so a design cannot buy a good ddG by
+  burying unsats — the worker's own `iface_score = ddg + w * vbuns` already
+  reasons this way. There is deliberately **no positive weight on
+  `hbonds_int`**: counting favourable H-bonds and salt bridges off a *predicted*
+  structure over-trusts sidechain placement. `sbuns` is the sidechain-only
+  subset of `vbuns`, so weighting both double-counts. Both stay reported
+  columns.
 - **`hotspot_engagement` is a FRACTION of the declared hotspots, and the gate is
   0.75, not 1.0.** Requiring every hotspot sounds strict and is mostly self-harm:
   on the 12-hotspot YAP1/TEAD1 calibration only **49% of RFD3 backbones contacted
