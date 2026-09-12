@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, asdict, field
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from loguru import logger
 
@@ -371,6 +371,7 @@ def calibrate(
     max_campaign_days: float = 5.0,
     adaptive_bar: bool = True,
     cost: "CostModel | None" = None,
+    gate: "Callable[[Sequence[dict], dict[str, Any]], tuple[list[dict], Any]] | None" = None,
 ) -> CalibrationResult:
     """
     Estimate the production scale needed for `target_designs` excellent designs.
@@ -446,7 +447,16 @@ def calibrate(
     if target_designs is None:
         target_designs = default_target
     thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
-    survivors, stats = filter_records(records, thresholds)
+    # The gate is injectable for the same reason `cost` is: the STATISTICS are
+    # generator-agnostic given k and n, but what counts as a survivor is not.
+    # BoltzGen's gate reads its own columns (`pass_filters`,
+    # `design_to_target_iptm`, ...) which `filter_records` knows nothing about.
+    #
+    # Note it must run over ALL records, not a pre-filtered subset: the rate
+    # being extrapolated is hits per DESIGN GENERATED, because that is what
+    # scaling a campaign buys more of. Pre-gating and passing the survivors
+    # would silently make it hits per survivor and under-size the campaign.
+    survivors, stats = (gate or filter_records)(records, thresholds)
 
     scored = [r for r in records if not r.get("error")]
     n_refolds = len(scored)

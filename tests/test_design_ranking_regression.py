@@ -209,8 +209,20 @@ def test_the_cyclic_bar_is_the_measured_one():
     from src.design_ranking import resolve_boltzgen_ranking
 
     r = resolve_boltzgen_ranking(_cfg(), "cyclic_peptide")
-    assert r.thresholds["iptm_min"] == 0.50
     assert r.excellence_bar == 0.50
+
+
+def test_iptm_is_the_sizing_bar_not_a_gate():
+    """The gate answers "is this a valid design" (BoltzGen's own
+    self-consistency filter, plus an iPAE ceiling); the BAR answers "is this a
+    good one". `design.binder_ranking` splits them the same way -- iptm_min 0.5
+    as a floor, excellence_bar 0.7 as the standard -- and setting both to the
+    same number makes one redundant."""
+    from src.design_ranking import resolve_boltzgen_ranking
+
+    r = resolve_boltzgen_ranking(_cfg(), "cyclic_peptide")
+    assert r.thresholds["iptm_min"] is None, "iptm gates nothing; it is the bar"
+    assert r.excellence_bar > 0
 
 
 def test_a_modality_override_merges_over_the_base_rather_than_replacing_it():
@@ -290,9 +302,15 @@ def test_the_native_gate_accounts_for_every_input():
 
 @pytest.mark.skipif(not (_ROOT / "outputs" / "bz_calib_ramp1_cyclic").exists(),
                     reason="the 994-design RAMP1 cyclic campaign is not present")
-def test_the_resolved_cyclic_gate_reproduces_the_measured_survivor_count():
-    """12 of 994 — `iptm >= 0.50` AND `pass_filters`, counted by hand off the
-    same campaign. A change in either the config or the gate moves this."""
+def test_the_resolved_cyclic_gate_reproduces_the_measured_counts():
+    """Every number here was counted by hand off the same campaign.
+
+    85 of 994 pass the gate (BoltzGen's own filter, which accounts for all 909
+    drops; the iPAE ceiling is inert on this target at 99.7%), and 12 of those
+    also clear the 0.50 bar. 12/994 = 1.21% is the rate that SIZES a campaign,
+    and it is 5x lower than the 6.44% an iptm-only reading gives -- which is
+    why the gated rate is the honest one.
+    """
     from src.design_ranking import gate_boltzgen_records, resolve_boltzgen_ranking
 
     csv_path = (_ROOT / "outputs" / "bz_calib_ramp1_cyclic"
@@ -302,8 +320,14 @@ def test_the_resolved_cyclic_gate_reproduces_the_measured_survivor_count():
     r = resolve_boltzgen_ranking(_cfg(), "cyclic_peptide")
     surv, stats = gate_boltzgen_records(rows, r.thresholds)
     assert stats.n_input == 994
-    assert len(surv) == 12
+    assert len(surv) == 85
     assert stats.dropped["boltzgen_pass"] == 909
+    # The diagnostic that separates a design problem from a sampling one.
+    assert stats.passing_alone["boltzgen_pass"] == 85
+    assert stats.passing_alone["ipae_max"] == 991
+    above = [r_ for r_ in surv
+             if float(r_["design_to_target_iptm"]) >= r.excellence_bar]
+    assert len(above) == 12
 
 
 @pytest.mark.skipif(not (_ROOT / "outputs" / "bz_calib_ramp1_cyclic").exists(),

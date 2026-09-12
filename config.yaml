@@ -689,14 +689,24 @@ design:
 
     modality:
       cyclic_peptide:
-        # MEASURED on 994 designs against RAMP1 (3N7S chain D): iptm >= 0.50
-        # gives 64 hits (6.44%, 95% CI 5.07-8.14) -- comfortably measurable;
-        # 0.55 gives 13; 0.60 gives 3, which is below MIN_HITS_FOR_ESTIMATE and
-        # so unmeasurable even at n=1000. 0.50 is the strictest defensible bar
-        # for this modality. Sizing 50 excellent designs at the Wilson-
-        # pessimistic 5.07% needs ~990 designs, about 2.2 GPU-h.
-        thresholds:
-          iptm_min: 0.50
+        # The GATE stays the base one (pass_filters + ipae) and iptm does its
+        # work as the sizing BAR, so the two express different things -- a floor
+        # for "is this a valid design" and a standard for "is this a good one",
+        # the same split `design.binder_ranking` uses. Setting both to 0.50 made
+        # them redundant.
+        #
+        # MEASURED on 994 designs against RAMP1 (3N7S chain D). iptm alone:
+        # >= 0.50 gives 64 hits (6.44%, 95% CI 5.07-8.14) -- comfortably
+        # measurable; 0.55 gives 13; 0.60 gives 3, below MIN_HITS_FOR_ESTIMATE
+        # and so unmeasurable even at n=1000. So 0.50 is the strictest
+        # defensible bar for this modality.
+        #
+        # WITH the gate, which is the rate that actually sizes a campaign,
+        # 12 of 994 designs are both self-consistent AND above the bar: 1.21%.
+        # Sizing 50 such designs at the Wilson-pessimistic rate needs ~7,200
+        # designs, about 16 GPU-h at 99 tokens. The iptm-only 6.44% would size
+        # it at ~990 designs and 2.2 GPU-h, i.e. under-cost it 7x -- the gated
+        # rate is the honest one.
         excellence_bar: 0.50
       mini_protein:
         # PROVISIONAL -- inherits the base gate and the cyclic bar. The

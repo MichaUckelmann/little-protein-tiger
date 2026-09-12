@@ -44,9 +44,31 @@ class FilterStats:
     n_survivors: int = 0
     # Per-reason drop counts. Keys are short tokens (iptm / ipae / hotspot_sasa / boltzgen_pass / missing_column).
     dropped: dict[str, int] = field(default_factory=dict)
+    # How many records pass each criterion ON ITS OWN, mirroring
+    # `binder_ranking.FilterStats`. This is what separates a design problem
+    # from a sampling one: a criterion almost nothing passes alone will not be
+    # fixed by generating more designs.
+    passing_alone: dict[str, int] = field(default_factory=dict)
 
     def record_drop(self, reason: str) -> None:
         self.dropped[reason] = self.dropped.get(reason, 0) + 1
+
+    def render(self) -> str:
+        """The funnel as text, in the same shape `binder_ranking.FilterStats`
+        renders it — `campaign_calibration` embeds whichever it is handed into
+        `calibration.json`, so the two must read alike."""
+        lines = [f"input:     {self.n_input:,}",
+                 f"survivors: {self.n_survivors:,}", ""]
+        if self.dropped:
+            lines.append("dropped by first failing criterion:")
+            for reason, n in sorted(self.dropped.items(), key=lambda kv: -kv[1]):
+                lines.append(f"  {reason:<26} {n:>8,}")
+        if self.passing_alone:
+            lines += ["", "passing each criterion alone:"]
+            for reason, n in self.passing_alone.items():
+                pct = 100.0 * n / self.n_input if self.n_input else 0.0
+                lines.append(f"  {reason:<26} {n:>8,}  ({pct:5.1f}%)")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -479,7 +501,12 @@ def _write_records_csv(records: list[DesignRecord], path: Path) -> None:
 #: the bar a campaign is sized at.
 DEFAULT_BOLTZGEN_THRESHOLDS: dict[str, Any] = {
     "require_boltzgen_pass": True,
-    "iptm_min": 0.50,
+    # OFF as a gate on purpose: iptm does its work as the sizing BAR
+    # (`excellence_bar`), so the gate expresses "is this a valid design" and
+    # the bar "is this a good one" -- the same split `design.binder_ranking`
+    # uses, where `iptm_min` is 0.5 and `excellence_bar` 0.7. Setting both to
+    # the same number makes one of them redundant.
+    "iptm_min": None,
     "ipae_max": 10.0,
     "plddt_min": None,
 }
@@ -589,5 +616,23 @@ def gate_boltzgen_records(
                 break
         if not dropped:
             survivors.append(rec)
+
+    # Each criterion in isolation, over every input.
+    scored = [r for r in records if not r.get("error")]
+    if thresholds.get("require_boltzgen_pass", True):
+        stats.passing_alone["boltzgen_pass"] = sum(
+            1 for r in scored if _as_bool(r.get("pass_filters")) is True)
+    for key, column, sense in checks:
+        limit = thresholds.get(key)
+        if limit is None:
+            continue
+        n_ok = 0
+        for r in scored:
+            v = _as_float(r.get(column))
+            if v is None:
+                continue
+            n_ok += 1 if (v >= limit if sense == "ge" else v <= limit) else 0
+        stats.passing_alone[key] = n_ok
+
     stats.n_survivors = len(survivors)
     return survivors, stats
