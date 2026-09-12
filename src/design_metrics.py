@@ -11,7 +11,11 @@ actually landed on those residues.
 This module:
 
 1. :func:`parse_boltzgen_outputs` — load the CSV as ``list[dict]`` records
-   and resolve each design's CIF path under ``intermediate_designs/``.
+   and resolve each design's CIF path under
+   ``intermediate_designs_inverse_folded/refold_cif/``. That is BoltzGen's
+   complex REFOLD, and it is the only one of its three per-design structures
+   that carries both the sequence the CSV reports and complete coordinates —
+   see that function for the measurement.
 2. :func:`enrich_with_hotspot_sasa` — call
    :func:`src.pyrosetta_sasa.compute_hotspot_sasa` per design and stamp
    ``lpt_*`` columns onto each record. Failures are logged and the columns
@@ -32,6 +36,10 @@ from loguru import logger
 
 from src.pyrosetta_sasa import PyRosettaWorkerError, compute_hotspot_sasa
 
+
+#: BoltzGen's complex refold, relative to a run directory. The default
+#: structure for every per-design measurement -- see `parse_boltzgen_outputs`.
+_REFOLD_DIR = "intermediate_designs_inverse_folded/refold_cif"
 
 DesignRecord = dict[str, Any]
 
@@ -67,7 +75,7 @@ def parse_boltzgen_outputs(
     run_dir: Path,
     *,
     metrics_csv_name: str = "all_designs_metrics.csv",
-    intermediate_dir_name: str = "intermediate_designs",
+    intermediate_dir_name: str = _REFOLD_DIR,
 ) -> list[DesignRecord]:
     """Read a boltzgen run's metrics CSV and resolve per-design CIF paths.
 
@@ -80,7 +88,30 @@ def parse_boltzgen_outputs(
         Name of the metrics CSV inside ``final_ranked_designs/``. Use
         ``f"final_designs_metrics_{budget}.csv"`` to read only the top-K.
     intermediate_dir_name : str
-        Where the per-design CIFs live, relative to ``run_dir``.
+        Where the per-design CIFs live, relative to ``run_dir``. Defaults to
+        the complex REFOLD, which is the only one of BoltzGen's three
+        per-design structures carrying both the sequence it reports and usable
+        coordinates:
+
+        =============================================  ========  ============
+        structure                                      sequence  coordinates
+        =============================================  ========  ============
+        ``intermediate_designs/``                      design-   complete
+                                                       step
+        ``intermediate_designs_inverse_folded/``       final     **51 of 99
+                                                                 binder atoms
+                                                                 at (0,0,0)**
+        ``.../refold_cif/``                            final     complete
+        =============================================  ========  ============
+
+        Measured on ``3KYS_..._66``: the design-step CIF's binder reads
+        ``GYDLDTFAKTAT`` while the CSV reports ``GYDPETFKKTPK``, and its
+        B-factor column is a 0/1 design mask rather than pLDDT. The
+        inverse-folded pose has the right sequence but leaves sidechains
+        unplaced at the origin -- and ``read_structure`` drops NaN
+        coordinates, not zeros, so those would be taken as real atoms sitting
+        on top of a target whose centroid is 0.55 A from the origin. Only the
+        refold has both.
 
     Returns
     -------
@@ -91,7 +122,9 @@ def parse_boltzgen_outputs(
         * ``design_id`` — alias for ``id`` (string).
         * ``cif_path`` — absolute ``pathlib.Path`` to the CIF, resolved
           under ``run_dir / intermediate_dir_name``. ``None`` if the file
-          is missing (logged as a warning).
+          is missing (logged as a warning). This is what the PyRosetta SASA
+          worker measures hotspot burial on, so it must be a pose whose
+          binder sidechains are real — see ``intermediate_dir_name``.
 
     Raises
     ------

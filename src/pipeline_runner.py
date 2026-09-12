@@ -680,6 +680,42 @@ class PipelineRunner:
         if start_idx > 1 and result.pdb_id and not pdb_id:
             self._reapply_recorded_structure_switch(result, handoff)
 
+        # Hotspots have to survive a restart too, and on the BoltzGen track they
+        # did not. `_stage_analysis` needs `result.hotspot_residues_json` to
+        # compute hotspot SASA and raises without it, but only `_stage_structure`
+        # ever set it — so `--start-from execution|analysis|summary`, the normal
+        # way back in after a stage failure or a prompt edit, died every time.
+        # Worse, it died AFTER the BoltzGen production run, so the cost of the
+        # gap was hours of GPU, and its own advice ("re-run from structure")
+        # meant re-paying for the one stage that gets safety-refused.
+        #
+        # The binder track already solves this exactly this way — see B1 in
+        # `_run_binder_track`, which re-reads `21_interface.md` and re-parses the
+        # table when resuming past the interface stage. Safe to read back off
+        # disk: `_correct_label_seq_ids` writes its corrections INTO
+        # `02_structure.md`, so a re-parse yields the same numbers the original
+        # run used, not the model's uncorrected ones.
+        if start_idx > 3 and not result.hotspot_residues_json:
+            struct_report = run_dir / "02_structure.md"
+            if struct_report.exists():
+                text = struct_report.read_text(encoding="utf-8")
+                recovered = self._parse_hotspot_residues(
+                    text, result.structure_handoff or handoff)
+                if recovered:
+                    result.hotspot_residues_json = recovered
+                    n = len(json.loads(recovered).get("residues") or [])
+                    logger.info(
+                        f"  resume: recovered {n} hotspot residues from "
+                        f"{struct_report.name}")
+                else:
+                    # Say it now, with the file named, rather than three stages
+                    # later out of a SASA worker.
+                    logger.warning(
+                        f"  resume: {struct_report.name} has no parseable "
+                        f"MODEL-READY HOTSPOTS table — the analysis stage needs "
+                        f"one and will refuse. Re-run with "
+                        f"--start-from structure.")
+
         try:
             # ── Stage 0: pathway-expert ──────────────────────────────────────
             if start_idx == 0:
@@ -5269,7 +5305,13 @@ class PipelineRunner:
 
         complex_name = result.target_complex or prev_handoff.get("target_complex", "the target complex")
         pdb_id = result.pdb_id or prev_handoff.get("pdb_id", "")
-        modality = prev_handoff.get("modality", "cyclic_peptide or mini_protein")
+        # The operator decides; the literature stage only proposes. This used to
+        # read the handoff raw and fall back to the literal string
+        # "cyclic_peptide or mini_protein", which then travelled into the design
+        # query as if it were a modality — and on into `_MODALITY_TO_PROTOCOL`,
+        # where it matched nothing and silently selected the protein protocol.
+        modality = self._resolve_modality(prev_handoff.get("modality"),
+                                          source="the literature stage")
 
         query = prev_handoff.get("design_query") or (
             f"Generate {modality} design inputs for {complex_name}, PDB {pdb_id}."
@@ -5412,7 +5454,13 @@ class PipelineRunner:
             logger.warning(f"  wrote multi-region notice → {skipped_path}")
 
         # Map modality → protocol. modality lives in the design handoff.
-        modality = (prev_handoff.get("modality") or "either").strip().lower()
+        # Protocol selection must honour --modality, not whatever the design
+        # stage proposed: `_resolve_modality` is documented as the single place
+        # the two are reconciled, and this call site bypassed it. A run launched
+        # with --modality mini_protein logged `modality=either ->
+        # protocol=protein-anything` purely by accident of the default.
+        modality = self._resolve_modality(prev_handoff.get("modality"),
+                                          source="the design stage")
         protocol = self._MODALITY_TO_PROTOCOL.get(modality, "protein-anything")
         logger.info(f"  modality={modality} → protocol={protocol}")
         logger.info(f"  yaml={yaml_path.name}  output={bg_output}")
@@ -5559,11 +5607,6 @@ class PipelineRunner:
         hs_data = json.loads(result.hotspot_residues_json)
         target_chain = hs_data["target_chain"]
         hotspots = hs_data["residues"]
-        binder_chain = ws_cfg.get("binder_chain", "B")
-        logger.info(
-            f"  target_chain={target_chain}  binder_chain={binder_chain}  "
-            f"hotspots={len(hotspots)}"
-        )
 
         # 1. Parse boltzgen output
         records = parse_boltzgen_outputs(bg_output)
@@ -5602,6 +5645,34 @@ class PipelineRunner:
                 f"hotspot auth_seq_ids → original label_seq_ids for "
                 f"BoltzGen-renumbered output CIFs"
             )
+
+        # Chain ids in the OUTPUT frame, measured now that the hotspot ids are
+        # in that frame too. Both halves of a chain's identity are rewritten by
+        # BoltzGen and the pipeline previously handled only the numbering:
+        #
+        # * `skills/protein-design-script/SKILL.md` hardcodes the binder as
+        #   `id: B` while templating the target chain, and real LPT targets sit
+        #   on chain B (7CZD PD-L1, 3DI2 IL7RA). BoltzGen does not reject that
+        #   collision — it renames one entity to the first free letter and only
+        #   LOGS it, and which one loses its letter depends on YAML entity order.
+        # * The target itself is renamed to `A` regardless of its input letter
+        #   (measured: 3N7S chain D -> output chain A).
+        # * `design.workstation.binder_chain` was read here but has never
+        #   existed in config.yaml, so its "B" default always won anyway.
+        #
+        # Getting either wrong is silent in the worst way: the SASA worker
+        # matches by chain id, finds no atoms, and reports sasa_delta = 0.0 for
+        # every design — indistinguishable from a binder that missed the
+        # epitope, which is the exact signature the remap above exists to
+        # prevent. Config still wins if explicitly set, as an escape hatch.
+        target_chain, binder_chain = self._boltzgen_output_chains(
+            records, hotspots_remapped, target_chain)
+        if ws_cfg.get("binder_chain"):
+            binder_chain = ws_cfg["binder_chain"]
+        logger.info(
+            f"  target_chain={target_chain}  binder_chain={binder_chain}  "
+            f"hotspots={len(hotspots)}"
+        )
 
         # 2. Enrich top-K by quality_score with hotspot SASA.
         # We sort records in-place by quality_score (descending) so the
@@ -5761,7 +5832,11 @@ class PipelineRunner:
                     .strip()
                     .lower()
                 )
-        modality = modality or "mini_protein"  # default if all else fails
+        # Report what was ACTUALLY designed, for the same reason: the analyst's
+        # rubric differs by modality, so telling it "mini_protein" for a
+        # cyclic-peptide run mis-calibrates its verdict.
+        modality = self._resolve_modality(modality or None,
+                                          source="the design report")
 
         # Build the human-readable hotspot summary for the query.
         hotspots: list[str] = []
@@ -5916,6 +5991,88 @@ class PipelineRunner:
         return fasta_path
 
     @staticmethod
+    @staticmethod
+    def _boltzgen_output_chains(
+        records: list[dict], hotspots: list[dict], input_target_chain: str,
+    ) -> tuple[str, str]:
+        """`(target_chain, binder_chain)` AS THEY APPEAR IN BOLTZGEN'S OUTPUT.
+
+        BoltzGen rewrites both halves of a chain's identity, and the pipeline
+        only ever handled one of them:
+
+        * **Residue numbering** — the input mmCIF's `label_seq` becomes the
+          output `auth_seq_id`. Handled, by the remap at the call site.
+        * **Chain id** — the target is renamed to `A` and the design to `B`
+          whatever the input letters were, the same normalisation RFD3 applies
+          in reverse (binder `A`, target `B`). Measured on the RAMP1
+          calibration campaign: input `3N7S` chain **D** (84 aa, auth 27-110)
+          comes back as output chain **A** (84 aa, auth 6-89). This was NOT
+          handled — `_stage_analysis` addressed the output with the input
+          letter, so on any target not already sitting on chain A the SASA
+          worker would look for a chain that does not exist and report
+          `sasa_delta = 0.0` for every design. All three archived campaigns
+          used chain A, which is the only reason it never fired.
+
+        The target is identified by GROUNDING rather than by convention: it is
+        the polymer chain whose residues match the (already remapped) hotspot
+        ids AND names. That self-validates the remap at the same time, and it
+        is immune to a future change in BoltzGen's naming. The binder is then
+        the other polymer chain.
+
+        Falls back to the input letter plus `"B"` and warns loudly on anything
+        ambiguous. Deliberately never raises: a campaign whose designs are
+        already on disk should not be ended by an unreadable probe file.
+        """
+        import gemmi
+
+        want = {int(h["auth_seq_id"]): str(h.get("residue") or "").upper()
+                for h in hotspots}
+        for rec in records:
+            path = rec.get("cif_path")
+            if not path or not Path(path).is_file():
+                continue
+            try:
+                st = gemmi.read_structure(str(path))
+                st.setup_entities()
+                polymers = [c for c in st[0]
+                            if any(r.find_atom("CA", "*") for r in c)]
+            except Exception as exc:
+                logger.debug(f"  chain probe failed on {path}: {exc}")
+                continue
+
+            scored: list[tuple[int, str]] = []
+            for c in polymers:
+                by_auth = {r.seqid.num: r.name.upper() for r in c}
+                hits = sum(1 for num, name in want.items()
+                           if by_auth.get(num) == name)
+                scored.append((hits, c.name))
+            scored.sort(reverse=True)
+            names = [c.name for c in polymers]
+
+            if scored and scored[0][0] > 0 and len(polymers) == 2:
+                target_out = scored[0][1]
+                binder_out = next(n for n in names if n != target_out)
+                if target_out != input_target_chain:
+                    logger.info(
+                        f"  BoltzGen renamed the target chain "
+                        f"{input_target_chain} -> {target_out} in its output "
+                        f"(binder on {binder_out}); {scored[0][0]}/{len(want)} "
+                        f"hotspots grounded there by name.")
+                return target_out, binder_out
+
+            logger.warning(
+                f"  ⚠ could not ground the target in {Path(path).name}: "
+                f"polymer chains {names}, hotspot name matches {scored}. "
+                f"Falling back to target={input_target_chain!r} binder='B'. "
+                f"If every hotspot SASA reads 0.0, this is why.")
+            return input_target_chain, "B"
+
+        logger.warning(
+            f"  ⚠ no readable design structure to identify the output chains — "
+            f"falling back to target={input_target_chain!r} binder='B'. If "
+            f"hotspot SASA comes back 0.0 for every design, check this first.")
+        return input_target_chain, "B"
+
     def _render_analysis_report(
         *,
         bg_output: Path,
