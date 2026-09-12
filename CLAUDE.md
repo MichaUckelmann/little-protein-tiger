@@ -215,7 +215,28 @@ BoltzGen, because RFD3 has no cyclic-peptide path and
 it cannot build — quietly. `PipelineRunner._resolve_modality` is the single
 place that reconciles what a stage PROPOSED against what the operator CHOSE;
 every consumer goes through it, and the skill prompts no longer present
-modality as a menu. Requires `--project` — same reasoning as
+modality as a menu.
+
+**Overriding the modality has to carry the LENGTHS with it, and for one
+release it did not.** A stage sizes `binder_length_min`/`max` for the modality
+it proposed, so once `_resolve_modality` rejects that proposal those numbers
+describe a campaign the run is not running — but `_binder_length_range`
+preferred the handoff's explicit numbers over the `binder_sizes` table, which
+defeated the coercion while leaving it looking correct. Caught on the first
+real PD-L1 macrocycle run: `binder-target-intel` proposed `mini_protein` with
+70-86, `--modality cyclic_peptide` overrode the modality, and the trim contig
+recorded a 78-residue binder for a 13-residue campaign. The spec was still
+right (it reads its own table), so what broke was the COMPLEX SIZE — 195
+tokens against 130, over-costing both BoltzGen laws by 74%, with no observed
+rate to supersede them because a 24-design pilot is below
+`MIN_DESIGNS_FOR_RATE`. Those feed `campaign_calibration.calibrate`'s budget
+check, i.e. the SCALE_UP/STOP verdict. **The reverse is worse and is the same
+line**: a stage proposing `cyclic_peptide` with 12-15 on a default foundry run
+would have handed RFD3 a 12-15mer it cannot build, quietly, with the coercion
+applied and apparently working. The handoff's numbers are now honoured only
+when its own modality survived the override — a stage's deliberately narrowed
+range (74-80 inside 70-86) still is — and the last-resort constants are
+per-modality too. Requires `--project` — same reasoning as
 the binder track's own requirement: the foundry stages downstream are
 multi-day GPU campaigns that need a resumable manifest — now required on
 every track, see above. `design.backend` was

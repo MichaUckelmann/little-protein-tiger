@@ -1710,3 +1710,77 @@ def test_the_corpus_itself_is_not_the_source_of_the_latex():
                     f"{f.name}: affinities_kd_Molar is {type(v).__name__}, not a "
                     f"float in Molar — see the curation contract in CLAUDE.md")
                 return
+
+
+# ----------------------------------------------------------------------
+# The modality override has to carry the LENGTHS with it
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("operator,proposed,expected", [
+    # The bug, caught on the first real PD-L1 macrocycle run: the stage
+    # proposed mini_protein with 70-86, --modality cyclic_peptide overrode the
+    # modality, and the lengths stayed at the REJECTED modality's.
+    ("cyclic_peptide", "mini_protein",   (12, 15)),
+    # The reverse, which is worse: a 12-15mer handed to RFD3 is something it
+    # cannot build, quietly — with the coercion applied and apparently working.
+    ("mini_protein",   "cyclic_peptide", (70, 86)),
+    # Agreement and silence must both still work.
+    ("cyclic_peptide", "cyclic_peptide", (12, 15)),
+    ("mini_protein",   "mini_protein",   (70, 86)),
+    ("cyclic_peptide", "",               (12, 15)),
+    ("mini_protein",   "",               (70, 86)),
+    ("cyclic_peptide", "either",         (12, 15)),
+])
+def test_the_binder_length_follows_the_operators_modality(config, operator,
+                                                          proposed, expected):
+    """`--modality` decides, and that has to include the LENGTHS.
+
+    A stage sizes its binder for the modality it proposed, so once
+    `_resolve_modality` rejects that proposal those numbers describe a
+    campaign this run is not running. Preferring them over the table (which
+    `_binder_length_range` did) defeated the coercion while leaving it looking
+    correct: on PD-L1 the trim contig recorded a 78-residue binder for a
+    13-residue campaign, over-stating the folded complex by 65 residues and
+    over-costing it 74% in both BoltzGen cost laws — which feed
+    `campaign_calibration.calibrate`'s budget check and can turn a SCALE_UP
+    into a STOP.
+    """
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner(config, workflow="binder", modality=operator,
+                       design_engine="boltzgen")
+    intel = {"modality": proposed}
+    if proposed == "mini_protein":
+        intel.update(binder_length_min=70, binder_length_max=86)
+    elif proposed == "cyclic_peptide":
+        intel.update(binder_length_min=12, binder_length_max=15)
+    assert r._binder_length_range(intel) == expected
+
+
+def test_a_stated_length_is_still_honoured_when_the_modality_agrees(config):
+    """The handoff is the authority when it is talking about the same
+    modality — a stage that narrowed 70-86 to 74-80 for a reason must not have
+    that silently widened back to the table's default."""
+    from src.pipeline_runner import PipelineRunner
+
+    r = PipelineRunner(config, workflow="binder", modality="mini_protein")
+    assert r._binder_length_range({
+        "modality": "mini_protein",
+        "binder_length_min": 74, "binder_length_max": 80}) == (74, 80)
+
+
+def test_the_last_resort_length_is_per_modality_too(config):
+    """Reached only when `binder_sizes` is absent entirely. It must not fall
+    back to a mini-protein window for a macrocycle — the same 5.8x mistake one
+    level down."""
+    import copy
+
+    from src.pipeline_runner import PipelineRunner
+
+    stripped = copy.deepcopy(config)
+    stripped["design"]["constraints"].pop("binder_sizes", None)
+    for modality, expected in (("cyclic_peptide", (12, 15)),
+                               ("mini_protein", (70, 86))):
+        r = PipelineRunner(stripped, workflow="binder", modality=modality,
+                           design_engine="boltzgen")
+        assert r._binder_length_range({}) == expected

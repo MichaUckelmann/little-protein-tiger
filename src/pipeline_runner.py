@@ -1222,13 +1222,46 @@ class PipelineRunner:
         re-parses `20_target_intel.md` off disk on a resume, and a report written
         before those keys existed carries neither. Falling back through the same
         `binder_sizes` table the producing sites use keeps the two in step.
+
+        **The handoff's numbers are only usable when its own modality survived
+        `_resolve_modality`.** A stage that PROPOSED one modality sized its
+        lengths for that one, so when the operator's `--modality` overrides the
+        proposal those numbers belong to the rejected modality and must be
+        discarded, not preferred over the table. Caught on the first real PD-L1
+        macrocycle run: `binder-target-intel` proposed `mini_protein` with
+        70-86, `--modality cyclic_peptide` correctly overrode the modality, and
+        the lengths stayed 70-86 — so the trim contig recorded a 78-residue
+        binder for a campaign designing a 13-residue one, which over-stated the
+        folded complex by 65 residues (195 tokens against 130) and over-costed
+        it 74% in BOTH cost laws. Those feed `campaign_calibration.calibrate`'s
+        budget check, so it can turn a SCALE_UP into a STOP.
+
+        The reverse is worse and is the same bug: a stage proposing
+        `cyclic_peptide` with 12-15 on a default foundry run would have handed
+        RFD3 a 12-15mer it cannot build — quietly — with the modality coercion
+        already applied and apparently working.
         """
         sizes = (self._binder_cfg().get("constraints") or {}).get("binder_sizes") or {}
-        modality = self._resolve_modality(intel.get("modality"),
+        proposed = str(intel.get("modality") or "").strip()
+        modality = self._resolve_modality(proposed or None,
                                           source="the stored handoff")
-        default = sizes.get(modality) or sizes.get("mini_protein") or {}
-        lo = intel.get("binder_length_min") or default.get("min") or 70
-        hi = intel.get("binder_length_max") or default.get("max") or 86
+        stated_is_usable = (not proposed or proposed in (modality, "either"))
+        default = sizes.get(modality) or {}
+        # Last resort only when `binder_sizes` itself is absent; still per
+        # modality, because the point of this method is that one number cannot
+        # serve both.
+        fallback_lo, fallback_hi = (
+            (12, 15) if modality == "cyclic_peptide" else (70, 86))
+        stated_lo = intel.get("binder_length_min") if stated_is_usable else None
+        stated_hi = intel.get("binder_length_max") if stated_is_usable else None
+        lo = stated_lo or default.get("min") or fallback_lo
+        hi = stated_hi or default.get("max") or fallback_hi
+        if proposed and not stated_is_usable:
+            logger.info(
+                f"  the stored handoff sized its binder for modality="
+                f"{proposed!r} ({intel.get('binder_length_min')}-"
+                f"{intel.get('binder_length_max')}); using {lo}-{hi} for "
+                f"{modality!r}, which is what this run designs")
         return int(lo), int(hi)
 
     @staticmethod
