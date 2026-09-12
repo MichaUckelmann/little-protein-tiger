@@ -1158,6 +1158,25 @@ class PipelineRunner:
                     f"{wanted!r} (--modality decides)")
         return wanted
 
+    def _binder_length_range(self, intel: dict) -> tuple[int, int]:
+        """`(min, max)` binder length for this run, defaulting BY MODALITY.
+
+        The handoff normally carries `binder_length_min` / `binder_length_max`,
+        set from `design.constraints.binder_sizes[modality]` by whichever stage
+        composed it. But a hardcoded mini-protein fallback here is wrong by 5.8x
+        for a cyclic-peptide campaign, and it is reachable: `_run_binder_track`
+        re-parses `20_target_intel.md` off disk on a resume, and a report written
+        before those keys existed carries neither. Falling back through the same
+        `binder_sizes` table the producing sites use keeps the two in step.
+        """
+        sizes = (self._binder_cfg().get("constraints") or {}).get("binder_sizes") or {}
+        modality = self._resolve_modality(intel.get("modality"),
+                                          source="the stored handoff")
+        default = sizes.get(modality) or sizes.get("mini_protein") or {}
+        lo = intel.get("binder_length_min") or default.get("min") or 70
+        hi = intel.get("binder_length_max") or default.get("max") or 86
+        return int(lo), int(hi)
+
     @staticmethod
     def _binder_sites(intel: dict[str, str], limit: int = 1) -> list[dict]:
         """
@@ -3301,6 +3320,8 @@ class PipelineRunner:
                             f"the hotspots are actually on, or any to disable "
                             f"the topology restriction entirely.")
 
+        binder_lo, binder_hi = self._binder_length_range(intel)
+
         def _trim(with_budget: int):
             return trim_target(
                 structure,
@@ -3314,8 +3335,8 @@ class PipelineRunner:
                 budget=with_budget,
                 out_dir=dirs["trim"],
                 pdb_id=result.pdb_id,
-                binder_min=int(intel.get("binder_length_min", 70)),
-                binder_max=int(intel.get("binder_length_max", 86)),
+                binder_min=binder_lo,
+                binder_max=binder_hi,
                 chainsaw_cmd=trim_cfg.get("chainsaw_cmd"),
                 min_bsa_retention=float(trim_cfg.get("min_bsa_retention", 0.90)),
             )
@@ -3430,14 +3451,15 @@ class PipelineRunner:
         name = f"{name}_binder_001"
         # RFD3 reads the target from a PDB; the trim writes both formats.
         pdb_input = Path(str(trim.trimmed_path)).with_suffix(".pdb")
+        spec_lo, spec_hi = self._binder_length_range(intel)
         spec = build_rfd3_spec(
             name=name,
             structure_path=pdb_input if pdb_input.exists() else trim.trimmed_path,
             contig=trim.contig, hotspots=hotspots,
             target_chain=hs["target_chain"],
             out_path=dirs["spec"] / f"{name}.json",
-            binder_min=int(intel.get("binder_length_min", 70)),
-            binder_max=int(intel.get("binder_length_max", 86)),
+            binder_min=spec_lo,
+            binder_max=spec_hi,
         )
         out = dirs["binder"] / self._BINDER_STAGE_FILES["binder_spec"]
         self._write_binder_report(
