@@ -4038,7 +4038,7 @@ class PipelineRunner:
                               result: PipelineResult, *,
                               calib: dict | None = None) -> dict:
         from src.binder_ranking import (
-            rank_designs, read_scores, write_ranking_outputs,
+            DEFAULT_Z_CLIP, rank_designs, read_scores, write_ranking_outputs,
         )
 
         cfg = self._binder_cfg()
@@ -4095,10 +4095,15 @@ class PipelineRunner:
         # well-defined, meaningless numbers for it; ranking on those promotes
         # confident nonsense. Gating first also makes the cost affordable —
         # PyRosetta is ~10-30 s per design, and the gate removes >99% of them.
+        # `z_clip` is read once and applied to both this gate-time ranking and
+        # the Rosetta-augmented re-rank below, so the two cannot disagree about
+        # how much one metric may dominate.
+        z_clip = rcfg.get("z_clip", DEFAULT_Z_CLIP)
         gated = rank_designs(
             rows, thresholds=rcfg.get("thresholds"), weights=rcfg.get("weights"),
             mmr=rcfg.get("mmr"), top_k=int(rcfg.get("top_k", 20)),
-            max_per_backbone=int(rcfg.get("max_per_backbone", 1)))
+            max_per_backbone=int(rcfg.get("max_per_backbone", 1)),
+            z_clip=z_clip)
 
         rosetta_note = ""
         rcfg_ros = rcfg.get("rosetta") or {}
@@ -4135,7 +4140,8 @@ class PipelineRunner:
                 ranking = rank_designs(
                     gated.survivors, thresholds={}, weights=weights,
                     mmr=rcfg.get("mmr"), top_k=int(rcfg.get("top_k", 20)),
-                    max_per_backbone=int(rcfg.get("max_per_backbone", 1)))
+                    max_per_backbone=int(rcfg.get("max_per_backbone", 1)),
+                    z_clip=z_clip)
                 ranking.filter_stats = gated.filter_stats
             else:
                 rosetta_note = f"\n\nRosetta metrics skipped: {ros.skipped_reason}"

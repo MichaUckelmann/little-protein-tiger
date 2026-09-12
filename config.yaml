@@ -547,6 +547,17 @@ design:
       neg_iface_pae: 1.0
       epitope_recall: 1.0
       hotspot_engagement: 0.5
+    # Cap on any single metric's contribution to the composite, in standard
+    # deviations (null disables). The composite is an unbounded weighted z-sum,
+    # so before this a design 3 SD clear on ipsae_min banked +6.0 at weight 2.0
+    # and no realistic deficit elsewhere could offset it -- the top-K filled
+    # with one-metric specialists. Learned from BoltzGen's own ranker, which is
+    # a MAXIMIN over six per-metric ranks (judged by your WORST metric) and is
+    # measurably a strong selector: on a 994-design campaign its top-100 had a
+    # median dock RMSD of 3.12 A / 94% under 5 A, versus 8.89 A / 16.3% over
+    # the full set and 8.01 A / 29% for iPTM-ranking. 2.0 is ~the 2.3/97.7
+    # percentile of a normal, so it touches outliers only.
+    z_clip: 2.0
     mmr: {lambda_: 0.5, seq_identity_cap: 0.7}
 
     # PyRosetta interface metrics. Run ONLY on designs that already cleared the
@@ -562,7 +573,19 @@ design:
       weights:               # merged over the weights above for the final rank
         neg_rosetta_ddg: 1.5
         rosetta_cms: 1.0
-        neg_rosetta_vbuns: 0.5
+        # Buried unsatisfied polars CREATED by binding (complex - binder -
+        # target, clamped >= 0): polars the interface buries without satisfying,
+        # which cost real affinity. Raised 0.5 -> 1.0 so a design cannot buy a
+        # good ddG by burying unsats -- the same reasoning as the worker's own
+        # `iface_score = ddg + w * vbuns`.
+        #
+        # Deliberately NOT paired with a positive weight on `hbonds_int` or
+        # `rosetta_sbuns`: counting FAVOURABLE H-bonds and salt bridges off a
+        # predicted structure over-trusts sidechain placement, and `sbuns` is
+        # the sidechain-only subset of `vbuns`, so weighting both double-counts.
+        # A liability we can be confident about is worth more than a reward we
+        # cannot. Both stay reported columns.
+        neg_rosetta_vbuns: 1.0
     # The n_seq sequences sharing one RFD3 backbone are near-duplicates; without
     # this cap a top-20 comes from a handful of backbones.
     max_per_backbone: 1

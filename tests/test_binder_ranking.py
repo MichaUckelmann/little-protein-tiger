@@ -157,3 +157,112 @@ def test_the_spec_builder_caps_hotspots_at_the_same_number():
     """The skill caps a region at 12; the builder warns above it."""
     from src.foundry_spec import MAX_HOTSPOTS
     assert MAX_HOTSPOTS == 12
+
+
+# --- one outlier metric must not carry a design ------------------------------
+# The composite is an unbounded weighted z-sum, so before `z_clip` a design far
+# clear on a single heavily-weighted column banked an arbitrarily large score
+# that no deficit elsewhere could offset, and the top-K filled with one-metric
+# specialists. Measured on two real campaigns: the unclipped rank-1 design was a
+# `binder_plddt` outlier (z = +3.07 and +2.91), and clipping promoted designs
+# docking 42% and 54% better (1.054 -> 0.614 A, 1.258 -> 0.572 A) with equal or
+# better epitope recall, for a few thousandths of ipSAE/pLDDT.
+#
+# The idea is borrowed from BoltzGen's own ranker, which is a MAXIMIN over six
+# per-metric ranks; clipping is the softer version that keeps LPT's calibrated
+# weights while removing the regime where one metric dominates.
+
+def test_z_clip_is_on_by_default_and_bounds_one_metric():
+    from src.binder_ranking import DEFAULT_Z_CLIP
+    assert DEFAULT_Z_CLIP == 2.0, "config.yaml documents the 2.0 choice"
+
+
+def test_clipping_collapses_a_one_metric_outlier_s_dominance():
+    """The regime `z_clip` exists to remove, and the honest size of the effect.
+
+    `spike` is a 3.3-sigma outlier on the heaviest column (ipsae_min, weight
+    2.0) and mediocre on the other two; `rounded` is solidly good on those two
+    and unremarkable on ipSAE. The fillers are SPREAD on iptm/epitope_recall and
+    TIGHT on ipsae, which is what makes spike an outlier there and rounded merely
+    above-average elsewhere — the real shape of the problem.
+
+    Note what clipping does and does not do: it shrinks spike's margin from
+    +2.69 to +0.06, but does NOT by itself flip the order, because at weight 2.0
+    with a 2.0 clip the ipSAE term still tops out at 4.0 — exactly equal to
+    iptm + epitope_recall maxed together. The weights still matter; clipping
+    removes the unbounded regime, it does not override the weighting.
+    """
+    from src.binder_ranking import composite_score
+
+    weights = {"ipsae_min": 2.0, "iptm": 1.0, "epitope_recall": 1.0}
+    fillers = [0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85]
+    survivors = [
+        dict(name="spike", ipsae_min=0.95, iptm=0.55, epitope_recall=0.55),
+        dict(name="rounded", ipsae_min=0.50, iptm=0.88, epitope_recall=0.92),
+        *[dict(name=f"f{i}", ipsae_min=0.50, iptm=v, epitope_recall=v)
+          for i, v in enumerate(fillers)],
+    ]
+
+    def margin(z_clip):
+        rows = [dict(r) for r in survivors]
+        composite_score(rows, weights, z_clip=z_clip)
+        by = {r["name"]: r["composite_score"] for r in rows}
+        return by["spike"] - by["rounded"]
+
+    unclipped, clipped = margin(None), margin(2.0)
+    assert unclipped > 2.0, "precondition: unbounded, the outlier dominates"
+    assert clipped < 0.2, "clipping must collapse that dominance"
+    assert abs(clipped) < unclipped / 10, "by at least an order of magnitude"
+
+
+def test_clipping_lets_a_slightly_better_rounded_design_win():
+    """One notch better on the other metrics and the order actually flips."""
+    from src.binder_ranking import composite_score
+
+    weights = {"ipsae_min": 2.0, "iptm": 1.0, "epitope_recall": 1.0}
+    fillers = [0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85]
+    survivors = [
+        dict(name="spike", ipsae_min=0.95, iptm=0.55, epitope_recall=0.55),
+        dict(name="rounded", ipsae_min=0.50, iptm=0.90, epitope_recall=0.95),
+        *[dict(name=f"f{i}", ipsae_min=0.50, iptm=v, epitope_recall=v)
+          for i, v in enumerate(fillers)],
+    ]
+
+    def winner(z_clip):
+        rows = [dict(r) for r in survivors]
+        composite_score(rows, weights, z_clip=z_clip)
+        return max(rows, key=lambda r: r["composite_score"])["name"]
+
+    assert winner(None) == "spike", "precondition: the outlier wins unbounded"
+    assert winner(2.0) == "rounded"
+
+
+def test_z_clip_never_changes_which_designs_survive_the_gate():
+    """It is a RANKING control, not a gate — `filter_records` never sees it."""
+    from src.binder_ranking import rank_designs
+
+    rows = [rec(name=f"d{i}", ipsae_min=0.3 + i / 100) for i in range(12)]
+    a = rank_designs([dict(r) for r in rows], z_clip=None)
+    b = rank_designs([dict(r) for r in rows], z_clip=2.0)
+    assert a.filter_stats.n_survivors == b.filter_stats.n_survivors
+    assert {r["name"] for r in a.survivors} == {r["name"] for r in b.survivors}
+
+
+def test_buried_unsatisfied_polars_outweigh_no_favourable_hbond_term():
+    """A liability we trust beats a reward we do not.
+
+    `vbuns` counts polars the interface buries WITHOUT satisfying — a real
+    affinity cost. `hbonds_int` counts favourable H-bonds off a predicted
+    structure, which over-trusts sidechain placement, so it stays an unweighted
+    reported column. `sbuns` is the sidechain-only subset of `vbuns`; weighting
+    both would double-count.
+    """
+    import yaml
+    from pathlib import Path
+
+    cfg = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "config.yaml").read_text())
+    w = cfg["design"]["binder_ranking"]["rosetta"]["weights"]
+    assert w["neg_rosetta_vbuns"] == 1.0
+    assert "rosetta_hbonds_int" not in w and "hbonds_int" not in w
+    assert "neg_rosetta_sbuns" not in w

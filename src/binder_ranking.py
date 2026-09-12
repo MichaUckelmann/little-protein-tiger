@@ -85,6 +85,11 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 # synthesised from the underlying column at scoring time.
 _NEG_PREFIX = "neg_"
 
+#: Per-column cap on a z-score's contribution to the composite, in standard
+#: deviations. Bounds any single metric's influence so a design must be good on
+#: SEVERAL terms to rank highly -- see `composite_score`. None disables it.
+DEFAULT_Z_CLIP = 2.0
+
 DEFAULT_MMR = {"lambda_": 0.5, "seq_identity_cap": 0.7}
 DEFAULT_TOP_K = 20
 DEFAULT_MAX_PER_BACKBONE = 1
@@ -238,6 +243,7 @@ def filter_records(
 def composite_score(
     survivors: list[DesignRecord],
     weights: dict[str, float] | None = None,
+    z_clip: float | None = DEFAULT_Z_CLIP,
 ) -> list[str]:
     """
     Stamp ``<col>_z``, ``composite_score`` and ``composite_rank`` on survivors.
@@ -247,6 +253,27 @@ def composite_score(
     scale.  A column with no variance contributes 0 rather than a division by
     zero, and a column absent from the data is skipped with a warning instead of
     silently counting as 0 for everyone.
+
+    ``z_clip`` bounds each column's per-design contribution to ``+/- z_clip``
+    standard deviations, so **one outlier metric cannot carry a design whose
+    other metrics are poor**. Without it the sum is unbounded: a design three
+    standard deviations clear on ``ipsae_min`` banks +6.0 at weight 2.0, which
+    no realistic deficit elsewhere can offset, and the top-K fills with
+    one-metric specialists.
+
+    Learned from BoltzGen's own ranker, which is a MAXIMIN over six per-metric
+    ranks -- a design is judged by its WORST metric, so being excellent at one
+    thing buys nothing. Measured on a 994-design cyclic-peptide campaign that
+    is a strong selector: its top-100 had a median design-vs-refold dock RMSD
+    of 3.12 A with 94% under 5 A, against 8.89 A / 16.3% over the full set,
+    while ranking by iPTM alone gave 8.01 A / 29%. Clipping is the softer form
+    of the same idea: it keeps the weighted composite (which carries real
+    calibration -- see ``EXCELLENT_IPSAE_MIN``) while removing the regime where
+    a single metric dominates. ``None`` restores the old unbounded behaviour.
+
+    2.0 is deliberate rather than tuned: it is roughly the 2.3/97.7 percentile
+    of a normal, so it touches genuine outliers only and leaves the ordering of
+    the bulk untouched.
     """
     weights = weights or DEFAULT_WEIGHTS
     if not survivors:
@@ -276,6 +303,8 @@ def composite_score(
             numeric = -numeric
         std = numeric.std()
         z = np.zeros_like(numeric) if std < 1e-12 else (numeric - numeric.mean()) / std
+        if z_clip is not None:
+            z = np.clip(z, -float(z_clip), float(z_clip))
         z_by_col[col] = z
         used.append(col)
 
@@ -348,6 +377,7 @@ def rank_designs(
     mmr: dict[str, float] | None = None,
     top_k: int = DEFAULT_TOP_K,
     max_per_backbone: int = DEFAULT_MAX_PER_BACKBONE,
+    z_clip: float | None = DEFAULT_Z_CLIP,
 ) -> RankingResult:
     """filter -> composite -> backbone cap -> sequence MMR."""
     mmr = {**DEFAULT_MMR, **(mmr or {})}
@@ -356,7 +386,7 @@ def rank_designs(
     if not survivors:
         return RankingResult([], [], stats, [], 0)
 
-    used = composite_score(survivors, weights)
+    used = composite_score(survivors, weights, z_clip=z_clip)
     capped = cap_per_backbone(survivors, max_per_backbone)
     n_backbones = len({str(r.get("design_family")) for r in survivors})
 

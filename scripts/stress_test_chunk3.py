@@ -84,7 +84,12 @@ def main() -> int:
     cfg["design"]["thresholds"]["iptm_min"] = 0.10
     cfg["design"]["thresholds"]["ipae_max"] = 25.0
     cfg["design"]["thresholds"]["hotspot_sasa_delta_min"] = 0.0
-    cfg["design"]["thresholds"]["require_boltzgen_pass"] = False
+    # require_boltzgen_pass is LEFT AT THE SHIPPED DEFAULT (True). It was
+    # overridden to False here, which discarded the single most informative
+    # column BoltzGen writes: `pass_filters` is dominated by its
+    # design-vs-refold RMSD check (<= 2 A), and on e2e_cgas_sting 0 of the 20
+    # designs this pipeline reported had passed it -- BoltzGen was signalling
+    # "none of these are acceptable" and the override suppressed it.
 
     # PipelineRunner needs a provider; skill-using stages never fire in this test.
     runner = PipelineRunner(config=cfg, provider="claude", max_iter=1, max_tokens=1000)
