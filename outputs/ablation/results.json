@@ -397,22 +397,23 @@
         "RAMP1",
         "NTRK1",
         "NGF",
-        "AP2A2",
-        "Kcnt1"
+        "SCN9A",
+        "NF-kB p65"
       ],
       "blank": [
         "CALCRL",
         "RAMP1",
-        "SCN9A",
-        "SCN1B",
         "TRPV1",
-        "Subunit interface"
+        "Outer-Pore Loop Complex",
+        "SCN9A (Nav1.7)",
+        "VSD4"
       ],
       "decoy": [
         "CALCRL",
         "RAMP1",
-        "TRPV1",
-        "DkTx"
+        "NTRK1",
+        "NGF",
+        "TRPV1 (Outer Pore Loop)"
       ]
     },
     "primary_same_as_live": {
@@ -421,12 +422,12 @@
     },
     "gene_overlap_with_live": {
       "blank": 0.2,
-      "decoy": 0.25
+      "decoy": 0.57
     },
     "n_dois": {
-      "live": 10,
+      "live": 8,
       "blank": 3,
-      "decoy": 2
+      "decoy": 4
     },
     "tier_labels": {
       "live": [
@@ -441,7 +442,8 @@
       ],
       "decoy": [
         "VALIDATED",
-        "VALIDATED"
+        "BIOLOGICALLY JUSTIFIED",
+        "BIOLOGICALLY JUSTIFIED"
       ]
     },
     "offtopic_leak": {
@@ -450,14 +452,14 @@
       "decoy": 0
     },
     "flags_corpus_gap": {
-      "live": 2,
+      "live": 0,
       "blank": 0,
       "decoy": 0
     },
     "n_corpus_calls": {
-      "live": 13,
-      "blank": 12,
-      "decoy": 9
+      "live": 9,
+      "blank": 4,
+      "decoy": 8
     },
     "first_corpus_call_at": {
       "live": 1,
@@ -465,14 +467,14 @@
       "decoy": 1
     },
     "n_tool_calls": {
-      "live": 15,
-      "blank": 14,
-      "decoy": 11
+      "live": 11,
+      "blank": 6,
+      "decoy": 10
     },
     "usd": {
-      "live": 0.5741,
-      "blank": 0.1132,
-      "decoy": 0.2388
+      "live": 0.1742,
+      "blank": 0.1072,
+      "decoy": 0.1754
     },
     "error": {}
   },
