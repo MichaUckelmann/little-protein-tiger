@@ -1024,6 +1024,24 @@ def write_trimmed(
         parent_residue,
     )
 
+    def _in_polymer(res) -> bool:
+        """Whether this residue is part of the POLYMER, not a bound ligand.
+
+        `label_seq` is gemmi's own entity bookkeeping, populated by
+        `setup_entities()` in `_model`, and it is the only signal that
+        separates the two cases cleanly:
+
+            3KYS A344  P1L  het=H  label_seq=152   subchain 'A'   <- polymer
+            5HYN A1009 SAH  het=H  label_seq=None  subchain 'CA'  <- ligand
+
+        Atom names cannot do it. S-adenosylhomocysteine carries a homocysteine
+        moiety, so it has a real N/CA/C and passes a backbone test — which is
+        how the first version of this warning came to advise adding SAH to
+        `_CURATED_PARENTS`. `het_flag` cannot do it either: the modified
+        residue we actually need to convert is itself a HETATM.
+        """
+        return res.label_seq is not None
+
     def as_parent(res, parent: str):
         """A modified residue rewritten as the amino acid it modifies.
 
@@ -1097,9 +1115,19 @@ def write_trimmed(
                 converted[f"{ch.name}{res.seqid.num} {res.name}"] = parent
                 ch_out.add_residue(as_parent(res, parent))
                 continue
-            if parent is None:
+            if parent is None and _in_polymer(res):
                 # `parent_residue` returns the name itself for a standard
                 # amino acid, so None here means non-standard AND unknown.
+                #
+                # The BACKBONE test is what makes this a useful warning rather
+                # than noise. Without it, every cofactor and metal ion in a
+                # kept chain is reported: on 5HYN (EZH2/EED) it fired for
+                # "SAHx1, ZNx8" and advised adding S-adenosylhomocysteine and
+                # zinc to `_CURATED_PARENTS` — which would be nonsense, since
+                # neither is a modified amino acid and neither belongs in a
+                # polymer chain. Only a residue a parser might MISTAKE for
+                # polymer, i.e. one gemmi places IN the polymer entity, is
+                # worth flagging.
                 unconvertible[res.name] = unconvertible.get(res.name, 0) + 1
             ch_out.add_residue(res)
         if len(ch_out):

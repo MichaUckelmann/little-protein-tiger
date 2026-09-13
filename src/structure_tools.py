@@ -957,6 +957,10 @@ _ONE_TO_THREE = {
 #: it. P1L is 3KYS A344, the TEAD1 palmitoylation site.
 _CURATED_PARENTS = {
     "P1L": ("CYS", "S-palmitoyl-L-cysteine"),
+    # gemmi tabulates M3L/MLY/MLZ/ALY (all -> 'k' -> LYS) but not this older
+    # dimethyl-lysine code, and a chromatin-weighted corpus meets methylated
+    # lysines constantly.
+    "M2L": ("LYS", "N,N-dimethyl-L-lysine"),
 }
 
 

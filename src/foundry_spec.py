@@ -222,7 +222,15 @@ def validate_spec(
             for res in ch:
                 key = (ch.name, int(res.seqid.num))
                 residues[key] = {a.name for a in res}
-                if res.het_flag == "H":
+                # A HETATM that gemmi places in the POLYMER entity only
+                # (`label_seq is not None`). A cofactor or metal ion numbered
+                # inside a span — 5HYN puts eight zincs and an SAH at
+                # 1001-1009 on the same chain as residues 10-740 — was never
+                # going to be included by a polymer parser, and refusing the
+                # spec over it would block a legitimate target. An atom-name
+                # test cannot make this distinction: SAH carries a
+                # homocysteine N/CA/C.
+                if res.het_flag == "H" and res.label_seq is not None:
                     hetatm[key] = res.name
 
         n_target = 0

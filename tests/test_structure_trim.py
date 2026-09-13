@@ -565,3 +565,46 @@ def test_the_trim_leaves_only_its_own_outputs_in_the_run_directory(tmp_path):
                 max_exposed_hydrophobic=None)
     cifs = sorted(p.name for p in tmp_path.glob("*.cif"))
     assert cifs == ["trimmed.cif"], cifs
+
+
+def test_a_cofactor_or_metal_ion_is_not_reported_as_an_unconvertible_residue(
+        tmp_path):
+    """The parent-conversion warning must fire only for residues a polymer
+    parser might MISTAKE for chain, i.e. ones carrying N/CA/C.
+
+    Without that gate it fired on 5HYN (EZH2/EED) for "SAHx1, ZNx8" and
+    advised adding S-adenosylhomocysteine and eight zinc ions to
+    `structure_tools._CURATED_PARENTS` — which would be nonsense, and which
+    buries any real modified residue in noise. Found by running the pipeline
+    over a chromatin target, not by a test.
+    """
+    from loguru import logger
+
+    from src.structure_trim import write_trimmed
+
+    src = Path("data/structures/5HYN_ba1.cif")
+    if not src.is_file():
+        pytest.skip("5HYN not in this checkout")
+    msgs: list[str] = []
+    hid = logger.add(lambda m: msgs.append(str(m)), level="WARNING")
+    try:
+        write_trimmed(src, tmp_path / "t.cif", {"A": None, "B": None})
+    finally:
+        logger.remove(hid)
+    noise = [m for m in msgs if "no parent amino acid known" in m]
+    assert not noise, f"ligands/ions reported as unconvertible residues: {noise}"
+
+
+def test_the_common_chromatin_ptms_all_resolve_to_lysine():
+    """A chromatin-weighted corpus meets methylated and acetylated lysines
+    constantly, and an unresolved one would be left as a HETATM that
+    `validate_spec` then refuses. gemmi tabulates most of them; M2L it does
+    not, so that one is curated."""
+    from src.structure_tools import parent_residue
+
+    for code in ("M3L", "MLY", "MLZ", "ALY", "M2L"):
+        assert parent_residue(code) == "LYS", code
+    # And the ligands must stay unparented — converting one would invent a
+    # residue that is not there.
+    for code in ("SAH", "ZN", "GOL", "EDO", "ATP", "HOH"):
+        assert parent_residue(code) is None, code
