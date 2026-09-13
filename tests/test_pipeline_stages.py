@@ -1207,3 +1207,136 @@ def test_max_local_hours_is_stored_and_defaults_to_none(config):
     assert PipelineRunner(config, workflow="binder")._max_local_hours is None
     r = PipelineRunner(config, workflow="binder", max_local_hours=12.0)
     assert r._max_local_hours == 12.0
+
+
+# ----------------------------------------------------------------------
+# Hotspot grounding: the two holes a glue table walked straight through
+# ----------------------------------------------------------------------
+
+_STRUCTURES = Path(__file__).resolve().parents[1] / "data" / "structures"
+
+
+def _local(pdb: str) -> Path | None:
+    for name in (f"{pdb}_ba1.cif", f"{pdb}.cif"):
+        p = _STRUCTURES / name
+        if p.exists():
+            return p
+    return None
+
+
+def test_a_hotspot_that_is_not_in_the_structure_fails_the_guard(config):
+    """A residue that is NOT THERE used to count as "no mismatch".
+
+    `actual is None` hit a `continue`, so an auth_seq_id absent from the
+    target chain passed grounding silently. Real run: `div_wildcard_tnbc`
+    put chain U's 447-453 (PTPN14) under `target_chain: A` (WWC1, 123
+    residues modelled, auth 6-327). Grounding passed; the ortholog check
+    then scored six nonexistent residues into `fraction_conserved: 0.625`
+    against a 0.60 floor, and the trim died several stages later with a bare
+    residue list.
+    """
+    if _local("6JJW") is None:
+        pytest.skip("6JJW not downloaded")
+    r = PipelineRunner(config, workflow="binder")
+    hs = json.dumps({
+        "target_chain": "A", "partner_chain": "U",
+        "residues": [
+            {"residue": "LEU", "auth_seq_id": 78, "rfd3_atoms": "CD1,CG"},
+            {"residue": "ASP", "auth_seq_id": 447, "rfd3_atoms": "CG,OD1"},
+        ],
+    })
+    with pytest.raises(PipelineError, match="do not exist in 6JJW chain A"):
+        r._verify_hotspot_grounding(hs, "6JJW")
+
+
+def test_the_guard_names_the_chain_the_residues_are_actually_on(config):
+    """Diagnosis, not just refusal — the commonest cause is the partner chain.
+
+    6JJW chain U really does carry ASP447/PRO448 under those names, so the
+    error says so. It still refuses: no stage supports a hotspot set spanning
+    two chains.
+    """
+    if _local("6JJW") is None:
+        pytest.skip("6JJW not downloaded")
+    r = PipelineRunner(config, workflow="binder")
+    import gemmi
+    st = gemmi.read_structure(str(_local("6JJW")))
+    st.setup_entities()
+    by_auth = {res.seqid.num: res.name for res in st[0]["U"]}
+    claimed = [{"residue": by_auth[a], "auth_seq_id": a} for a in (447, 448)
+               if a in by_auth]
+    assert claimed, "6JJW chain U should carry 447/448"
+    hs = json.dumps({"target_chain": "A", "partner_chain": "U",
+                     "residues": claimed})
+    with pytest.raises(PipelineError, match="present under those names in chain U"):
+        r._verify_hotspot_grounding(hs, "6JJW")
+
+
+def test_a_target_chain_that_does_not_exist_fails_the_guard(config):
+    """3FLN has exactly ONE chain (C) and a real run put 11 hotspots on "A".
+
+    An absent chain made `get_sequence_map` return `{"error": ...}`, which
+    the try/except read as "could not verify" and failed open — but every
+    later stage addresses residues by that chain id, so there is nothing
+    inconclusive about it.
+    """
+    if _local("3FLN") is None:
+        pytest.skip("3FLN not downloaded")
+    r = PipelineRunner(config, workflow="binder")
+    hs = json.dumps({
+        "target_chain": "A", "partner_chain": "B",
+        "residues": [{"residue": "GLY", "auth_seq_id": 10}],
+    })
+    with pytest.raises(PipelineError, match="does not exist in"):
+        r._verify_hotspot_grounding(hs, "3FLN")
+
+
+def test_a_label_seq_id_is_not_rewritten_from_another_residues_map(config,
+                                                                   tmp_path):
+    """The name mismatch is evidence the map describes a different residue.
+
+    `_resolve_unverified_label_seq_ids` always overwrote the column, so on
+    `div_standard_diabetes`' 5VAI glue table the four chain-P rows
+    (ALA30/GLY35/ARG36/GLY37, labels 24/29/30/31) were rewritten with chain
+    R's labels at the same auth ids (69/74/75/76) — which address VAL/THR/
+    VAL/GLN on the other protein. BoltzGen consumes this column as
+    label_seq.
+    """
+    cif = _local("5VAI")
+    if cif is None:
+        pytest.skip("5VAI not downloaded")
+    r = PipelineRunner(config, workflow="binder")
+    text = (
+        "### MODEL-READY HOTSPOTS\n\n"
+        "| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |\n"
+        "|---|---|---|---|\n"
+        "| ALA | 30 | 24 | CB,CA |\n"
+        "| GLY | 35 | 29 | CA,C |\n"
+    )
+    fixed, warns = r._resolve_unverified_label_seq_ids(text, cif, "R")
+    # Chain P's own labels survive; chain R's 69/74 are not written in.
+    assert "| ALA | 30 | 24 |" in fixed
+    assert "| GLY | 35 | 29 |" in fixed
+    assert "69" not in fixed and "74" not in fixed
+    assert any("NAME mismatch" in w for w in warns)
+
+
+def test_a_correct_row_is_still_corrected(config):
+    """The refusal above must not disable the correction it lives next to.
+
+    5VAI chain R auth 66 is PHE with label_seq 105, so a row naming PHE66
+    with a wrong label is still rewritten — that is the YAP-TEAD occlusion
+    fix and it stays live.
+    """
+    cif = _local("5VAI")
+    if cif is None:
+        pytest.skip("5VAI not downloaded")
+    r = PipelineRunner(config, workflow="binder")
+    text = (
+        "### MODEL-READY HOTSPOTS\n\n"
+        "| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |\n"
+        "|---|---|---|---|\n"
+        "| PHE | 66 | 38 | CB,CA |\n"
+    )
+    fixed, _ = r._resolve_unverified_label_seq_ids(text, cif, "R")
+    assert "| PHE | 66 | 105 |" in fixed

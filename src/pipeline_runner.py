@@ -2288,22 +2288,78 @@ class PipelineRunner:
             # every iteration hit the `continue`, and `mismatches` could
             # never be non-empty. The guard this docstring describes has
             # never once fired.
-            struct_residues = seq_map["residues"]
+            struct_residues = seq_map.get("residues")
         except Exception as exc:
             logger.warning(
                 f"could not verify hotspot grounding against {path}: {exc}")
             return
+        if struct_residues is None:
+            # get_sequence_map RETURNS {"error": ...} rather than raising, so
+            # an absent chain used to land in the except above and be treated
+            # as "could not verify" — a fail-open for a condition that is not
+            # inconclusive at all. Distinguish the two: a file we cannot read
+            # still fails open (the warning above), a chain that is not in a
+            # file we read fine does not.
+            logger.warning(
+                f"hotspot grounding: {seq_map.get('error') or 'no residues'} "
+                f"for chain {chain} in {path.name}")
+            struct_residues = []
         by_auth = {r["auth_seq_id"]: r["three_letter"] for r in struct_residues}
+        if not by_auth:
+            # get_sequence_map returns {"error": ...} for an absent chain and
+            # an empty list for an empty one, so reaching here means the
+            # target_chain the stage declared is not in this file. That is not
+            # an inconclusive read to fail open on — every subsequent stage
+            # addresses residues by that chain id. Measured over the 67 reports
+            # on disk with a local structure: one hit, `div_standard_tuberculosis`
+            # on 3FLN, which has exactly ONE chain (C) and got 11 hotspots on a
+            # chain A that has never existed.
+            raise PipelineError(
+                f"the interface stage declared target_chain {chain!r}, which "
+                f"does not exist in {path.name} — no hotspot can be grounded "
+                f"against it. Re-run the stage, or name a chain the entry "
+                f"actually has.")
 
         mismatches = []
+        absent = []
         for h in residues:
             auth = h.get("auth_seq_id")
             claimed = str(h.get("residue", "")).upper()
+            if auth is None or not claimed:
+                continue
             actual = by_auth.get(auth)
-            if auth is None or not claimed or actual is None:
+            if actual is None:
+                # A residue that is NOT THERE used to `continue` — counted as
+                # "no mismatch", which is the opposite of what this guard is
+                # for. Nothing downstream fails cleanly on it either: the
+                # ortholog check scored six such residues into a
+                # `fraction_conserved: 0.625` and came within one residue of
+                # rejecting a run for a conservation failure that was really a
+                # chain-attribution bug, and the trim finally died several
+                # stages later with a bare residue list. Fail here instead.
+                absent.append((claimed, auth))
                 continue
             if actual != claimed:
                 mismatches.append(f"{claimed}{auth} (structure has {actual}{auth})")
+        if absent:
+            # Say WHICH chain the residues are on when one chain holds them
+            # all under their claimed names — that is the real diagnosis, and
+            # the commonest cause is a table whose rows belong to the partner
+            # (a glue/STABILIZE table listing both sides; `div_wildcard_tnbc`
+            # put chain U's 447-453 under target_chain A). Diagnosis only: no
+            # stage supports a cross-chain hotspot set, so this still fails.
+            hint = self._chain_holding_residues(path, absent, exclude=chain)
+            names = ", ".join(f"{n}{a}" for n, a in absent)
+            raise PipelineError(
+                f"hotspot table names residue(s) that do not exist in "
+                f"{pdb_id} chain {chain}: {names}."
+                + (f" All of them are present under those names in chain "
+                   f"{hint} — the table is attributing another chain's "
+                   f"residues to the target. Re-run the stage against one "
+                   f"chain, or pick a structure whose target chain carries "
+                   f"the epitope." if hint else
+                   " Re-run the stage, or pick a different structure — an "
+                   "unmodelled residue cannot be designed against."))
         if mismatches:
             raise PipelineError(
                 f"hotspot table is not grounded in {pdb_id}'s actual numbering: "
@@ -2311,6 +2367,31 @@ class PipelineRunner:
                 f"textbook/literature numbering for a well-known protein instead "
                 f"of reading this specific structure's residues — re-run the "
                 f"stage, or pick a different structure.")
+
+    @staticmethod
+    def _chain_holding_residues(path: Path, wanted: list[tuple[str, int]],
+                                exclude: str) -> str | None:
+        """Which OTHER chain carries every (name, auth) pair? Diagnosis only.
+
+        Returns a chain id when exactly one other chain holds all of them
+        under the claimed names, else None. Best-effort: a failure to read
+        the file costs a sentence of the error message, never the error.
+        """
+        try:
+            import gemmi
+
+            st = gemmi.read_structure(str(path))
+            st.setup_entities()
+            hits = []
+            for ch in st[0]:
+                if ch.name == exclude:
+                    continue
+                by_auth = {r.seqid.num: r.name.upper() for r in ch}
+                if all(by_auth.get(a) == n for n, a in wanted):
+                    hits.append(ch.name)
+            return hits[0] if len(hits) == 1 else None
+        except Exception:
+            return None
 
     @staticmethod
     def _combine_allowed(restrict, chimera_keep: set[int] | None) -> set[int] | None:
@@ -7829,8 +7910,29 @@ class PipelineRunner:
                     warnings.append(
                         f"residue NAME mismatch at chain {target_chain} "
                         f"auth_seq_id {auth_s}: report says {expected_name} but "
-                        f"structure has {actual_name} — likely a numbering offset"
+                        f"structure has {actual_name} — likely a numbering "
+                        f"offset, or a row belonging to another chain; "
+                        f"label_seq_id left as written"
                     )
+                # Leave the row alone. The map we are holding describes a
+                # DIFFERENT residue at this auth id, so substituting its label
+                # writes a number that is precisely wrong rather than merely
+                # unverified — and this function always overwrites, so it did.
+                # Observed on `div_standard_diabetes`' 5VAI glue table: four
+                # chain-P rows (ALA30/GLY35/ARG36/GLY37, correct for chain P,
+                # labels 24/29/30/31) were rewritten with chain R's labels at
+                # those same auth ids (69/74/75/76), which address VAL/THR/
+                # VAL/GLN on the other protein. The names had already
+                # mismatched, so the evidence that the rewrite was wrong was
+                # in hand at the moment it happened. BoltzGen reads this
+                # column as label_seq, which makes it the YAP-TEAD
+                # zero-occlusion failure mode with a different cause.
+                #
+                # The caller's `_verify_hotspot_grounding` hard-fails on a
+                # name mismatch, so on the normal path this row never reaches
+                # a spec either way — this keeps the report on disk honest for
+                # the paths that fail open, and for a human reading it.
+                return match.group(0)
 
             # Compare LLM value to the structure's own, and emit the
             # structure's in the rewritten cell.
