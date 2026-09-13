@@ -17,6 +17,10 @@ what makes the overlap a check rather than a restatement.<br>
 <a href="https://michauckelmann.github.io/little-protein-tiger/">See the
 showcases &rarr;</a></sub></p>
 
+> [!IMPORTANT]
+> **This codebase is in active development, code is updated almost daily. Make
+> sure to sync your local copy frequently.**
+
 **Point it at a disease and it comes back with designed protein binders — or
 point it at a target you already have and skip to the design.** LPT reads the
 literature, picks a target and a structure, chooses the epitope, generates and
