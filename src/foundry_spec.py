@@ -218,6 +218,7 @@ def validate_spec(
         st.setup_entities()
         residues: dict[tuple[str, int], set[str]] = {}
         hetatm: dict[tuple[str, int], str] = {}
+        label_of: dict[tuple[str, int], int] = {}
         for ch in st[0]:
             for res in ch:
                 key = (ch.name, int(res.seqid.num))
@@ -232,6 +233,40 @@ def validate_spec(
                 # homocysteine N/CA/C.
                 if res.het_flag == "H" and res.label_seq is not None:
                     hetatm[key] = res.name
+                if res.label_seq is not None:
+                    label_of[key] = int(res.label_seq)
+
+        # A contig is written in AUTHOR numbering, and RFD3 only reads author
+        # numbering out of a PDB file. Its loader (atomworks -> biotite) takes
+        # biotite's non-default `use_author_fields=False` path, so from an
+        # mmCIF it addresses residues by `label_seq_id`: on 4ZGM (auth 29-128,
+        # label 6-105) the auth-numbered contig `A29-128` resolved against
+        # label ids and died with `[component=A106] Residue A106 not found in
+        # atom array` — A106 being the first id past the label range, for a
+        # residue plainly present in the file as ATOM ALA 106. Every campaign
+        # in this pipeline is safe by construction because `_stage_trim` hands
+        # RFD3 `trimmed.pdb`, where author numbering is the ONLY numbering.
+        # The hazard is a caller that passes the mmCIF instead, and the
+        # failure mode above is the LUCKY one: had the spans fallen inside the
+        # label range, RFD3 would have designed against the wrong residues
+        # with no error at all.
+        if struct_path.suffix.lower() in (".cif", ".mmcif"):
+            shifted = sorted(
+                (f"{chain}{auth} (label {label_of[(chain, auth)]})")
+                for chain, lo, hi in spans
+                for auth in range(lo, hi + 1)
+                if (chain, auth) in label_of
+                and label_of[(chain, auth)] != auth)
+            if shifted:
+                raise SpecError(
+                    f"design {name!r} names an mmCIF input "
+                    f"({struct_path.name}) whose label_seq_id numbering "
+                    f"differs from its author numbering, e.g. "
+                    + ", ".join(shifted[:3])
+                    + f" ({len(shifted)} residues in all). RFD3 reads an "
+                      f"mmCIF by label_seq_id, so this contig would address "
+                      f"the wrong residues. Pass the PDB the trim writes "
+                      f"(trimmed.pdb) instead.")
 
         n_target = 0
         for chain, lo, hi in spans:

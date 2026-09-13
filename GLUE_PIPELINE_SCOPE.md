@@ -1425,7 +1425,44 @@ Foundry regression net clean: 43 artifact hashes identical, 13/13
 re-derivations bit-identical, zero survivor-count changes — `trim_target` is
 the function all 13 calibrated campaigns went through.
 
-### Stage 1 — Settle the merge empirically · ~0.5 d, 2 GPU-min
+### Stage 1 — Settle the merge empirically · **DONE, PASS (2026-09-13)**
+
+**Verdict: RFD3 merges two input chains into one output chain.** Measured on
+one 4-sample RFD3 design against 4ZGM with the hand-built spec
+`70-86,/0,A29-128,B10-37` (7 hotspots straddling the A/B interface, taken from
+the pipeline's own `analyze_interface`, validated by the UNMODIFIED
+`validate_spec`: 128 target residues, 2 segments):
+
+| check | result |
+|---|---|
+| output chains | **2** — `A` 79 residues (the diffused binder), `B` 128 |
+| `diffused_index_map` keys | span **both** input chains: 100 `A*` + 28 `B*` |
+| `diffused_index_map` values | **all `B*`** |
+| output res_ids | **1..128, consecutive** |
+
+So a molecular-glue target reaches scoring in exactly the shape the existing
+code assumes — one binder chain against one target chain — and stages 3-7 rest
+on a measurement rather than a reading of foundry's source. `check_merge.py`
+asserts all four mechanically.
+
+**Two things the probe cost that the plan did not anticipate**, both now fixed
+in the repo rather than in the probe:
+
+1. **RFD3 reads an mmCIF by `label_seq_id`.** The first two attempts fed it
+   `4ZGM_ba1.cif` and died with `[component=A106] Residue A106 not found in
+   atom array` for a residue plainly present as `ATOM ... ALA A ... 106` —
+   4ZGM chain A is auth 29-128 / label 6-105, and A106 is the first id past
+   the LABEL range. The pipeline is safe only because `_stage_trim` passes
+   `trimmed.pdb`; `validate_spec` now refuses an mmCIF whose two numberings
+   disagree, and **that guard immediately caught all 13 Phase A rung specs**,
+   which pointed at `trimmed.cif`. Spans falling inside the label range would
+   have mis-modelled silently.
+2. `extra.num_chains` **does not exist** in this foundry build's sidecar (keys
+   are `ckpt_path`, `diffused_index_map`, `metrics`, `seed`, `specification`),
+   so the go/no-go below was unsatisfiable as written. The chain count comes
+   from the output CIF.
+
+#### As originally specified
 
 Build a two-chain RFD3 spec by hand on `4ZGM` (`70-86,/0,A29-128,B10-37`),
 validate it with the **unmodified** `validate_spec`, and run **one** RFD3 design

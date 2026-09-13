@@ -284,8 +284,8 @@ def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True,
     the same generator a real campaign runs. A hand-written RFD3 invocation
     would be a second, divergent path.
 
-    `--dry-run` is the default, and a real launch goes through `setsid nohup`
-    inside `job_registry.launch_detached` — per the standing workstation note,
+    `--dry-run` is the default, and a real launch goes through
+    `JobRegistry.launch` — per the standing workstation note,
     a Bash background task's teardown reaches descendants and has killed a
     campaign and its detached child before.
 
@@ -297,11 +297,31 @@ def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True,
     """
     import yaml
 
+    from src.env_config import resolve_env_path
     from src.foundry_runner import (SEC_PER_RFD3_DESIGN, FoundryPaths,
-                                    _rfd3_command)
+                                    FoundryValidationError, _rfd3_command,
+                                    _resolve_foundry_bin)
 
     cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
     design = cfg.get("design") or {}
+
+    # `_rfd3_command` emits `uv run .venv-blackwell/bin/rfd3 ...` — a path
+    # RELATIVE to the foundry checkout, because `uv run` resolves the venv
+    # from its cwd. The campaign driver honours that (`cd "$FOUNDRY"`); this
+    # script wrote `cd <LPT root>` and every rung would have died instantly
+    # with `Failed to spawn .venv-blackwell/bin/rfd3`, thirteen times, for
+    # nothing. Resolve the binary here too, so a wrong/absent venv name fails
+    # now rather than inside a detached job.
+    f_cfg = design.get("foundry") or {}
+    foundry_root = resolve_env_path("LPT_FOUNDRY_ROOT", f_cfg.get("root"))
+    if not foundry_root:
+        raise FoundryValidationError(
+            "foundry root is not set — set LPT_FOUNDRY_ROOT in .env or "
+            "design.foundry.root in config.yaml")
+    foundry_root = Path(foundry_root)
+    rfd3_bin = _resolve_foundry_bin(
+        foundry_root, f_cfg.get("rfd3_bin", ".venv-blackwell/bin/rfd3"),
+        "rfd3")
     payload = json.loads((out_root / "ladder.json").read_text(encoding="utf-8"))
     n_batches = max(1, n_designs // 4)
     total_h = 0.0
@@ -321,13 +341,14 @@ def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True,
         plan = types.SimpleNamespace(n_batches=n_batches,
                                      diffusion_batch_size=4,
                                      expected_rfd3=n_batches * 4)
-        cmd = _rfd3_command(design, Path(rung["spec_path"]), paths, plan)
+        cmd = _rfd3_command(design, Path(rung["spec_path"]), paths, plan,
+                            bin_=rfd3_bin)
         script = paths.campaign_dir / "run_designs.sh"
         script.write_text(
             "#!/usr/bin/env bash\n"
             "# Phase A: RFD3 only. No MPNN, no RF3 — see launch_designs().\n"
             "set -euo pipefail\n"
-            f"cd {ROOT}\n"
+            f"cd {foundry_root}\n"
             f"{cmd}\n", encoding="utf-8")
         script.chmod(0o755)
 
@@ -337,10 +358,20 @@ def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True,
               f"({n_batches * 4} designs, ~{est:.2f} GPU-h at "
               f"{SEC_PER_RFD3_DESIGN:g} s/design)", flush=True)
         if not dry_run:
-            from src.job_registry import launch_detached
+            # `JobRegistry.launch`, the same entry point the campaign driver
+            # uses (start_new_session=True, so it survives this process and a
+            # Bash-task teardown). An earlier revision called a module-level
+            # `launch_detached` that does not exist in job_registry and never
+            # has — the ImportError fired only under `--launch`, so the whole
+            # of Phase A planned cleanly thirteen times and could not run.
+            from src.job_registry import JobRegistry
 
-            print(f"    launched: {launch_detached(script, paths.registry_path)}",
-                  flush=True)
+            log = paths.logs_dir / "rfd3.log"
+            rec = JobRegistry(paths.registry_path).launch(
+                f"rung_{rung['budget']}", ["bash", str(script)],
+                cwd=str(paths.campaign_dir), log_path=log,
+                note=f"Phase A rung {rung['budget']}")
+            print(f"    launched: pid {rec.pid} -> {log}", flush=True)
     print(f"\ntotal across rungs: ~{total_h:.2f} GPU-h"
           + ("  (dry run — nothing launched)" if dry_run else ""))
     print("NOTE: SEC_PER_RFD3_DESIGN has no size law — it is a flat constant "
@@ -527,9 +558,15 @@ def build_specs(out_root: Path, binder_min: int = 70,
         hotspots = [{"auth_seq_id": a, "rfd3_atoms": atoms[a]}
                     for a in rung["hotspots_auth"] if a in atoms]
         spec_path = rung_dir / "spec.json"
+        # The PDB sibling `trim_target` writes, which is what
+        # `_stage_trim` hands RFD3 (pipeline_runner's `pdb_input`) — NOT the
+        # .cif. RFD3 reads an mmCIF by label_seq_id, so an author-numbered
+        # contig against the .cif addresses the wrong residues or aborts on
+        # the GPU; `validate_spec` now refuses that pairing, which is what
+        # caught all 13 rungs here.
         build_rfd3_spec(
             name=f"{payload['pdb_id'].lower()}_rung{rung['budget']}",
-            structure_path=Path(rung["trimmed_path"]),
+            structure_path=Path(rung["trimmed_path"]).with_suffix(".pdb"),
             contig=rung["contig"], hotspots=hotspots,
             target_chain=payload["target_chain"], out_path=spec_path,
             binder_min=binder_min, binder_max=binder_max)

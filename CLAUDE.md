@@ -482,6 +482,31 @@ them without re-reading this list is how they get silently reverted.
   which exists **only in a design sidecar** (`*_model_*.json`) — never in the input
   spec. Scoring must remap hotspots from a sidecar; using the spec silently scores
   the wrong residues.
+- **RFD3 must be fed the trim's PDB, never its mmCIF, and that is load-bearing
+  rather than stylistic.** Its loader (atomworks -> biotite) takes biotite's
+  non-default `use_author_fields=False` path, so from an mmCIF it addresses
+  residues by `label_seq_id` while every contig in this pipeline is written in
+  AUTHOR numbering. Measured on 4ZGM (chain A auth 29-128, label 6-105): the
+  contig `A29-128` against `4ZGM_ba1.cif` died with `[component=A106] Residue
+  A106 not found in atom array` — A106 being the first id past the label
+  range, for a residue plainly present as `ATOM ... ALA A ... 106`. That is
+  the LUCKY failure; spans that happen to fall inside the label range model
+  the wrong residues with no error at all. `_stage_trim` is safe because it
+  passes `trimmed.pdb` (`pipeline_runner`'s `pdb_input`), where author
+  numbering is the only numbering — so `write_trimmed` writing both files is
+  not redundancy. `validate_spec` now refuses an mmCIF input whose label and
+  author numbering disagree; a structure numbered from 1 is unaffected.
+  A benchmark script pointed 13 specs at `trimmed.cif` and is what found this.
+- **RFD3 merges contig components that are NOT separated by `/0` into ONE
+  output chain, whatever input chains they came from** — `/0` is the
+  chain-INCREMENT token (foundry `rfd3/inference/input_parsing.py:1319-1324`).
+  Measured on 4ZGM with `70-86,/0,A29-128,B10-37`: the output is exactly two
+  chains (binder A = 79 residues, target B = 128) and the sidecar's
+  `diffused_index_map` carries 128 entries — 100 keyed `A*`, 28 keyed `B*` —
+  every one of them mapping into `B`, numbered 1..128 consecutively. This is
+  what makes a two-chain (molecular-glue) target possible without touching
+  scoring: `binder_metrics`, `binder_ranking`, the `chain_pair_*` `[0][1]`
+  read and ipSAE all keep seeing one binder against one target.
 - **RFD3 sidecar metrics use flat dotted keys**:
   `"n_clashing.interresidue_clashes_w_sidechain"` is one string, not a nested
   object. Reading it as nested disables the clash gates and the prefilter keeps

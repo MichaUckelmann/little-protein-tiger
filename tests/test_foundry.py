@@ -183,6 +183,113 @@ def test_validate_cross_checks_against_the_trim(real_spec):
         validate_spec(path, kept_segments=[(44, 120)])
 
 
+_CIF_HEADER = """data_TEST
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.auth_seq_id
+_atom_site.auth_asym_id
+_atom_site.pdbx_PDB_model_num
+"""
+
+#: (name, dx, dy) for a minimal ALA — enough for a contig and a CB hotspot.
+_ALA_ATOMS = (("N", 0.0, 0.0), ("CA", 1.5, 0.0), ("C", 2.4, 1.2),
+              ("O", 3.6, 1.2), ("CB", 1.5, -1.5))
+
+
+def _two_chain_structure(tmp_path, first_auth: int, *, label_from: int = 1):
+    """A poly-ALA A/B pair, as .cif AND .pdb.
+
+    The mmCIF is written as literal text rather than through gemmi so that
+    `label_seq_id` and `auth_seq_id` can be made to DISAGREE, which is the
+    whole subject of these tests — gemmi's own mmCIF writer numbers both the
+    same way and cannot express the case.
+    """
+    import gemmi
+
+    rows, serial = [], 1
+    for chain_name, n, y0 in (("A", 12, 0.0), ("B", 8, 12.0)):
+        for i in range(n):
+            for name, dx, dy in _ALA_ATOMS:
+                rows.append(
+                    f"ATOM {serial} {name[0]} {name} . ALA {chain_name} 1 "
+                    f"{label_from + i} ? {dx + 4.0 * i:.3f} {dy + y0:.3f} "
+                    f"0.000 1.00 30.00 {first_auth + i} {chain_name} 1")
+                serial += 1
+    cif = tmp_path / f"target_{first_auth}_{label_from}.cif"
+    cif.write_text(_CIF_HEADER + "\n".join(rows) + "\n", encoding="utf-8")
+
+    # The PDB sibling, from the same coordinates. PDB has ONE numbering, so
+    # gemmi is the right writer here.
+    st = gemmi.read_structure(str(cif))
+    st.setup_entities()
+    pdb = cif.with_suffix(".pdb")
+    st.write_pdb(str(pdb))
+    return cif, pdb
+
+
+def _spec_for(tmp_path, struct: Path, first_auth: int):
+    spec = {"d": {
+        "dialect": 2,
+        "input": str(struct),
+        "contig": f"68-86,/0,A{first_auth}-{first_auth + 11}",
+        "select_hotspots": {f"A{first_auth + 3}": "CB"},
+        "infer_ori_strategy": "hotspots",
+    }}
+    out = tmp_path / f"spec_{struct.suffix.lstrip('.')}.json"
+    out.write_text(json.dumps(spec))
+    return out
+
+
+def test_validate_refuses_an_author_numbered_contig_against_a_shifted_mmcif(tmp_path):
+    """RFD3 reads an mmCIF by `label_seq_id`, not by author numbering.
+
+    Measured, on a real probe: 4ZGM chain A is auth 29-128 / label 6-105, and
+    the author-numbered contig `A29-128` against `4ZGM_ba1.cif` aborted with
+    `[component=A106] Residue A106 not found in atom array` — A106 being the
+    first id past the LABEL range, for a residue plainly in the file as
+    `ATOM ... ALA A ... 106`. The pipeline is safe by construction because
+    `_stage_trim` hands RFD3 `trimmed.pdb`, where author numbering is the only
+    numbering; this refuses the pairing that is not, since the failure above is
+    the lucky case — spans inside the label range mis-model silently.
+    """
+    cif, _pdb = _two_chain_structure(tmp_path, first_auth=195, label_from=1)
+    with pytest.raises(SpecError, match="label_seq_id"):
+        validate_spec(_spec_for(tmp_path, cif, 195))
+
+
+def test_validate_accepts_the_pdb_sibling_of_that_same_structure(tmp_path):
+    """Same coordinates, same contig — the format is the whole difference."""
+    _cif, pdb = _two_chain_structure(tmp_path, first_auth=195, label_from=1)
+    summary = validate_spec(_spec_for(tmp_path, pdb, 195))
+    assert summary["designs"]["d"]["n_target_residues"] == 12
+
+
+def test_an_mmcif_whose_numbering_already_agrees_is_not_refused(tmp_path):
+    """The guard is about a SHIFT, not about the format.
+
+    A structure numbered from 1 has label_seq_id == auth_seq_id, so the
+    contig means what it says and refusing it would block a legitimate input.
+    """
+    cif, _pdb = _two_chain_structure(tmp_path, first_auth=1, label_from=1)
+    summary = validate_spec(_spec_for(tmp_path, cif, 1))
+    assert summary["designs"]["d"]["n_target_residues"] == 12
+
+
 # ----------------------------------------------------------------------
 # MPNN configs
 # ----------------------------------------------------------------------
