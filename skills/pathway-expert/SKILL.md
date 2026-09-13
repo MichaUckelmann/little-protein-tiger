@@ -318,7 +318,7 @@ in corpus", explicitly reason through the following before writing the report:
      therapeutic mode. The mode name is historical — interpret broadly: it
      covers (a) enzyme catalytic sites, (b) allosteric pockets, (c) substrate-
      binding clefts on non-enzymes including **DNA-binding clefts** (e.g.
-     blocking cGAS from sensing dsDNA), RNA-binding clefts, lipid-binding
+     blocking a cytosolic DNA sensor), RNA-binding clefts, lipid-binding
      pockets, and metabolite-binding sites. The pipeline mechanic is identical
      in every case: a designed peptide / macrocycle / mini-protein occupies
      the cleft and competes with the natural ligand.
@@ -481,7 +481,7 @@ suggest the user run `python scripts/fetch_papers.py` with specific pathway keyw
 ### PIPELINE HANDOFF
 - pdb_id: <PDB accession from corpus (pdb_accessions or suggested_pdb_structures fields only), or NOT_FOUND>
 - structure_organism: <scientific name of the source organism of that PDB entry, from entities[].organism_name — append " (ortholog)" when it is not Homo sapiens, e.g. "Schizosaccharomyces pombe (ortholog)". Write UNKNOWN only if metadata_available was false.>
-- target_complex: <ProteinA / ProteinB — for PPI candidates. For DIRECT INHIBITION, the single protein name with annotation, e.g. "DPP4 (active site)">
+- target_complex: <ProteinA / ProteinB — for PPI candidates. For DIRECT INHIBITION, the single protein name with annotation, formatted "GENE_A (active site)">
 - design_intent: <disrupt | stabilize | inhibit_active_site — from Phase 4a reasoning for the PRIMARY RECOMMENDATION>
 - structure_query: <one sentence. For PPI: "Analyze PDB {pdb_id} ({structure_organism}) at data/structures/{pdb_id}.cif. Target complex: {ProteinA} / {ProteinB}. Identify hotspot residues for binder design." For inhibit_active_site: "Analyze PDB {pdb_id} ({structure_organism}) at data/structures/{pdb_id}.cif. Target protein: {ProteinName}. Identify catalytic pocket residues for active-site inhibition." DO NOT name a modality (cyclic peptide / mini-protein / stapled peptide) anywhere in this query — modality is the operator's choice, resolved downstream, and asserting one here silently overrides it. DO NOT include chain letters (A/B/...) anywhere in this query — at this stage you have not inspected the mmCIF and any chain assignment you write will be a guess. Chain identity is resolved by the downstream structure-analysis stage, which reads the mmCIF header directly.>
 - choices_json: <compact JSON array — see format below>
@@ -555,12 +555,12 @@ choose the site accordingly rather than proposing one that will be refused.
 
 **Reachable, and clinically validated:**
 
-- **Class B ECD** (GCGR, GLP1R, CALCRL, PTH1R, CRHR). These use a two-domain
-  mechanism: the peptide hormone's C-terminus binds a genuine extracellular
-  domain, its N-terminus then inserts into the helical bundle. The ECD contact
-  is a real protein-protein interface and is fully extracellular. Erenumab
-  blocks the CALCRL/RAMP1 receptor this way and is an approved migraine drug;
-  anti-GCGR antibodies are in trials for diabetes.
+- **Class B ECDs.** These use a two-domain mechanism: the peptide hormone's
+  C-terminus binds a genuine extracellular domain, its N-terminus then inserts
+  into the helical bundle. The ECD contact is a real protein-protein interface
+  and is fully extracellular. Approved antibodies and trial agents exist
+  against class B ECDs, so the modality is validated — identify the specific
+  receptor from the corpus, not from this list.
 - **Class C Venus flytrap** (mGluR, CaSR, GABA-B) — the orthosteric site is
   entirely extracellular and large.
 - **Class F CRD** (Frizzled, SMO).
@@ -568,8 +568,8 @@ choose the site accordingly rather than proposing one that will be refused.
   (chemokine receptors, angiotensin, opioid peptide receptors). The ligand has a
   large extracellular footprint, and antibodies against these surfaces work
   (mogamulizumab/CCR4, leronlimab/CCR5).
-- **Receptor / accessory-protein interfaces** such as CALCRL-RAMP1, where the
-  interface itself sits outside the membrane.
+- **Receptor / accessory-protein interfaces**, where the interface itself sits
+  outside the membrane.
 
 **Not reachable — do not propose these:**
 

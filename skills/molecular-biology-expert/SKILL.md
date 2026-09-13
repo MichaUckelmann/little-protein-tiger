@@ -64,8 +64,8 @@ If the target is ambiguous (e.g., "KRAS" without specifying which effector), ask
 user to clarify before proceeding.
 
 **Common name normalisation:** Use canonical protein names in queries. Examples:
-- TP53 / p53 / hp53 → "p53"
-- JAK1/2/3 → "JAK" (search broadly, then filter to isoform if needed)
+- GAPDH / G3PDH / hGAPDH → "GAPDH"
+- ACTB / ACTG1 → "actin" (search broadly, then filter to the specific paralog if needed)
 - p53 / TP53 / tumor protein p53 → "p53"
 
 ---
@@ -253,10 +253,12 @@ report that you did. If the only residues the corpus gives you are
 intramembrane, that is a genuine finding — set `tractability: Poor` and explain,
 rather than passing them on.
 
-Worked example from a real run: for the CGRP receptor the useful hint was
-`RAMP1 F83/W84/P85` — the extracellular domain, the epitope the approved
-antibody erenumab engages. The same hint also carried `CALCRL W254/Y255/H295`,
-which are transmembrane by UniProt annotation and cost the run a stage.
+Worked example from a real run, on a class B GPCR / accessory-protein pair:
+the useful half of the hint named three residues on the accessory protein's
+extracellular domain — the epitope an approved antibody engages. The SAME hint
+also carried three residues on the receptor that are transmembrane by UniProt
+annotation, and that half cost the run a stage. One hint, both kinds; check
+each residue's topology rather than the hint as a whole.
 
 ---
 
@@ -484,7 +486,7 @@ traced to a DOI and then to a `source_span` within the full fingerprint.
   `doi:` prefix.
 - **Residue name normalisation.** When cross-referencing structure-tools hotspots
   against fingerprint `key_amino_acid_residues`, treat "Phe69", "F69", "PHE 69",
-  and "hTP53 Arg273" as equivalent. Match on residue number + one-letter or three-letter
+  and "h<GENE> Arg273" as equivalent. Match on residue number + one-letter or three-letter
   amino acid code.
 - **Corpus bias.** The corpus is focused on biochemistry and biophysics. In vivo
   validation, clinical data, and ADMET properties are rarely in the corpus — flag

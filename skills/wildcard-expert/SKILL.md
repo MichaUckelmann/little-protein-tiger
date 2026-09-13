@@ -594,12 +594,12 @@ choose the site accordingly rather than proposing one that will be refused.
 
 **Reachable, and clinically validated:**
 
-- **Class B ECD** (GCGR, GLP1R, CALCRL, PTH1R, CRHR). These use a two-domain
-  mechanism: the peptide hormone's C-terminus binds a genuine extracellular
-  domain, its N-terminus then inserts into the helical bundle. The ECD contact
-  is a real protein-protein interface and is fully extracellular. Erenumab
-  blocks the CALCRL/RAMP1 receptor this way and is an approved migraine drug;
-  anti-GCGR antibodies are in trials for diabetes.
+- **Class B ECDs.** These use a two-domain mechanism: the peptide hormone's
+  C-terminus binds a genuine extracellular domain, its N-terminus then inserts
+  into the helical bundle. The ECD contact is a real protein-protein interface
+  and is fully extracellular. Approved antibodies and trial agents exist
+  against class B ECDs, so the modality is validated — identify the specific
+  receptor from the corpus, not from this list.
 - **Class C Venus flytrap** (mGluR, CaSR, GABA-B) — the orthosteric site is
   entirely extracellular and large.
 - **Class F CRD** (Frizzled, SMO).
@@ -607,8 +607,8 @@ choose the site accordingly rather than proposing one that will be refused.
   (chemokine receptors, angiotensin, opioid peptide receptors). The ligand has a
   large extracellular footprint, and antibodies against these surfaces work
   (mogamulizumab/CCR4, leronlimab/CCR5).
-- **Receptor / accessory-protein interfaces** such as CALCRL-RAMP1, where the
-  interface itself sits outside the membrane.
+- **Receptor / accessory-protein interfaces**, where the interface itself sits
+  outside the membrane.
 
 **Not reachable — do not propose these:**
 
@@ -837,9 +837,10 @@ rule **in order** — first match wins:
 3. **Rationale must cite `novelty_score` AND the strongest DepMap
    neighbourhood signal (when Call 7 ran on the pick).** State both in
    one sentence — e.g. "novelty_score=0.72 — PERIPHERY-NOVEL,
-   mechanistically connected to KRAS via SOS1 (3-hop path, min mentions
-   = 4); DepMap-coupled to RAF1 at r=0.58 (n=1208) — an interaction the
-   corpus has not yet recognised but DepMap validates functionally."
+   mechanistically connected to <anchor> via <intermediate> (3-hop path,
+   min mentions = 4); DepMap-coupled to <partner> at r=0.58 (n=1208) — an
+   interaction the corpus has not yet recognised but DepMap validates
+   functionally."
    When the Call-7 sweep produced no partner with r ≥ 0.4, state that
    explicitly rather than omitting the line.
 

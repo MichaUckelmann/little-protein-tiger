@@ -17,7 +17,7 @@ description: >
   "molecular glue", "PPI stabilizer", "PPI analysis", "design a binder",
   "cyclic peptide target", "mini-protein target", or when a multi-chain structure is
   provided and the user asks which surface to target. Also trigger for known complexes
-  (e.g. PD-1/PD-L1, p53-MDM2). Requires structure-tools MCP.
+  (a named two-protein complex). Requires structure-tools MCP.
 ---
 
 # PPI Interface Analysis for Peptide / Mini-Protein Design
@@ -207,17 +207,17 @@ Adjudication rules (apply before any geometry call):
   descriptions.
 - **MISMATCH but same protein under canonical RCSB long form** → proceed,
   note the synonymy in your report. Examples:
-  - Expected `TP53` vs entity `"Cellular tumor antigen p53"` → same, proceed.
-  - Expected `CTNNB1` vs entity `"Catenin beta-1"` → same, proceed.
+  - Expected `GAPDH` vs entity `"Glyceraldehyde-3-phosphate dehydrogenase"` → same, proceed.
+  - Expected `ACTB` vs entity `"Actin, cytoplasmic 1"` → same, proceed.
   - Expected `EGFR` vs entity `"Epidermal growth factor receptor"` → same, proceed.
   - Expected `ENPP1` vs entity `"Ectonucleotide pyrophosphatase/phosphodiesterase family member 1"` → same, proceed.
 - **MISMATCH = different paralogs / family members** → **NO_GO**. Emit a stub
   PIPELINE HANDOFF naming both the expected target and the actual entity.
   Examples:
   - Expected `ENPP1` vs entity `"... family member 2"` → ENPP2, NO_GO.
-  - Expected `JAK1` vs entity `"Tyrosine-protein kinase JAK2"` → JAK2, NO_GO (different JAK paralog).
-  - Expected `JAK1` vs entity for JAK2 → NO_GO.
-  - Expected `AKT1 / <partner>` vs an AKT2 complex → NO_GO (AKT2 ≠ AKT1, paralog).
+  - Expected `ACTB` vs entity `"Actin, cytoplasmic 2"` → ACTG1, NO_GO (different actin paralog — they differ by four residues).
+  - Expected `ACTB` vs entity for ACTG1 → NO_GO.
+  - Expected `GENE_A / GENE_B` vs a complex of GENE_A's paralog → NO_GO.
 - **MISMATCH = different species / orthologs but same gene** (e.g. mouse vs
   human ENPP1) → **proceed.** An ortholog is often the only structure that
   exists for a complex, and a site conserved between it and the human protein

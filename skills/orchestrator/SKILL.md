@@ -239,7 +239,7 @@ synthesise signals from both reports and produce a `CAMPAIGN RECOMMENDATION`.
 
 Compare the structure-tools MODEL-READY HOTSPOTS against the literature
 `INTERFACE INSIGHTS FROM LITERATURE` validated residues. Normalise naming conventions
-when comparing (e.g. "Arg273" = "R273" = "ARG273" = "hTP53 Arg273" — match on residue
+when comparing (e.g. "Arg273" = "R273" = "ARG273" = "h<GENE> Arg273" — match on residue
 number + amino acid identity).
 
 Classify each hotspot residue as:
@@ -378,4 +378,4 @@ After Stage 4 completes, present a brief campaign summary:
   skip Stage 2, produce a limited CAMPAIGN RECOMMENDATION based on structural signals
   only, and flag the missing literature context explicitly.
 - **Residue naming normalisation.** When cross-referencing hotspots, treat "Phe69",
-  "R273", "ARG273", and "hTP53 Arg273" as equivalent.
+  "R273", "ARG273", and "h<GENE> Arg273" as equivalent.

@@ -57,7 +57,7 @@ supporting DOIs + tightest Kd/Ki.
 `human_only: bool = True` and `taxa: list[int] | None = None`. The default
 is correct for ~90% of queries — it restricts results to proteins that
 sprint 2 resolved to a human gene symbol (covers human-native AND
-ortholog-mapped, e.g. mouse Trp53 → TP53). Yeast / bacterial / Drosophila
+ortholog-mapped, e.g. mouse Gapdh → GAPDH). Yeast / bacterial / Drosophila
 proteins are excluded.
 
 When to override:
@@ -365,8 +365,8 @@ End the keyword block with a one-line action hint:
   pharmacokinetic data are sparse. Flag their absence explicitly rather
   than treating the corpus as exhaustive.
 - **Aliases vary across fingerprints.** `get_interactions_for` already
-  normalises ("JAK" matches "JAK1"), but when the user names a paralog
-  family ("JAK"), expect partners to span multiple paralogs — clarify
+  normalises (a family head matches its numbered member), but when the user
+  names a paralog family, expect partners to span multiple paralogs — clarify
   with the user if it matters which one.
 - **`[uncited]` is allowed and encouraged.** Don't withhold useful
   background knowledge just because no corpus paper supports it; tag it

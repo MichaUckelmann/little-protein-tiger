@@ -35,8 +35,29 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 #: a general rule: a future leak of a DIFFERENT target is caught by
 #: `test_the_selectors_use_placeholder_genes`, which checks the convention.
 _AUDITED = re.compile(
-    r"\b(yap1?|tead[1-4]?|hippo|mesothelioma|3kys|verteporfin|wwtr1|vgll4)\b",
+    r"\b(yap1?|tead[1-4]?|hippo|mesothelioma|3kys|verteporfin|wwtr1|vgll4"
+    r"|calcrl|ramp1|erenumab|cgrp)\b",
     re.IGNORECASE)
+
+#: Plausible design TARGETS, which a selector prompt must never name. Wider
+#: than `_AUDITED` and applied only to the two stages that CHOOSE — every
+#: target any run of this pipeline has ever picked was named somewhere in the
+#: skills, which is why this list exists and why it is checked at the point of
+#: choice rather than everywhere.
+#:
+#: Mechanics examples elsewhere may still name a real gene, but they now use
+#: housekeeping proteins (GAPDH, ACTB/ACTG1) that nobody designs a binder
+#: against. An earlier pass used TP53/MDM2 for that role, which MOVED the bias
+#: instead of removing it: p53-MDM2 is the textbook PPI drug-discovery
+#: example.
+_DRUGGABLE = re.compile(
+    r"\b(tp53|mdm2|akt[12]|jak[123]|ctnnb1|kras|raf1|braf|egfr|scap|srebp"
+    r"|enpp[12]|dpp4|lpar1|cgas|sting|cd79b|sos1|mybpc3|pd-?l1|pd-?1"
+    r"|il7ra?|calcrl|ramp1|yap1?|tead[1-4]?)\b",
+    re.IGNORECASE)
+
+#: The stages that turn a query into a target. Only these two.
+_SELECTORS = ("pathway-expert", "wildcard-expert")
 
 #: Every text that reaches a model: skill system prompts (`skill_runner`
 #: `_load_system_prompt` reads the WHOLE SKILL.md, frontmatter included), the
@@ -136,3 +157,24 @@ def test_the_placeholder_convention_is_explained_where_it_is_used():
         encoding="utf-8")
     assert "DELIBERATE PLACEHOLDERS" in text
     assert "an example was copied instead of answered" in text
+
+
+@pytest.mark.parametrize("skill", _SELECTORS)
+def test_a_selector_names_no_plausible_target_at_all(skill):
+    """The empirical reason this is stricter than `_AUDITED`: every target any
+    run of this pipeline has picked — YAP1/TEAD1, PD-L1, CALCRL/RAMP1,
+    KRAS/RAF1 — was named somewhere in the skills. Whether that is cause or
+    coincidence is measurable (see scripts/ablate_corpus.py and the
+    target-diversity sweep), but a stage that CHOOSES should not be carrying a
+    menu while we find out.
+
+    Mechanics examples in the evaluator skills are exempt by design: they use
+    housekeeping proteins (GAPDH, ACTB/ACTG1) that are not candidate answers.
+    """
+    text = (_ROOT / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+    hits = [f"{skill}:{i}: {line.strip()[:90]}"
+            for i, line in enumerate(text.splitlines(), 1)
+            if _DRUGGABLE.search(line)]
+    assert not hits, (
+        "a target-selecting prompt must name no plausible target:\n"
+        + "\n".join(hits))
