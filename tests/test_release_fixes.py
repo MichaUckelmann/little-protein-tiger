@@ -1784,3 +1784,32 @@ def test_the_last_resort_length_is_per_modality_too(config):
         r = PipelineRunner(stripped, workflow="binder", modality=modality,
                            design_engine="boltzgen")
         assert r._binder_length_range({}) == expected
+
+
+def test_no_entry_point_passes_a_project_slug_where_a_project_goes():
+    """`PipelineRunner` dereferences `project.root` and `project.run_dir()`, so
+    a bare slug string gets as far as `_init_ledger` and dies with `'str'
+    object has no attribute 'root'`.
+
+    `scripts/e2e_ppi_boltzgen.py` did exactly that and nothing caught it,
+    because the driver had never been RUN — it was written and committed in one
+    sitting, and the first execution was a queued acceptance run hours later.
+    Checked by reflection over every script that constructs a runner, so the
+    next entry point cannot reintroduce it.
+    """
+    import re
+
+    root = _repo_root() / "scripts"
+    offenders = []
+    for path in sorted(root.glob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        if "PipelineRunner(" not in src:
+            continue
+        for m in re.finditer(r"project\s*=\s*([A-Za-z_][\w.]*)", src):
+            name = m.group(1)
+            # A Project instance, or None. `args.project` / a bare `.project`
+            # attribute off an argparse namespace is the slug string.
+            if name.startswith("args.") or name.endswith("_slug"):
+                offenders.append(f"{path.name}: project={name}")
+    assert not offenders, (
+        "pass a src.project.Project, not its slug: " + "; ".join(offenders))

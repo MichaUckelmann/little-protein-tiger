@@ -1019,10 +1019,42 @@ def write_trimmed(
     """
     import gemmi
 
-    from src.structure_tools import is_chain_residue, is_solvent_or_additive
+    from src.structure_tools import (
+        is_chain_residue, is_solvent_or_additive, parent_atom_names,
+        parent_residue,
+    )
+
+    def as_parent(res, parent: str):
+        """A modified residue rewritten as the amino acid it modifies.
+
+        Three things change, and all three matter to a generator's parser:
+
+        * the NAME, so the residue is recognised at all;
+        * the atom set, trimmed to what the parent defines — leaving the
+          modification's own atoms behind would hand RFD3 a cysteine carrying
+          a 16-carbon tail;
+        * `het_flag`, from 'H' to 'A'. This is the one that actually bit.
+          3KYS A344 is deposited as a HETATM record between two ATOM records,
+          and a parser that builds the polymer from ATOM records drops it —
+          which is why RFD3 reported `Residue A344 not found in atom array`
+          for a residue plainly present in the file.
+        """
+        out = gemmi.Residue()
+        out.name = parent
+        out.seqid = res.seqid
+        out.subchain = res.subchain
+        out.label_seq = res.label_seq
+        out.het_flag = "A"
+        allowed_atoms = parent_atom_names(parent)
+        for atom in res:
+            if atom.name in allowed_atoms:
+                out.add_atom(atom)
+        return out
 
     src = _model(structure_path)
     dropped: dict[str, int] = {}
+    converted: dict[str, str] = {}
+    unconvertible: dict[str, int] = {}
     wanted = {c: (None if v is None else set(int(x) for x in v))
               for c, v in keep.items()}
 
@@ -1054,6 +1086,21 @@ def write_trimmed(
             if is_solvent_or_additive(res.name):
                 dropped[res.name] = dropped.get(res.name, 0) + 1
                 continue
+            # A modified residue is kept (above) for its backbone, but it has
+            # to reach the generator as something the generator can parse.
+            # See `as_parent`. An unknown parent is NOT guessed — inventing
+            # one would silently change which amino acid gets designed
+            # against — so it is left alone and reported; `validate_spec`
+            # refuses a contig that spans one.
+            parent = parent_residue(res.name)
+            if parent is not None and parent != res.name.strip().upper():
+                converted[f"{ch.name}{res.seqid.num} {res.name}"] = parent
+                ch_out.add_residue(as_parent(res, parent))
+                continue
+            if parent is None:
+                # `parent_residue` returns the name itself for a standard
+                # amino acid, so None here means non-standard AND unknown.
+                unconvertible[res.name] = unconvertible.get(res.name, 0) + 1
             ch_out.add_residue(res)
         if len(ch_out):
             model_out.add_chain(ch_out)
@@ -1063,6 +1110,20 @@ def write_trimmed(
         logger.info(
             f"dropped {sum(dropped.values())} solvent/additive residues "
             f"({', '.join(f'{k}x{v}' for k, v in sorted(dropped.items()))})")
+    if converted:
+        logger.info(
+            f"converted {len(converted)} modified residue(s) to their parent "
+            f"amino acid for the generator's parser: "
+            + ", ".join(f"{k} -> {v}" for k, v in sorted(converted.items())))
+    if unconvertible:
+        logger.warning(
+            "no parent amino acid known for "
+            + ", ".join(f"{k}x{v}" for k, v in sorted(unconvertible.items()))
+            + " — kept as deposited. A generator whose parser does not know "
+              "the residue will not see it, and a contig spanning it is "
+              "refused by validate_spec rather than failing on the GPU. Add "
+              "it to structure_tools._CURATED_PARENTS if the chemistry is "
+              "unambiguous.")
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.suffix.lower() == ".pdb":
@@ -1364,12 +1425,26 @@ def _exposed_hydrophobic(original: Path, trimmed: Path, chain: str,
     def sasa(path: Path) -> dict[int, tuple[str, float]]:
         """Per-residue SASA of the target chain's POLYPEPTIDE alone.
 
-        Amino acids only, and one chain only, in both files — otherwise this
-        measures the wrong thing twice over. Waters are stripped from the
-        trimmed structure but not the deposited one, so including them reports
-        desolvation as exposure: on 7CZD, a trim that removed nothing at all
-        showed Met18 gaining 71 A^2. Excluding the partner likewise stops the
-        interface itself reading as a fresh hydrophobic face.
+        Amino acids only, one chain only, and PARENT-CANONICAL ATOMS ONLY, in
+        both files — otherwise this measures the wrong thing several ways over.
+
+        Waters are stripped from the trimmed structure but not the deposited
+        one, so including them reports desolvation as exposure: on 7CZD, a trim
+        that removed nothing at all showed Met18 gaining 71 A^2. Excluding the
+        partner likewise stops the interface itself reading as a fresh
+        hydrophobic face.
+
+        The atom restriction is the same discipline one level down, and it is
+        needed because `write_trimmed` now converts a modified residue to its
+        parent amino acid and drops the modification's own atoms. biotite DOES
+        count P1L (S-palmitoyl-cysteine) as an amino acid, so 3KYS A344's
+        16-carbon tail was present on the deposited side and gone from the
+        trimmed one — and the pocket it fills is lined by MET347 and PHE392,
+        which duly read as +28.9 and +21.7 A^2 of freshly exposed hydrophobic
+        surface and made the guard refuse a trim that had cut nothing. The cut
+        did not expose them; removing a lipid RFD3 cannot model did. Comparing
+        only atoms that survive INTO the design structure is what makes the
+        two sides comparable.
         """
         import biotite.structure as struc
         from biotite.structure.io.pdbx import CIFFile, get_structure
@@ -1380,8 +1455,19 @@ def _exposed_hydrophobic(original: Path, trimmed: Path, chain: str,
             arr = PDBFile.read(str(pth)).get_structure(model=1)
         else:
             arr = get_structure(CIFFile.read(str(pth)), model=1)
+        from src.structure_tools import parent_atom_names, parent_residue
+
         arr = arr[struc.filter_amino_acids(arr) & (arr.chain_id == chain)]
         arr = arr[~np.isnan(arr.coord).any(axis=1)]
+        # Cache per residue NAME, not per atom: a few distinct names, tens of
+        # thousands of atoms.
+        allowed: dict[str, frozenset[str]] = {}
+        for rn in set(map(str, arr.res_name)):
+            allowed[rn] = parent_atom_names(parent_residue(rn) or "") | {"OXT"}
+        arr = arr[np.array(
+            [an in allowed[rn] for rn, an in zip(map(str, arr.res_name),
+                                                 map(str, arr.atom_name))],
+            dtype=bool)] if arr.array_length() else arr
         if arr.array_length() == 0:
             return {}
         vals = struc.sasa(arr, vdw_radii="Single")

@@ -915,6 +915,91 @@ def is_chain_residue(res) -> bool:
     return all(res.find_atom(a, "*") is not None for a in ("N", "CA", "C"))
 
 
+#: Heavy (non-hydrogen) atom names of each standard amino acid. Used ONLY to
+#: decide which atoms of a modified residue survive conversion to its parent —
+#: keeping an atom the parent does not define is how a renamed residue reaches
+#: a generator as a CYS carrying a 16-carbon tail.
+_PARENT_ATOMS: dict[str, frozenset[str]] = {
+    "ALA": frozenset("N CA C O CB".split()),
+    "ARG": frozenset("N CA C O CB CG CD NE CZ NH1 NH2".split()),
+    "ASN": frozenset("N CA C O CB CG OD1 ND2".split()),
+    "ASP": frozenset("N CA C O CB CG OD1 OD2".split()),
+    "CYS": frozenset("N CA C O CB SG".split()),
+    "GLN": frozenset("N CA C O CB CG CD OE1 NE2".split()),
+    "GLU": frozenset("N CA C O CB CG CD OE1 OE2".split()),
+    "GLY": frozenset("N CA C O".split()),
+    "HIS": frozenset("N CA C O CB CG ND1 CD2 CE1 NE2".split()),
+    "ILE": frozenset("N CA C O CB CG1 CG2 CD1".split()),
+    "LEU": frozenset("N CA C O CB CG CD1 CD2".split()),
+    "LYS": frozenset("N CA C O CB CG CD CE NZ".split()),
+    "MET": frozenset("N CA C O CB CG SD CE".split()),
+    "PHE": frozenset("N CA C O CB CG CD1 CD2 CE1 CE2 CZ".split()),
+    "PRO": frozenset("N CA C O CB CG CD".split()),
+    "SER": frozenset("N CA C O CB OG".split()),
+    "THR": frozenset("N CA C O CB OG1 CG2".split()),
+    "TRP": frozenset(
+        "N CA C O CB CG CD1 CD2 NE1 CE2 CE3 CZ2 CZ3 CH2".split()),
+    "TYR": frozenset("N CA C O CB CG CD1 CD2 CE1 CE2 CZ OH".split()),
+    "VAL": frozenset("N CA C O CB CG1 CG2".split()),
+}
+
+#: One-letter -> three-letter, for the gemmi tier of `parent_residue`.
+_ONE_TO_THREE = {
+    "A": "ALA", "R": "ARG", "N": "ASN", "D": "ASP", "C": "CYS", "Q": "GLN",
+    "E": "GLU", "G": "GLY", "H": "HIS", "I": "ILE", "L": "LEU", "K": "LYS",
+    "M": "MET", "F": "PHE", "P": "PRO", "S": "SER", "T": "THR", "W": "TRP",
+    "Y": "TYR", "V": "VAL",
+}
+
+#: Modified residues whose parent NEITHER the deposited CIF nor gemmi states.
+#: Deliberately tiny: an entry here is a claim about chemistry, so it carries
+#: the modification's full name and is added only when a real structure needed
+#: it. P1L is 3KYS A344, the TEAD1 palmitoylation site.
+_CURATED_PARENTS = {
+    "P1L": ("CYS", "S-palmitoyl-L-cysteine"),
+}
+
+
+def parent_residue(res_name: str, cif_parent: str | None = None) -> str | None:
+    """The standard amino acid a modified residue is a modification OF.
+
+    Ordered tiers, most authoritative first, because no single source covers
+    the cases that arise:
+
+    1. `cif_parent` — the deposited file's own
+       `_chem_comp.mon_nstd_parent_comp_id`. Authoritative, and absent more
+       often than not: 3KYS declares `_chem_comp` for every component and
+       states a parent for NONE of them.
+    2. gemmi's residue table, via `one_letter_code`. It answers for the
+       modifications it tabulates (MSE -> 'm' -> MET) and returns empty for
+       anything it does not know.
+    3. `_CURATED_PARENTS`, for residues neither source states.
+
+    Returns None when nothing knows, which callers must treat as a refusal
+    rather than a default — inventing a parent would silently change which
+    amino acid a generator designs against.
+    """
+    name = (res_name or "").strip().upper()
+    if name in _PARENT_ATOMS:
+        return name
+    if cif_parent:
+        cand = cif_parent.strip().upper()
+        if cand in _PARENT_ATOMS:
+            return cand
+    info = gemmi.find_tabulated_residue(name)
+    if info is not None:
+        code = (info.one_letter_code or "").strip().upper()
+        if code in _ONE_TO_THREE:
+            return _ONE_TO_THREE[code]
+    entry = _CURATED_PARENTS.get(name)
+    return entry[0] if entry else None
+
+
+def parent_atom_names(parent: str) -> frozenset[str]:
+    """Heavy atoms the parent residue defines. Empty for an unknown parent."""
+    return _PARENT_ATOMS.get((parent or "").strip().upper(), frozenset())
+
+
 def is_solvent_or_additive(resname: str) -> bool:
     """True for water and common crystallisation additives — never for the chain.
 

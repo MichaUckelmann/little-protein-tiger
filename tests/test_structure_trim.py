@@ -373,6 +373,16 @@ def test_a_partial_backbone_is_not_enough():
 @pytest.mark.skipif(not Path("data/structures/3KYS_ba1.cif").exists(),
                     reason="3KYS not in the structure cache")
 def test_the_real_palmitoyl_cysteine_survives_a_trim(tmp_path):
+    """It must not be DELETED — deleting it splits TEAD1 into an extra segment
+    and drops the palmitoylation site the whole TEAD-inhibitor literature is
+    about. It is now also CONVERTED to its parent cysteine, because RFD3's
+    parser does not know P1L and it is deposited as a HETATM record between two
+    ATOM records: a contig spanning it aborted a real campaign with `Residue
+    A344 not found in atom array` after ten retries.
+
+    So the requirement is sharper than "still there": still there, at the same
+    author id, with an intact backbone, and parseable.
+    """
     import gemmi
     from src.structure_trim import write_trimmed
     out = tmp_path / "t.cif"
@@ -380,8 +390,68 @@ def test_the_real_palmitoyl_cysteine_survives_a_trim(tmp_path):
                   {"A": list(range(195, 412))})
     st = gemmi.read_structure(str(out))
     names = {r.name for c in st[0] for r in c}
-    assert "P1L" in names, "the palmitoylated cysteine was deleted again"
     assert "HOH" not in names, "solvent should still be stripped"
+
+    a344 = [r for c in st[0] if c.name == "A" for r in c if r.seqid.num == 344]
+    assert a344, "the palmitoylated cysteine was deleted again"
+    res = a344[0]
+    assert res.name == "CYS", f"A344 should be written as its parent, got {res.name}"
+    assert res.het_flag == "A", (
+        "A344 must be an ATOM record — as a HETATM a polymer parser skips it, "
+        "which is the failure this conversion exists for")
+    atoms = {a.name for a in res}
+    assert {"N", "CA", "C", "O", "CB", "SG"} <= atoms, (
+        f"backbone + the cysteine sidechain must survive, got {sorted(atoms)}")
+    assert not {a for a in atoms if a.startswith("C") and a[1:].isdigit()}, (
+        f"the palmitoyl tail must be gone, got {sorted(atoms)}")
+
+
+def test_a_modified_residue_with_no_known_parent_is_left_alone(tmp_path,
+                                                               monkeypatch):
+    """Guessing a parent would silently change which amino acid is designed
+    against, so an unknown modification is kept as deposited and reported.
+    `foundry_spec.validate_spec` is what then refuses a contig spanning it —
+    before the GPU, rather than after ten RFD3 retries."""
+    from loguru import logger
+
+    import src.structure_tools as stools
+    from src.structure_trim import write_trimmed
+
+    monkeypatch.setitem(stools._CURATED_PARENTS, "P1L", None)
+    monkeypatch.setattr(stools, "_CURATED_PARENTS", {})
+    msgs: list[str] = []
+    hid = logger.add(lambda m: msgs.append(str(m)), level="WARNING")
+    try:
+        out = write_trimmed(Path("data/structures/3KYS_ba1.cif"),
+                            tmp_path / "t.cif",
+                            {"A": list(range(195, 412))})
+    finally:
+        logger.remove(hid)
+    import gemmi
+    st = gemmi.read_structure(str(out))
+    a344 = [r for c in st[0] if c.name == "A" for r in c if r.seqid.num == 344]
+    assert a344 and a344[0].name == "P1L", "an unknown parent must not be guessed"
+    assert any("no parent amino acid known" in m for m in msgs), msgs
+
+
+def test_the_exposure_guard_compares_the_same_atoms_on_both_sides(tmp_path):
+    """Converting a modified residue drops the modification's atoms from the
+    TRIMMED structure only, and biotite counts P1L as an amino acid — so the
+    deposited side still carried 3KYS A344's 16-carbon tail. The pocket it
+    fills is lined by MET347 and PHE392, which read as +28.9 and +21.7 A^2 of
+    freshly exposed hydrophobic surface and made the guard refuse a trim that
+    had cut NOTHING (208 -> 208 residues). Same class of error as counting
+    waters on one side only."""
+    from src.structure_trim import trim_target
+
+    hs = [{"auth_seq_id": n} for n in
+          (240, 242, 246, 249, 274, 276, 314, 346, 350, 353, 354, 357, 362, 366)]
+    res = trim_target(Path("data/structures/3KYS_ba1.cif"),
+                      target_chain="A", partner_chain="B", hotspots=hs,
+                      out_dir=tmp_path, budget=220)
+    assert res.n_residues_after == 208, "nothing should have been cut"
+    assert len(res.kept_segments) == 2, (
+        f"keeping A344 means 2 segments, not 3: {res.kept_segments}")
 
 
 # --- the three trim policies -----------------------------------------------

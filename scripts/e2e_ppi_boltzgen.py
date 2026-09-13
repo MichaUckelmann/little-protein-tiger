@@ -96,8 +96,23 @@ def main(argv: list[str] | None = None) -> int:
         f"size, against {(1000 + 20000) * seconds_per_design(285, 'protein-anything') / 3600:.0f} "
         f"GPU-h for the shipped counts.")
 
+    # A real Project, not the slug string. `PipelineRunner` dereferences
+    # `project.root` / `project.run_dir()`, so a string gets as far as
+    # `_init_ledger` and dies with `'str' object has no attribute 'root'` —
+    # which is exactly what this driver did the first time it was ever run.
+    # Mirrors what scripts/run_pipeline.py does for every other entry point.
+    from src.project import Project
+
+    project = Project.create(args.project, query=PROMPT, workflow="ppi")
+    rnd = project.latest_round() or project.new_round(note=PROMPT[:80])
+    round_id = rnd["run_id"]
+    logger.info(f"Project: {project.slug}  round: {round_id}  "
+                f"dir: {project.run_dir(round_id)}")
+
     runner = PipelineRunner(
-        config=cfg, provider=args.provider, project=args.project,
+        config=cfg, provider=args.provider,
+        project=project, round_id=round_id,
+        output_dir=project.run_dir(round_id),
         design_engine="boltzgen_legacy", budget_usd=args.budget_usd,
     )
     t0 = time.time()

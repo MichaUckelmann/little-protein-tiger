@@ -217,10 +217,13 @@ def validate_spec(
         st = gemmi.read_structure(str(struct_path))
         st.setup_entities()
         residues: dict[tuple[str, int], set[str]] = {}
+        hetatm: dict[tuple[str, int], str] = {}
         for ch in st[0]:
             for res in ch:
-                residues[(ch.name, int(res.seqid.num))] = {
-                    a.name for a in res}
+                key = (ch.name, int(res.seqid.num))
+                residues[key] = {a.name for a in res}
+                if res.het_flag == "H":
+                    hetatm[key] = res.name
 
         n_target = 0
         for chain, lo, hi in spans:
@@ -232,6 +235,29 @@ def validate_spec(
                     raise SpecError(
                         f"design {name!r} contig span {chain}{lo}-{hi}: residue "
                         f"{chain}{endpoint} is not in {struct_path.name}")
+            # A HETATM record INSIDE a contig span is invisible to a parser
+            # that builds the polymer from ATOM records, and RFD3's is one.
+            # 3KYS A344 (P1L, S-palmitoyl-cysteine) is deposited that way
+            # between two ATOM residues, and a contig spanning it aborted the
+            # campaign with `Residue A344 not found in atom array` after ten
+            # retries — a residue plainly present in the file. `write_trimmed`
+            # now converts a modified residue to its parent amino acid (name,
+            # atom set AND het_flag), so reaching this means the parent was
+            # unknown, and guessing one would change which amino acid gets
+            # designed against. Refuse here, before the GPU.
+            stranded = {i: hetatm[(chain, i)] for i in range(lo, hi + 1)
+                        if (chain, i) in hetatm}
+            if stranded:
+                raise SpecError(
+                    f"design {name!r} contig span {chain}{lo}-{hi} covers "
+                    f"HETATM residue(s) "
+                    + ", ".join(f"{chain}{i} ({n})"
+                                for i, n in sorted(stranded.items()))
+                    + " that no parent amino acid is known for. A polymer "
+                      "parser will not see them and the campaign aborts on "
+                      "the GPU. Add the modification to "
+                      "structure_tools._CURATED_PARENTS if its chemistry is "
+                      "unambiguous, or split the contig around it.")
             n_target += (hi - lo + 1) - len(missing)
             if len(missing) > 0.25 * (hi - lo + 1):
                 logger.warning(
