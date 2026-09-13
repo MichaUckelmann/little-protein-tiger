@@ -159,7 +159,11 @@ off to the SAME stage machine `--workflow binder` uses. Flipped after a real
 KRAS/RAF1 campaign validated the bridge end-to-end on GPU (82 min, top design
 iPTM 0.923 / dock-RMSD 0.39 A).
 
-**`--design-engine` names three engines, and only one of them is off the
+**`--design-engine` names TWO engines now — `boltzgen_legacy` was retired on
+2026-09-13 (`LEGACY_RETIREMENT_SCOPE.md`), and the CLI refuses the name. The
+paragraphs below describe the state before that, and still hold for the two
+that remain; the legacy-specific refusals are what the retirement replaced.
+It named three engines, and only one of them was off the
 bridge.** `foundry` (RFD3->solubleMPNN->RF3) and `boltzgen` both take the
 bridged route and differ only in which generator
 spec/pilot/calibration/production/scoring dispatch to

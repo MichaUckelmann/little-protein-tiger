@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from pathlib import Path
 import subprocess
 import sys
 
@@ -165,16 +166,50 @@ def _cli(*argv: str) -> subprocess.CompletedProcess:
         capture_output=True, text=True)
 
 
-def test_stop_after_is_refused_rather_than_ignored_on_the_legacy_engine():
-    """The flag was honoured on the binder track only, so a legacy run took it
-    and ran design -> execution -> analysis -> summary anyway. At the shipped
-    `design.production.num_designs` that is a multi-day campaign the operator
-    believed they had capped — 332 GPU-h at YAP1/TEAD1 size."""
+def test_the_legacy_engine_is_no_longer_offered_by_the_cli():
+    """Step 0 of LEGACY_RETIREMENT_SCOPE.md: the name is refused at the CLI,
+    on every track, rather than accepted or silently mapped onto `boltzgen`.
+
+    Mapping it would be the worse failure: the two are not the same campaign
+    — the legacy stages honour neither --stop-after nor a calibration verdict
+    — so an operator who asked for one and got the other would be told
+    nothing. The flag-specific refusals this replaces (--stop-after,
+    --compute/--n-gpus on legacy) are subsumed: you cannot reach them.
+    """
     proc = _cli("--workflow", "ppi", "--query", "x", "--project", "p",
                 "--design-engine", "boltzgen_legacy",
                 "--stop-after", "calibration")
     assert proc.returncode != 0
-    assert "not honoured" in proc.stderr
+    # argparse rejects the value before the body runs, so either message is a
+    # pass; what matters is that no run starts.
+    assert ("invalid choice" in proc.stderr or "retired" in proc.stderr)
+
+
+def test_a_config_supplied_legacy_backend_is_refused_too():
+    """`design.backend` can still name it, which is why the body's check
+    survives the choices list losing the value."""
+    import textwrap
+
+    cfg = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    cfg.setdefault("design", {})["backend"] = "boltzgen_legacy"
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        alt = Path(td) / "config.yaml"
+        alt.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(f"""
+                import sys, yaml, pathlib
+                sys.path.insert(0, {str(_ROOT)!r})
+                sys.argv = ["run_pipeline.py", "--workflow", "ppi",
+                            "--query", "x", "--project", "p"]
+                import scripts.run_pipeline as rp
+                rp._load_config = lambda *a, **k: yaml.safe_load(
+                    pathlib.Path({str(alt)!r}).read_text())
+                rp.main()
+            """)], capture_output=True, text=True, cwd=str(_ROOT))
+    assert proc.returncode != 0
+    assert "retired" in (proc.stderr + proc.stdout), proc.stderr[-400:]
 
 
 @pytest.mark.parametrize("engine", _BRIDGED)
@@ -188,19 +223,36 @@ def test_stop_after_is_accepted_on_both_bridged_engines(engine):
     assert proc.returncode == 0
 
 
-def test_the_legacy_engine_is_refused_off_the_ppi_track():
-    """It runs the PPI design/execution/analysis stages, which read the
-    literature handoff. Accepting it on the binder track would silently run
-    the NEW BoltzGen backend instead, since `_boltzgen_backend` is false for
-    it — i.e. quietly not what was asked for."""
+def test_the_legacy_engine_is_refused_on_every_track_by_the_cli():
+    """Was "--workflow ppi only"; retirement makes it every track."""
     proc = _cli("--workflow", "binder", "--target", "KRAS", "--project", "p",
                 "--design-engine", "boltzgen_legacy")
-    assert proc.returncode != 0 and "ppi only" in proc.stderr
+    assert proc.returncode != 0
+    assert ("invalid choice" in proc.stderr or "retired" in proc.stderr)
+
+
+def test_the_runner_still_accepts_it_for_a_library_caller_on_the_ppi_track():
+    """Step 0 is a DE-ADVERTISEMENT, not a removal, and this pins the seam.
+
+    `UNIFY_BOLTZGEN_BACKEND_NOTES.md`'s decision 2 asked that the path stay
+    genuinely reachable while it is kept, and `scripts/e2e_ppi_boltzgen.py`
+    — documented there as the only safe way to run it, since a bare CLI
+    invocation would run 332 GPU-h uncapped — constructs `PipelineRunner`
+    directly. So the runner-level refusal stays scoped to non-PPI tracks
+    until the stage chain itself is deleted (step 2 of the scope). When that
+    happens, DELETE THIS TEST rather than loosening it.
+    """
+    cfg = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    runner = PipelineRunner(cfg, workflow="ppi",
+                            design_engine="boltzgen_legacy",
+                            project=None, round_id=None)
+    assert runner._design_engine == "boltzgen_legacy"
+    assert runner._boltzgen_backend is False
+    assert runner._bridges_to_binder_track is False
 
     with pytest.raises(ValueError, match="ppi only"):
-        PipelineRunner(yaml.safe_load(
-            (_ROOT / "config.yaml").read_text(encoding="utf-8")),
-            workflow="binder", design_engine="boltzgen_legacy")
+        PipelineRunner(cfg, workflow="binder",
+                       design_engine="boltzgen_legacy")
 
 
 def test_cluster_flags_are_refused_on_boltzgen_rather_than_run_locally():

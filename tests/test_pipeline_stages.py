@@ -372,7 +372,6 @@ def test_every_engine_requires_a_project(config, tmp_path, engine):
 @pytest.mark.parametrize("argv", [
     ["--workflow", "ppi", "--query", "x", "--design-engine", "foundry"],
     ["--workflow", "ppi", "--query", "x", "--design-engine", "boltzgen"],
-    ["--workflow", "ppi", "--query", "x", "--design-engine", "boltzgen_legacy"],
     ["--workflow", "ppi", "--query", "x"],
     ["--workflow", "binder", "--target", "KRAS"],
     ["--workflow", "structure", "--pdb", "3KYS"],

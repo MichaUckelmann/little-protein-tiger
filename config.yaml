@@ -299,8 +299,10 @@ design:
   pathway:
     mode: standard
 
-  # --workflow ppi ONLY (the binder track always runs foundry regardless of
-  # this key). "foundry" (the default) or "boltzgen" (src/design_runner.py)
+  # "foundry" (the default) or "boltzgen" — the two live engines; both run
+  # the binder-track stage machine on every workflow, so this key is no
+  # longer --workflow ppi only. ("boltzgen_legacy", the src/design_runner.py
+  # path, was retired 2026-09-13 and is refused here as at the CLI.)
   # (foundry hands off to the same RFD3 -> solubleMPNN -> RF3 stage machine
   # --workflow binder uses, right after PPI's own structure stage — see
   # PipelineRunner._bridge_ppi_to_foundry and UNIFY_DESIGN_BACKEND_NOTES.md).

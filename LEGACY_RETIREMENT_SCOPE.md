@@ -147,12 +147,21 @@ correction is worth making whether or not anything is retired.**
 
 Each step is independently revertable and leaves the suite green.
 
-**Step 0 — de-advertise (recommended first, ~15 lines, 5 test edits).**
-Drop `"boltzgen_legacy"` from `--design-engine` choices
-(`scripts/run_pipeline.py:250`) and replace the `if is_legacy:` block
-(`:541-563`) with one `parser.error()` naming the retirement and pointing at
-`--design-engine boltzgen`; widen the runner's existing `ValueError` (`:527`)
-to refuse it on every workflow. Nothing else moves: every module, config key
+**Step 0 — de-advertise. DONE 2026-09-13.**
+Dropped `"boltzgen_legacy"` from `--design-engine` choices
+(`scripts/run_pipeline.py:250`) and replaced the `if is_legacy:` block with
+one `parser.error()` naming the retirement and pointing at
+`--design-engine boltzgen`. The check survives the choices list losing the
+value because `design.backend` in `config.yaml` can still name it.
+
+**Corrected while doing it:** this step originally also said "widen the
+runner's `ValueError` to refuse it on every workflow", which CONTRADICTS the
+same step's promise that `scripts/e2e_ppi_boltzgen.py` stays reachable — that
+driver constructs `PipelineRunner` directly, so a runner-level refusal blocks
+it. The runner-level widening belongs to step 2, where the stage chain goes
+and the driver is deleted with it. A test now pins the seam deliberately
+(`test_the_runner_still_accepts_it_for_a_library_caller_on_the_ppi_track`) and
+says to delete itself at step 2. Nothing else moved: every module, config key
 and artifact reader stays, so the live paths cannot regress. Test cost:
 re-point `tests/test_ppi_backend_routing.py:168-179` and `:191-204`, and drop
 the engine from two parametrisations in `tests/test_pipeline_stages.py:351`/`:373`.

@@ -247,7 +247,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--design-engine",
-        choices=["foundry", "boltzgen", "boltzgen_legacy"],
+        choices=["foundry", "boltzgen"],
         default=None,
         dest="design_engine",
         help=(
@@ -257,13 +257,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "its discovered target off right after the structure stage, so "
             "both get the trim, a MEASURED production size, --stop-after and "
             "a resumable manifest. 'boltzgen' is selected automatically by "
-            "--modality cyclic_peptide, which RFD3 cannot build. "
-            "'boltzgen_legacy' is the older --workflow ppi design/execution/"
-            "analysis path, kept as a regression check until the bridged one "
-            "is proven to cover it: it honours neither --stop-after nor a "
-            "calibration verdict, and is sized only by design.pilot / "
-            "design.production in config.yaml. Default without this flag: "
-            "design.backend in config.yaml (itself 'foundry' unless changed)."
+            "--modality cyclic_peptide, which RFD3 cannot build. The third "
+            "engine, 'boltzgen_legacy', is RETIRED and no longer offered "
+            "here — see the refusal text for what replaced it. Default "
+            "without this flag: design.backend in config.yaml (itself "
+            "'foundry' unless changed)."
         ),
     )
     p.add_argument(
@@ -539,28 +537,29 @@ def main() -> int:
     runs_binder_stages = not is_legacy
 
     if is_legacy:
-        if is_binder or is_structure:
-            parser.error(
-                f"--design-engine boltzgen_legacy is --workflow ppi only: it "
-                f"runs the PPI design/execution/analysis stages, which read "
-                f"the literature handoff. For --workflow "
-                f"{args.workflow} use --design-engine boltzgen, which "
-                f"dispatches that track's own generator stages to BoltzGen.")
-        if args.stop_after:
-            # Refused rather than ignored. The legacy stages run design ->
-            # execution -> analysis -> summary unconditionally, and at the
-            # shipped design.production.num_designs that is a multi-day run
-            # the operator believed they had capped.
-            parser.error(
-                "--stop-after is not honoured on --design-engine "
-                "boltzgen_legacy: those stages run to completion, sized only "
-                "by design.pilot / design.production in config.yaml. Use "
-                "--design-engine boltzgen to get the calibrated, "
-                "stoppable path.")
-        if args.compute != "auto" or args.n_gpus:
-            parser.error(
-                "--compute / --n-gpus apply to the binder-track stages; "
-                "--design-engine boltzgen_legacy runs on the local GPU only.")
+        # RETIRED (2026-09-13). Refused here rather than silently mapped onto
+        # `boltzgen`, because the two are not the same campaign: the legacy
+        # stages honour neither --stop-after nor a calibration verdict, so an
+        # operator who asked for one and got the other would be told nothing.
+        #
+        # The name can still arrive from config.yaml's design.backend, which
+        # is why this check survives the choices list losing the value.
+        #
+        # What retired it: the bridged BoltzGen backend now covers both entry
+        # points on evidence — projects/e2e_boltzgen took a PPI-discovered
+        # target through the bridge to a SCALE_UP calibration verdict, and
+        # projects/pdl1_macrocycle ran a cyclic peptide to production — while
+        # the legacy chain has never written a stage report on this machine.
+        # See LEGACY_RETIREMENT_SCOPE.md.
+        parser.error(
+            "--design-engine boltzgen_legacy is retired: use "
+            "'boltzgen', which dispatches this track's own generator stages "
+            "to BoltzGen and gives you the trim, a measured production size, "
+            "--stop-after and a resumable manifest. (If the value came from "
+            "config.yaml, change design.backend.) Reports and top-K views of "
+            "campaigns the legacy path already produced still work — "
+            "scripts/generate_ppi_report.py and scripts/pymol_show_topk.py "
+            "read them off disk.")
 
     if design_engine == "boltzgen" and (args.compute == "cluster" or args.n_gpus):
         # `_run_boltzgen_stage` has no cluster path — only the foundry stages

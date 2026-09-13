@@ -376,17 +376,20 @@ PipelineRunner.run(query="Design therapeutics for ...")
   So a BoltzGen campaign is trimmed, MEASURED before it scales, stoppable at
   the calibration gate, and resumable — none of which the older path had.
 
-  boltzgen_legacy (`--design-engine boltzgen_legacy`) — the older PPI-only
-  path, kept as the regression check for what the bridge replaced:
+  boltzgen_legacy — RETIRED (2026-09-13), and no longer accepted by the CLI.
+  It was the older PPI-only path, kept as a regression check for what the
+  bridge replaced, and it never ran once after the bridge landed:
   stage 3  protein-design-script      → BoltzGen YAML + RFD3 JSON
   stage 4  design_runner              → BoltzGen pilot → gate → production
                                           (workstation GPU subprocess)
   stage 5  design_metrics + ranking   → enrich top-K with pyrosetta hotspot
                                           SASA, MMR-rank by composite score
   stage 6  design-analyst             → final candidate review + FASTA
-  It honours neither `--stop-after` nor a calibration verdict, and is sized
-  only by `design.pilot` / `design.production` in config.yaml — so the CLI
-  refuses those flags there rather than accepting them.
+  It honoured neither `--stop-after` nor a calibration verdict and was sized
+  only by `design.pilot` / `design.production`, which is what made it worth
+  retiring once the bridged engine covered both entry points on evidence.
+  See LEGACY_RETIREMENT_SCOPE.md; reports of campaigns it already produced
+  still render.
 ```
 
 Stage 0 has two modes (`--pathway-mode`, or `design.pathway.mode` in
@@ -697,9 +700,9 @@ from a free-text prompt: pathway → literature → structure discovery, then a
 hand-off into the binder track's own stage machine, whose generator stages go
 to the backend selected by `design.backend` / `--design-engine` — `foundry`
 (the default: RFD3 → solubleMPNN → RF3) or `boltzgen`. **`--project` is
-required** on every track. `--design-engine boltzgen_legacy` instead continues
-into the older PPI-only BoltzGen design/execution/analysis stages, kept as a
-regression check.
+required** on every track. (A third engine, `boltzgen_legacy`, ran the older
+PPI-only design/execution/analysis stages; it is retired — see
+LEGACY_RETIREMENT_SCOPE.md.)
 
 ```bash
 # Standard run (pathway-expert, validated-target-biased — picks YAP1/TEAD1-class
@@ -969,7 +972,7 @@ One flag, on every track: `--design-engine` (or `design.backend` in
 |---|---|---|
 | `foundry` *(default)* | RFD3 → solubleMPNN → RF3 | mini-proteins; Rosetta metrics on gate survivors |
 | `boltzgen` | BoltzGen | the **same** binder-track stages, a different generator — and the only path to a cyclic peptide |
-| `boltzgen_legacy` | BoltzGen | the older PPI-only design → execution → analysis chain, kept as a regression check. Reachable only by naming it, and it **refuses** the flags it cannot honour (`--stop-after`, `--compute`, `--n-gpus`) rather than accepting and ignoring them |
+| ~~`boltzgen_legacy`~~ | — | **retired** (2026-09-13). The older PPI-only design → execution → analysis chain; the CLI refuses the name and points here. Campaigns it already produced still render — see [LEGACY_RETIREMENT_SCOPE.md](LEGACY_RETIREMENT_SCOPE.md) |
 
 `foundry` and `boltzgen` run the identical stage machine — `trim → spec →
 pilot → calibration → production → scoring → summary` — so `--stop-after`,
