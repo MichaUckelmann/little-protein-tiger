@@ -236,20 +236,23 @@ def validate_spec(
                 if res.label_seq is not None:
                     label_of[key] = int(res.label_seq)
 
-        # A contig is written in AUTHOR numbering, and RFD3 only reads author
-        # numbering out of a PDB file. Its loader (atomworks -> biotite) takes
-        # biotite's non-default `use_author_fields=False` path, so from an
-        # mmCIF it addresses residues by `label_seq_id`: on 4ZGM (auth 29-128,
-        # label 6-105) the auth-numbered contig `A29-128` resolved against
-        # label ids and died with `[component=A106] Residue A106 not found in
-        # atom array` — A106 being the first id past the label range, for a
-        # residue plainly present in the file as ATOM ALA 106. Every campaign
-        # in this pipeline is safe by construction because `_stage_trim` hands
-        # RFD3 `trimmed.pdb`, where author numbering is the ONLY numbering.
-        # The hazard is a caller that passes the mmCIF instead, and the
-        # failure mode above is the LUCKY one: had the spans fallen inside the
-        # label range, RFD3 would have designed against the wrong residues
-        # with no error at all.
+        # A contig is written in AUTHOR numbering, and RFD3 resolves a
+        # component against its loader's `res_id` — which is the author number
+        # for a PDB input and `label_seq_id` for an mmCIF one. Measured through
+        # RFD3's own `inference_load_` (atomworks.io.parse): the same trim
+        # reads `res_id` 195..411 as trimmed.pdb and 3..219 as trimmed.cif,
+        # where the author numbering survives only in a separate `auth_seq_id`
+        # annotation that `foundry/utils/components.py::fetch_mask_from_idx`
+        # does not look at. On 4ZGM (auth 29-128 / label 6-105) the
+        # author-numbered contig `A29-128` therefore died with
+        # `[component=A106] Residue A106 not found in atom array` for a residue
+        # plainly present as `ATOM ... ALA A ... 106`. Campaigns are safe
+        # because `_stage_trim` passes `trimmed.pdb`; the hazard is a caller
+        # that passes the mmCIF, and the failure above is the LUCKY one — had
+        # the spans fallen inside the label range, RFD3 would have designed
+        # against the wrong residues with no error at all. (This is NOT
+        # "RFD3 is label_seq": BoltzGen's `binding:` genuinely is label_seq,
+        # and that difference is real.)
         if struct_path.suffix.lower() in (".cif", ".mmcif"):
             shifted = sorted(
                 (f"{chain}{auth} (label {label_of[(chain, auth)]})")

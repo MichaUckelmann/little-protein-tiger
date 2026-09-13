@@ -1448,7 +1448,8 @@ asserts all four mechanically.
 **Two things the probe cost that the plan did not anticipate**, both now fixed
 in the repo rather than in the probe:
 
-1. **RFD3 reads an mmCIF by `label_seq_id`.** The first two attempts fed it
+1. **RFD3 addresses residues by its loader's `res_id` — author numbering from
+   a PDB, `label_seq_id` from an mmCIF.** The first two attempts fed it
    `4ZGM_ba1.cif` and died with `[component=A106] Residue A106 not found in
    atom array` for a residue plainly present as `ATOM ... ALA A ... 106` —
    4ZGM chain A is auth 29-128 / label 6-105, and A106 is the first id past

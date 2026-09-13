@@ -482,21 +482,29 @@ them without re-reading this list is how they get silently reverted.
   which exists **only in a design sidecar** (`*_model_*.json`) — never in the input
   spec. Scoring must remap hotspots from a sidecar; using the spec silently scores
   the wrong residues.
-- **RFD3 must be fed the trim's PDB, never its mmCIF, and that is load-bearing
-  rather than stylistic.** Its loader (atomworks -> biotite) takes biotite's
-  non-default `use_author_fields=False` path, so from an mmCIF it addresses
-  residues by `label_seq_id` while every contig in this pipeline is written in
-  AUTHOR numbering. Measured on 4ZGM (chain A auth 29-128, label 6-105): the
-  contig `A29-128` against `4ZGM_ba1.cif` died with `[component=A106] Residue
-  A106 not found in atom array` — A106 being the first id past the label
-  range, for a residue plainly present as `ATOM ... ALA A ... 106`. That is
-  the LUCKY failure; spans that happen to fall inside the label range model
-  the wrong residues with no error at all. `_stage_trim` is safe because it
-  passes `trimmed.pdb` (`pipeline_runner`'s `pdb_input`), where author
-  numbering is the only numbering — so `write_trimmed` writing both files is
-  not redundancy. `validate_spec` now refuses an mmCIF input whose label and
-  author numbering disagree; a structure numbered from 1 is unaffected.
-  A benchmark script pointed 13 specs at `trimmed.cif` and is what found this.
+- **RFD3 addresses a contig/hotspot residue by its loader's `res_id`, which is
+  the AUTHOR number for a PDB input and `label_seq_id` for an mmCIF one.**
+  Serving author-numbered hotspots (`A314: CD2,CZ`) is therefore correct and
+  always has been — because `_stage_trim` hands RFD3 `trimmed.pdb`
+  (`pipeline_runner`'s `pdb_input`), so `write_trimmed` writing both files is
+  not redundancy. Measured through RFD3's own loader
+  (`rfd3.utils.inference.inference_load_`, which
+  `DesignInputSpecification.load_input` calls, wrapping `atomworks.io.parse`):
+  for `trimmed.pdb` chain A is `res_id` 195..411, the author numbering, with no
+  auth annotation at all; for the SAME trim's `trimmed.cif` it is 3..219, and
+  the author numbering survives only in a separate `auth_seq_id` annotation
+  that nothing in the lookup path reads —
+  `foundry/utils/components.py::fetch_mask_from_idx` compares
+  `atom_array.res_id` and raises `Residue {chain}{res_id} not found in atom
+  array`. So an author-numbered contig against an mmCIF resolves against label
+  numbering: on 4ZGM (auth 29-128 / label 6-105) `A29-128` died at
+  `[component=A106]` for a residue plainly present as `ATOM ... ALA A ... 106`,
+  and that is the LUCKY case — spans inside the label range mis-model in
+  silence. `validate_spec` refuses an mmCIF input whose two numberings
+  disagree; a structure numbered from 1 is unaffected. Do NOT read this as
+  "RFD3 is a label_seq engine" — it is the read that makes BoltzGen and foundry
+  differ (BoltzGen's `binding:` really is label_seq), and conflating them is
+  how a correct auth-numbered hotspot table would get "fixed" into a wrong one.
 - **RFD3 merges contig components that are NOT separated by `/0` into ONE
   output chain, whatever input chains they came from** — `/0` is the
   chain-INCREMENT token (foundry `rfd3/inference/input_parsing.py:1319-1324`).

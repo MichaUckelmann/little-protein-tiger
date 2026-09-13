@@ -256,7 +256,13 @@ def _spec_for(tmp_path, struct: Path, first_auth: int):
 
 
 def test_validate_refuses_an_author_numbered_contig_against_a_shifted_mmcif(tmp_path):
-    """RFD3 reads an mmCIF by `label_seq_id`, not by author numbering.
+    """RFD3 resolves a component against its loader's `res_id`: the author
+    number from a PDB, `label_seq_id` from an mmCIF.
+
+    Verified through RFD3's own `rfd3.utils.inference.inference_load_`: one
+    trim reads `res_id` 195..411 from trimmed.pdb and 3..219 from trimmed.cif,
+    and `foundry/utils/components.py::fetch_mask_from_idx` matches `res_id`,
+    not the `auth_seq_id` annotation the CIF path keeps alongside it.
 
     Measured, on a real probe: 4ZGM chain A is auth 29-128 / label 6-105, and
     the author-numbered contig `A29-128` against `4ZGM_ba1.cif` aborted with
