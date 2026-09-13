@@ -370,8 +370,7 @@ def test_a_partial_backbone_is_not_enough():
     assert not is_chain_residue(_FakeRes("XYZ", ("N", "CA")))
 
 
-@pytest.mark.skipif(not Path("data/structures/3KYS_ba1.cif").exists(),
-                    reason="3KYS not in the structure cache")
+@pytest.mark.skipif(not _3KYS.exists(), reason="3KYS not downloaded")
 def test_the_real_palmitoyl_cysteine_survives_a_trim(tmp_path):
     """It must not be DELETED — deleting it splits TEAD1 into an extra segment
     and drops the palmitoylation site the whole TEAD-inhibitor literature is
@@ -386,7 +385,7 @@ def test_the_real_palmitoyl_cysteine_survives_a_trim(tmp_path):
     import gemmi
     from src.structure_trim import write_trimmed
     out = tmp_path / "t.cif"
-    write_trimmed(Path("data/structures/3KYS_ba1.cif"), out,
+    write_trimmed(_3KYS, out,
                   {"A": list(range(195, 412))})
     st = gemmi.read_structure(str(out))
     names = {r.name for c in st[0] for r in c}
@@ -406,6 +405,7 @@ def test_the_real_palmitoyl_cysteine_survives_a_trim(tmp_path):
         f"the palmitoyl tail must be gone, got {sorted(atoms)}")
 
 
+@pytest.mark.skipif(not _3KYS.exists(), reason="3KYS not downloaded")
 def test_a_modified_residue_with_no_known_parent_is_left_alone(tmp_path,
                                                                monkeypatch):
     """Guessing a parent would silently change which amino acid is designed
@@ -422,7 +422,7 @@ def test_a_modified_residue_with_no_known_parent_is_left_alone(tmp_path,
     msgs: list[str] = []
     hid = logger.add(lambda m: msgs.append(str(m)), level="WARNING")
     try:
-        out = write_trimmed(Path("data/structures/3KYS_ba1.cif"),
+        out = write_trimmed(_3KYS,
                             tmp_path / "t.cif",
                             {"A": list(range(195, 412))})
     finally:
@@ -434,6 +434,7 @@ def test_a_modified_residue_with_no_known_parent_is_left_alone(tmp_path,
     assert any("no parent amino acid known" in m for m in msgs), msgs
 
 
+@pytest.mark.skipif(not _3KYS.exists(), reason="3KYS not downloaded")
 def test_the_exposure_guard_compares_the_same_atoms_on_both_sides(tmp_path):
     """Converting a modified residue drops the modification's atoms from the
     TRIMMED structure only, and biotite counts P1L as an amino acid — so the
@@ -446,7 +447,7 @@ def test_the_exposure_guard_compares_the_same_atoms_on_both_sides(tmp_path):
 
     hs = [{"auth_seq_id": n} for n in
           (240, 242, 246, 249, 274, 276, 314, 346, 350, 353, 354, 357, 362, 366)]
-    res = trim_target(Path("data/structures/3KYS_ba1.cif"),
+    res = trim_target(_3KYS,
                       target_chain="A", partner_chain="B", hotspots=hs,
                       out_dir=tmp_path, budget=220)
     assert res.n_residues_after == 208, "nothing should have been cut"

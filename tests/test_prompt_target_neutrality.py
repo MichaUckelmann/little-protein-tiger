@@ -107,27 +107,41 @@ def test_no_tool_description_names_the_audited_target():
         + "\n".join(offenders))
 
 
-def test_the_mcp_transport_is_checked_too():
-    """FastMCP uses a tool's docstring as its description, so the MCP server's
+@pytest.mark.parametrize("module", ["src/mcp_server.py",
+                                   "src/structure_tools_server.py"])
+def test_the_mcp_transport_is_checked_too(module):
+    """FastMCP uses a tool's docstring as its description, so the MCP servers'
     docstrings are a second, independent prompt surface — and the two
     transports are deliberately NOT kept identical (see CLAUDE.md's
-    "Two transports, opposite trigger rules"), so neither covers the other."""
-    import inspect
+    "Two transports, opposite trigger rules"), so neither covers the other.
 
-    from src import mcp_server
+    Parsed from the SOURCE rather than imported, the same way
+    `test_release_fixes.py`'s MCP description checks do it: `src/mcp_server.py`
+    deliberately requires the optional `corpus` extra, which CI does not
+    install, and importing it there fails the test on a missing
+    sentence-transformers rather than on anything about the descriptions.
 
+    Parsing also does the scoping this test needs more directly than
+    `__module__` did: only functions DEFINED in the file are visible, so the
+    imported implementations (`export_subgraph as _export_subgraph`, whose
+    docstring FastMCP never publishes — the wrapper's own is what it reads)
+    cannot be mistaken for tool wrappers. Module-level defs only; a nested
+    helper is not a tool.
+    """
+    import ast
+
+    src = (_ROOT / module).read_text(encoding="utf-8")
+    tree = ast.parse(src)
     offenders = []
-    for name, fn in vars(mcp_server).items():
-        # Only the tool WRAPPERS, which are defined in this module. Imported
-        # implementation functions (`export_subgraph as _export_subgraph`) are
-        # the same object as `_corpus_graph`'s and their docstrings are not
-        # what FastMCP publishes — the wrapper's own docstring is.
-        if not callable(fn) or getattr(fn, "__module__", "") != mcp_server.__name__:
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        doc = inspect.getdoc(fn)
-        if doc and _AUDITED.search(doc):
-            m = _AUDITED.search(doc)
-            offenders.append(f"mcp_server.{name}: ...{doc[max(0, m.start() - 40):m.end() + 40]}...")
+        doc = ast.get_docstring(node)
+        m = _AUDITED.search(doc) if doc else None
+        if m:
+            offenders.append(
+                f"{module}::{node.name}: "
+                f"...{doc[max(0, m.start() - 40):m.end() + 40]}...")
     assert not offenders, "\n".join(offenders)
 
 

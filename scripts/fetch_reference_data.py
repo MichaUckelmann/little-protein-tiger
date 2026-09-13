@@ -10,13 +10,23 @@ layers below anything that said what the file was or where to get it.
 
     HUMAN_9606_idmapping.dat.gz   UniProt   ~35 MB   REQUIRED
     hgnc_complete_set.tsv         HGNC      ~17 MB   REQUIRED
-    CRISPRGeneEffect.csv          DepMap   ~420 MB   optional (--with-depmap)
+    CRISPRGeneEffect.csv          DepMap   ~440 MB   optional (--with-depmap)
+    8 mmCIF entries                RCSB      ~7 MB   optional (--with-structures)
 
-All three are public and free. Usage:
+All are public and free. Usage:
 
     python scripts/fetch_reference_data.py              # the two required files
     python scripts/fetch_reference_data.py --with-depmap
+    python scripts/fetch_reference_data.py --with-structures
     python scripts/fetch_reference_data.py --check      # report, download nothing
+
+`--with-structures` fetches the entries the test suite names. Nineteen tests
+SKIP without them — including the two that pin the 3KYS A344 palmitoyl-cysteine
+lesson, which cost a real campaign ten RFD3 aborts — and a skip reads as a pass
+in a CI summary. They are biological assembly 1, not the ASU, for the reason
+`target_resolve.ensure_assembly` gives: the ASU can split a biological dimer
+across symmetry copies, so the chain pair you measure is not the one that
+exists in solution.
 
 Each download records provenance (URL, timestamp, size, sha256) in
 `data/depmap/PROVENANCE.json`. These are versioned releases that change under
@@ -67,7 +77,7 @@ class Dataset:
         # and `src.depmap` is the one place that precedence is implemented.
         # Asking it, rather than reproducing the rule, is what keeps `--check`
         # and the hand-download instructions pointing where the loader will
-        # actually look — telling a user to save 420 MB to a path nothing
+        # actually look — telling a user to save 440 MB to a path nothing
         # reads is the whole failure this avoids.
         if self.filename == "CRISPRGeneEffect.csv":
             try:
@@ -111,7 +121,7 @@ DATASETS: tuple[Dataset, ...] = (
         name="depmap-crispr",
         url="https://depmap.org/portal/data_page/?tab=allData  (file: CRISPRGeneEffect.csv)",
         filename="CRISPRGeneEffect.csv",
-        approx_mb=420,
+        approx_mb=440,
         required=False,
         manual=True,
         purpose=("CRISPR Chronos gene-effect matrix. Needed by "
@@ -125,7 +135,16 @@ DATASETS: tuple[Dataset, ...] = (
 
 
 def _human(n: int) -> str:
-    return f"{n / 1_048_576:,.1f} MB"
+    """Decimal MB, because that is what the reader is comparing against.
+
+    RCSB, GitHub's release pages and every `ls -h` alternative the docs quote
+    report decimal; dividing by 1_048_576 and writing "MB" gave a third
+    number for the same file, which is how a reader learns to distrust the
+    tool (`test_sizes_are_reported_in_the_unit_they_claim`). That test greps
+    for `2**20` and this spelt the constant out, so it was the one place in
+    the script still doing it.
+    """
+    return f"{n / 1_000_000:,.1f} MB"
 
 
 def _sha256(path: Path) -> str:
@@ -251,6 +270,20 @@ def check() -> int:
             print(f"         {ds.purpose}")
             if ds.required:
                 missing_required += 1
+    # Structures live elsewhere (`data/structures/`) and are not `Dataset`s —
+    # they are cached by the pipeline itself as runs touch entries, so most of
+    # them arrive without this script. Reported so `--check` does not imply
+    # `data/depmap` is the whole of what the suite reads.
+    sdir = _ROOT / "data" / "structures"
+    have = [n for n in REFERENCE_STRUCTURES
+            if (sdir / f"{n}_ba1.cif").exists()]
+    have += [n for names in REFERENCE_ASU.values() for n in names
+             if (sdir / n).exists()]
+    n_want = len(REFERENCE_STRUCTURES) + sum(len(v) for v in REFERENCE_ASU.values())
+    print(f"\nTest structures in {sdir}: {len(have)}/{n_want} present"
+          + ("" if len(have) == n_want else
+             "  — 19 tests skip; run with --with-structures (~7 MB)"))
+
     if missing_required:
         print(f"\n{missing_required} required file(s) missing — the binder track "
               f"cannot start.\nRun: python scripts/fetch_reference_data.py")
@@ -259,17 +292,87 @@ def check() -> int:
     return 0
 
 
+#: The entries the non-network tests read off disk. Each is named by a test's
+#: own skip guard, so this list is derived from the suite rather than chosen:
+#: grep `reason="... not downloaded"` / `not in this checkout`.
+#:
+REFERENCE_STRUCTURES = ("3KYS", "3N7S", "5GN0", "5HYN", "6E3Y", "7CZD", "7XQ8")
+
+#: Deposited ASUs, under the exact filename a test opens. Only one is wanted:
+#: `test_release_fixes.py`'s `test_the_bsa_mismatch_is_real_and_the_fix_silences_a_no_op_trim`
+#: reads `3kys.cif` — LOWERCASE, and a case-sensitive filesystem is not
+#: persuaded by `3KYS.cif` being close. Every other test reads an assembly
+#: file, and the `6E3Y.cif` paths elsewhere in the suite live inside mocked
+#: query strings that are never opened, so fetching them would be 1 MB spent
+#: on nothing.
+REFERENCE_ASU = {"3KYS": ("3kys.cif",)}
+
+
+def fetch_structures(force: bool = False) -> bool:
+    """Download the reference mmCIF entries into `data/structures/`.
+
+    Reuses `target_resolve.ensure_assembly` rather than re-implementing the
+    RCSB URL and the gzip step: it already caches on disk, already prefers
+    assembly 1, and is the function the pipeline itself uses, so this script
+    cannot drift from what a real run downloads.
+    """
+    import gzip
+
+    structures_dir = _ROOT / "data" / "structures"
+    structures_dir.mkdir(parents=True, exist_ok=True)
+    from src.target_resolve import ensure_assembly
+
+    print(f"Fetching {len(REFERENCE_STRUCTURES)} entries into {structures_dir}\n")
+    ok = True
+    for pdb_id in REFERENCE_STRUCTURES:
+        dest = structures_dir / f"{pdb_id}_ba1.cif"
+        if force and dest.exists():
+            dest.unlink()
+        got = ensure_assembly(pdb_id, structures_dir)
+        if got:
+            print(f"  OK   {got.name}  {_human(got.stat().st_size)}")
+        else:
+            print(f"  FAIL {pdb_id}_ba1.cif")
+            ok = False
+
+    for pdb_id, names in REFERENCE_ASU.items():
+        raw = None
+        for name in names:
+            dest = structures_dir / name
+            if dest.exists() and not force:
+                continue
+            if raw is None:
+                url = f"https://files.rcsb.org/download/{pdb_id.upper()}.cif.gz"
+                try:
+                    resp = requests.get(url, timeout=60)
+                    resp.raise_for_status()
+                    raw = gzip.decompress(resp.content)
+                except Exception as exc:                     # noqa: BLE001
+                    print(f"  FAIL {name}: {exc}")
+                    ok = False
+                    break
+            dest.write_bytes(raw)
+            print(f"  OK   {dest.name}  {_human(len(raw))}")
+    print()
+    return ok
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Download the reference datasets LPT needs but does not ship.")
     ap.add_argument("--check", action="store_true",
                     help="Report what's present and exit; download nothing.")
     ap.add_argument("--with-depmap", action="store_true",
-                    help=f"Also fetch CRISPRGeneEffect.csv (~420 MB), needed "
+                    help=f"Also fetch CRISPRGeneEffect.csv (~440 MB), needed "
                          f"only by find_cocorrelated_genes, "
                          f"get_genetic_codependency and "
                          f"export_subgraph(with_depmap=True). Runs continue "
                          f"without it; those tools return an error.")
+    ap.add_argument("--with-structures", action="store_true",
+                    help=f"Also fetch the {len(REFERENCE_STRUCTURES)} mmCIF "
+                         f"entries the test suite reads (~7 MB). Without them "
+                         f"19 tests skip, including the two that pin the 3KYS "
+                         f"A344 modified-residue lesson.")
     ap.add_argument("--force", action="store_true",
                     help="Re-download even if the file is already present.")
     args = ap.parse_args()
@@ -283,8 +386,11 @@ def main() -> int:
     # A manual dataset returning False is not a failure of this script.
     ok = all(res for d, res in results if not d.manual)
 
+    if args.with_structures:
+        ok = fetch_structures(force=args.force) and ok
+
     if not args.with_depmap:
-        print("\nSkipped CRISPRGeneEffect.csv (~420 MB) — pass --with-depmap "
+        print("\nSkipped CRISPRGeneEffect.csv (~440 MB) — pass --with-depmap "
               "if you want find_cocorrelated_genes / "
               "get_genetic_codependency. Every other corpus tool works "
               "without it, and a run that calls them continues.")
