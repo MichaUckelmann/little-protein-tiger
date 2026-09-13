@@ -525,7 +525,6 @@ usage: run_skill.py --skill SKILL --query QUERY
 | `binder-optimizer` | Takes a predicted binder-target complex, proposes 4 single-point mutations, validates clashes, and emits AF3 submission JSONs |
 | `molecular-biology-expert` | Queries the corpus for biochemical detail on a specific protein pair (binding affinities, hotspot residues, inhibitor data) |
 | `complex-expert` | Corpus search focused on a named protein complex — mechanism, structure, existing inhibitors |
-| `protein-design-script` | Generates RFdiffusion3 / BoltzGen run scripts from a hotspot spec |
 | `chimerax-visualization` | Generates a ChimeraX `.cxc` script to visualise the interface: target in focus, binder washed out, hotspot patches highlighted |
 | `orchestrator` | End-to-end multi-stage run: pathway → interface → design → optimization |
 | `binder-target-intel` | Stage 0 of the binder-track pipeline: given a named target and design intent plus a pre-computed candidate-interface table, picks which structure/chain-pair/interface to design a binder against. Invoke only when the target is already named and no literature discovery is wanted |
@@ -712,12 +711,13 @@ python scripts/run_pipeline.py --workflow ppi \
   --project upr_wildcard \
   --pathway-mode wildcard
 
-# The BoltzGen path, with a small pilot, and per-stage conversation traces
-# captured for audit:
+# The same run with per-stage conversation traces captured for audit.
+# Campaign size is not a flag here — both live engines size themselves from a
+# measured calibration run; use run_pipeline.py's --stop-after / --n-batches
+# to bound GPU spend.
 .venv/bin/python scripts/test_e2e.py \
   --prompt "Design cancer therapeutics to target key nodes in mesothelioma." \
-  --slug mesothelioma \
-  --pilot 50 --production 100
+  --slug mesothelioma
 ```
 
 Configuration lives under `design:` in `config.yaml`, except for
@@ -729,14 +729,19 @@ they don't live in the tracked `config.yaml`:
 - `design.workstation.boltzgen_executable` (or `LPT_BOLTZGEN_EXECUTABLE`) —
   absolute path to the BoltzGen entry point (we use the entry script's own
   shebang to invoke its conda/uv env, no `conda activate` needed).
-- `design.workstation.cuda_device` / `timeout_hours` — GPU and time limits.
-- `design.pilot` / `design.production` — `num_designs` + `budget` per phase. The
-  pilot result gates the production run (raises `PipelinePausedError`
-  `pilot_failed` if completion + final-fill rates fall below threshold).
-- `design.thresholds` — hard filters in stage 5: `iptm_min`, `ipae_max`,
-  `hotspot_sasa_delta_min`, `require_boltzgen_pass`.
-- `design.ranking` — `enrich_top_k` (how many designs get pyrosetta SASA),
-  composite `weights`, `mmr` diversity params, `top_k`.
+- `design.workstation.cuda_device` — which GPU the BoltzGen stages use.
+- `design.foundry.{pilot,calibration,production}.n_batches` and
+  `design.boltzgen.{pilot,calibration,production}` — campaign sizes per phase,
+  per engine. `production` is a CEILING, not the plan: the calibration stage
+  measures the hit rate and sizes production from it, then pauses on its
+  verdict (SCALE_UP / SCALE_UP_PARTIAL / ITERATE / STOP).
+- `design.binder_ranking` (foundry) / `design.boltzgen_ranking` (BoltzGen) —
+  the hard gates, composite `weights`, `z_clip`, `mmr` diversity params,
+  `top_k`, and the `success_metric` / `excellence_bar` a campaign is sized on.
+- `design.thresholds` and `design.ranking.top_k` — the retired legacy PPI
+  chain's gate and top-K. Only `src/ppi_report.py` (for the two archived
+  legacy runs under `outputs/`) and the bridged BoltzGen scoring stage read
+  them respectively; see the notes in `config.yaml`.
 - `design.constraints` — target-size limits (`max_target_residues`,
   `target_residues_warn`) and binder size ranges (`cyclic_peptide` 12..15,
   `mini_protein` 70..86 by default).
@@ -1203,7 +1208,6 @@ little_protein_tiger/
 │   ├── binder-optimizer/        # Point mutation proposals + AF3 JSON generation
 │   ├── molecular-biology-expert/# Corpus search for a specific protein pair
 │   ├── complex-expert/          # Corpus search for a named complex
-│   ├── protein-design-script/   # RFdiffusion3 / BoltzGen script generation
 │   ├── chimerax-visualization/  # ChimeraX .cxc script for interface figures
 │   ├── corpus-explorer/         # Conversational free-form corpus exploration
 │   ├── binder-target-intel/     # Binder track stage 0: pick structure + interface
@@ -1330,14 +1334,13 @@ Bundled third-party material — see
 - **Mol\*** (`assets/vendor/molstar/`) — MIT, vendored so generated reports have
   no runtime network dependency. Licence and pinned version in
   `assets/vendor/molstar/`.
-- **RFdiffusion3 documentation** (`skills/protein-design-script/RFD3_*.md`) —
+- **RFdiffusion3 documentation** (`docs/engine-references/RFD3_*.md`) —
   BSD 3-Clause, © 2025 Institute for Protein Design, University of Washington.
-  Vendored because the `protein-design-script` skill reads them as in-context
-  reference and they pin the contig/spec format `src/foundry_spec.py` validates
-  against. Neither the IPD, the University of Washington, nor the foundry
-  contributors endorse LPT.
+  Vendored because they pin the contig/spec format `src/foundry_spec.py`
+  validates against. Neither the IPD, the University of Washington, nor the
+  foundry contributors endorse LPT.
 - **BoltzGen documentation and example spec**
-  (`skills/protein-design-script/boltzgen_*`) — MIT, © 2025 Hannes Stärk.
+  (`docs/engine-references/boltzgen_*`) — MIT, © 2025 Hannes Stärk.
 
 Python dependencies are MIT/BSD/Apache, with one to be aware of: **PyMuPDF is
 AGPL-3.0-or-later**. It is imported at runtime by `src/text_extractor.py` for

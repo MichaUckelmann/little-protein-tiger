@@ -649,11 +649,11 @@ _TOOL_DEFS: list[dict[str, Any]] = [
 # waste tokens. Add a skill here when it has no genuine tool needs.
 _NO_TOOL_SKILLS = {"design-analyst"}
 
-_WRITE_FILE_SKILLS = {"protein-design-script", "binder-optimizer"}
+_WRITE_FILE_SKILLS = {"binder-optimizer"}
 
 # Skills that need the full residue index maps for AF3/BoltzGen JSON construction
-_NEEDS_INDEX_MAPS = {"protein-design-script", "binder-optimizer",
-                     "complex-structure-analysis", "binder-target-intel"}
+_NEEDS_INDEX_MAPS = {"binder-optimizer", "complex-structure-analysis",
+                     "binder-target-intel"}
 
 # Skills that have access to the corpus-wide PDB lookup tool. wildcard-expert's
 # Phase 4.6 calls find_pdb_structures — without the allowlist entry the call

@@ -360,8 +360,9 @@ against RAMP1, `3N7S` chain D), not by reading its docs.
   `binder_ranking.DEFAULT_Z_CLIP` was learned from.
 - **`quality_score` is not a score.** It is 994 evenly-spaced distinct values,
   i.e. `1 - (final_rank-1)/(n-1)` — a rank percentile carrying no information
-  beyond the ordering. Fine for sorting (`design.ranking.enrich_top_k` does
-  exactly that), meaningless as a quality threshold.
+  beyond the ordering. Fine for sorting — the retired `design.ranking.
+  enrich_top_k` used it for exactly that — and meaningless as a quality
+  threshold.
 - **`ipae` is target-dependent, not universally too loose or too strict.** The
   shipped `ipae_max: 10.0` passes 99.7% on RAMP1 cyclic and dropped 57% on the
   archived mesothelioma run. And `complex_plddt >= 0.70` — currently only a
@@ -1334,8 +1335,8 @@ it.
 - `src/pipeline_runner.py` `_STAGE_TO_SKILL` is **many-to-one** —
   `complex-structure-analysis` serves both `structure` and `interface`. (It used to
   hold two more: `design-analyst` served `summary` as well as `binder_summary`, and
-  `protein-design-script` served `design`; both of those stages went with the
-  `boltzgen_legacy` retirement, so `design-analyst` is currently single-stage —
+  the retired `protein-design-script` skill served `design`; both of those stages
+  went with the `boltzgen_legacy` retirement, so `design-analyst` is single-stage —
   do not let that tempt you into dropping the explicit `stage=`.) The inversion
   (`_stage_for_skill`) is first-match-wins and cannot tell them apart, so **every call
   passes `stage=` explicitly**. Adding a stage that reuses a skill without it silently

@@ -1483,20 +1483,33 @@ def test_no_skill_offers_modality_as_a_free_choice():
 
 def test_packaged_skill_zips_match_their_source():
     """SKILL.md is the source of truth; the zips are build artifacts. An edit
-    that forgets scripts/package_skills.py ships a stale prompt."""
+    that forgets scripts/package_skills.py ships a stale prompt.
+
+    A zip whose source directory is GONE is the same failure seen from the
+    other side, and it used to `continue` past this check silently:
+    `protein-design-script.zip` would have kept shipping a retired skill's
+    prompt — installable, and naming vendored reference files that no longer
+    sit beside it — after the directory was deleted. There is no legitimate
+    zip without a source directory, so an orphan is an error here and in
+    `scripts/package_skills.py`.
+    """
     import zipfile
 
     root = _repo_root()
-    stale = []
+    stale, orphans = [], []
     for zip_path in sorted((root / "skills").glob("*.zip")):
         src = root / "skills" / zip_path.stem / "SKILL.md"
         if not src.is_file():
+            orphans.append(zip_path.name)
             continue
         with zipfile.ZipFile(zip_path) as zf:
             members = [n for n in zf.namelist() if n.endswith("SKILL.md")]
             if not members or zf.read(members[0]) != src.read_bytes():
                 stale.append(zip_path.name)
     assert not stale, f"stale skill zips (run scripts/package_skills.py): {stale}"
+    assert not orphans, (
+        f"packaged zips with no skills/<name>/SKILL.md behind them — delete "
+        f"them: {orphans}")
 
 
 # ----------------------------------------------------------------------
@@ -1541,10 +1554,11 @@ def test_every_skill_referenced_tool_exists_in_the_mcp_transport():
 
 
 def test_lpt_does_not_expose_a_file_writing_tool_over_mcp():
-    """`protein-design-script` and `orchestrator` ask for `filesystem:write_file`
-    — the standard filesystem server, not LPT's — and
-    complex-structure-analysis explicitly forbids one. Exposing arbitrary file
-    writes over MCP would be a security surface for no benefit."""
+    """`orchestrator` asks for `filesystem:write_file` — the standard
+    filesystem server, not LPT's — and complex-structure-analysis explicitly
+    forbids one. Exposing arbitrary file writes over MCP would be a security
+    surface for no benefit. (`protein-design-script` was the other asker until
+    it went with the boltzgen_legacy retirement; the rule is unchanged.)"""
     assert "write_file" not in _mcp_tool_names()
 
 

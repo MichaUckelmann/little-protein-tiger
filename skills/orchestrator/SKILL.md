@@ -5,11 +5,12 @@ description: >
   requests this specific workflow; do not trigger it from a general
   question, which you can answer better from your own knowledge than from
   this narrow corpus.
-  Sequence the full protein-protein interaction design pipeline across four expert
-  skills: target selection (pathway-expert OR complex-expert, conditional), structural
-  analysis (complex-structure-analysis), literature analysis (molecular-biology-expert), and
-  design input generation (protein-design-script). Synthesises a go/no-go campaign
-  recommendation before committing to design compute.
+  Sequence the protein-protein interaction target-assessment pipeline across three
+  expert skills: target selection (pathway-expert OR complex-expert, conditional),
+  structural analysis (complex-structure-analysis) and literature analysis
+  (molecular-biology-expert). Synthesises a go/no-go campaign recommendation
+  before committing to design compute; generating the design inputs themselves
+  is the CLI pipeline's job, not this skill's.
   Trigger on: "run the full pipeline", "design campaign for [target]", "orchestrate",
   "start the design workflow", "full analysis of [target]", "go from structure to
   design", or when a PDB ID is provided and the user asks to run the complete workflow.
@@ -34,8 +35,12 @@ Stage 0: Target Selection (conditional) →  pathway-expert  [disease → target
 Stage 1: Structural Analysis            →  complex-structure-analysis
 Stage 2: Literature Analysis            →  molecular-biology-expert
 Stage 3: Go/No-Go Synthesis             →  CAMPAIGN RECOMMENDATION (this skill)
-Stage 4: Design Input                   →  protein-design-script
 ```
+
+The pipeline **ends at the recommendation**. Design inputs are built
+deterministically by `scripts/run_pipeline.py` (`src/foundry_spec.py` /
+`src/boltzgen_spec.py`) from the structure stage's hotspots — no skill writes
+a generator spec any more.
 
 ## Prerequisites
 
@@ -78,13 +83,9 @@ saved to a dedicated run folder under `outputs/`.
 | Stage 1 (structure-tools) | `01_structural_analysis.md` |
 | Stage 2 (mol-bio expert) | `02_literature_report.md` |
 | Stage 3 (campaign recommendation) | `03_campaign_recommendation.md` |
-| Stage 4 (design inputs) | `04_design_inputs\` subfolder — written by protein-design-script |
 
 Use `filesystem:write_file` with the full path and the complete report content
 (copy verbatim from the conversation — do not summarise or truncate).
-
-Pass the run folder path explicitly to the **protein-design-script** at Stage 4:
-> "Write all output files to: `{run_folder}\04_design_inputs\`"
 
 ---
 
@@ -268,11 +269,11 @@ on structural and biological grounds.
 
 **GO** — Both ratings Excellent or Good; at least 1 cross-validated hotspot; no
 disqualifying structural blocker. Prior art with ≤ 500 nM affinity = note as confidence
-boost. Proceed to Stage 4.
+boost. Recommend proceeding to a design campaign.
 
 **CONDITIONAL GO** — One rating Marginal; hotspots partially or not cross-validated;
 OR key risks identified (e.g. isoform redundancy, intracellular access) but not
-disqualifying. Proceed to Stage 4 with caveats explicitly listed.
+disqualifying. Recommend proceeding with caveats explicitly listed.
 
 **NO-GO** — Either rating Poor AND structural rating Marginal/Poor; zero cross-validated
 hotspots; OR a severe structural blocker: fully disordered target on both sides of the
@@ -280,7 +281,7 @@ complex, interface BSA < 300 Å², or no druggable surface identified by structu
 Absence of prior art alone is NEVER a NO-GO reason.
 
 For NO-GO: explain the specific blocker, suggest alternatives (different interface region,
-different target protein, different approach), and do not proceed to Stage 4.
+different target protein, different approach), and do not recommend a design campaign.
 
 ### CAMPAIGN RECOMMENDATION output format
 
@@ -333,34 +334,32 @@ Next step: <"Proceed to generate design inputs" / "Address [X] before proceeding
 `{run_folder}\03_campaign_recommendation.md`. Include a header line with the target
 name, date, and pipeline decision (GO / CONDITIONAL GO / NO-GO).
 
-After presenting the CAMPAIGN RECOMMENDATION, for GO or CONDITIONAL GO ask:
-
-> "Proceed to generate design inputs?"
-
 ---
 
-## Stage 4: Design Input Generation
+## Handing off to a design campaign
 
-Invoke the **protein-design-script** skill. Provide it with the combined context:
+This skill does NOT generate design inputs, and there is no skill left that
+does: the generator spec (an RFD3 contig JSON or a BoltzGen YAML) is built
+deterministically by the CLI pipeline from the structure stage's own
+`MODEL-READY HOTSPOTS`, because every field in it is a mechanical fact about
+one structure file.
 
-- From the structure-tools report: `MODEL-READY HOTSPOTS` table (with BoltzGen and RFD3
-  formatted blocks), target chain ID, PDB ID, modality recommendation
-- From the mol-bio report: literature-validated residues to prioritise, any residues
-  to avoid, known binding epitope to mimic, suggested affinity target
+So after presenting the CAMPAIGN RECOMMENDATION, for GO or CONDITIONAL GO,
+stop and hand the user the command instead of building anything:
 
-The design skill will generate BoltzGen YAML and/or RFD3 JSON inputs. Do not
-anticipate or pre-fill these yourself — hand off the context and let the design skill
-apply its own logic.
+> "To run the campaign on this target:
+> `python scripts/run_pipeline.py --workflow structure --structure <local .cif/.pdb> --project <slug>`
+> (use `--pdb <ACCESSION>` instead of `--structure` for an RCSB entry —
+> `--structure` takes a local FILE, and the two are not interchangeable)
+> (or `--workflow binder --target <GENE>` to let the pipeline pick the
+> structure). It re-reads the interface, trims the target, sizes the campaign
+> from a measured calibration run, and pauses at the calibration verdict."
 
-When invoking protein-design-script, explicitly include the run folder path in your
-handoff message:
-> "Write all output files to: `{run_folder}\04_design_inputs\`"
+Then close with a brief summary:
 
-After Stage 4 completes, present a brief campaign summary:
-
-> "Campaign complete for [complex]. Design inputs generated for [modality].
-> Cross-validated hotspots engaged: [list]. Prior art benchmark: [affinity or 'none'].
-> Files ready: [list any generated files]."
+> "Assessment complete for [complex]. Recommendation: [GO / CONDITIONAL GO /
+> NO-GO]. Cross-validated hotspots: [list]. Suggested modality: [modality].
+> Prior art benchmark: [affinity or 'none']."
 
 ---
 

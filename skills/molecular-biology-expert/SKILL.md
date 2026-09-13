@@ -437,7 +437,7 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
 Rules for `### PIPELINE HANDOFF`:
 - `go_recommendation` must be exactly one of: `GO`, `CONDITIONAL_GO`, or `NO_GO`. Use the tractability rubric: Excellent/Good → GO; Marginal → CONDITIONAL_GO (still produces designs, with the key risk surfaced); Poor → NO_GO. Note: missing ΔΔG / Kd values are not a downgrade trigger — see the Tractability rubric in FEASIBILITY ASSESSMENT. An ortholog structure is never itself a NO_GO; but when `ortholog_of_human` is not NONE and the report makes no per-residue conservation claim about the priority residues, tractability is Good at best and `go_recommendation` is capped at `CONDITIONAL_GO`, with that uncertainty as the `go_rationale`.
 - `go_rationale` is a single sentence — the programmatic orchestrator displays this directly to the user.
-- `design_query` is the verbatim query string passed to protein-design-script; include PDB ID, top 3–5 hotspot residues, and suggested affinity target. Do NOT include chain letters — chain assignment is handled by the structure-analysis stage downstream.
+- `design_query` is the verbatim query string carried forward to the design stages; include PDB ID, top 3–5 hotspot residues, and suggested affinity target. Do NOT include chain letters — chain assignment is handled by the structure-analysis stage downstream.
 - `target_site_hint` is a single-line JSON object with these keys (use straight double-quotes, no trailing commas):
   - `mode`: `"ppi_interface"` (for disrupt / stabilize) or `"single_protein_pocket"` (for inhibit_active_site)
   - `target_protein`: the protein whose surface the binder engages
@@ -475,8 +475,10 @@ reports the human position for each hotspot.
 
 The `INTERFACE INSIGHTS FROM LITERATURE` and `DESIGN RECOMMENDATIONS` sections are
 formatted for downstream consumption by:
-- **protein-design-script** — uses residues to prioritise, suggested modality, and
-  affinity target to parameterise BoltzGen / RFD3 inputs
+- **the design stages** (`src/foundry_spec.py` / `src/boltzgen_spec.py`, via
+  `complex-structure-analysis`'s hotspot table) — use the residues to
+  prioritise, the suggested modality and the affinity target to parameterise
+  the RFD3 contig or BoltzGen YAML. Deterministic Python, not a skill.
 - **Orchestrator skill** (planned) — uses tractability rating and key risk to make
   go/no-go recommendations before committing compute
 

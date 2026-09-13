@@ -630,8 +630,10 @@ this lookup (from the residue type and its known contact geometry):
 ## Phase 4: Output Report
 
 **Do not call `write_file`.** All output belongs in the report text below.
-The pipeline captures this report automatically; `protein-design-script` reads
-the MODEL-READY HOTSPOTS section from it in Stage 4.
+The pipeline captures this report automatically and parses the MODEL-READY
+HOTSPOTS section out of it to build the generator spec (`src/foundry_spec.py`
+for RFD3, `src/boltzgen_spec.py` for BoltzGen) — deterministic Python, so the
+table's exact shape is load-bearing.
 
 Populate from tool outputs only. Do not infer distances, BSA values, or interaction
 types from residue names — all of these are now in the tool results.

@@ -6450,7 +6450,6 @@ class PipelineRunner:
         "molecular-biology-expert": 10,
         "complex-structure-analysis": 14,
         "binder-target-intel": 4,
-        "protein-design-script": 8,
         "design-analyst": 2,
     }
     # Observed mean visible output per call. Deliberately NOT max_tokens

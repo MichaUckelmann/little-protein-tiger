@@ -12,6 +12,12 @@ entry for `<name>/` is written first.
 execution model" section. Directories with no SKILL.md (nothing ready to package
 yet, e.g. work-in-progress skills) are skipped.
 
+A `skills/<name>.zip` with NO `skills/<name>/` behind it is an ERROR, not a
+skip: it is a retired skill still shipping an installable prompt (the shape
+`protein-design-script.zip` would have taken after step 3 of
+LEGACY_RETIREMENT_SCOPE.md). This script names them and exits non-zero;
+`tests/test_release_fixes.py` pins the same rule.
+
 Usage:
     python scripts/package_skills.py
 """
@@ -56,12 +62,21 @@ def main() -> int:
         zip_path = package_skill(skill_dir)
         packaged.append(zip_path.name)
 
+    orphans = sorted(z.name for z in SKILLS_DIR.glob("*.zip")
+                     if not (SKILLS_DIR / z.stem / "SKILL.md").is_file())
+
     for name in packaged:
         print(f"packaged: {name}")
     for name in skipped:
         print(f"skipped (no SKILL.md): {name}")
+    for name in orphans:
+        print(f"orphan (no skills/{name[:-4]}/SKILL.md — delete it): {name}",
+              file=sys.stderr)
 
     print(f"\n{len(packaged)} skill(s) packaged, {len(skipped)} skipped.")
+    if orphans:
+        print(f"error: {len(orphans)} orphaned zip(s)", file=sys.stderr)
+        return 1
     return 0
 
 

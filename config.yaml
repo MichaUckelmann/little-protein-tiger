@@ -305,7 +305,8 @@ design:
   # path, was retired 2026-09-13 and is refused here as at the CLI.)
   # (foundry hands off to the same RFD3 -> solubleMPNN -> RF3 stage machine
   # --workflow binder uses, right after PPI's own structure stage — see
-  # PipelineRunner._bridge_ppi_to_foundry and UNIFY_DESIGN_BACKEND_NOTES.md).
+  # PipelineRunner._bridge_ppi_to_binder_track and
+  # UNIFY_DESIGN_BACKEND_NOTES.md).
   # DEFAULT since the bridge was validated on a real KRAS/RAF1 GPU campaign:
   # both --workflow ppi and --workflow binder now run the same RFD3 ->
   # solubleMPNN -> RF3 machine, so a target discovered by the PPI stages is
@@ -634,21 +635,14 @@ design:
     # activating the env or going through `uv run`. Machine-specific — set
     # via LPT_BOLTZGEN_EXECUTABLE instead (see .env.example and
     # docs/environment_setup.md).
+    # Both keys are read by the BRIDGED BoltzGen stages
+    # (`_boltzgen_backend`), not by anything retired. `timeout_hours` was the
+    # legacy `src/design_runner.py` subprocess timeout and went with it on
+    # 2026-09-13; the bridged path polls a detached campaign from disk counts
+    # instead and has no single blocking call to time out.
     boltzgen_executable: null
     cuda_device: 0
-    timeout_hours: 24
 
-  pilot:
-    num_designs: 1000          # small first-pass batch
-    budget: 30                 # final-set size for pilot
-    min_completion_rate: 0.5   # fraction of num_designs that must finish the pipeline
-    min_final_fill_rate: 0.5   # fraction of pilot budget that must survive filtering
-
-  production:
-    num_designs: 20000
-    budget: 100
-
-  # Stage 5 (analysis + ranking).
   # Campaign sizes for BoltzGen on the BINDER track, mirroring
   # design.foundry's {pilot, calibration, production} shape. Counts are DESIGNS
   # (BoltzGen's own unit) rather than RFD3 batches — there is no funnel here,
@@ -677,9 +671,11 @@ design:
     production:  {num_designs: 10000, budget: 200}
 
   # ── BoltzGen as a BINDER-TRACK backend ────────────────────────────────────
-  # Distinct from the `thresholds` / `ranking` blocks below, which belong to the
-  # LEGACY PPI BoltzGen stages (design -> execution -> analysis) and gate
-  # LPT-computed `lpt_*` columns as well as BoltzGen's own.
+  # Distinct from the `thresholds` / `ranking` blocks below, which belonged to
+  # the retired legacy PPI BoltzGen stages (design -> execution -> analysis)
+  # and gated LPT-computed `lpt_*` columns as well as BoltzGen's own. Of those
+  # two, only `ranking.top_k` and the `thresholds` block still have a reader —
+  # see the notes on each.
   #
   # This block gates BoltzGen's OWN scoring only, and exists because that
   # scoring turned out to be good: BoltzGen ranks by MAXIMIN over six
@@ -757,7 +753,24 @@ design:
         # 0.118-0.665, median 0.234. Probes size nothing.
         thresholds: {}
 
-  # Hard filters — designs failing any of these are dropped before ranking.
+  # RETIRED GATE, KEPT FOR ONE READER. These were the legacy PPI chain's hard
+  # filters (`design_ranking.filter_records` at the analysis stage). No live
+  # stage reads them: the bridged BoltzGen path gates on
+  # `design.boltzgen_ranking.thresholds` and foundry on
+  # `design.binder_ranking.thresholds`.
+  #
+  # It survives because `src/ppi_report.py` reads `iptm_min` and
+  # `hotspot_sasa_delta_min` (:456-457) to draw the gate marker lines on the
+  # histograms of the two ARCHIVED legacy runs in `outputs/` — the only runs
+  # that renderer can render. Its in-code fallbacks happen to equal these
+  # values today, so deleting the block would not move a marker *now*; it
+  # would silently make the archived reports depend on two literals in
+  # `ppi_report` instead, where the next edit to either has nothing to
+  # disagree with. `tests/test_design_ranking_regression.py` also reads this
+  # block as the shipped-defaults contract for `filter_records`, which is
+  # still live (`ppi_report` calls it). Both go together at step 5 of
+  # LEGACY_RETIREMENT_SCOPE.md, or not at all.
+  #
   # Columns refer to entries on the enriched design records (boltzgen-native
   # or lpt_-prefixed; see src/design_metrics.py).
   thresholds:
@@ -766,22 +779,12 @@ design:
     hotspot_sasa_delta_min: 30.0    # lpt_hotspot_sasa_delta (Å² occluded; higher = better)
     require_boltzgen_pass: true     # require pass_filters == True from boltzgen's filter step
 
+  # ONE LIVE KEY. `enrich_top_k`, the composite `weights` and the `mmr` block
+  # were the legacy PPI analysis stage's and went with it on 2026-09-13.
+  # `top_k` is read by the BRIDGED BoltzGen scoring stage
+  # (`pipeline_runner._stage_boltzgen_scoring`, :4345) — deleting the block would
+  # silently re-default it to 20 rather than fail.
   ranking:
-    # Only enrich the top-N by boltzgen's own quality_score with SASA before
-    # filtering+ranking. At ~0.6s/design via the pyrosetta worker, 200 caps
-    # the analysis stage at ~2 min even on full 20k production runs.
-    enrich_top_k: 200
-    # All weights act on z-scored survivors in "higher is better" form.
-    # Columns must exist on the records (boltzgen-native or lpt_*).
-    # Use neg_min_design_to_target_pae (boltzgen pre-inverts so higher = better).
-    weights:
-      design_to_target_iptm: 2.0
-      neg_min_design_to_target_pae: 1.5
-      lpt_hotspot_sasa_delta: 1.5
-      complex_plddt: 1.0
-    mmr:
-      lambda_: 0.5                  # tradeoff: 1.0 = quality only, 0.0 = diversity only
-      seq_identity_cap: 0.7         # designs ≥ this similar to a higher-ranked pick are dropped
     top_k: 20
 
   pyrosetta:
@@ -822,7 +825,8 @@ design:
   # structure stage surfaces per-chain residue counts to the LLM in the
   # structure_query so it can pick a chain within bounds (or recommend
   # cropping). The binder size ranges below are baked into the BoltzGen
-  # YAML's `sequence: <min>..<max>` slot at the protein-design-script step.
+  # YAML's `sequence: <min>..<max>` slot by `src/boltzgen_spec.py`, and into
+  # the RFD3 contig's diffused-binder length by `src/foundry_spec.py`.
   constraints:
     # BoltzGen + structure prediction scale with target residue count.
     # Above max_target_residues the design pass rate drops and GPU memory

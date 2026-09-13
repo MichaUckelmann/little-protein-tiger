@@ -224,18 +224,92 @@ templates stay (step 5).
   docstrings rather than removing the flags, which belongs with step 4's
   config pruning.
 
-**Step 3 — delete `skills/protein-design-script/`.** Requires the same commit
-to fix `tests/test_ortholog_check.py:985` (an unguarded
-`Path(...).read_text()`, verified), prune `src/skill_runner.py:652`/`:655` and
-`src/pipeline_runner.py:7364`, delete the `.zip`, and — easy to miss — move or
-drop the **vendored third-party reference docs that live inside that
-directory** (`RFD3_reference.md`, `boltzgen_reference.md` and four others),
-whose attributions in `THIRD_PARTY_LICENSES.md:18-28`/`:71-78` and
-`README.md:1342-1349` would otherwise point at nothing.
+**Step 3 — delete `skills/protein-design-script/`. DONE 2026-09-13.**
+The six reference files inside it were `git mv`'d to **`docs/engine-references/`**
+(not dropped — they pin the contig/spec formats `src/foundry_spec.py` and
+`src/boltzgen_spec.py` validate against, for the two LIVE engines), and every
+attribution repointed: `THIRD_PARTY_LICENSES.md` (both blocks) and
+`README.md`'s bundled-material list. Deleted `SKILL.md`, the directory and
+`skills/protein-design-script.zip`; pruned the member from
+`skill_runner._WRITE_FILE_SKILLS` / `_NEEDS_INDEX_MAPS` (both sets kept, both
+still have members, and the CLI-only-`write_file` exception is intact) and
+from `pipeline_runner._STAGE_CALL_PRIOR`. Repackaged the zips.
 
-**Step 4 — config pruning** (§ "Legacy-only"), keeping `design.ranking.top_k`
-and the two `design.workstation` BoltzGen keys. Also fix
-`config.yaml:302-314`, whose comment already mis-names the engine.
+**Done differently from the plan, or found wrong in it:**
+
+- The test to delete is `tests/test_ortholog_check.py:984`
+  (`test_the_design_skill_no_longer_says_copy_verbatim`), not `:985` — and
+  the plan under-counted the tails. Two more needed editing:
+  `test_release_fixes.py::test_lpt_does_not_expose_a_file_writing_tool_over_mcp`
+  named the skill in its docstring as one of the two askers for
+  `filesystem:write_file` (the rule is unchanged; only `orchestrator` asks
+  now), and `test_packaged_skill_zips_match_their_source` **`continue`d past a
+  zip whose source directory was gone**, so `protein-design-script.zip` could
+  have kept shipping an installable retired prompt silently. That check is now
+  an error there and in `scripts/package_skills.py` (which exits non-zero on
+  an orphan).
+- **Six files, not "RFD3_reference.md, boltzgen_reference.md and four
+  others" as though all six were third-party.**
+  `example_output_KRAS_RAF1_PPI_analysis_6XHB.md` is LPT's OWN
+  `complex-structure-analysis` output, attributed nowhere and licensed like
+  the rest of the repo; it moved with the set because it is the worked example
+  of the report format the deterministic spec builders parse.
+- **No surviving skill referenced the vendored files by path** (checked:
+  `binder-optimizer`, `complex-structure-analysis`, all of `skills/`), so
+  nothing dangles on the prompt side. Three skills DID name the deleted skill
+  in prose and all three would have instructed a model to invoke it:
+  `orchestrator` (a whole Stage 4 — replaced with a "hand off to
+  `scripts/run_pipeline.py`" section, and the pipeline overview is now three
+  expert skills ending at the go/no-go recommendation),
+  `molecular-biology-expert` (two handoff notes) and
+  `complex-structure-analysis` (one line claiming the design skill reads its
+  hotspot table "in Stage 4" — it is `src/foundry_spec.py` /
+  `src/boltzgen_spec.py` that parse it now, which is worth stating precisely
+  because it makes the table's exact shape load-bearing).
+- **`src/ppi_report.py:337` still names it, deliberately.** That is the
+  provenance footer of the two ARCHIVED legacy runs, where "the design spec
+  through `protein-design-script`" is a true claim about how that run was
+  produced. Rewriting it would misdescribe the archived report.
+  `README.md:379`'s retirement note and `CLAUDE.md`'s `_STAGE_TO_SKILL` note
+  name it historically too, and stay.
+- `UNIFY_BOLTZGEN_BACKEND_NOTES.md:29` ("the `protein-design-script` skill
+  [is] not retired yet") is now false, and is left alone as a dated decision
+  record — the same treatment `diary.md` gets.
+
+**Step 4 — config pruning. DONE 2026-09-13.**
+Removed `design.pilot.*`, `design.production.*`,
+`design.ranking.{enrich_top_k,weights,mmr}` and
+`design.workstation.timeout_hours`. Kept `design.ranking.top_k` (re-verified:
+read at `pipeline_runner.py:4345-4346`, bridged BoltzGen scoring) and
+`design.workstation.{boltzgen_executable,cuda_device}`, each with a comment
+saying which live reader keeps it. Fixed the `design.backend` comment, which
+named `PipelineRunner._bridge_ppi_to_foundry` — a method that does not exist
+(it is `_bridge_ppi_to_binder_track`) — the stale `# Stage 5 (analysis +
+ranking).` header on `design.boltzgen`, the `boltzgen_ranking` header's claim
+that the blocks below are live legacy, and `design.constraints`' "at the
+protein-design-script step". `README.md`'s config list and `CLAUDE.md`'s
+`enrich_top_k` mention followed.
+
+**`design.thresholds` is KEPT**, annotated as surviving for one reader.
+Reasoning, since the plan listed it as legacy-only: `src/ppi_report.py:456-457`
+reads `iptm_min` and `hotspot_sasa_delta_min` to draw the histogram gate
+markers for the two archived legacy runs, and `ppi_report` survives until step
+5. Its in-code fallbacks (`0.6`, `30.0`) happen to equal the shipped values,
+so deleting the block would not move a marker *today* — but it would silently
+transfer the archived reports' gate lines to two literals in `ppi_report`,
+where the next edit to either has nothing to disagree with, and
+`tests/test_design_ranking_regression.py` reads the block as the
+shipped-defaults contract for `filter_records` (still live, called by
+`ppi_report`). Both go together at step 5, or not at all.
+
+`scripts/test_e2e.py` and `scripts/test_e2e_cgas_sting.py` lost their
+`--pilot`/`--production` flags and all four `cfg["design"][...]` writes
+(`pilot`, `production`, and the three `thresholds` loosenings), with the
+docstrings saying why. Deliberately NOT repointed at
+`design.boltzgen_ranking` / `design.binder_ranking`: that would invent new
+sizing behaviour for a smoke-test driver. `test_e2e_cgas_sting.py`'s pause
+handler also named `pilot_failed`, a pause point that no longer exists; it
+now names `calibration_verdict` and says how to resume.
 
 **Step 5 — `src/ppi_report.py` and its templates.** LAST, and only after
 deciding the two archived runs need no renderer: it costs ~35 tests across

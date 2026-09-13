@@ -15,7 +15,7 @@ before relying on any of them commercially.
 
 ## RFdiffusion3 documentation — BSD 3-Clause
 
-Three reference documents in `skills/protein-design-script/` are verbatim
+Three reference documents in `docs/engine-references/` are verbatim
 copies of documentation from [RosettaCommons/foundry](https://github.com/RosettaCommons/foundry)
 (branch `production`), retrieved 2026-05-21:
 
@@ -25,10 +25,12 @@ copies of documentation from [RosettaCommons/foundry](https://github.com/Rosetta
 | `RFD3input.md` | `models/rfd3/docs/input.md` |
 | `RFD3_protein_binder_design.md` | `models/rfd3/docs/examples/protein_binder_design.md` |
 
-They are vendored rather than linked because the `protein-design-script` skill
-reads them as in-context reference, and because they pin the contig/spec format
-`src/foundry_spec.py` validates against. Upstream is the authority; re-fetch
-before assuming these are current.
+They are vendored rather than linked because they pin the contig/spec format
+`src/foundry_spec.py` validates against. (They lived in
+`skills/protein-design-script/`, which read them as in-context reference, until
+that skill was retired with `boltzgen_legacy` on 2026-09-13; the spec is built
+deterministically now and these are reference material for whoever maintains
+it.) Upstream is the authority; re-fetch before assuming these are current.
 
 ```
 BSD 3-Clause License
@@ -68,7 +70,7 @@ of Washington, nor the foundry contributors endorse LPT.
 
 ## BoltzGen documentation and example spec — MIT
 
-Two files in `skills/protein-design-script/` come from
+Two files in `docs/engine-references/` come from
 [HannesStark/boltzgen](https://github.com/HannesStark/boltzgen) (branch `main`),
 retrieved 2026-05-21:
 

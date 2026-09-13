@@ -3,11 +3,11 @@
 The BoltzGen counterpart of :mod:`src.foundry_spec`, and the same division of
 labour: this module turns a chosen epitope plus a trim decision into the one
 input file the generator reads, and refuses rather than guessing when the
-inputs cannot be expressed. Today that YAML is written by the
-``protein-design-script`` LLM skill; every field here is a mechanical fact
-about one structure file, which is the wrong job for a model and the source of
-two expensive silent failures (see ``resolve_binding`` and
-``safe_binder_range``).
+inputs cannot be expressed. That YAML used to be written by an LLM skill
+(``protein-design-script``, retired with ``boltzgen_legacy`` on 2026-09-13);
+every field here is a mechanical fact about one structure file, which is the
+wrong job for a model and the source of two expensive silent failures (see
+``resolve_binding`` and ``safe_binder_range``).
 
 ## One numbering, and it is the deposited ``label_seq``
 

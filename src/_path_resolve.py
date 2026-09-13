@@ -69,9 +69,8 @@ def _confine(candidate: Path, root: Path) -> Path:
     Stripping a leading slash confines an ABSOLUTE path, but does nothing to a
     relative one: `root / "../../../etc/passwd"` is still an escape, because
     pathlib does not normalise `..` and the old code did no final containment
-    check. Reachable through `write_file` (enabled for `protein-design-script`
-    and `binder-optimizer`) and every file_path-taking structure tool on both
-    transports.
+    check. Reachable through `write_file` (enabled for `binder-optimizer`) and
+    every file_path-taking structure tool on both transports.
 
     `os.path.normpath` is deliberate over `Path.resolve()`: it is purely
     lexical, so a path that escapes via a symlink inside the repo is judged on

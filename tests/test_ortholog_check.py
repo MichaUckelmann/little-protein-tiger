@@ -981,14 +981,6 @@ def test_a_pdb_target_gets_real_numbers_not_the_unavailable_marker():
     assert any("valid for" in w and "ONLY" in w for w in warns)
 
 
-def test_the_design_skill_no_longer_says_copy_verbatim():
-    from pathlib import Path
-
-    md = Path("skills/protein-design-script/SKILL.md").read_text()
-    assert "copied\n  verbatim from MODEL-READY HOTSPOTS" not in md
-    assert "only valid for the file" in md
-
-
 # ---------------------------------------------------------------------------
 # The measured prefilter rate has to reach the NEXT stage's plan
 # ---------------------------------------------------------------------------

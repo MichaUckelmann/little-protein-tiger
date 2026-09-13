@@ -110,13 +110,15 @@ in-process dispatch table in `src/skill_runner.py` for the CLI. **A tool a skill
 calls must exist in both**, or the skill silently degrades under one of them.
 `tests/test_release_fixes.py` pins this.
 
-One deliberate asymmetry: `protein-design-script` and `orchestrator` reference
+One deliberate asymmetry: `orchestrator` references
 `filesystem:write_file`, which is the standard **filesystem** MCP server, not
 LPT's. LPT does not expose a file-writing tool — it would be an arbitrary-write
 surface for no benefit, and `complex-structure-analysis` explicitly instructs
-against using one. If you want those two skills to write files under MCP,
-configure the filesystem server yourself with a path allowlist you are happy
-with.
+against using one. If you want that skill to write files under MCP, configure
+the filesystem server yourself with a path allowlist you are happy with.
+(`protein-design-script` was the other asker until it went with the
+`boltzgen_legacy` retirement; `binder-optimizer` still has `write_file` on the
+CLI transport, where it is LPT's own in-process tool.)
 
 ## PDB discovery: read the flag
 

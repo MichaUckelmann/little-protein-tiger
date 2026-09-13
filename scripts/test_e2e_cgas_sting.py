@@ -6,9 +6,13 @@ track it bridges into, with capture_traces=True so every LLM stage dumps its
 full conversation (raw JSON + rendered markdown) under
 <run_dir>/<NN_stage>/traces/.
 
---pilot writes `design.pilot`, which only the retired boltzgen_legacy chain
-read; it is inert on both live engines, which size themselves from the
-calibration verdict instead.
+There are no campaign-size flags. `--pilot`/`--production` used to write
+`design.pilot`/`design.production`, which only the retired boltzgen_legacy
+chain read, so they had been inert since that chain went; those config keys
+are now gone too (step 4 of LEGACY_RETIREMENT_SCOPE.md) and the flags with
+them. Both live engines size themselves from a measured calibration run —
+use `run_pipeline.py --stop-after calibration` / `--n-batches` to bound GPU
+spend, not this driver.
 
 Usage:
     .venv/bin/python scripts/test_e2e_cgas_sting.py
@@ -43,8 +47,6 @@ def main() -> int:
         type=Path,
         default=_ROOT / "outputs" / "e2e_cgas_sting",
     )
-    ap.add_argument("--pilot", type=int, default=50)
-    ap.add_argument("--production", type=int, default=100)
     ap.add_argument("--project", type=str, default="cgas_sting",
                     help="Project slug for the persistent manifest — required "
                          "by the runner whenever the PPI track uses the "
@@ -65,31 +67,15 @@ def main() -> int:
 
     cfg = yaml.safe_load((_ROOT / "config.yaml").read_text())
 
-    # Bound the GPU spend for a test. Same sizes as the chunk-3 stress test.
-    cfg["design"]["pilot"]["num_designs"] = args.pilot
-    cfg["design"]["pilot"]["budget"] = max(5, args.pilot // 5)
-    cfg["design"]["production"]["num_designs"] = args.production
-    cfg["design"]["production"]["budget"] = max(10, args.production // 5)
-
-    # Loosen the analysis-stage hard filters for the test — we want the
-    # pipeline to produce a non-empty top-K even if the small batch yields
-    # weak metrics. Real production runs keep the defaults from config.
-    cfg["design"]["thresholds"]["iptm_min"] = 0.10
-    cfg["design"]["thresholds"]["ipae_max"] = 25.0
-    cfg["design"]["thresholds"]["hotspot_sasa_delta_min"] = 0.0
-    # require_boltzgen_pass is LEFT AT THE SHIPPED DEFAULT (True). It was
-    # overridden to False here, which discarded the single most informative
-    # column BoltzGen writes: `pass_filters` is dominated by its
-    # design-vs-refold RMSD check (<= 2 A), and on e2e_cgas_sting 0 of the 20
-    # designs this pipeline reported had passed it -- BoltzGen was signalling
-    # "none of these are acceptable" and the override suppressed it.
-    #
-    # EXPECTED CONSEQUENCE, not a regression: on this target only 1 of 100
-    # designs passes, so the ranking path downstream runs with n=1 and MMR /
-    # the backbone cap / the top-K are all degenerate. That is a weaker smoke
-    # test than the old 100-survivor run, and the right place to exercise the
-    # shipped thresholds properly is a CPU-only regression over an archived
-    # campaign, not a GPU e2e.
+    # No config overrides. The four `design.thresholds` values this used to
+    # loosen gated the retired legacy analysis stage only; the gate a bridged
+    # run actually passes through is `design.boltzgen_ranking.thresholds`
+    # (BoltzGen) or `design.binder_ranking.thresholds` (foundry), and
+    # re-pointing these writes at either would be inventing a new sizing
+    # behaviour for a smoke-test driver rather than removing a dead one. The
+    # shipped thresholds are exercised properly by
+    # tests/test_design_ranking_regression.py over an archived campaign, on
+    # CPU, which is where that belongs anyway.
 
     runner = PipelineRunner(
         config=cfg,
@@ -117,8 +103,12 @@ def main() -> int:
         elapsed = time.time() - t0
         print(f"\n[pause] {exc.pause_point} after {elapsed:.0f}s")
         print(f"  payload: {exc.payload}")
-        # auto_mode=True should not pause normally; this is a real fault
-        # (e.g. pilot_failed). Dump and exit non-zero so the caller sees it.
+        # auto_mode=True skips the UI pauses, but the binder-track stages
+        # still raise the ones that are CHECKPOINTS rather than prompts —
+        # `calibration_verdict` above all, which is where a campaign is sized
+        # and is meant to stop for a human. Dump and exit non-zero so the
+        # caller sees which one, and resume with `run_pipeline.py
+        # --start-from production --project <slug>`.
         return 1
     except PipelineError as exc:
         elapsed = time.time() - t0
