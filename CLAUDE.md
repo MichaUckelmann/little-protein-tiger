@@ -487,7 +487,14 @@ them without re-reading this list is how they get silently reverted.
   Serving author-numbered hotspots (`A314: CD2,CZ`) is therefore correct and
   always has been — because `_stage_trim` hands RFD3 `trimmed.pdb`
   (`pipeline_runner`'s `pdb_input`), so `write_trimmed` writing both files is
-  not redundancy. Measured through RFD3's own loader
+  not redundancy. The deciding line is in atomworks, not in RFD3:
+  `atomworks/io/utils/io_utils.py` calls biotite's `pdbx.get_structure` with
+  **`use_author_fields=False`**, and biotite then sources BOTH `res_id` from
+  `label_seq_id` and `chain_id` from `label_asym_id`; `auth_seq_id` is loaded
+  only as an extra annotation (for non-polymer indexing) and only non-polymer
+  `res_id`s are ever written back from it (`update_nonpoly_seq_ids`). The PDB
+  branch never reaches that call, so `res_id` stays biotite's `resSeq` — the
+  author number. Measured through RFD3's own loader
   (`rfd3.utils.inference.inference_load_`, which
   `DesignInputSpecification.load_input` calls, wrapping `atomworks.io.parse`):
   for `trimmed.pdb` chain A is `res_id` 195..411, the author numbering, with no
@@ -501,7 +508,14 @@ them without re-reading this list is how they get silently reverted.
   `[component=A106]` for a residue plainly present as `ATOM ... ALA A ... 106`,
   and that is the LUCKY case — spans inside the label range mis-model in
   silence. `validate_spec` refuses an mmCIF input whose two numberings
-  disagree; a structure numbered from 1 is unaffected. Do NOT read this as
+  disagree, and one whose contig chain is not its own `label_asym_id`: the
+  chain letter shifts by the SAME mechanism, so a construct numbered from 1
+  (numbering agreeing, that check silent) on author chains H/L would resolve
+  against nothing. One author chain legitimately holds several label
+  subchains — deposited 3KYS auth chain A spans label_asym A (polymer) and E
+  (non-polymers) — so only the span's own residues are checked. A structure
+  numbered from 1 whose chains are its label chains is unaffected. Do NOT read
+  this as
   "RFD3 is a label_seq engine" — it is the read that makes BoltzGen and foundry
   differ (BoltzGen's `binding:` really is label_seq), and conflating them is
   how a correct auth-numbered hotspot table would get "fixed" into a wrong one.

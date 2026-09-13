@@ -219,6 +219,9 @@ def validate_spec(
         residues: dict[tuple[str, int], set[str]] = {}
         hetatm: dict[tuple[str, int], str] = {}
         label_of: dict[tuple[str, int], int] = {}
+        #: gemmi exposes `label_asym_id` as `subchain`, which is what RFD3
+        #: reads as `chain_id` from an mmCIF.
+        subchain_of: dict[tuple[str, int], str] = {}
         for ch in st[0]:
             for res in ch:
                 key = (ch.name, int(res.seqid.num))
@@ -235,6 +238,8 @@ def validate_spec(
                     hetatm[key] = res.name
                 if res.label_seq is not None:
                     label_of[key] = int(res.label_seq)
+                if res.subchain:
+                    subchain_of[key] = res.subchain
 
         # A contig is written in AUTHOR numbering, and RFD3 resolves a
         # component against its loader's `res_id` — which is the author number
@@ -270,6 +275,33 @@ def validate_spec(
                       f"mmCIF by label_seq_id, so this contig would address "
                       f"the wrong residues. Pass the PDB the trim writes "
                       f"(trimmed.pdb) instead.")
+
+            # The chain LETTER shifts by the same mechanism, independently of
+            # the numbering: `use_author_fields=False` sets biotite's
+            # `chain_id` from `label_asym_id` as well as `res_id` from
+            # `label_seq_id`. So a construct numbered from 1 — numbering
+            # agreeing, the check above silent — whose author chain is `H`
+            # while its label_asym_id is `A` would still resolve `H1-120`
+            # against nothing. Checked only for the SPAN residues, because one
+            # author chain legitimately holds several label subchains:
+            # deposited 3KYS auth chain A spans label_asym A (the polymer) and
+            # E (its non-polymers), and refusing over that would refuse every
+            # deposited entry.
+            mislabelled = sorted(
+                {(chain, subchain_of[(chain, auth)])
+                 for chain, lo, hi in spans
+                 for auth in range(lo, hi + 1)
+                 if (chain, auth) in subchain_of
+                 and subchain_of[(chain, auth)] != chain})
+            if mislabelled:
+                raise SpecError(
+                    f"design {name!r} names an mmCIF input "
+                    f"({struct_path.name}) whose contig chain(s) "
+                    + ", ".join(f"{c!r} are label_asym_id {sub!r}"
+                                for c, sub in mislabelled)
+                    + ". RFD3 reads an mmCIF's chain_id from label_asym_id, "
+                      "so this contig would address the wrong chain. Pass "
+                      "the PDB the trim writes (trimmed.pdb) instead.")
 
         n_target = 0
         for chain, lo, hi in spans:

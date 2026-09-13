@@ -211,7 +211,8 @@ _ALA_ATOMS = (("N", 0.0, 0.0), ("CA", 1.5, 0.0), ("C", 2.4, 1.2),
               ("O", 3.6, 1.2), ("CB", 1.5, -1.5))
 
 
-def _two_chain_structure(tmp_path, first_auth: int, *, label_from: int = 1):
+def _two_chain_structure(tmp_path, first_auth: int, *, label_from: int = 1,
+                         label_asym: dict | None = None):
     """A poly-ALA A/B pair, as .cif AND .pdb.
 
     The mmCIF is written as literal text rather than through gemmi so that
@@ -225,12 +226,14 @@ def _two_chain_structure(tmp_path, first_auth: int, *, label_from: int = 1):
     for chain_name, n, y0 in (("A", 12, 0.0), ("B", 8, 12.0)):
         for i in range(n):
             for name, dx, dy in _ALA_ATOMS:
+                lab = (label_asym or {}).get(chain_name, chain_name)
                 rows.append(
-                    f"ATOM {serial} {name[0]} {name} . ALA {chain_name} 1 "
+                    f"ATOM {serial} {name[0]} {name} . ALA {lab} 1 "
                     f"{label_from + i} ? {dx + 4.0 * i:.3f} {dy + y0:.3f} "
                     f"0.000 1.00 30.00 {first_auth + i} {chain_name} 1")
                 serial += 1
-    cif = tmp_path / f"target_{first_auth}_{label_from}.cif"
+    tag = "_".join(sorted((label_asym or {}).values())) or "same"
+    cif = tmp_path / f"target_{first_auth}_{label_from}_{tag}.cif"
     cif.write_text(_CIF_HEADER + "\n".join(rows) + "\n", encoding="utf-8")
 
     # The PDB sibling, from the same coordinates. PDB has ONE numbering, so
@@ -294,6 +297,38 @@ def test_an_mmcif_whose_numbering_already_agrees_is_not_refused(tmp_path):
     cif, _pdb = _two_chain_structure(tmp_path, first_auth=1, label_from=1)
     summary = validate_spec(_spec_for(tmp_path, cif, 1))
     assert summary["designs"]["d"]["n_target_residues"] == 12
+
+
+def test_validate_refuses_a_contig_chain_that_is_not_the_mmcifs_label_asym_id(tmp_path):
+    """The chain LETTER shifts by the same mechanism as the numbering.
+
+    `use_author_fields=False` sets biotite's `chain_id` from `label_asym_id`
+    as well as `res_id` from `label_seq_id`, so a construct numbered from 1 —
+    where the numbering check above stays silent — whose author chain is `A`
+    but whose `label_asym_id` is `X` resolves `A1-12` against nothing. The
+    real shape of this is an antibody numbered from 1 on author chains H/L.
+    """
+    cif, _pdb = _two_chain_structure(tmp_path, first_auth=1, label_from=1,
+                                     label_asym={"A": "X", "B": "Y"})
+    with pytest.raises(SpecError, match="label_asym_id"):
+        validate_spec(_spec_for(tmp_path, cif, 1))
+
+
+def test_one_author_chain_holding_several_label_subchains_is_fine(tmp_path):
+    """Deposited 3KYS author chain A spans label_asym A (the polymer) and E
+    (its non-polymers). Refusing over that would refuse every deposited
+    entry, so only the SPAN residues' subchain is checked."""
+    struct = (Path(__file__).resolve().parents[1] / "data" / "structures"
+              / "3KYS.cif")
+    if not struct.exists():
+        pytest.skip("3KYS reference structure unavailable")
+    import gemmi
+
+    st = gemmi.read_structure(str(struct))
+    st.setup_entities()
+    chain_a = next(ch for ch in st[0] if ch.name == "A")
+    assert len({r.subchain for r in chain_a}) > 1, (
+        "this test's premise: one author chain, several label subchains")
 
 
 # ----------------------------------------------------------------------

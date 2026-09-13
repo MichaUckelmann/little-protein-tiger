@@ -108,10 +108,22 @@ def parse_hotspot_residues(text: str, handoff: dict) -> str | None:
                 label_id_int = int(label_raw.strip())
             except (ValueError, AttributeError):
                 # Non-numeric label (e.g. "**UNVERIFIED**") — fall back to
-                # auth_seq_id. Downstream SASA enrichment uses auth_seq_id
-                # anyway; label_seq_id is only needed for BoltzGen YAML
-                # `binding:` lines, and those are written by the
-                # design-script skill from its own copy of the table.
+                # auth_seq_id. Downstream SASA enrichment and every RFD3
+                # spec use auth_seq_id anyway (RFD3 resolves against its
+                # loader's `res_id`, which for the `trimmed.pdb` it is given
+                # IS the author numbering — see CLAUDE.md).
+                #
+                # Two things still read the label column, so the fallback is
+                # not free: `ppi_report` highlights a legacy-BoltzGen design
+                # refold by it (that engine's output carries the input
+                # label_seq as its auth_seq_id), and the legacy design-script
+                # skill writes `binding:` from its own copy of the table. The
+                # DETERMINISTIC BoltzGen builder does not — `boltzgen_spec.
+                # resolve_binding` recomputes the index from auth_seq_id
+                # against the file that will appear in `path:` and grounds it
+                # by residue name. Normally moot, because
+                # `_resolve_unverified_label_seq_ids` overwrites the column
+                # from gemmi and hard-fails if it cannot.
                 label_id_int = auth_id_int
             key = (residue, auth_id_int)
             if key not in seen:
