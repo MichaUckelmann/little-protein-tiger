@@ -1359,15 +1359,38 @@ All **[survey]**.
 Cheapest and most informative first. Each stage ends with a decision, and
 **nothing GPU-shaped happens before stage 3**.
 
-### Stage 0 — Three fixes that stand alone (no glue commitment) · ~1.5 d
+### Stage 0 — DONE (`6220a2a`, 2026-09-13)
 
 Items 24 (domain-source preference), 23 (early atom-existence + steer-quality
 check), and the exposure **area** reported alongside the count (§2.2.4).
 
-**Go/no-go:** full suite green; 5VAI `method="auto"` now produces `R29-128`
-rather than refusing at 33 exposed hydrophobics; the 3 unbuildable 5VAI hotspot
-atoms are reported at interface-stage time. **These ship regardless of whether
-glue proceeds.**
+**Every go/no-go met.** Full suite green (1222). `method="auto"` on 5VAI now
+returns `geometric`, `[(29, 128)]`, 1 segment, 100 residues, BSA retention
+100.3%, 2 exposed hydrophobics — where it previously refused at 33. The 3
+unbuildable 5VAI hotspot atoms (PHE66 `CD2,CZ`, ASP67 `CG,OD1`, ARG36
+`CZ,NH1`) and the 4 weak-steer ones (ALA70, ALA30, GLY35, GLY37) are both
+reported at interface-stage time. The exposure warning reads "75 A^2, 6% of
+the target-side interface area", matching §2.2's measured 74.8/1356.0.
+
+Two decisions made during the build, both narrower than the scope proposed:
+
+- **The atom check WARNS, it does not refuse.** Whether `rfd3_atoms` matters
+  is engine-dependent — BoltzGen steers from `binding:` label_seq entries and
+  never reads the column — so a refusal would end a legitimate BoltzGen
+  campaign over something its generator ignores. `validate_spec` still
+  hard-fails for the runs that build an RFD3 contig; only the diagnosis moved
+  earlier.
+- **The exposure AREA is reported, not gated,** and no `TrimResult` field was
+  added for it. Every threshold in `structure_trim.py` is expressed in
+  residues; adding a field creates the `_TrimFromDisk` reflection obligation
+  (`test_audit_fixes.py`) for a number no consumer reads yet. The area travels
+  in `warnings`, which is what reaches the stage report. §5 is what would
+  calibrate a fraction-based gate, and this is the measurement a campaign
+  needs recorded first.
+
+Foundry regression net clean: 43 artifact hashes identical, 13/13
+re-derivations bit-identical, zero survivor-count changes — `trim_target` is
+the function all 13 calibrated campaigns went through.
 
 ### Stage 1 — Settle the merge empirically · ~0.5 d, 2 GPU-min
 
