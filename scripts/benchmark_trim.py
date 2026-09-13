@@ -379,6 +379,736 @@ def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True,
           "rung directories' mtimes against their token counts.")
 
 
+# --------------------------------------------------------------- Phase B ---
+# Phase B refolds a CHOSEN SUBSET of Phase A's designs. The contrast is
+# WITHIN-RUNG — patch-heavy against matched patch-light designs from the same
+# rung — because a between-rung comparison varies exposure, target size, token
+# count and segment count together, so "the smaller target was an easier
+# design problem" explains any difference just as well (GLUE_PIPELINE_SCOPE.md,
+# "Phase B — REVISED").
+#
+# Nothing here re-implements the pipeline: MPNN and RF3 run through
+# `src/foundry_stages.py` exactly as the campaign driver invokes them, the
+# per-refold metrics through `src.binder_metrics.score_campaign`, and the gates
+# through `src.binder_ranking`'s own criteria list.
+
+# Matching covariates, in the scope's priority order, as weights on z-scores.
+#
+# `engagement` is deliberately NOT here, though the scope lists it. It is a
+# design-stage MEDIATOR, not a nuisance covariate: on 3KYS's bottom rung,
+# median engagement falls from 11/12 to 9/12 and 37.7 % of designs land below
+# the production gate, which IS the effect Phase B exists to measure.
+# Matching on it would pair each patch-heavy design with the patch-light
+# design whose engagement already matched, conditioning away part of the
+# causal path and biasing every result toward null. Measured, not argued: with
+# engagement in the weights the matcher still could only pair 0.958 against
+# 0.833 at 3KYS rung 120, so it bought imbalance AND bias. Engagement is
+# reported per arm instead, as a pre-refold outcome. `--match-engagement`
+# restores the scope's original set for anyone who wants the comparison.
+# `n_contacts` IS here, and it is the covariate that makes the contrast mean
+# what it claims. Patch contacts are a subset of total target contacts, so
+# without it the heavy arm is simply the stickier designs: matched only on
+# length and clashes, 3KYS's heavy arms came out with HIGHER epitope
+# engagement than their light partners (1.000 vs 0.875 at rung 173), which is
+# the opposite of the hypothesis and is explained entirely by their making
+# more contacts of every kind. Matched on total contacts, the question becomes
+# the one worth asking: given the same number of target contacts, does having
+# more of them on the fresh patch cost anything?
+PHASEB_MATCH_WEIGHTS = {"binder_len": 4.0, "n_contacts": 3.0,
+                        "sc_clashes": 2.0, "n_chainbreaks": 1.0}
+PHASEB_MATCH_WEIGHTS_WITH_ENGAGEMENT = {"binder_len": 4.0, "n_contacts": 3.0,
+                                        "engagement": 3.0, "sc_clashes": 2.0,
+                                        "n_chainbreaks": 1.0}
+PHASEB_MIN_NON_LOOP = 0.6
+PHASEB_N_SEQ = 4
+# Below this heavy-minus-light gap in patch contacts a rung cannot
+# answer the question, and refolding it produces a null that reads
+# like evidence of no effect.
+PHASEB_MIN_SEPARATION = 2
+# And below this many matched pairs a rung contributes nothing on its
+# own — it can still be pooled, but it cannot be read alone.
+PHASEB_MIN_PAIRS = 15
+
+
+def _design_covariates(sidecar: Path) -> dict | None:
+    """The matching covariates for one design, from its RFD3 sidecar.
+
+    There is no binder-length key. `metrics.num_residues` counts the WHOLE
+    complex and `diffused_index_map` carries one entry per FIXED (target)
+    residue, so the binder is the difference — verified against the contig on
+    a real sidecar (159 - 90 = 69 against contig `68-86`).
+
+    The clash keys are FLAT dotted strings, the trap `prefilter_designs`
+    documents: read as nested they return 0 for every design, which would
+    turn the clash covariate into a constant and quietly drop it out of the
+    matching.
+    """
+    try:
+        d = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    m = d.get("metrics") or {}
+    imap = d.get("diffused_index_map") or {}
+    n_tot = m.get("num_residues")
+    if n_tot is None or not imap:
+        return None
+    return {
+        "binder_len": int(n_tot) - len(imap),
+        "n_chainbreaks": int(m.get("n_chainbreaks", 0) or 0),
+        "sc_clashes": int(
+            m.get("n_clashing.interresidue_clashes_w_sidechain", 0) or 0),
+        "bb_clashes": int(
+            m.get("n_clashing.interresidue_clashes_w_backbone", 0) or 0),
+        "non_loop_fraction": float(m.get("non_loop_fraction", 1.0) or 0.0),
+    }
+
+
+def _prefilter_ok(cov: dict, max_chainbreaks: int) -> bool:
+    """The production prefilter's four criteria, on one design's sidecar.
+
+    Selection restricts BOTH arms to prefilter survivors, for two reasons.
+    It removes a confound — clashes and chainbreaks are exactly what the
+    matching is trying to balance, and letting the prefilter drop them
+    unevenly afterwards would undo it — and it makes the measured gate-pass
+    rate the production-relevant one, since a real campaign never refolds a
+    design the prefilter rejected. Thresholds mirror
+    `foundry_runner.prefilter_designs`; `max_chainbreaks` is the rung's own
+    segment count, the same derivation `write_campaign_driver` applies.
+    """
+    return (cov["n_chainbreaks"] <= max_chainbreaks
+            and cov["sc_clashes"] <= 0
+            and cov["bb_clashes"] <= 0
+            and cov["non_loop_fraction"] >= PHASEB_MIN_NON_LOOP)
+
+
+def _sidecar_for_design(rung_dir: Path, design: str) -> Path | None:
+    """`design` in `design_scores.json` is a CIF stem, and for a `.cif.gz`
+    that stem still ends in `.cif` (`Path("x.cif.gz").stem == "x.cif"`)."""
+    stem = design[:-4] if design.endswith(".cif") else design
+    hits = sorted(rung_dir.rglob(f"rfd3/**/{stem}.json"))
+    return hits[0] if hits else None
+
+
+def _zscale(rows: list[dict], keys) -> dict:
+    """Per-covariate mean/SD over the rung, so the weights mean what they say.
+    A zero-variance covariate gets SD 1.0 — it then contributes nothing rather
+    than dividing by zero."""
+    import statistics as st
+
+    out = {}
+    for k in keys:
+        vals = [float(r[k]) for r in rows]
+        sd = st.pstdev(vals) if len(vals) > 1 else 0.0
+        out[k] = (st.mean(vals), sd if sd > 1e-9 else 1.0)
+    return out
+
+
+def _light_pool(cands: list[dict], n_arm: int,
+                floor: int) -> tuple[list[dict], int]:
+    """The patch-LIGHT candidate pool, defined by an absolute patch cap.
+
+    Matching on covariates alone is not enough to define this arm, and the
+    first version of this selector proved it: given the whole sub-floor
+    remainder to choose from, `_match_arms` picked whichever design best
+    matched binder length and engagement, which on 6VJJ meant partnering a
+    3-contact "heavy" design with a 2-contact "light" one. A one-contact gap
+    measures nothing.
+
+    So the cap is chosen first — the SMALLEST patch-contact count that still
+    leaves `n_arm` candidates strictly below the heavy arm's floor — and the
+    covariate matching then happens inside that pool. Zero-contact designs
+    are used whenever there are enough of them, which is the cleanest control
+    the ladder can offer: same trim, same epitope, no patch contact at all.
+    """
+    below = [c for c in cands if c["patch_contacts"] < floor]
+    for cap in range(0, max((c["patch_contacts"] for c in below), default=0) + 1):
+        pool = [c for c in below if c["patch_contacts"] <= cap]
+        if len(pool) >= n_arm:
+            return pool, cap
+    return below, floor - 1
+
+
+def _match_arms(heavy: list[dict], pool: list[dict], scale: dict,
+                weights: dict | None = None, *, caliper_contacts: int = 3,
+                caliper_len: int = 3) -> tuple[list[dict], list[dict]]:
+    """Greedy nearest-neighbour matching, without replacement, with calipers.
+
+    Heavy designs are matched in descending patch-contact order, so the most
+    informative ones get their pick of the pool. Distance is a weighted
+    Euclidean over z-scored covariates — a lexicographic ordering would let a
+    tie on binder length decide everything and ignore the rest.
+
+    **The calipers are what make the arms comparable, and without them this
+    function produced an actively misleading pairing.** Nearest-neighbour on
+    its own always returns a partner: on 3KYS rung 120 the closest available
+    patch-light design carried 36 target contacts against the heavy arm's 52,
+    so the "effect" of patch contact would have been measured against designs
+    making a third fewer contacts of every kind. A heavy design with no
+    partner inside the caliper is DROPPED and reported, which turns a hidden
+    bias into a visible loss of n — and a rung that loses most of its heavy
+    arm is a rung whose contrast does not exist in the sampled population,
+    which is worth knowing before spending GPU hours rather than after.
+    """
+    weights = weights or PHASEB_MATCH_WEIGHTS
+    taken: set[str] = set()
+    matched, unmatched = [], []
+    for h in sorted(heavy, key=lambda r: -r["patch_contacts"]):
+        best, best_d = None, None
+        for c in pool:
+            if c["design"] in taken:
+                continue
+            if abs(int(h["n_contacts"]) - int(c["n_contacts"])) > caliper_contacts:
+                continue
+            if abs(int(h["binder_len"]) - int(c["binder_len"])) > caliper_len:
+                continue
+            d = 0.0
+            for name, w in weights.items():
+                _mu, sd = scale[name]
+                d += w * ((float(h[name]) - float(c[name])) / sd) ** 2
+            if best_d is None or d < best_d:
+                best, best_d = c, d
+        if best is None:
+            unmatched.append(h)
+            continue
+        taken.add(best["design"])
+        matched.append({**best, "matched_to": h["design"],
+                        "match_distance": round(best_d ** 0.5, 4)})
+    return matched, unmatched
+
+
+def phaseb_select(out_root: Path, *, rungs: list[int], control_rung: int | None,
+                  single_arm: list[int], n_arm: int = 40,
+                  n_control: int = 100,
+                  match_engagement: bool = False,
+                  caliper_contacts: int = 3,
+                  caliper_len: int = 3) -> dict:
+    """Choose the designs Phase B will refold, and write `phaseb_arms.json`.
+
+    Reads Phase A's own `design_scores.json` for the patch-contact counts, so
+    the selection variable is the measured one and not a second derivation.
+    Patch contacts per design are `round(patch_contact_fraction *
+    n_contacts)` — `design_scores.json` stores the fraction, and `n_patch`
+    there is the rung's patch SIZE, not a per-design count.
+    """
+    ladder = json.loads((out_root / "ladder.json").read_text(encoding="utf-8"))
+    scores = json.loads(
+        (out_root / "design_scores.json").read_text(encoding="utf-8"))
+    seg_of = {int(r["budget"]): int(r.get("n_segments", 1))
+              for r in ladder["rungs"] if "spec_path" in r}
+    tok_of = {int(r["budget"]): int(r["n_tokens"])
+              for r in ladder["rungs"] if "spec_path" in r}
+    by_rung: dict[int, list[dict]] = {}
+    for r in scores:
+        by_rung.setdefault(int(r["rung"]), []).append(r)
+
+    out = {"ladder": out_root.name, "rungs": []}
+    wanted = [(b, "paired") for b in rungs]
+    wanted += [(b, "single") for b in single_arm]
+    if control_rung is not None:
+        wanted.append((control_rung, "control"))
+    for budget, kind in wanted:
+        rows = by_rung.get(budget)
+        if not rows:
+            print(f"  rung {budget}: no design scores — skipped", flush=True)
+            continue
+        rung_dir = out_root / f"rung_{budget}"
+        cands = []
+        for r in rows:
+            sidecar = _sidecar_for_design(rung_dir, r["design"])
+            if sidecar is None:
+                continue
+            cov = _design_covariates(sidecar)
+            if cov is None or not _prefilter_ok(cov, seg_of.get(budget, 1)):
+                continue
+            cif = _cif_for(sidecar)
+            if cif is None:
+                continue
+            cands.append({
+                "design": r["design"], "sidecar": str(sidecar), "cif": str(cif),
+                "patch_contacts": round(r["patch_contact_fraction"]
+                                        * r["n_contacts"]),
+                "patch_fraction": r["patch_contact_fraction"],
+                "n_contacts": r["n_contacts"],
+                "engagement": r["hotspot_engagement_design"] or 0.0,
+                "binder_len": cov["binder_len"],
+                "sc_clashes": cov["sc_clashes"],
+                "n_chainbreaks": cov["n_chainbreaks"],
+            })
+        if not cands:
+            print(f"  rung {budget}: no prefilter survivors — skipped",
+                  flush=True)
+            continue
+        scale = _zscale(cands, ("binder_len", "n_contacts", "engagement",
+                                "sc_clashes", "n_chainbreaks"))
+        entry = {"budget": budget, "kind": kind, "n_tokens": tok_of.get(budget),
+                 "n_segments": seg_of.get(budget, 1),
+                 "n_prefilter_survivors": len(cands), "arms": {}}
+        ranked = sorted(cands, key=lambda r: (-r["patch_contacts"],
+                                              -r["patch_fraction"]))
+        if kind == "control":
+            entry["arms"]["control"] = [dict(c) for c in ranked[:n_control]]
+        elif kind == "single":
+            entry["arms"]["heavy"] = [dict(c) for c in ranked[:n_arm]]
+        else:
+            heavy = [dict(c) for c in ranked[:n_arm]]
+            floor = min(h["patch_contacts"] for h in heavy)
+            pool, cap = _light_pool(cands, n_arm, floor)
+            entry["light_patch_cap"] = cap
+            light, unmatched = _match_arms(
+                heavy, pool, scale,
+                PHASEB_MATCH_WEIGHTS_WITH_ENGAGEMENT if match_engagement
+                else PHASEB_MATCH_WEIGHTS,
+                caliper_contacts=caliper_contacts, caliper_len=caliper_len)
+            dropped = {u["design"] for u in unmatched}
+            # Only PAIRS go to the GPU: an unmatched heavy design would cost
+            # a refold and contribute to no comparison.
+            entry["arms"]["heavy"] = [h for h in heavy
+                                      if h["design"] not in dropped]
+            entry["arms"]["light"] = light
+            entry["n_unmatched_heavy"] = len(unmatched)
+            if unmatched:
+                print(f"  rung {budget}: {len(unmatched)} of {len(heavy)} "
+                      f"heavy designs had no partner within the caliper "
+                      f"(+/-{caliper_contacts} contacts, +/-{caliper_len} "
+                      f"residues) and were dropped", flush=True)
+        import statistics as st
+        entry["separation"] = {
+            arm: {"n": len(v),
+                  "median_patch_contacts": st.median(
+                      x["patch_contacts"] for x in v) if v else None,
+                  "median_binder_len": st.median(
+                      x["binder_len"] for x in v) if v else None,
+                  "median_engagement": round(st.median(
+                      x["engagement"] for x in v), 4) if v else None,
+                  "median_n_contacts": st.median(
+                      x["n_contacts"] for x in v) if v else None}
+            for arm, v in entry["arms"].items()}
+        n_pairs = len(entry["arms"].get("light") or [])
+        if entry["kind"] == "paired" and n_pairs < PHASEB_MIN_PAIRS:
+            entry["weak"] = True
+            print(f"  rung {budget}: WEAK — only {n_pairs} matched pairs, "
+                  f"below the {PHASEB_MIN_PAIRS} this rung needs to "
+                  f"contribute. Its contrast does not exist in the sampled "
+                  f"population; refold it only to pool with other rungs.",
+                  flush=True)
+        h = (entry["separation"].get("heavy") or {}).get(
+            "median_patch_contacts")
+        l = (entry["separation"].get("light") or {}).get(
+            "median_patch_contacts")
+        if h is not None and l is not None:
+            entry["separation_gap"] = h - l
+            if h - l < PHASEB_MIN_SEPARATION:
+                entry["weak"] = True
+                print(f"  rung {budget}: WEAK — heavy median {h} vs light "
+                      f"{l} patch contacts is a gap of {h - l}, below the "
+                      f"{PHASEB_MIN_SEPARATION} this rung would need to "
+                      f"measure anything. Refolding it buys a null result "
+                      f"that means nothing.", flush=True)
+        out["rungs"].append(entry)
+        sep = "  ".join(
+            f"{a}: n={s['n']} patch={s['median_patch_contacts']}"
+            for a, s in entry["separation"].items())
+        print(f"  rung {budget} ({kind}, {len(cands)} prefilter survivors of "
+              f"{len(rows)}): {sep}", flush=True)
+
+    (out_root / "phaseb_arms.json").write_text(
+        json.dumps(out, indent=1), encoding="utf-8")
+    n_designs = sum(len(v) for e in out["rungs"] for v in e["arms"].values())
+    print(f"\nwrote {out_root / 'phaseb_arms.json'}: {n_designs} designs, "
+          f"{n_designs * PHASEB_N_SEQ} refolds expected", flush=True)
+    return out
+
+
+def phaseb_launch(out_root: Path, *, dry_run: bool = True,
+                  only: int | None = None) -> None:
+    """One detached MPNN+RF3 job per rung, over the selected designs only.
+
+    The subset mechanism is a directory of symlinks, which is exactly what
+    the production prefilter hands MPNN (`foundry_stages.cmd_mpnn` scandirs a
+    directory for `*.cif.gz`). The SIDECAR is symlinked beside each design
+    too: `binder_metrics.score_campaign` resolves both the design CIF and its
+    RFD3 sidecar out of the design dir, and without the sidecar every
+    hotspot/chainbreak column comes back empty.
+
+    Each rung gets its own parent directory because `cmd_rf3 --skip-existing`
+    stages symlinks into `<out_dir>.parent/".rf3_staging"` and wipes what it
+    finds there — two rungs sharing a parent would delete each other's queue.
+    """
+    import yaml
+
+    from src.env_config import resolve_env_path
+    from src.foundry_runner import (FoundryValidationError, _resolve_foundry_bin,
+                                    rf3_seconds_per_refold)
+
+    cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    design = cfg.get("design") or {}
+    f_cfg = design.get("foundry") or {}
+    foundry_root = resolve_env_path("LPT_FOUNDRY_ROOT", f_cfg.get("root"))
+    if not foundry_root:
+        raise FoundryValidationError(
+            "foundry root is not set — set LPT_FOUNDRY_ROOT in .env or "
+            "design.foundry.root in config.yaml")
+    foundry_root = Path(foundry_root)
+    # Resolve BOTH binaries up front: a wrong venv name must fail here, not
+    # inside a detached job hours later (the Phase A lesson).
+    mpnn_bin = _resolve_foundry_bin(
+        foundry_root, f_cfg.get("mpnn_bin", ".venv-blackwell/bin/mpnn"), "mpnn")
+    rf3_bin = _resolve_foundry_bin(
+        foundry_root, f_cfg.get("rf3_bin", ".venv-blackwell/bin/rf3"), "rf3")
+    ckpt_dir = resolve_env_path("LPT_FOUNDRY_CKPT_DIR", f_cfg.get("ckpt_dir"))
+
+    arms = json.loads(
+        (out_root / "phaseb_arms.json").read_text(encoding="utf-8"))
+    total_h = 0.0
+    for entry in arms["rungs"]:
+        budget = int(entry["budget"])
+        if only is not None and budget != only:
+            continue
+        work = out_root / "phaseb" / f"rung_{budget}"
+        sel, mpnn_out, rf3_out = (work / "designs_selected",
+                                  work / "mpnn_out", work / "rf3_out")
+        logs = work / "logs"
+        for d in (sel, mpnn_out, rf3_out, logs):
+            d.mkdir(parents=True, exist_ok=True)
+        members = [m for v in entry["arms"].values() for m in v]
+        for m in members:
+            for src in (Path(m["cif"]), Path(m["sidecar"])):
+                link = sel / src.name
+                if link.is_symlink() or link.exists():
+                    link.unlink()
+                link.symlink_to(src)
+        n_refolds = len(members) * PHASEB_N_SEQ
+        est = n_refolds * rf3_seconds_per_refold(
+            n_tokens=entry.get("n_tokens")) / 3600
+        total_h += est
+        py = sys.executable
+        script = work / "run_phaseb.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "# Phase B: MPNN + RF3 over ONE rung's selected designs.\n"
+            "# Same two stage commands the campaign driver writes; the only\n"
+            "# difference is that the design dir holds a chosen subset.\n"
+            "set -euo pipefail\n"
+            f'cd "{ROOT}"\n'
+            f'export CUDA_VISIBLE_DEVICES="0"\n'
+            f'"{py}" "{ROOT}/src/foundry_stages.py" mpnn "{sel}" "{mpnn_out}"'
+            f' --checkpoint "solublempnn" --n-seq {PHASEB_N_SEQ}'
+            f' --chunk-size 250 --foundry "{foundry_root}"'
+            f' --mpnn-bin "{mpnn_bin}"'
+            + (f' --ckpt-dir "{ckpt_dir}"' if ckpt_dir else "")
+            + f' --skip-existing >> "{logs}/mpnn.log" 2>&1\n'
+            f'"{py}" "{ROOT}/src/foundry_stages.py" rf3 "{mpnn_out}"'
+            f' "{rf3_out}" --checkpoint "rf3" --template "target"'
+            f' --diffusion-batch-size 1 --seed 0 --foundry "{foundry_root}"'
+            f' --rf3-bin "{rf3_bin}" --skip-existing'
+            f' >> "{logs}/rf3.log" 2>&1\n', encoding="utf-8")
+        script.chmod(0o755)
+        print(f"  rung {budget}: {len(members)} designs -> {n_refolds} refolds,"
+              f" ~{est:.2f} GPU-h  {script}", flush=True)
+        if not dry_run:
+            from src.job_registry import JobRegistry
+
+            rec = JobRegistry(work / "jobs.json").launch(
+                f"phaseb_rung_{budget}", ["bash", str(script)],
+                cwd=str(work), log_path=logs / "stage.log",
+                note=f"Phase B rung {budget}")
+            print(f"    launched: pid {rec.pid} -> {logs}/stage.log",
+                  flush=True)
+    print(f"\ntotal across rungs: ~{total_h:.2f} GPU-h"
+          + ("  (dry run — nothing launched)" if dry_run else ""), flush=True)
+
+
+def phaseb_score(out_root: Path, cutoff: float = 8.0,
+                 workers: int = 0) -> list[dict]:
+    """Score every completed Phase B refold, and label it with its arm.
+
+    Metrics come from `binder_metrics.score_campaign` — the same call
+    `_score_campaign` makes for a real campaign — and the gate verdict from
+    `binder_ranking`'s own criteria list, so a threshold change in
+    `config.yaml` moves this readout with it.
+
+    The one thing computed here is PATCH SURVIVAL: the fraction of a design's
+    own patch contacts still present in its refold. Both sides use
+    `binder_backbone_only=True`, unlike Phase A's design-stage count, because
+    RFD3's binder sidechains belong to RFD3's sequence and not to the MPNN
+    sequence being refolded — comparing sidechain contacts across the two
+    would measure the sequence change, not the pose.
+    """
+    import os
+
+    import yaml
+
+    from src.binder_metrics import (ScoreConfig, epitope, hotspots_from_rfd3,
+                                    read_structure, score_campaign)
+    from src.binder_ranking import DEFAULT_THRESHOLDS, _criteria
+
+    cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    rcfg = (((cfg.get("design") or {}).get("binder_ranking")) or {})
+    crit = _criteria({**DEFAULT_THRESHOLDS, **(rcfg.get("thresholds") or {})})
+    ladder = json.loads((out_root / "ladder.json").read_text(encoding="utf-8"))
+    patch_of = {int(r["budget"]): ({int(a) for _n, a, _d in r["patch_away"]}
+                                   | {int(a) for _n, a, _d in r["patch_near"]})
+                for r in ladder["rungs"] if "spec_path" in r}
+    arms = json.loads(
+        (out_root / "phaseb_arms.json").read_text(encoding="utf-8"))
+    workers = workers or max(1, (os.cpu_count() or 4) - 2)
+    rows: list[dict] = []
+    for entry in arms["rungs"]:
+        budget = int(entry["budget"])
+        work = out_root / "phaseb" / f"rung_{budget}"
+        rf3_out, sel = work / "rf3_out", work / "designs_selected"
+        if not rf3_out.is_dir():
+            print(f"  rung {budget}: no refolds yet", flush=True)
+            continue
+        arm_of = {m["design"]: arm for arm, v in entry["arms"].items()
+                  for m in v}
+        # design_family strips MPNN's `_b<k>_d<k>`; the arm keys are CIF stems
+        # ending in `.cif` (a `.cif.gz` stem), so index on both spellings.
+        arm_of.update({k[:-4]: v for k, v in arm_of.items()
+                       if k.endswith(".cif")})
+        sidecars = sorted(sel.glob("*_model_*.json"))
+        if not sidecars:
+            print(f"  rung {budget}: no sidecars in {sel}", flush=True)
+            continue
+        hotspots = hotspots_from_rfd3(sidecars[0], "B")
+        scored = score_campaign(
+            rf3_out, sel, hotspots=hotspots,
+            cfg=ScoreConfig(contact_cutoff=cutoff), workers=workers,
+            with_ipsae=True)
+        patch_cache: dict[str, set] = {}
+        for r in scored:
+            fam = r.get("design_family") or ""
+            r["rung"] = budget
+            r["arm"] = arm_of.get(fam) or arm_of.get(f"{fam}.cif")
+            r["gate_pass"] = (not r.get("error")
+                              and all(c(r) for _l, c in crit))
+            r["gate_first_fail"] = next(
+                (l for l, c in crit if not c(r)), None)
+            r["patch_survival"] = None
+            try:
+                dcif, pcif = r.get("design_cif"), r.get("refold_cif")
+                if not (dcif and pcif) or r.get("error"):
+                    continue
+                if fam not in patch_cache:
+                    car = sel / f"{fam}.json"
+                    imap = (json.loads(car.read_text(encoding="utf-8"))
+                            .get("diffused_index_map") or {}) if car.exists() \
+                        else {}
+                    out_of = {}
+                    for k, v in imap.items():
+                        try:
+                            out_of[int(k[1:])] = int(str(v)[1:])
+                        except (ValueError, IndexError):
+                            continue
+                    patch_out = {out_of[a] for a in patch_of.get(budget, set())
+                                 if a in out_of}
+                    des = epitope(read_structure(Path(dcif)), "A", "B", cutoff,
+                                  binder_backbone_only=True)
+                    patch_cache[fam] = (patch_out, des & patch_out)
+                patch_out, des_patch = patch_cache[fam]
+                r["n_patch_design"] = len(des_patch)
+                if des_patch:
+                    prd = epitope(read_structure(Path(pcif)), "A", "B", cutoff,
+                                  binder_backbone_only=True)
+                    r["patch_survival"] = round(
+                        len(des_patch & prd) / len(des_patch), 4)
+            except Exception as exc:                              # noqa: BLE001
+                r["patch_survival_error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                rows.append(r)
+        n_lab = sum(1 for r in scored if r.get("arm"))
+        print(f"  rung {budget}: scored {len(scored)} refolds "
+              f"({n_lab} arm-labelled)", flush=True)
+    (out_root / "phaseb_scores.json").write_text(
+        json.dumps(rows, indent=1, default=str), encoding="utf-8")
+    print(f"\nwrote {out_root / 'phaseb_scores.json'} ({len(rows)} rows)",
+          flush=True)
+    return rows
+
+
+def _design_level(rows: list[dict]) -> list[dict]:
+    """One record per RFD3 design, chosen the way production chooses.
+
+    `binder_ranking.composite_score` + one per `design_family` is exactly
+    `max_per_backbone=1`, so the unit matches what a campaign would report.
+    Picking the best refold per metric instead would cherry-pick a different
+    design for each column.
+    """
+    from src.binder_ranking import DEFAULT_Z_CLIP, composite_score
+
+    usable = [r for r in rows if not r.get("error")]
+    if not usable:
+        return []
+    composite_score(usable, z_clip=DEFAULT_Z_CLIP)
+    best: dict[str, dict] = {}
+    for r in usable:
+        fam = r.get("design_family") or r.get("name")
+        cur = best.get(fam)
+        if cur is None or (r.get("composite_score") or float("-inf")) > (
+                cur.get("composite_score") or float("-inf")):
+            best[fam] = r
+    return list(best.values())
+
+
+def _medians(rows: list[dict]) -> dict:
+    """Median of each reported metric over one arm, skipping missing values.
+
+    `binder_rmsd_dock` is the one that matters most: iPTM reports confidence
+    in whatever interface the model chose, so a mis-docked design can carry a
+    high iPTM, and the dock RMSD is what separates them (CLAUDE.md, "RF3
+    templating cannot convey a docked pose").
+    """
+    import statistics as st
+
+    out = {}
+    for key in ("iptm", "binder_rmsd_dock", "binder_plddt", "ipsae_min",
+                "hotspot_engagement", "patch_survival"):
+        vals = [r[key] for r in rows
+                if isinstance(r.get(key), (int, float))]
+        out[key] = round(st.median(vals), 4) if vals else None
+    return out
+
+
+def _mwu(a: list[float], b: list[float]) -> dict:
+    from scipy.stats import mannwhitneyu
+
+    a = [x for x in a if x is not None]
+    b = [x for x in b if x is not None]
+    if len(a) < 3 or len(b) < 3:
+        return {"n_a": len(a), "n_b": len(b), "p": None}
+    import statistics as st
+
+    u, p = mannwhitneyu(a, b, alternative="two-sided")
+    return {"n_a": len(a), "n_b": len(b), "median_a": round(st.median(a), 4),
+            "median_b": round(st.median(b), 4), "U": float(u),
+            "p": round(float(p), 5)}
+
+
+def phaseb_analyze(out_root: Path) -> dict:
+    """The pre-registered readout: per rung, then pooled.
+
+    Design-level is primary (4 sequences off one backbone are correlated);
+    refold-level is reported as the secondary, better-powered test. The
+    gate-pass ratio carries Wilson intervals on each arm and a Katz log
+    interval on the ratio — `campaign_calibration.wilson_interval` is the
+    pipeline's own, so the interval here and the one in a SCALE_UP verdict are
+    computed the same way.
+    """
+    import math
+    import statistics as st
+
+    from src.campaign_calibration import wilson_interval
+
+    rows = json.loads(
+        (out_root / "phaseb_scores.json").read_text(encoding="utf-8"))
+    by_rung: dict[int, list[dict]] = {}
+    for r in rows:
+        by_rung.setdefault(int(r["rung"]), []).append(r)
+
+    def _rate(rs):
+        k = sum(1 for r in rs if r.get("gate_pass"))
+        lo, hi = wilson_interval(k, len(rs)) if rs else (0.0, 0.0)
+        return {"k": k, "n": len(rs),
+                "rate": round(k / len(rs), 4) if rs else None,
+                "ci95": [round(lo, 4), round(hi, 4)]}
+
+    def _ratio(h, l):
+        if not (h["k"] and l["k"]):
+            return {"point": None, "note": "a zero cell — ratio undefined; "
+                                           "read the two Wilson intervals"}
+        rr = (h["k"] / h["n"]) / (l["k"] / l["n"])
+        se = math.sqrt(1 / h["k"] - 1 / h["n"] + 1 / l["k"] - 1 / l["n"])
+        return {"point": round(rr, 3),
+                "ci95": [round(rr * math.exp(-1.96 * se), 3),
+                         round(rr * math.exp(1.96 * se), 3)]}
+
+    out = {"rungs": [], "pooled": {}}
+    pooled = {"heavy": [], "light": [], "control": []}
+    pooled_d = {"heavy": [], "light": [], "control": []}
+    for budget in sorted(by_rung, reverse=True):
+        rs = by_rung[budget]
+        arms = {a: [r for r in rs if r.get("arm") == a]
+                for a in ("heavy", "light", "control")}
+        dl = {a: _design_level(v) for a, v in arms.items()}
+        for a in pooled:
+            pooled[a].extend(arms[a])
+            pooled_d[a].extend(dl[a])
+        entry = {"budget": budget,
+                 "design_level": {a: _rate(v) for a, v in dl.items() if v},
+                 "refold_level": {a: _rate(v) for a, v in arms.items() if v},
+                 # Per-arm medians are computed here, NOT read out of the
+                 # Mann-Whitney block: that block only exists for a paired
+                 # rung, so a control or single arm would otherwise report no
+                 # numbers at all — and the control IS the baseline the
+                 # paired arms are read against.
+                 "medians": {a: _medians(v) for a, v in dl.items() if v}}
+        if dl["heavy"] and dl["light"]:
+            entry["iptm"] = _mwu([r.get("iptm") for r in dl["heavy"]],
+                                 [r.get("iptm") for r in dl["light"]])
+            entry["binder_rmsd_dock"] = _mwu(
+                [r.get("binder_rmsd_dock") for r in dl["heavy"]],
+                [r.get("binder_rmsd_dock") for r in dl["light"]])
+            entry["gate_ratio_design"] = _ratio(entry["design_level"]["heavy"],
+                                                entry["design_level"]["light"])
+        for a, v in arms.items():
+            surv = [r["patch_survival"] for r in v
+                    if r.get("patch_survival") is not None]
+            if surv:
+                entry.setdefault("patch_survival", {})[a] = {
+                    "n": len(surv), "median": round(st.median(surv), 4),
+                    "mean": round(st.mean(surv), 4)}
+        out["rungs"].append(entry)
+
+    dl = {a: v for a, v in pooled_d.items() if v}
+    out["pooled"] = {
+        "design_level": {a: _rate(v) for a, v in dl.items()},
+        "refold_level": {a: _rate(v) for a, v in pooled.items() if v},
+        "medians": {a: _medians(v) for a, v in dl.items()}}
+    if dl.get("heavy") and dl.get("light"):
+        out["pooled"]["iptm"] = _mwu([r.get("iptm") for r in dl["heavy"]],
+                                     [r.get("iptm") for r in dl["light"]])
+        out["pooled"]["binder_rmsd_dock"] = _mwu(
+            [r.get("binder_rmsd_dock") for r in dl["heavy"]],
+            [r.get("binder_rmsd_dock") for r in dl["light"]])
+        out["pooled"]["gate_ratio_design"] = _ratio(
+            out["pooled"]["design_level"]["heavy"],
+            out["pooled"]["design_level"]["light"])
+    (out_root / "phaseb_stats.json").write_text(
+        json.dumps(out, indent=1), encoding="utf-8")
+    _print_phaseb(out)
+    return out
+
+
+def _print_phaseb(stats: dict) -> None:
+    print(f"\n{'rung':>6} {'arm':>8} {'designs':>8} {'pass':>6} {'rate':>7} "
+          f"{'95% CI':>15} {'med iptm':>9} {'med dock':>9} {'patch surv':>10}")
+    for e in stats["rungs"]:
+        for arm in ("heavy", "light", "control"):
+            d = e["design_level"].get(arm)
+            if not d:
+                continue
+            med = (e.get("medians") or {}).get(arm) or {}
+            med_i, med_d = med.get("iptm"), med.get("binder_rmsd_dock")
+            surv = (e.get("patch_survival") or {}).get(arm, {}).get("median")
+            print(f"{e['budget']:>6} {arm:>8} {d['n']:>8} {d['k']:>6} "
+                  f"{(d['rate'] if d['rate'] is not None else 0):>7.3f} "
+                  f"{str(d['ci95']):>15} "
+                  f"{(f'{med_i:.3f}' if med_i is not None else '-'):>9} "
+                  f"{(f'{med_d:.2f}' if med_d is not None else '-'):>9} "
+                  f"{(f'{surv:.3f}' if surv is not None else '-'):>10}")
+        if e.get("iptm", {}).get("p") is not None:
+            print(f"{'':>6} heavy vs light: iptm p={e['iptm']['p']:.4f}, "
+                  f"dock p={e['binder_rmsd_dock']['p']:.4f}, "
+                  f"gate ratio {e.get('gate_ratio_design', {}).get('point')}")
+    p = stats["pooled"]
+    if p.get("iptm"):
+        print(f"\npooled (design level): iptm p={p['iptm']['p']}, "
+              f"dock p={p['binder_rmsd_dock']['p']}, "
+              f"gate ratio {p['gate_ratio_design']}")
+    print("\nThe decision rule is pre-registered in GLUE_PIPELINE_SCOPE.md "
+          "(\"Pre-registered decision rule\") — read it BEFORE these numbers.")
+
+
 def _main() -> int:
     import argparse
 
@@ -416,6 +1146,47 @@ def _main() -> int:
     s.add_argument("--out", required=True)
     s.add_argument("--cutoff", type=float, default=8.0)
 
+    s = sub.add_parser("phaseb-select",
+                       help="choose Phase B's paired arms from Phase A's scores")
+    s.add_argument("--out", required=True)
+    s.add_argument("--rungs", default="",
+                   help="comma-separated budgets to PAIR (heavy vs matched "
+                        "light), e.g. 117,106,90")
+    s.add_argument("--control-rung", type=int, default=None,
+                   help="the no-trim rung, taken as one unmatched arm")
+    s.add_argument("--single-arm", default="",
+                   help="budgets contributing ONE arm only — saturated rungs "
+                        "where no patch-light designs exist to match")
+    s.add_argument("--n-arm", type=int, default=40)
+    s.add_argument("--n-control", type=int, default=100)
+    s.add_argument("--caliper-contacts", type=int, default=3,
+                   help="max allowed difference in TOTAL target contacts "
+                        "between a matched pair; heavy designs with no "
+                        "partner inside it are dropped")
+    s.add_argument("--caliper-len", type=int, default=3,
+                   help="max allowed binder-length difference in a pair")
+    s.add_argument("--match-engagement", action="store_true",
+                   help="also match on design-stage hotspot engagement. OFF "
+                        "by default: it is a mediator, not a nuisance "
+                        "covariate — see PHASEB_MATCH_WEIGHTS.")
+
+    s = sub.add_parser("phaseb-launch",
+                       help="one detached MPNN+RF3 job per rung (GPU)")
+    s.add_argument("--out", required=True)
+    s.add_argument("--launch", action="store_true",
+                   help="actually launch; without it, plan and print only")
+    s.add_argument("--rung", type=int, default=None,
+                   help="launch ONE rung. Rungs must not share the card.")
+
+    s = sub.add_parser("phaseb-score", help="score Phase B's refolds (CPU)")
+    s.add_argument("--out", required=True)
+    s.add_argument("--cutoff", type=float, default=8.0)
+    s.add_argument("--workers", type=int, default=0)
+
+    s = sub.add_parser("phaseb-analyze",
+                       help="the pre-registered Phase B readout (CPU)")
+    s.add_argument("--out", required=True)
+
     a = ap.parse_args()
     if a.cmd == "sweep":
         rows = []
@@ -437,6 +1208,21 @@ def _main() -> int:
                [int(b) for b in a.budgets.split(",")], Path(a.out))
     elif a.cmd == "spec":
         build_specs(Path(a.out), a.binder_min, a.binder_max)
+    elif a.cmd == "phaseb-select":
+        phaseb_select(
+            Path(a.out),
+            rungs=[int(x) for x in a.rungs.split(",") if x.strip()],
+            control_rung=a.control_rung,
+            single_arm=[int(x) for x in a.single_arm.split(",") if x.strip()],
+            n_arm=a.n_arm, n_control=a.n_control,
+            match_engagement=a.match_engagement,
+            caliper_contacts=a.caliper_contacts, caliper_len=a.caliper_len)
+    elif a.cmd == "phaseb-launch":
+        phaseb_launch(Path(a.out), dry_run=not a.launch, only=a.rung)
+    elif a.cmd == "phaseb-score":
+        phaseb_score(Path(a.out), a.cutoff, workers=a.workers)
+    elif a.cmd == "phaseb-analyze":
+        phaseb_analyze(Path(a.out))
     elif a.cmd == "designs":
         launch_designs(Path(a.out), a.designs, dry_run=not a.launch,
                        only=a.rung)

@@ -1077,13 +1077,19 @@ RFD3 output size, **measured** rather than taken from the docstring's "rfd3 ~2 %
 **Phase A fits in one working day on one card, with room to spare.**
 (At 150/rung: 1.35 + 1.57 = 2.92 GPU-h, 111 MB.)
 
-### Phase B — REVISED after Phase A: a paired within-rung contrast
+### Phase A — COMPLETE (2026-09-14), and the two ladders disagree
 
-**Phase A's 6VJJ ladder is done, and it falsified H1**, which changes what
-Phase B should measure. Measured over 6 rungs x 300 RFD3 designs, patch
-contacts scored at 8.0 A heavy-atom:
+Both ladders ran to 300 RFD3 designs per rung, 3,900 designs, ~5.9 GPU-h, and
+they answer DIFFERENT questions: 6VJJ's exposure is all far from the epitope
+(H1), 3KYS's marches toward it (H2). Patch contacts scored at 8.0 A
+heavy-atom; `engage` is the median design-stage `hotspot_engagement` over a
+fixed 12-hotspot set, identical at every rung (`derive_hotspots`, top-12 by
+BSA — deliberately deterministic, so no LLM variance enters the ladder), and
+every rung retained all 12 with BSA retention >= 1.0.
 
-| rung | tokens | patch A^2 (away/near) | patch % of target | enrichment | engagement |
+**6VJJ — far exposure. H1 FALSIFIED.**
+
+| rung | tokens | patch A^2 (away/near) | patch % of target | enrichment | engage |
 |---|---|---|---|---|---|
 | 168 | 246 | 0 / 0 | 0.000 | — (no-trim control) | 1.000 |
 | 153 | 231 | 335 / 263 | 0.028 | 0.43 | 1.000 |
@@ -1092,71 +1098,230 @@ contacts scored at 8.0 A heavy-atom:
 | 106 | 178 | 721 / 387 | 0.054 | 0.34 | 1.000 |
 | 90  | 168 | 743 / 451 | 0.056 | 0.29 | 1.000 |
 
-H1 predicted enrichment **> 1.0 rising with dose**. Measured: **0.29-0.48,
-i.e. 2-3x LESS than area-proportional, falling as the patch grows**, with
-hotspot engagement **1.000 at every rung** — cutting 168 -> 90 residues cost
-no epitope contact at all. A fresh hydrophobic face did not attract
-hotspot-conditioned RFD3 backbones. Note the scope of that claim: RFD3 is
-STEERED by `select_hotspots`, so this measures whether exposure diverts a
-conditioned binder, not whether it would attract an unconditioned one.
+H1 predicted enrichment **> 1.0 rising with dose**. Measured **0.29-0.48,
+falling as the patch grows**, engagement **1.000 everywhere** — cutting
+168 -> 90 residues cost no epitope contact at all.
 
-**Two facts kill the original two-point dose plan below.** First, the dose
-axis has little signal left to find at the design stage. Second, and worse,
-comparing rung 207 against rung 90 varies exposure, target size, token count
-AND segment count together, so any yield difference is uninterpretable —
-"smaller target is an easier design problem" predicts the same result.
+**3KYS — NEAR-epitope exposure. A signal, at the last rung only.**
 
-**The feasibility number that shapes the replacement**: at the top rungs
-~290/300 designs touch the patch at all, but the MEDIAN patch contact
-fraction is 0.056 — about 2 of 36 target contacts. So "contacting vs not" is
-not a contrast. Designs with >= 3 patch residues number 42 / 40 / 29 / 21 / 9
-at rungs 90 / 106 / 117 / 140 / 153, which is enough for a per-rung split at
-the three highest rungs.
+| rung | tokens | patch A^2 (away/near) | patch % of target | enrichment | engage |
+|---|---|---|---|---|---|
+| 208 | 286 | 0 / 0 | 0.000 | — (no-trim control) | 0.875 |
+| 200 | 278 | 353 / 0 | 0.000 | 0.27 | 0.917 |
+| 173 | 251 | 538 / 157 | 0.022 | 0.24 | 0.917 |
+| 140 | 218 | 1057 / 256 | 0.074 | 0.37 | 0.917 |
+| 120 | 198 | 995 / 463 | 0.135 | 0.60 | 0.917 |
+| 100 | 178 | 555 / 515 | 0.139 | 0.63 | 0.917 |
+| 90  | 168 | 202 / 678 | 0.283 | **1.27** | **0.750** |
 
-**Design: within-rung, patch-heavy vs patch-light, matched.**
+Read the last row against the other six. Enrichment crosses 1.0 exactly where
+near-epitope area (678 A^2, 15 residues) overtakes far area (202 A^2, 5) — and
+median engagement drops a whole hotspot, from 11/12 to 9/12. The distribution
+moves, not just the median: designs BELOW the 0.75 production gate are
+**37.7 %** at rung 90 against 2.3-10.0 % at every other rung (mean engagement
+0.790 vs 0.879-0.909). That is the first thing in either ladder that looks like
+the hazard `EXPOSED_HOTSPOT_CLEARANCE_A = 10` was written for.
+
+**Enrichment is area-normalised** (`frac / patch_share_of_target`), so "a
+smaller target has fewer non-patch residues to touch" is already divided out —
+that is why it, and not `patch_contact_fraction`, is the statistic to read.
+Two confounds remain and neither is resolved at the design stage: rung 90 is
+also the smallest target (90 residues, 168 tokens), and its cut necessarily
+removed the residues flanking the epitope, so "the groove got shallower" and
+"the fresh patch competes" predict the same engagement drop. Distinguishing
+them needs the refolds.
+
+**Free measurement: RFD3 per-design cost HAS a size law.** From sidecar mtimes
+within each rung (first 10 dropped, so model load is excluded), 13 rungs x 300
+designs:
+
+| target | tokens | s/design | | target | tokens | s/design |
+|---|---|---|---|---|---|---|
+| 3KYS | 286 | 10.81 | | 6VJJ | 246 | 7.94 |
+| 3KYS | 278 | 10.50 | | 6VJJ | 231 | 7.35 |
+| 3KYS | 251 | 8.47  | | 6VJJ | 218 | 6.94 |
+| 3KYS | 218 | 6.96  | | 6VJJ | 195 | 6.17 |
+| 3KYS | 198 | 6.25  | | 6VJJ | 184 | 5.82 |
+| 3KYS | 178 | 5.66  | | 6VJJ | 168 | 5.29 |
+| 3KYS | 168 | 5.40  | | | | |
+
+Log-log fit: **6.24 s at 195 tokens, exponent 1.28** (R^2 0.963 over all 13;
+1.33 on 3KYS alone over 168-286, 1.06 on 6VJJ over 168-246 — the 3KYS exponent
+is higher because its range is wider, not because the target differs).
+**The two targets agree where they overlap** — 6.96 vs 6.94 s at 218 tokens,
+5.40 vs 5.29 at 168 — so this is a size law, not a target effect, and the same
+shape as RF3's runtime law (1.62) and the disk law (1.49).
+`foundry_runner.SEC_PER_RFD3_DESIGN = 5.4` is flat: right at 168 tokens and
+**2.0x low at 286**, so a large-complex campaign's RFD3 half is under-costed by
+half. Changing it moves `plan_campaign`'s estimate and through it
+`campaign_calibration`'s budget check, i.e. SCALE_UP/STOP verdicts — the same
+blast radius the RF3 law has, so it is a deliberate change and not a drive-by.
+
+### Phase B — REVISED after Phase A: a paired within-rung contrast
+
+**Both ladders are now done — see "Phase A — COMPLETE" above for the two
+tables.** H1 is falsified on 6VJJ (enrichment 0.29-0.48, falling with dose,
+engagement 1.000 at every rung); H2 has a signal on 3KYS, but only at the
+bottom rung (enrichment 1.27, median engagement 9/12, 37.7 % of designs below
+the production gate). Note the scope of the 6VJJ claim: RFD3 is STEERED by
+`select_hotspots`, so it measures whether exposure diverts a CONDITIONED
+binder, not whether it would attract an unconditioned one.
+
+**Two facts killed the original two-point dose plan below.** First, the dose
+axis has little signal left to find at the design stage on 6VJJ. Second, and
+worse, comparing rung 207 against rung 90 varies exposure, target size, token
+count AND segment count together, so any yield difference is uninterpretable —
+"smaller target is an easier design problem" predicts the same result. That
+argument applies with full force to 3KYS rung 90, which is exactly where its
+signal is, so the pairing matters more here rather than less.
+
+**The feasibility numbers that shape the arms**, counted from the completed,
+freshly-scored ladders as `round(patch_contact_fraction * n_contacts)` —
+i.e. how many of a design's target contacts land on the fresh patch:
+
+| ladder | rung | >=1 | >=2 | >=3 | >=4 | >=5 | median | max |
+|---|---|---|---|---|---|---|---|---|
+| 6VJJ | 153 | 207 | 86 | 10 | 9 | 9 | 1 | 9 |
+| 6VJJ | 140 | 283 | 172 | 40 | 1 | 0 | 2 | 4 |
+| 6VJJ | 117 | 285 | 190 | 56 | 9 | 5 | 2 | 13 |
+| 6VJJ | 106 | 290 | 209 | 75 | 9 | 1 | 2 | 5 |
+| 6VJJ | 90  | 291 | 211 | 79 | 10 | 5 | 2 | 14 |
+| 3KYS | 200 | 1 | 0 | 0 | 0 | 0 | 0 | 1 |
+| 3KYS | 173 | 219 | 61 | 41 | 23 | 6 | 1 | 12 |
+| 3KYS | 140 | 297 | 289 | 218 | 49 | 24 | 3 | 20 |
+| 3KYS | 120 | 300 | 299 | 291 | 278 | 237 | 5 | 25 |
+| 3KYS | 100 | 300 | 300 | 298 | 283 | 244 | 6 | 21 |
+| 3KYS | 90  | 300 | 300 | 299 | 298 | 298 | 15 | 19 |
+
+(An earlier interim pass reported 42/40/29/21/9 for 6VJJ's `>=3` column; the
+table above is from the completed 300/300 rungs re-scored by the current
+`score` subcommand, and is the authoritative one. The medians and enrichments
+reproduced the interim numbers to the digit.)
+
+**This changes which rungs can carry a within-rung contrast, and it differs
+per ladder.** On 6VJJ every rung splits (79-283 heavy against 89-213 at <= 1),
+so the scope's choice of 90 / 106 / 117 stands. On 3KYS the three bottom rungs
+are **saturated** — at rung 90, 298 of 300 designs have >= 5 patch contacts,
+so there is no patch-light arm to match against and a within-rung contrast is
+arithmetically impossible there. 3KYS's usable pairs are **rung 173** (41
+heavy at >= 3 against 81 with none) and **rung 140** (49 at >= 4, and a
+top-40-vs-bottom-40 split separates ~6 contacts from ~1). Rung 90's
+engagement collapse is therefore a DESIGN-STAGE result that is already
+measured and needs no refolds; what the refolds add there is whether the
+surviving backbones still fold and dock, which is a one-arm quality question
+against the rung 208 control, not a contrast.
+
+**Design: within-rung, patch-heavy vs patch-light, matched.** The driver is
+`scripts/benchmark_trim.py phaseb-select | phaseb-launch | phaseb-score |
+phaseb-analyze`, and `$SP/phaseB.sh` chains them. Four things below CHANGED
+when the selector was run against the real ladders — each is marked, because
+three of them were pre-registered differently and the reason for changing
+them is data, not preference.
 
 - **Unit**: an RFD3 design. Primary analysis is design-level (best refold per
-  design, the way `binder_ranking` already picks); refold-level is secondary,
-  because 4 sequences off one backbone are correlated.
-- **Arms**: top ~40 designs by patch contact fraction against 40 matched
-  patch-light designs FROM THE SAME RUNG — so target size, token count,
-  contig, segment count and `max_chainbreaks` are identical by construction.
-  That is the whole point of pairing within a rung.
-- **Matching** (nearest-neighbour, in this order): binder length,
-  design-stage `hotspot_engagement`, RFD3 clash count, chainbreak count.
-- **Rungs**: 6VJJ 90 / 106 / 117 (the three with >= 29 patch-heavy designs),
-  plus rung 168 — the no-trim control — as 100 unmatched designs for a
-  baseline quality distribution. Repeat on 3KYS once that ladder lands,
-  choosing its rungs by NEAR-epitope exposure, which is the H2 question 6VJJ
-  cannot answer.
-- **Measured per refold** via `binder_metrics` (not a second implementation):
-  `iptm`, `binder_rmsd_dock`, `binder_plddt`, `hotspot_engagement`,
-  gate-pass, and **patch-contact survival** — the fraction of design-stage
-  patch contacts still present in the refold, remapped through the sidecar's
-  `diffused_index_map` (never the spec).
-- **Statistics**: Mann-Whitney U on iptm / dock-RMSD; gate-pass rate ratio
-  with a Wilson interval.
+  design by composite, i.e. exactly `max_per_backbone=1`, the way
+  `binder_ranking` already picks); refold-level is secondary, because 4
+  sequences off one backbone are correlated.
+- **Both arms are restricted to PREFILTER SURVIVORS** (new). A real campaign
+  never refolds a design the prefilter rejected, so a gate-pass rate measured
+  over rejects would not be the production quantity; and letting the
+  prefilter drop designs AFTER matching would undo the clash/chainbreak
+  balance the matching just bought. Costs 9-33 % of each rung (202-273 of
+  300), and 3KYS rung 90 is the biggest loss, which is itself informative.
+- **Arms**: heavy = top designs by patch contacts; light = a matched control
+  drawn from an ABSOLUTE patch cap (new) — the smallest cap that still fills
+  the arm, so zero-contact designs are used whenever enough exist. Defining
+  the light arm by covariate matching alone does not work and the first
+  version proved it: given the whole sub-floor remainder, the matcher paired
+  a 3-contact heavy design with a 2-contact "light" one on 6VJJ. A
+  one-contact gap measures nothing.
+- **Matching** (nearest-neighbour, weighted z-scores): binder length,
+  **total target contacts** (new), RFD3 clash count, chainbreak count —
+  **with hard calipers of ±3 contacts and ±3 residues, and a heavy design
+  that has no partner inside them is DROPPED** (new).
+- **Design-stage `hotspot_engagement` is NO LONGER a matching covariate**
+  (changed). It is a MEDIATOR: on 3KYS's bottom rung engagement falls from
+  11/12 to 9/12 and 37.7 % of designs land below the production gate, which
+  is the effect Phase B exists to measure, so balancing it conditions away
+  part of the causal path and biases every result toward null. It is reported
+  per arm instead. `--match-engagement` restores the original set.
+- **Measured per refold** via `binder_metrics.score_campaign` (not a second
+  implementation): `iptm`, `binder_rmsd_dock`, `binder_plddt`, `ipsae_min`,
+  `hotspot_engagement`, the gate verdict from `binder_ranking`'s own criteria
+  list (with the gate that rejected it, so the funnel is legible), and
+  **patch-contact survival** — the fraction of a design's own patch contacts
+  still present in its refold, remapped through the sidecar's
+  `diffused_index_map` (never the spec). Survival uses
+  `binder_backbone_only=True` on BOTH sides, unlike Phase A's design-stage
+  count: RFD3's binder sidechains belong to RFD3's sequence, not to the MPNN
+  sequence being refolded, so a sidechain-aware comparison would measure the
+  sequence change rather than the pose.
+- **Statistics**: Mann-Whitney U on iptm / dock-RMSD; gate-pass rate with a
+  Wilson interval per arm (`campaign_calibration.wilson_interval`, the
+  pipeline's own) and a Katz log interval on the ratio.
 
-**Cost, from the pipeline's own size laws** at the measured 0.79 prefilter
-rate and `n_seq = 4`:
+**What the ladders actually support, measured.** Pairs surviving the caliper,
+against the 40 requested:
 
-| set | tokens | designs | refolds | GPU-h | disk |
+| ladder | rung | pairs | heavy patch | light patch | gap |
 |---|---|---|---|---|---|
-| 6VJJ rung 90 | 168 | 80 | 253 | 0.50 | 0.20 GB |
-| 6VJJ rung 106 | 178 | 80 | 253 | 0.55 | 0.21 GB |
-| 6VJJ rung 117 | 195 | 80 | 253 | 0.64 | 0.25 GB |
-| 6VJJ rung 168 (control) | 246 | 100 | 316 | 1.16 | 0.43 GB |
-| **6VJJ total** | | **340** | **1,074** | **2.86** | **1.09 GB** |
-| + 3KYS equivalent (198-286 tok) | | | | ~4.6 | ~1.8 GB |
+| 6VJJ | 117 | 26 | 3 | 1 | 2 |
+| 6VJJ | 106 | 28 | 3 | 1 | 2 |
+| 6VJJ | 90  | 30 | 3 | 1 | 2 |
+| 3KYS | 173 | 26 | 3 | 0 | 3 |
+| 3KYS | 140 | 20 | 5 | 2 | 3 |
+| 3KYS | 120 | 13 | 7 | 4 | 3 |
+| 3KYS | 100 | **5** | 8 | 3 | 5 |
 
-**~7.5 GPU-h for both ladders** — against 26.4 for the full original Phase B
-and 7.7 for its two-point restriction, while answering the sharper question.
+3KYS rung 100 is **dropped**: five pairs is not an experiment, and the rung
+where the exposure dose is most interesting is exactly where patch contact
+and total contact count are most tightly coupled, so the caliper has almost
+nothing to match with. 3KYS rung 90 is saturated past matching altogether
+(298 of 300 designs have >= 5 patch contacts) and contributes ONE arm of 40,
+read against the rung 208 control — and note that control carries 2 target
+segments where every trimmed rung has 1, so it is a quality baseline and not
+a clean comparator; rung 173's light arm (1 segment, zero patch contacts) is
+the better reference for it. `PHASEB_MIN_PAIRS = 15` and
+`PHASEB_MIN_SEPARATION = 2` make a rung that cannot answer the question say
+so before the GPU time is spent.
 
-**Power** (normal approximation, two-sided alpha 0.05, power 0.80): at a 0.18
-baseline gate-pass rate, design-level 40+40 per rung pooled to ~120/arm
-detects a drop to **0.06**; the secondary refold-level test at ~380/arm
-detects **0.10**. Anything subtler than that is out of reach at this cost and
-should not be claimed.
+**Cost, from the pipeline's own size laws.** Note the refold count is
+`designs x 4`, with **no prefilter discount** — selection already restricted
+both arms to prefilter survivors, so every selected design reaches MPNN:
+
+| set | tokens | designs | refolds | GPU-h |
+|---|---|---|---|---|
+| 3KYS rung 173 | 251 | 52 | 208 | 0.79 |
+| 3KYS rung 140 | 218 | 40 | 160 | 0.48 |
+| 3KYS rung 120 | 198 | 26 | 104 | 0.27 |
+| 3KYS rung 90 (single arm) | 168 | 40 | 160 | 0.32 |
+| 3KYS rung 208 (control, 60) | 286 | 60 | 240 | 1.13 |
+| **3KYS total** | | **218** | **872** | **2.99** |
+| 6VJJ rungs 90 / 106 / 117 | 168-195 | 168 | 672 | ~1.53 |
+| 6VJJ rung 168 (control, 60) | 246 | 60 | 240 | 0.89 |
+| **6VJJ total** | | **228** | **912** | **2.42** |
+| **both ladders** | | **446** | **1,784** | **5.41** |
+
+**Power, recomputed on the pairs that exist** (two-sided alpha 0.05, power
+0.80). 6VJJ pools to 84 pairs/arm and 3KYS to 59, against the ~120 the
+original plan assumed. At a 0.18 baseline gate-pass rate, the proportion test
+detects a drop to **0.045** (6VJJ) and **0.02** (3KYS) — i.e. on 3KYS the
+binary readout can only see a near-total collapse, and a null there means
+almost nothing. The CONTINUOUS outcomes are where the power is: Mann-Whitney
+at 84/59 per arm detects a shift of **0.43 / 0.52 SD** in iptm or dock-RMSD,
+and the refold-level test (336 / 236 per arm, correlated within backbone)
+somewhat better. So read the medians and the U tests first, and treat the
+gate-pass ratio as corroboration rather than the headline.
+
+**The GPU path is smoke-tested** (2026-09-14): MPNN had never run on this
+workstation — no campaign under `projects/` has an `mpnn_out` — so one 3KYS
+rung-90 design was taken end to end before queueing 5.4 GPU-h. MPNN produced
+2 structures from the `solublempnn` alias and RF3 refolded both (15 s each at
+168 tokens, contended with the showcase), `score_campaign` scored them and
+the gate attributed both failures to `binder_rmsd_dock <= 5`. Those two
+refolds were then DELETED rather than kept: they came from a 2-sequence MPNN
+pass, and `--skip-existing` would have let the real 4-sequence run inherit
+refolds of sequences it never generated.
 
 **Pre-registered decision rule** — written before the refolds run, so the
 result cannot be rationalised afterwards:
