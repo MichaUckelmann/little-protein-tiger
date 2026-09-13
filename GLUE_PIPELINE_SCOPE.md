@@ -1406,7 +1406,55 @@ decisive experiment in the plan and it must come first. (`validate_spec` may
 refuse the trim cross-check — pass `kept_segments=None` for this probe, and note
 that the refusal is item 12, not a surprise.)
 
-### Stage 2 — The trimming benchmark, Phase A · ~1.5 d + 5.85 GPU-h
+### Stage 2 — Phase A: the driver is BUILT and costed; the GPU half is queued
+
+`scripts/benchmark_trim.py` gained four subcommands — `ladder`, `spec`,
+`designs`, `score` — and everything that does not need the GPU has been run.
+Findings, all reproducible with the commands in §5.7:
+
+**Both ladders build, and 3KYS reproduces §5.3 EXACTLY**: total exposed 0, 353,
+695, 1313, 1459, 1070, 881 A^2 and near-epitope 0, 0, 157, 257, 463, 515, 678
+A^2 — the monotone near-epitope dose that makes it the only ladder testing H2.
+All 13 rungs build a spec that the unmodified `validate_spec` accepts, each
+retaining all 12 hotspots, at 168-286 tokens.
+
+**One rung does not reproduce and mine is the authoritative number.** 6VJJ at
+budget 153 measures 335 away + 263 near = **598 A^2** against §5.3's 435. Rungs
+140/117/106/90 match to the digit (801, 1097, 1108, 1194), so the difference is
+specific to that rung. `benchmark_trim.py`'s own older
+`newly_exposed_hydrophobic` gives a third answer (897 A^2) — it does not
+restrict to parent-canonical atoms and does not split near from away — which is
+the likeliest origin of the disagreement. The ladder now calls the PRODUCTION
+`_exposed_hydrophobic`, which is the function whose thresholds are being
+calibrated, so that is the number to use.
+
+**Phase A costs 5.85 GPU-h only if it runs RFD3 ALONE — and §5.7's
+"drive it through `write_campaign_driver`" does not.** That driver runs the
+full pipeline (design -> prefilter -> MPNN -> RF3), and `plan.est_gpu_hours`
+over the same 13 rungs reads **34.8 GPU-h** (15.0 for 6VJJ's six, 19.8 for
+3KYS's seven) — six times the budget, almost all of it refolds the readout
+never looks at. `launch_designs` therefore uses `_rfd3_command` rather than the
+driver: same command, same sampler settings, same checkpoint alias, same
+binary resolution, no refolds. That reads **2.70 + 3.15 = 5.85 GPU-h**, which
+is where §5.6's figure comes from.
+
+**The scorer is validated against the pipeline's own column, not against
+itself.** `hotspot_engagement_design` was compared per design to the
+`hotspots_design` that `mesothelioma_showcase` recorded at calibration time:
+**1,924 matched refold rows, max |delta| 3.3e-5** (mine rounds to 4 dp, the CSV
+to 3), median 0.917 on both sides. This matters because §5.4's own figure
+(median 0.791 over 60 designs) is neither — it is a 60-design sample, and the
+whole-set answer differs by DESIGN SET rather than by computation: all 580 raw
+RFD3 outputs give median 1.000, the 481 that pass the prefilter give 0.917. A
+scorer that was wrong would compress exactly the difference the experiment
+measures (diary 2026-09-10), so it is checked against a number the pipeline
+produced independently.
+
+**Remaining: the GPU half.** 5.85 GPU-h, queued behind the showcase, `queue3`
+and stage 1. `SEC_PER_RFD3_DESIGN` is a flat constant with no size law, and
+Phase A measures one for free — the rung directories span 168-286 tokens.
+
+#### Original stage-2 plan, for reference · ~1.5 d + 5.85 GPU-h
 
 Item 25, then the §5 Phase A ladders on 6VJJ and 3KYS, 300 designs/rung,
 including the size-matched polar control (§5.9).
