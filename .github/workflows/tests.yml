@@ -39,14 +39,15 @@ jobs:
         run: pip install -e ".[dev]"
 
       # The suite is green without this (tests that need it skip), but skipping
-      # is not the same as passing. ~60 MB, public, no credentials.
+      # is not the same as passing. ~78 MB, public, no credentials.
       #
       # `--with-structures` is the second half and was missing: this step's
       # comment used to claim it made the chain-assignment and
       # hotspot-grounding guards run, and it did not — those read mmCIF files
-      # off disk and the script fetched only UniProt and HGNC, so 19 tests
+      # off disk and the script fetched only UniProt and HGNC, so 24 tests
       # skipped here every run. That includes the two pinning the 3KYS A344
-      # palmitoyl-cysteine lesson, which cost a real campaign ten RFD3 aborts.
+      # palmitoyl-cysteine lesson, which cost a real campaign ten RFD3 aborts,
+      # and the five guarding hotspot grounding against a wrong chain.
       - name: Fetch reference data
         run: python scripts/fetch_reference_data.py --with-structures
 

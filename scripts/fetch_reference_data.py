@@ -11,7 +11,7 @@ layers below anything that said what the file was or where to get it.
     HUMAN_9606_idmapping.dat.gz   UniProt   ~35 MB   REQUIRED
     hgnc_complete_set.tsv         HGNC      ~17 MB   REQUIRED
     CRISPRGeneEffect.csv          DepMap   ~440 MB   optional (--with-depmap)
-    8 mmCIF entries                RCSB      ~7 MB   optional (--with-structures)
+    12 mmCIF entries (ASU + BA1)   RCSB     ~25 MB   optional (--with-structures)
 
 All are public and free. Usage:
 
@@ -20,13 +20,20 @@ All are public and free. Usage:
     python scripts/fetch_reference_data.py --with-structures
     python scripts/fetch_reference_data.py --check      # report, download nothing
 
-`--with-structures` fetches the entries the test suite names. Nineteen tests
-SKIP without them — including the two that pin the 3KYS A344 palmitoyl-cysteine
-lesson, which cost a real campaign ten RFD3 aborts — and a skip reads as a pass
-in a CI summary. They are biological assembly 1, not the ASU, for the reason
-`target_resolve.ensure_assembly` gives: the ASU can split a biological dimer
-across symmetry copies, so the chain pair you measure is not the one that
-exists in solution.
+`--with-structures` fetches the entries the test suite names — 24 tests SKIP
+without them, including the two that pin the 3KYS A344 palmitoyl-cysteine
+lesson (which cost a real campaign ten RFD3 aborts) and the five guarding
+hotspot grounding against a wrong chain. A skip reads as a pass in a CI
+summary.
+
+BOTH the deposited ASU and biological assembly 1 are fetched for every entry.
+Assembly 1 because the ASU can split a biological dimer across symmetry
+copies, so the chain pair you measure is not the one that exists in solution
+(`target_resolve.ensure_assembly` says the same). The ASU as well because
+`PipelineRunner._ensure_structure` RETURNS the ASU path and downloads it when
+absent — so an entry with only an assembly file on disk still reaches RCSB
+from inside a unit test, which is how fetching assemblies alone turned a
+skipping module into a live download that then failed on the CI runner.
 
 Each download records provenance (URL, timestamp, size, sha256) in
 `data/depmap/PROVENANCE.json`. These are versioned releases that change under
@@ -275,14 +282,14 @@ def check() -> int:
     # them arrive without this script. Reported so `--check` does not imply
     # `data/depmap` is the whole of what the suite reads.
     sdir = _ROOT / "data" / "structures"
-    have = [n for n in REFERENCE_STRUCTURES
-            if (sdir / f"{n}_ba1.cif").exists()]
-    have += [n for names in REFERENCE_ASU.values() for n in names
-             if (sdir / n).exists()]
-    n_want = len(REFERENCE_STRUCTURES) + sum(len(v) for v in REFERENCE_ASU.values())
+    wanted = [f"{n}_ba1.cif" for n in REFERENCE_STRUCTURES]
+    wanted += [f"{n}.cif" for n in REFERENCE_STRUCTURES]
+    wanted += [n for v in REFERENCE_ALIASES.values() for n in v]
+    have = [n for n in wanted if (sdir / n).exists()]
+    n_want = len(wanted)
     print(f"\nTest structures in {sdir}: {len(have)}/{n_want} present"
           + ("" if len(have) == n_want else
-             "  — 19 tests skip; run with --with-structures (~7 MB)"))
+             "  — 24 tests skip; run with --with-structures (~25 MB)"))
 
     if missing_required:
         print(f"\n{missing_required} required file(s) missing — the binder track "
@@ -296,16 +303,23 @@ def check() -> int:
 #: own skip guard, so this list is derived from the suite rather than chosen:
 #: grep `reason="... not downloaded"` / `not in this checkout`.
 #:
-REFERENCE_STRUCTURES = ("3KYS", "3N7S", "5GN0", "5HYN", "6E3Y", "7CZD", "7XQ8")
+#: 8ZNL is here for `scripts/bench_models.py`'s INTERFACE_CASES rather than
+#: for a skip guard — `test_every_interface_case_names_a_structure_that_is_in_the_checkout`
+#: derives its list from the benchmark, whose own reason for wanting them on
+#: disk is that "a download failure on one cell would show up as that model
+#: being slower".
+#: 3FLN, 5VAI, 6JJW and 6VJJ are named by the guard tests added with the
+#: absent-residue/absent-chain fixes (9965bb6) and by the trim benchmark.
+#: 3FLN has exactly ONE chain and 6JJW's hotspot numbers exist on only one of
+#: its two, which is what makes them the fixtures those guards need.
+REFERENCE_STRUCTURES = ("3FLN", "3KYS", "3N7S", "5GN0", "5HYN", "5VAI",
+                        "6E3Y", "6JJW", "6VJJ", "7CZD", "7XQ8", "8ZNL")
 
-#: Deposited ASUs, under the exact filename a test opens. Only one is wanted:
-#: `test_release_fixes.py`'s `test_the_bsa_mismatch_is_real_and_the_fix_silences_a_no_op_trim`
-#: reads `3kys.cif` — LOWERCASE, and a case-sensitive filesystem is not
-#: persuaded by `3KYS.cif` being close. Every other test reads an assembly
-#: file, and the `6E3Y.cif` paths elsewhere in the suite live inside mocked
-#: query strings that are never opened, so fetching them would be 1 MB spent
-#: on nothing.
-REFERENCE_ASU = {"3KYS": ("3kys.cif",)}
+#: Extra filenames beyond `<ID>.cif` and `<ID>_ba1.cif`. 3KYS is read as
+#: `3kys.cif` — LOWERCASE — by `test_release_fixes.py`'s
+#: `test_the_bsa_mismatch_is_real_and_the_fix_silences_a_no_op_trim`, and a
+#: case-sensitive filesystem is not persuaded by `3KYS.cif` being close.
+REFERENCE_ALIASES = {"3KYS": ("3kys.cif",)}
 
 
 def fetch_structures(force: bool = False) -> bool:
@@ -335,7 +349,15 @@ def fetch_structures(force: bool = False) -> bool:
             print(f"  FAIL {pdb_id}_ba1.cif")
             ok = False
 
-    for pdb_id, names in REFERENCE_ASU.items():
+        # The deposited ASU as well, for every entry, not just the ones a test
+        # opens by name: `_ensure_structure` returns the ASU path and downloads
+        # it when absent, so an entry with only an assembly file on disk still
+        # reaches RCSB from inside a test. That is how a whole module
+        # (`test_structure_first_track.py`, 7CZD) went from skipping to making
+        # a live download the moment assemblies were fetched — and the download
+        # then failed on the runner, which is a worse outcome than the skip.
+        # Six megabytes buys the property that no test needs the network.
+        names = (f"{pdb_id}.cif", *REFERENCE_ALIASES.get(pdb_id, ()))
         raw = None
         for name in names:
             dest = structures_dir / name
@@ -370,9 +392,10 @@ def main() -> int:
                          f"without it; those tools return an error.")
     ap.add_argument("--with-structures", action="store_true",
                     help=f"Also fetch the {len(REFERENCE_STRUCTURES)} mmCIF "
-                         f"entries the test suite reads (~7 MB). Without them "
-                         f"19 tests skip, including the two that pin the 3KYS "
-                         f"A344 modified-residue lesson.")
+                         f"entries the test suite reads, ASU and assembly 1 "
+                         f"(~25 MB). Without them 24 tests skip, including "
+                         f"the two that pin the 3KYS A344 modified-residue "
+                         f"lesson.")
     ap.add_argument("--force", action="store_true",
                     help="Re-download even if the file is already present.")
     args = ap.parse_args()
