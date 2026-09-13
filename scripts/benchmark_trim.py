@@ -260,7 +260,8 @@ def run(path: Path, budget: int = 220) -> dict:
     return row
 
 
-def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True) -> None:
+def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True,
+                   only: int | None = None) -> None:
     """One detached RFD3-ONLY job per rung.
 
     **Phase A runs the design step and nothing else**, and that is the whole
@@ -287,6 +288,12 @@ def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True) -> None
     inside `job_registry.launch_detached` — per the standing workstation note,
     a Bash background task's teardown reaches descendants and has killed a
     campaign and its detached child before.
+
+    `only` launches ONE rung. Without it every rung goes at once, and 13
+    concurrent RFD3 processes on one card would not only thrash but destroy
+    the secondary measurement: Phase A's rungs span 168-286 tokens, which is
+    exactly the spread needed to fit the size law `SEC_PER_RFD3_DESIGN` does
+    not have. Contended timings measure the contention.
     """
     import yaml
 
@@ -300,6 +307,8 @@ def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True) -> None
     total_h = 0.0
     for rung in payload["rungs"]:
         if "error" in rung or "spec_path" not in rung:
+            continue
+        if only is not None and int(rung["budget"]) != only:
             continue
         rung_dir = out_root / f"rung_{rung['budget']}"
         paths = FoundryPaths.under(rung_dir / "campaign")
@@ -367,6 +376,10 @@ def _main() -> int:
     s.add_argument("--designs", type=int, default=300)
     s.add_argument("--launch", action="store_true",
                    help="actually launch; without it, plan and print only")
+    s.add_argument("--rung", type=int, default=None,
+                   help="launch ONE rung (by budget). Rungs must not share "
+                        "the card: concurrent jobs would corrupt the "
+                        "per-rung timing Phase A also measures.")
 
     s = sub.add_parser("score", help="the section 5.4 readout (CPU)")
     s.add_argument("--out", required=True)
@@ -394,7 +407,8 @@ def _main() -> int:
     elif a.cmd == "spec":
         build_specs(Path(a.out), a.binder_min, a.binder_max)
     elif a.cmd == "designs":
-        launch_designs(Path(a.out), a.designs, dry_run=not a.launch)
+        launch_designs(Path(a.out), a.designs, dry_run=not a.launch,
+                       only=a.rung)
     elif a.cmd == "score":
         score_designs(Path(a.out), a.cutoff)
     return 0
