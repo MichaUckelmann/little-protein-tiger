@@ -382,8 +382,12 @@ may not be feasible without a hard trim.
 
 ---
 
-## Commits held locally (nothing pushed since `4cd99f1`)
+## Commits — all pushed as of `fe7f387` (2026-09-13)
 
+    fe7f387  Intracellular is a delivery burden - say so in the prompts that said otherwise
+    c2b3d49  Intracellular is a delivery burden, not a prohibition   (the decision)
+    de18abb  Record that the 220-residue budget was never measured
+    c9caaaa  Write down the target-selection audit before compaction
     5f25759  Record that the PPI structure guards are inert for a non-human target
     c4a488f  A cofactor is not a modified residue, and label_seq is what knows the difference
     f45cba9  Neither selector prompt names a plausible target any more
@@ -393,8 +397,8 @@ may not be feasible without a hard trim.
 13/13 re-derivations bit-identical) as of `c4a488f`.
 
 `08b05f2`/`f45cba9` were held pending evidence that placeholder exemplars did
-not hurt handoff compliance. **That evidence now exists** (14/15 handoffs, 0
-leaks), so the hold can be lifted.
+not hurt handoff compliance; that evidence exists (14/15 handoffs, 0 leaks), so
+the hold was lifted before pushing.
 
 ---
 
