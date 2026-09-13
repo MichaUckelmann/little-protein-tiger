@@ -82,12 +82,70 @@ Fix: guidance, not a number. Tell the structure stage the domains carrying its
 chosen hotspots must total <= 220 after trimming. Names no target, so it is
 consistent with the neutrality rule.
 
-**Open sub-question, agent `a1a289a778a5fa5c6` was dispatched on it and its
-report has NOT been seen:** was 220 ever measured against this 32 GB card, or
-is it an assertion? Largest complex known to have completed RF3 here is ~286
-tokens (YAP1/TEAD1, 208 target + 78 binder). No OOM event has been observed in
-any log. That agent was asked for provenance, the real VRAM ceiling, and a
-cheap benchmark design.
+**220 WAS NEVER MEASURED — answered, agent `a1a289a778a5fa5c6`.** Set
+2026-08-21 from ONE complex that ran comfortably at ~175 tokens (a ~97-residue
+target), and `config.yaml:341-343` has admitted that verbatim ever since.
+`diary.md:2836` and `:3067` list the bisection as an open punch-list item;
+no commit closes it. Commit `2996fe8` deleted `gpu_memory_gb: 32` as unread,
+so **nothing in the codebase connects the number to any amount of VRAM**, and
+`plan_campaign` clamps on disk alone (`foundry_runner.py:320-334`).
+
+**No OOM has ever happened here.** Three greps over `projects/`, `logs/`,
+`data/` for `out of memory|CUDA out of memory|torch.cuda.OutOfMemory`,
+`CUDA error|uncorrectable ECC|device-side assert`, and `\bOOM\b` returned
+ZERO hits. The only `uncorrectable ECC` mentions are prose about the cluster
+(`CLAUDE.md:827`, `diary.md:3161`). The only real error class in any campaign
+log is the A344 validation incident (`e2e_foundry/.../rfd3.log:13,162,178`).
+
+**What has actually folded on this card** (22 `trim_map.json` files, all
+`budget: 220` except `mash_e2e` at 222; token counts are ground truth from
+`num_tokens_in` in every RFD3 sidecar, span +-8 because the binder samples
+70-86):
+
+| campaign | target res | tokens | RF3 refolds | status |
+|---|---|---|---|---|
+| mash_e2e r2 (5GN0 A) | **222** | **292-308** | 2,452 | production KILLED at 16/6,104 |
+| mesothelioma_showcase (3KYS A) | 207 | 277-293 | 3,620 | complete through binder_summary |
+| il7ra_e2e (3DI2 B) | 186 | 256-272 | 9,688 | production finished on disk, UNRECORDED in manifest |
+| pdl1_e2e (7CZD B) | 117 | 187-203 | 7,512 | complete |
+| pain_receptors_v3 (3N7S D) | 84 | 154-170 | 3,680 | complete |
+
+- **Largest ever folded: 222 residues / up to 308 tokens** (mash_e2e, through
+  pilot + calibration). Largest to complete PRODUCTION: 207 residues / 293
+  tokens, 1,352 refolds in 8.60 h.
+- **Time and disk have each killed a campaign; memory never has.** mash_e2e
+  died because its gate costed 22,184 refolds at 63 GPU-h on the stale flat
+  8.4 s anchor while `plan_campaign` costed the same work at **138.1 GPU-h** on
+  the measured 20.6 s/refold — the one-anchor-one-law bug. `gem_vegf_a` stopped
+  a step earlier at 267.4 GPU-h / 217.9 GB against a 120/120 budget.
+- The targets 220 is now refusing need **382-484 tokens** (8B4A chain A RhlR =
+  304 res; 9HNW chain A WDR48 = 406 res, a single WD40 beta-propeller with
+  nothing to cut) — 1.24-1.57x beyond anything folded here, but by the fitted
+  runtime law only **27-40 s/refold**, versus the 20.6 s mash_e2e sustained for
+  17 GPU-h. Cheap in time. Entirely unknown in memory.
+- **RFD3 is the likelier VRAM-binding stage and the worse characterised**:
+  `SEC_PER_RFD3_DESIGN = 5.4` has NO size law at all and runs at
+  `diffusion_batch_size: 4`.
+- Recommend making the gate a **TOKEN** gate in `validate_spec`: tokens are
+  what both cost laws and the GPU care about, and the residue gate sums target
+  spans only, never the binder (`foundry_spec.py:271-279`) — so it is ~28%
+  wrong across modalities by construction.
+- **Benchmark, ~30-60 GPU-MINUTES:** 8 token points (195 -> 1000), 3 refolds
+  each, driving `src/foundry_stages.py rf3` directly on hand-assembled
+  two-chain `*_b0_d0.cif` files — it globs only `"_b" in name and
+  name.endswith(".cif")` (`foundry_stages.py:169`), so RFD3 and MPNN can be
+  skipped. Extend `scripts/benchmark_trim.py` (already walks a size spectrum,
+  already derives hotspots from `analyze_interface`, already CPU-only by
+  default). Sample peak VRAM with `nvidia-smi -lms 250` — RF3 runs as a
+  subprocess in `.venv-blackwell`, so `torch.cuda.max_memory_allocated` is
+  unreachable. Time from `rf3_out` mtimes. Validate each point against the
+  sidecar's `num_tokens_in`. **Must run on an IDLE card** — peak VRAM measured
+  beside another tenant measures the wrong thing.
+
+Two stale `scripts/doctor.py` checks found in passing: the 31 GB warning
+(`:408`) cites `config.yaml`'s deleted `gpu_memory_gb`, and `check_disk`
+(`:418-421`) still cites "~2.5 MB per RF3 design" after `229dae7` replaced it
+with the measured 0.59-1.57 MB size law.
 
 ### 2. Every PPI structure guard is inert for a non-human target, silently
 
