@@ -125,7 +125,7 @@ numbers can be audited rather than taken on trust.
 - [Built on](#built-on) — the design engines, data sources and libraries LPT stands on
 - [Requirements](#requirements) · [Configuration](#configuration)
 - [Pipeline overview](#pipeline-overview) — the two tracks and what each stage does
-- [Usage](#usage) — [fetch](#1-fetch-papers) · [curate](#2-curate-papers) · [ingest](#3-ingest-vectors) · [ask the corpus](#4-ask-the-corpus-a-question) · [run a skill](#5-run-expert-skills-from-the-cli) · [corpus explorer](#6-corpus-explorer-conversational) · [PPI pipeline](#7-run-the-binder-design-pipeline-end-to-end) · [from a target name](#7b-run-the-binder-pipeline-from-a-target-name) · [on a cluster](#7c-scale-a-campaign-onto-a-slurm-cluster) · [PyMOL](#8-visualise-top-k-designs-in-pymol)
+- [Usage](#usage) — [fetch](#1-fetch-papers) · [curate](#2-curate-papers) · [ingest](#3-ingest-vectors) · [ask the corpus](#4-ask-the-corpus-a-question) · [run a skill](#5-run-expert-skills-from-the-cli) · [corpus explorer](#6-corpus-explorer-conversational) · [PPI pipeline](#7-run-the-binder-design-pipeline-end-to-end) · [from a target name](#7b-run-the-binder-pipeline-from-a-target-name) · [from a structure](#7c-run-from-a-structure-you-already-have) · [backends & macrocycles](#7d-changing-the-design-backend-and-designing-a-macrocycle) · [on a cluster](#7e-scale-a-campaign-onto-a-slurm-cluster) · [PyMOL](#8-visualise-top-k-designs-in-pymol)
 - [Inspecting the database](#inspecting-the-database) · [MCP](#use-it-from-claude-desktop--claude-code) · [Project structure](#project-structure)
 - [Migrating to a new machine](#migrating-to-a-new-machine) · [Journal filtering](#journal-filtering--read-this-before-building-a-corpus)
 - [Responsible use](#responsible-use) · [Licence](#licence-and-third-party-tools) — noncommercial; see [docs/licensing.md](docs/licensing.md) · [Further reading](#further-reading)
@@ -960,7 +960,67 @@ carrying every stage report in full. No LLM, no GPU; regenerate any time with
 > [CLAUDE.md](CLAUDE.md) ("Non-obvious facts the binder track depends on").
 > Read that before changing a threshold.
 
-### 7c. Scale a campaign onto a SLURM cluster
+### 7d. Changing the design backend, and designing a macrocycle
+
+One flag, on every track: `--design-engine` (or `design.backend` in
+`config.yaml` to change the default for every run).
+
+| engine | generator | notes |
+|---|---|---|
+| `foundry` *(default)* | RFD3 → solubleMPNN → RF3 | mini-proteins; Rosetta metrics on gate survivors |
+| `boltzgen` | BoltzGen | the **same** binder-track stages, a different generator — and the only path to a cyclic peptide |
+| `boltzgen_legacy` | BoltzGen | the older PPI-only design → execution → analysis chain, kept as a regression check. Reachable only by naming it, and it **refuses** the flags it cannot honour (`--stop-after`, `--compute`, `--n-gpus`) rather than accepting and ignoring them |
+
+`foundry` and `boltzgen` run the identical stage machine — `trim → spec →
+pilot → calibration → production → scoring → summary` — so `--stop-after`,
+`--start-from` and the resumable project manifest behave the same on both;
+only the generator the GPU stages dispatch to changes.
+
+**Macrocycles are BoltzGen's, and the modality picks the engine.**
+`--modality cyclic_peptide` (12–15 residues, against `mini_protein`'s 70–86)
+selects BoltzGen for you, because RFD3 has no cyclic-peptide path and feeding
+it a 13-mer asks for something it cannot build — quietly. Asking for both
+explicitly (`--modality cyclic_peptide --design-engine foundry`) is refused,
+not coerced. Modality is the operator's choice: a skill may *propose* one, but
+`PipelineRunner._resolve_modality` reconciles the proposal against your flag,
+lengths included. Worth knowing before you pay for one: measured on BoltzGen
+for BOTH modalities, 994 designs each against the same target (RAMP1, `3N7S`
+chain D), the rate that actually sizes a campaign
+was **1.11 % for mini-proteins against 1.21 % for cyclic peptides** — within
+noise — so choose the modality for its biology and synthesis, not for an
+expected hit rate (see [CLAUDE.md](CLAUDE.md)).
+
+`--success-metric` writes into the block its own engine reads
+(`design.binder_ranking` for foundry, `design.boltzgen_ranking` for BoltzGen);
+`--success-metric ipsae_min` is refused on BoltzGen, which writes no PAE
+matrix to compute it from.
+
+```bash
+# The default: foundry (RFD3 -> solubleMPNN -> RF3)
+python scripts/run_pipeline.py --workflow binder --target PD-L1 \
+  --project pdl1_minibinder --stop-after calibration
+
+# Same target, same stages, BoltzGen as the generator
+python scripts/run_pipeline.py --workflow binder --target PD-L1 \
+  --design-engine boltzgen --project pdl1_boltzgen --stop-after calibration
+
+# A macrocycle: the modality selects BoltzGen for you
+python scripts/run_pipeline.py --workflow binder --target PD-L1 \
+  --modality cyclic_peptide --project pdl1_macrocycle \
+  --budget 5 --stop-after calibration
+
+# A PPI-discovered target on BoltzGen, through the same bridge
+python scripts/run_pipeline.py --workflow ppi \
+  --query "Design cancer therapeutics to target key nodes in mesothelioma." \
+  --design-engine boltzgen --project mesothelioma_boltzgen \
+  --budget 5 --stop-after calibration
+
+# Prefer it everywhere instead of passing the flag: config.yaml
+#   design:
+#     backend: boltzgen
+```
+
+### 7e. Scale a campaign onto a SLURM cluster
 
 `--compute auto` (the default) makes the local-vs-cluster call **for you**, once,
 at the calibration gate: `pilot` and `calibration` always run locally (they're
