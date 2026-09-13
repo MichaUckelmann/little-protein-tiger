@@ -694,11 +694,17 @@ def test_an_unresolvable_partner_name_fails_open(config, monkeypatch, tmp_path):
 
 def test_designable_size_is_gated_on_the_engines_that_trim(config):
     """
-    `--design-engine boltzgen_legacy` has no trim stage, so there the RAW chain
-    length is the operative number and refusing an oversized chain is correct.
-    The designable count may only relax the policy when a trim will actually
-    follow — which is now BOTH bridged generators, since `_stage_trim` is
+    The designable count may only relax the size policy when a trim will
+    actually follow. `--design-engine boltzgen_legacy` had no trim stage, so
+    there the RAW chain length was the operative number and refusing an
+    oversized chain was correct; it is retired now (LEGACY_RETIREMENT_SCOPE.md
+    step 2) and both surviving generators trim, since `_stage_trim` is
     generator-neutral and runs before either spec.
+
+    The predicate is therefore a tautology, and the GATE is kept anyway —
+    which is the whole point of this test. Any future generator that reaches
+    the design stages without a trim must opt IN to `_BRIDGED_ENGINES` rather
+    than silently inherit a relaxation measured on a trimmed target.
     """
     import inspect
 
@@ -709,15 +715,17 @@ def test_designable_size_is_gated_on_the_engines_that_trim(config):
     i_call = src.index("_designable_chain_sizes(")
     assert i_gate < i_call, "the designable-size lookup must sit behind the engine gate"
 
-    # And the gate must answer the question for the right set of engines: the
-    # BoltzGen backend trims, the legacy PPI path does not.
     def bridges(engine: str) -> bool:
         return PipelineRunner(config, workflow="ppi",
                               design_engine=engine)._bridges_to_binder_track
 
     assert bridges("foundry") is True
     assert bridges("boltzgen") is True
-    assert bridges("boltzgen_legacy") is False
+
+    # And the set is written as an opt-in list, not as a "not legacy" test —
+    # so a new engine is excluded until someone says otherwise.
+    from src.pipeline_runner import _BRIDGED_ENGINES
+    assert set(_BRIDGED_ENGINES) == {"foundry", "boltzgen"}
 
 
 def test_no_oversized_chain_means_no_lookup(config, monkeypatch):

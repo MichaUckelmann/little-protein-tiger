@@ -159,42 +159,43 @@ off to the SAME stage machine `--workflow binder` uses. Flipped after a real
 KRAS/RAF1 campaign validated the bridge end-to-end on GPU (82 min, top design
 iPTM 0.923 / dock-RMSD 0.39 A).
 
-**`--design-engine` names TWO engines now — `boltzgen_legacy` was retired on
-2026-09-13 (`LEGACY_RETIREMENT_SCOPE.md`), and the CLI refuses the name. The
-paragraphs below describe the state before that, and still hold for the two
-that remain; the legacy-specific refusals are what the retirement replaced.
-It named three engines, and only one of them was off the
-bridge.** `foundry` (RFD3->solubleMPNN->RF3) and `boltzgen` both take the
-bridged route and differ only in which generator
-spec/pilot/calibration/production/scoring dispatch to
-(`_boltzgen_backend`); `boltzgen_legacy` is the older PPI-only
-design/execution/analysis path, kept as the regression check for what the
-bridge replaced (decision 2 in the BoltzGen notes) and reachable ONLY by
-naming it.
+**`--design-engine` names TWO engines, and both take the bridge.** `foundry`
+(RFD3->solubleMPNN->RF3) and `boltzgen` differ only in which generator
+spec/pilot/calibration/production/scoring dispatch to (`_boltzgen_backend`).
+**`boltzgen_legacy` — the older PPI-only design/execution/analysis chain — was
+RETIRED on 2026-09-13**: the CLI and `PipelineRunner.__init__` both refuse the
+name (`_RETIRED_ENGINES`), and `_stage_design`/`_stage_execution`/
+`_stage_analysis`/`_stage_summary`, `src/design_runner.py`, its own e2e
+driver script and `STAGE_ORDER`'s indices 3-6 are deleted.
+`STAGE_ORDER` is now `["pathway", "literature", "structure"]` — a PPI run has
+no stage name past `structure`, because it bridges from there, so a PPI
+campaign resumes at a BINDER stage name. What discharged decision 2 of the
+BoltzGen notes, and the staged plan, are in `LEGACY_RETIREMENT_SCOPE.md`;
+`src/design_ranking.py` and `src/design_metrics.py` survive it and are LIVE
+(see the "Common file pairs" note).
 
 - **`_bridges_to_binder_track` and `_boltzgen_backend` answer different
-  questions**, and conflating them sends the legacy engine into the new
-  stages under the old name. The first decides whether a PPI run reaches the
-  binder-track stages at all; the second decides which generator those stages
-  use. `boltzgen_legacy` is False for both. Three places ask the first — the
-  resume dispatch, the hand-off after go/no-go, and the structure stage's
-  designable-size hint — and they go through the property rather than
-  re-spelling the comparison, because `== "foundry"` in the hand-off is
+  questions**, and the first is now a TAUTOLOGY (`_BRIDGED_ENGINES` ==
+  `_DESIGN_ENGINES`, since the one engine that did not bridge is gone). It is
+  kept deliberately, with the defensive `raise` after it: the first decides
+  whether a PPI run reaches the binder-track stages at all, the second which
+  generator those stages use, and `tests/test_audit_fixes.py` asserts by
+  source inspection that the first gates `_designable_chain_sizes` — the
+  lesson being that relaxing a designable-size limit is only sound where a
+  trim actually follows. Keep them separate: `== "foundry"` in the hand-off is
   exactly what left `--design-engine boltzgen` on the legacy path for its
-  first release: nothing failed, the run just silently had no trim, no
+  first release, and nothing failed — the run just silently had no trim, no
   measured production size, no `--stop-after` and no per-stage manifest.
 - **The bridge itself reads no engine at all** (a test pins this): it composes
   a target_intel handoff and an interface artifact, and `_run_binder_track`
   dispatches from there. A backend-specific line in it would be a second
   dispatch waiting to disagree with the first.
-- **`boltzgen_legacy` REFUSES the flags it cannot honour** rather than
-  accepting them. `--stop-after` was binder-track-only, so the legacy path
-  took the flag and ran design -> execution -> analysis -> summary anyway —
-  332 GPU-h at YAP1/TEAD1 size on the shipped `design.production` counts, for
-  an operator who believed they had capped it. `--compute`/`--n-gpus` are
-  refused there and on `boltzgen` too, since `_run_boltzgen_stage` has no
-  cluster path and would run the whole campaign locally while the operator
-  waited for a submission script.
+- **`--compute`/`--n-gpus` are refused on `boltzgen`**, since
+  `_run_boltzgen_stage` has no cluster path and would otherwise run the whole
+  campaign locally while the operator waited for a submission script. (The
+  near-identically worded refusal that used to sit beside it, for
+  `boltzgen_legacy`, went with the retirement — do not confuse the two if you
+  read an older diff: the surviving one is the live guard.)
 - **`--success-metric` writes the block its engine reads.** BoltzGen's gate
   and bar live in `design.boltzgen_ranking` (BoltzGen-native columns, via
   `resolve_boltzgen_ranking`), foundry's in `design.binder_ranking`; writing
@@ -215,9 +216,8 @@ naming it.
 - **`--project` is required on every track and every engine**, checked in
   both `run()` and the CLI. The GPU stages each track reaches are multi-hour
   to multi-day and checkpoint into the manifest, which is also what
-  `--start-from` reads. `boltzgen_legacy` was the one combination that ran
-  without one — and the one whose campaign had nowhere to record that it had
-  started.
+  `--start-from` reads. (`boltzgen_legacy` was the last combination that ran
+  without one; it is retired, and the requirement stands on every track.)
 
 **Modality is the operator's choice, not the model's.** `--modality` defaults
 to `mini_protein`; `cyclic_peptide` is opt-in and automatically selects
@@ -1331,9 +1331,12 @@ it.
   this exception. See `docs/mcp.md`.
 - `src/structure_tools.py` (pure logic) ⇄ `src/structure_tools_server.py` (MCP wrapper) — server is a thin shim; logic lives in the former.
 - `src/pipeline_runner.py` ⇄ each skill's "PIPELINE HANDOFF" output block.
-- `src/pipeline_runner.py` `_STAGE_TO_SKILL` is **many-to-one** — `complex-structure-analysis`
-  serves both `structure` and `interface`, `design-analyst` serves both `summary` and
-  `binder_summary`, and `protein-design-script` serves `design`. The inversion
+- `src/pipeline_runner.py` `_STAGE_TO_SKILL` is **many-to-one** —
+  `complex-structure-analysis` serves both `structure` and `interface`. (It used to
+  hold two more: `design-analyst` served `summary` as well as `binder_summary`, and
+  `protein-design-script` served `design`; both of those stages went with the
+  `boltzgen_legacy` retirement, so `design-analyst` is currently single-stage —
+  do not let that tempt you into dropping the explicit `stage=`.) The inversion
   (`_stage_for_skill`) is first-match-wins and cannot tell them apart, so **every call
   passes `stage=` explicitly**. Adding a stage that reuses a skill without it silently
   takes the other stage's model and manifest slot.

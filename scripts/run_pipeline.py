@@ -9,9 +9,8 @@ Chains the stages automatically, in PipelineRunner.STAGE_ORDER order:
        dispatched to the backend selected by design.backend /
        --design-engine: foundry (default, RFD3 -> solubleMPNN -> RF3) or
        boltzgen.
-  --design-engine boltzgen_legacy instead runs the older PPI-only path
-    (protein-design-script -> design_runner -> ranking -> design-analyst),
-    kept as a regression check.
+  The older PPI-only chain (--design-engine boltzgen_legacy) is RETIRED —
+    see LEGACY_RETIREMENT_SCOPE.md.
 
 Each stage writes a report to the run directory and passes a machine-readable
 '### PIPELINE HANDOFF' block to the next stage.
@@ -114,9 +113,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--start-from",
         choices=[
-            # ppi-workflow stages, in PipelineRunner.STAGE_ORDER order
-            "pathway", "literature", "structure", "design",
-            "execution", "analysis", "summary",
+            # ppi-workflow stages, in PipelineRunner.STAGE_ORDER order.
+            # It ends at "structure": a PPI run bridges into the binder
+            # track's stages after the go/no-go decision, so resuming a GPU
+            # stage of a PPI campaign names a binder stage below.
+            "pathway", "literature", "structure",
             # binder-workflow stages (used with --workflow binder)
             "target_intel", "interface", "trim", "binder_spec",
             "pilot", "calibration", "production", "binder_scoring",
@@ -376,9 +377,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "after the calibration verdict (SCALE_UP/SCALE_UP_PARTIAL) on a "
             "plain single-target run — resume with --start-from production "
             "once the verdict and estimated GPU-hours/disk look right. "
-            "Honoured on every track that runs the binder-track stages, "
-            "i.e. everything except --design-engine boltzgen_legacy, which "
-            "refuses the flag rather than ignoring it."
+            "Honoured on every track and both engines — all of them run the "
+            "binder-track stages."
         ),
     )
     p.add_argument(
@@ -517,40 +517,32 @@ def main() -> int:
                 "foundry: RFD3 has no cyclic-peptide path. Drop "
                 "--design-engine to let the modality pick boltzgen, or design "
                 "a mini_protein instead.")
-        # An explicit --design-engine boltzgen_legacy is honoured: the legacy
-        # path builds macrocycles too (both shipped cyclic campaigns ran on
-        # it). Only silence gets coerced.
-        if design_engine not in ("boltzgen", "boltzgen_legacy"):
+        # Only silence gets coerced; an explicit "boltzgen" is already right.
+        if design_engine != "boltzgen":
             logger.info(
                 "--modality cyclic_peptide: using the boltzgen design engine "
                 "(foundry/RFD3 has no cyclic-peptide path)")
             design_engine = "boltzgen"
 
-    is_legacy = design_engine == "boltzgen_legacy"
-    #: True whenever this invocation will run the binder-track stage machine,
-    #: on either generator: --workflow binder and --workflow structure enter
-    #: it directly, and --workflow ppi bridges into it after its structure
-    #: stage. `boltzgen_legacy` is the only path that does not, so every
-    #: binder-track flag below applies unless that engine was named.
-    #: Formerly `runs_foundry`, which stopped being the question once
-    #: BoltzGen dispatched into the same stages.
-    runs_binder_stages = not is_legacy
-
-    if is_legacy:
-        # RETIRED (2026-09-13). Refused here rather than silently mapped onto
-        # `boltzgen`, because the two are not the same campaign: the legacy
-        # stages honour neither --stop-after nor a calibration verdict, so an
-        # operator who asked for one and got the other would be told nothing.
+    if design_engine == "boltzgen_legacy":
+        # RETIRED (2026-09-13), and as of step 2 of LEGACY_RETIREMENT_SCOPE.md
+        # the stage chain itself is deleted — `PipelineRunner` refuses the
+        # name too, on every workflow. Refused here rather than silently
+        # mapped onto `boltzgen`, because the two were not the same campaign:
+        # the legacy stages honoured neither --stop-after nor a calibration
+        # verdict, so an operator who asked for one and got the other would
+        # be told nothing.
         #
         # The name can still arrive from config.yaml's design.backend, which
-        # is why this check survives the choices list losing the value.
+        # is why this check survives the choices list losing the value. It
+        # stays in the CLI as well as the runner so the operator gets a
+        # usage error rather than a traceback.
         #
-        # What retired it: the bridged BoltzGen backend now covers both entry
+        # What retired it: the bridged BoltzGen backend covers both entry
         # points on evidence — projects/e2e_boltzgen took a PPI-discovered
         # target through the bridge to a SCALE_UP calibration verdict, and
         # projects/pdl1_macrocycle ran a cyclic peptide to production — while
-        # the legacy chain has never written a stage report on this machine.
-        # See LEGACY_RETIREMENT_SCOPE.md.
+        # the legacy chain never wrote a stage report on this machine.
         parser.error(
             "--design-engine boltzgen_legacy is retired: use "
             "'boltzgen', which dispatches this track's own generator stages "
@@ -587,7 +579,7 @@ def main() -> int:
                 "— it does not search for a target, so one must be given.")
         if args.structure and args.pdb:
             parser.error("--structure and --pdb are mutually exclusive.")
-        if args.start_from in ("pathway", "structure", "literature", "design"):
+        if args.start_from in ("pathway", "structure", "literature"):
             args.start_from = "interface"
         if args.start_from not in _BINDER_STAGES:
             parser.error(
@@ -650,10 +642,12 @@ def main() -> int:
             "(a path to a prior stage output file)."
         )
 
-    # A --workflow ppi run on either bridged generator reaches the same
-    # stages a binder run does, so these apply there too. Every other
-    # binder-track flag below is already passed unconditionally.
-    if runs_binder_stages and args.success_metric:
+    # Every track reaches the binder-track stages — --workflow binder and
+    # --workflow structure enter them directly, --workflow ppi bridges into
+    # them after its structure stage — so these apply unconditionally. They
+    # used to be gated on `runs_binder_stages`, which existed only to exclude
+    # the retired legacy engine.
+    if args.success_metric:
         # Two ranking blocks, not one: BoltzGen reads
         # `design.boltzgen_ranking` (its gate is BoltzGen-native columns,
         # `resolve_boltzgen_ranking`), foundry `design.binder_ranking`.
@@ -674,7 +668,7 @@ def main() -> int:
                 "--success-metric iptm, which is BoltzGen's default.")
         config.setdefault("design", {}).setdefault(
             block, {})["success_metric"] = args.success_metric
-    if runs_binder_stages and args.n_gpus:
+    if args.n_gpus:
         config.setdefault("design", {}).setdefault(
             "cluster", {})["n_gpus"] = args.n_gpus
 
@@ -829,10 +823,6 @@ def main() -> int:
     print(f"  GO/NO-GO:        {result.go_recommendation}")
     if result.go_rationale:
         print(f"  Rationale:       {result.go_rationale}")
-    if result.design_files:
-        print(f"  Design files:")
-        for f in result.design_files:
-            print(f"    {f}")
     if result.error:
         print(f"  ERROR:           {result.error}")
     if runner._ledger is not None and runner._ledger.entries:

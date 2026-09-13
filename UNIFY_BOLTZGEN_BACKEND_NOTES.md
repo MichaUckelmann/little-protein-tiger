@@ -8,6 +8,15 @@ Sibling of `UNIFY_DESIGN_BACKEND_NOTES.md`, which scoped the other direction
 runs are next — they were deliberately deferred so they test the final
 implementation rather than an intermediate one.**
 
+> **Superseded in part, 2026-09-13.** The acceptance runs happened and
+> `boltzgen_legacy` is RETIRED — decision 2 below is discharged, and steps 1-2
+> of `LEGACY_RETIREMENT_SCOPE.md` deleted the stage chain,
+> `src/design_runner.py`, and three of the scripts this document lists
+> (`run_boltzgen_campaign.py`, `calibrate_boltzgen_thresholds.py`,
+> `e2e_ppi_boltzgen.py`). Read what follows as the record of how the bridged
+> backend was built and measured, not as current operating instructions:
+> anything here that names `boltzgen_legacy` or those scripts no longer runs.
+
 ---
 
 ## Operator decisions already taken

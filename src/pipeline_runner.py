@@ -1,11 +1,16 @@
 """
 Programmatic pipeline orchestrator for the LittleProteinTiger design pipeline.
 
-Sequences four SkillRunner calls:
+Sequences the PPI track's three discovery stages:
   Stage 0  — pathway-expert              discovers PPI target + PDB from corpus
-  Stage 1  — complex-structure-analysis  interface geometry + hotspot mapping
-  Stage 2  — molecular-biology-expert    prior art + tractability + go/no-go
-  Stage 4  — protein-design-script       BoltzGen YAML + RFD3 JSON (if GO/CONDITIONAL_GO)
+  Stage 1  — molecular-biology-expert    prior art + tractability + go/no-go
+  Stage 2  — complex-structure-analysis  interface geometry + hotspot mapping
+
+On GO/CONDITIONAL_GO the run hands off to the binder track's own stage machine
+(`_bridge_ppi_to_binder_track` -> trim -> spec -> pilot -> calibration ->
+production -> scoring -> design-analyst), with the generator stages dispatched
+to foundry or BoltzGen. The older PPI-only design/execution/analysis/summary
+chain is retired — see LEGACY_RETIREMENT_SCOPE.md.
 
 Each stage reads a '### PIPELINE HANDOFF' block from the previous output to obtain
 the exact query and key fields for the next stage.  If the block is absent the runner
@@ -41,18 +46,10 @@ load_env(_ROOT / ".env")
 
 from src import handoff as _handoff
 from src.env_config import resolve_env_path
-from src.design_metrics import (
-    enrich_with_hotspot_sasa,
-    parse_boltzgen_outputs,
-    write_enriched_csv,
-)
-from src.design_ranking import rank_designs, write_ranking_outputs
-from src.design_runner import (
-    BoltzGenRunError,
-    BoltzGenValidationError,
-    run_pilot_then_production,
-    validate_yaml,
-)
+# `src.design_metrics` and `src.design_ranking` are imported lazily, inside
+# the bridged-BoltzGen stages that use them (`parse_boltzgen_outputs`,
+# `gate_boltzgen_records`, `resolve_boltzgen_ranking`). Everything this module
+# used at import time belonged to the retired legacy chain.
 from src.fingerprint_store import load_fingerprint
 from src.skill_runner import SkillRefusedError, SkillRunner
 from src.campaign_calibration import MIN_HITS_FOR_ESTIMATE
@@ -61,10 +58,17 @@ from src.token_budget import BudgetExceeded, TokenLedger, Usage, load_pricing
 #: The design generators, and which of them share the binder track's stage
 #: machine. `foundry` and `boltzgen` both go through
 #: `_bridge_ppi_to_binder_track` on the PPI track and both dispatch inside
-#: `_run_binder_track`; `boltzgen_legacy` is the older PPI-only
-#: design/execution/analysis path, kept until the bridged one is proven to
-#: cover it. Ordered so error messages list the default first.
+#: `_run_binder_track`. `boltzgen_legacy` is RETIRED — its stage chain is
+#: deleted (LEGACY_RETIREMENT_SCOPE.md) — and the NAME is kept here only so
+#: that naming it earns a specific refusal saying what replaced it, rather
+#: than degrading to a generic "invalid design_engine". Ordered so error
+#: messages list the default first.
 _DESIGN_ENGINES = ("foundry", "boltzgen", "boltzgen_legacy")
+
+#: Retired engines: recognised as names only so `__init__` can refuse them
+#: with a message that says what replaced them, instead of degrading to a
+#: generic "invalid design_engine". Never runnable.
+_RETIRED_ENGINES = ("boltzgen_legacy",)
 
 #: Engines whose PPI runs bridge into the binder-track stage machine. The
 #: complement is exactly `boltzgen_legacy`, and writing it this way round
@@ -156,12 +160,9 @@ _STAGE_TO_SKILL: dict[str, str] = {
     "pathway":    "pathway-expert",
     "structure":  "complex-structure-analysis",
     "literature": "molecular-biology-expert",
-    "design":     "protein-design-script",
-    "summary":    "design-analyst",
     # Binder (target-name-first) workflow stages.  Only the LLM stages appear
     # here; trim / binder_spec / pilot / calibration / production /
-    # binder_scoring are deterministic Python and follow the execution+analysis
-    # convention of having no skill entry.
+    # binder_scoring are deterministic Python and carry no skill entry.
     "target_intel":       "binder-target-intel",
     "interface":          "complex-structure-analysis",
     "binder_summary":     "design-analyst",
@@ -218,9 +219,12 @@ def _stage_for_skill(skill_name: str) -> str:
     Best-effort inverse of _STAGE_TO_SKILL.
 
     First match wins, so this is ambiguous for any skill serving more than one
-    stage (complex-structure-analysis -> structure | interface, design-analyst
-    -> summary | binder_summary).  Callers that know their stage must pass it
-    explicitly; this exists only as the legacy fallback.
+    stage (complex-structure-analysis -> structure | interface).  Callers that
+    know their stage must pass it explicitly; this exists only as the fallback.
+
+    `design-analyst` served `summary` as well as `binder_summary` until the
+    `boltzgen_legacy` retirement deleted the former, so it is single-stage for
+    now — which changes nothing for callers: pass `stage=` anyway.
     """
     return next(
         (s for s, sk in _STAGE_TO_SKILL.items() if sk == skill_name),
@@ -283,7 +287,6 @@ class PipelineResult:
     stage_files: dict[str, Path] = field(default_factory=dict)
     target_complex: str | None = None
     pdb_id: str | None = None
-    design_files: list[Path] = field(default_factory=list)
     error: str | None = None
     # JSON string: {"target_chain": "A", "partner_chain": "B", "residues": [...]}
     # Populated after the structure stage; None if MODEL-READY HOTSPOTS not found.
@@ -346,7 +349,12 @@ class PipelineRunner:
         Abort guard — stage aborts if input token count exceeds this.
     """
 
-    STAGE_ORDER = ["pathway", "literature", "structure", "design", "execution", "analysis", "summary"]
+    #: The PPI track's own stages. It ends at `structure`: on GO the run
+    #: bridges into `BINDER_STAGE_ORDER` (see `_bridge_ppi_to_binder_track`),
+    #: and a binder-stage `start_from` is dispatched straight there. The
+    #: retired legacy chain used to occupy indices 3-6 —
+    #: LEGACY_RETIREMENT_SCOPE.md.
+    STAGE_ORDER = ["pathway", "literature", "structure"]
 
     def __init__(
         self,
@@ -492,9 +500,10 @@ class PipelineRunner:
             )
         self._pathway_mode: str = resolved_mode
         # Which generator builds the designs: "foundry" (default) |
-        # "boltzgen" | "boltzgen_legacy".
+        # "boltzgen". (`boltzgen_legacy` is a name the constructor still
+        # recognises, in order to refuse it specifically — see below.)
         #
-        # The first two are the SAME stage machine — target_intel/interface/
+        # The two are the SAME stage machine — target_intel/interface/
         # trim are generator-neutral, and only spec/pilot/calibration/
         # production/scoring dispatch (see `_boltzgen_backend`). A PPI run on
         # either one therefore takes the same route: PPI's own pathway/
@@ -503,13 +512,10 @@ class PipelineRunner:
         # manifest, `--stop-after` and a trim, none of which the older path
         # had.
         #
-        # `boltzgen_legacy` is the older PPI-only design/execution/analysis
-        # path, kept alive deliberately (see UNIFY_BOLTZGEN_BACKEND_NOTES.md's
-        # decision 2) until the bridged one is proven to cover it, and
-        # reachable only by naming it. It is NOT a synonym for "boltzgen": it
-        # runs the `protein-design-script` skill, reads
-        # `design.pilot`/`design.production` rather than `design.boltzgen`,
-        # and honours neither `--stop-after` nor a calibration verdict.
+        # `boltzgen_legacy` was the older PPI-only design/execution/analysis/
+        # summary chain. It is RETIRED: the stage methods, its driver scripts
+        # and `src/design_runner.py` are deleted, so the name now names
+        # nothing runnable and is refused on every workflow below.
         #
         # `design.backend` in config.yaml sets the project-wide default, with
         # the same override-precedence pattern as `pathway_mode` above: an
@@ -524,18 +530,27 @@ class PipelineRunner:
                 f"Invalid design_engine={resolved_engine!r}; expected one of "
                 f"{', '.join(repr(e) for e in _DESIGN_ENGINES)}."
             )
-        if resolved_engine == "boltzgen_legacy" and self._workflow != "ppi":
-            # The legacy stages are PPI-only by construction — they read the
-            # literature handoff and run the `protein-design-script` skill,
-            # neither of which exists on a track that starts from a named
-            # target or a local file. Accepting the value there would silently
-            # run the NEW BoltzGen backend instead (`_boltzgen_backend` is
-            # false for it), i.e. quietly not what was asked for.
+        if resolved_engine in _RETIRED_ENGINES:
+            # Refused here, not only at the CLI: `design.backend` in
+            # config.yaml can name it, and a library caller constructs this
+            # class directly (the one driver that did — scripts/
+            # e2e_ppi_boltzgen.py — is deleted with the chain).
+            #
+            # Refused rather than silently mapped onto "boltzgen", because the
+            # two were never the same campaign: the legacy chain honoured
+            # neither `--stop-after` nor a calibration verdict, so an operator
+            # who asked for one and got the other would be told nothing.
             raise ValueError(
-                f"design_engine='boltzgen_legacy' is --workflow ppi only; "
-                f"got workflow={self._workflow!r}. Use 'boltzgen' — the "
-                f"binder and structure tracks dispatch their generator "
-                f"stages to it directly."
+                f"design_engine={resolved_engine!r} is RETIRED — its stage "
+                f"chain (design -> execution -> analysis -> summary) and "
+                f"src/design_runner.py are deleted. Use 'boltzgen': it "
+                f"dispatches this track's own generator stages to BoltzGen "
+                f"and gives you the trim, a MEASURED production size, "
+                f"--stop-after and a resumable manifest. (If the value came "
+                f"from config.yaml, change design.backend.) See "
+                f"LEGACY_RETIREMENT_SCOPE.md. Reports over campaigns the "
+                f"legacy path already produced still work — "
+                f"scripts/generate_ppi_report.py reads them off disk."
             )
         self._design_engine = resolved_engine
         # What the operator asked to design. LLM stages PROPOSE a modality;
@@ -569,7 +584,6 @@ class PipelineRunner:
         auto_mode: bool = True,
         structure_next_step: str | None = None,
         target_complex: str | None = None,
-        force_production: bool = False,
         target: str | None = None,
     ) -> PipelineResult:
         """
@@ -580,7 +594,10 @@ class PipelineRunner:
         query : str
             User's initial query (e.g. "design PPI inhibitors for MRSA").
         start_from : str
-            Stage to begin at: pathway | structure | literature | design.
+            Stage to begin at: pathway | literature | structure, or any
+            binder-track stage name (a PPI run bridges into that track after
+            the go/no-go decision, so `--start-from production` resumes
+            there).
         pdb_id : str | None
             Known PDB accession.  Skips pathway stage when provided
             (implies start_from="structure" unless explicitly overridden).
@@ -615,9 +632,9 @@ class PipelineRunner:
             # either generator — so every track needs the round-based,
             # resumable manifest those stages checkpoint into. The binder and
             # structure tracks were already refused here by the CLI and the
-            # foundry bridge by the runner; `boltzgen_legacy` was the one
-            # combination that ran without one, which is also the one whose
-            # multi-hour campaign had nowhere to record that it had started.
+            # foundry bridge by the runner; the retired `boltzgen_legacy` was
+            # the one combination that ran without one, which is also the one
+            # whose multi-hour campaign had nowhere to record it had started.
             raise PipelineBlockedError(
                 f"--workflow {self._workflow} requires --project: the GPU "
                 f"stages every track reaches (pilot/calibration/production) "
@@ -644,7 +661,7 @@ class PipelineRunner:
         # coordinates and picks the epitope. Everything from `trim` onward is
         # the same code a --workflow binder campaign runs.
         if self._workflow == "structure":
-            if start_from in ("pathway", "structure", "literature", "design",
+            if start_from in ("pathway", "structure", "literature",
                               "target_intel"):
                 start_from = "interface"
             dirs = self._binder_dirs(run_dir)
@@ -665,7 +682,7 @@ class PipelineRunner:
         # Runs foundry (RFD3 -> solubleMPNN -> RF3) on the local GPU rather than
         # BoltzGen, and sizes the production run from a measured calibration.
         if self._workflow == "binder":
-            if start_from in ("pathway", "structure", "literature", "design"):
+            if start_from in ("pathway", "structure", "literature"):
                 start_from = "target_intel"
             return self._run_binder_track(
                 query, run_dir, result,
@@ -681,9 +698,9 @@ class PipelineRunner:
         # process (e.g. --start-from production) has no PPI stage to
         # re-enter — go straight into the binder-track stage machine that the
         # earlier bridge call already handed off to and wrote checkpoints for.
-        # Both bridged generators resume this way; `boltzgen_legacy` has no
-        # binder stage to resume into and falls through to the stage-index
-        # lookup below, which rejects the name.
+        # Both generators resume this way. A name that is neither a PPI stage
+        # nor a binder stage falls through to the stage-index lookup below,
+        # which rejects it rather than silently restarting at pathway.
         if self._workflow == "ppi" and self._bridges_to_binder_track \
                 and start_from in self.BINDER_STAGE_ORDER:
             return self._run_binder_track(
@@ -734,41 +751,13 @@ class PipelineRunner:
         if start_idx > 1 and result.pdb_id and not pdb_id:
             self._reapply_recorded_structure_switch(result, handoff)
 
-        # Hotspots have to survive a restart too, and on the BoltzGen track they
-        # did not. `_stage_analysis` needs `result.hotspot_residues_json` to
-        # compute hotspot SASA and raises without it, but only `_stage_structure`
-        # ever set it — so `--start-from execution|analysis|summary`, the normal
-        # way back in after a stage failure or a prompt edit, died every time.
-        # Worse, it died AFTER the BoltzGen production run, so the cost of the
-        # gap was hours of GPU, and its own advice ("re-run from structure")
-        # meant re-paying for the one stage that gets safety-refused.
-        #
-        # The binder track already solves this exactly this way — see B1 in
-        # `_run_binder_track`, which re-reads `21_interface.md` and re-parses the
-        # table when resuming past the interface stage. Safe to read back off
-        # disk: `_correct_label_seq_ids` writes its corrections INTO
-        # `02_structure.md`, so a re-parse yields the same numbers the original
-        # run used, not the model's uncorrected ones.
-        if start_idx > 3 and not result.hotspot_residues_json:
-            struct_report = run_dir / "02_structure.md"
-            if struct_report.exists():
-                text = struct_report.read_text(encoding="utf-8")
-                recovered = self._parse_hotspot_residues(
-                    text, result.structure_handoff or handoff)
-                if recovered:
-                    result.hotspot_residues_json = recovered
-                    n = len(json.loads(recovered).get("residues") or [])
-                    logger.info(
-                        f"  resume: recovered {n} hotspot residues from "
-                        f"{struct_report.name}")
-                else:
-                    # Say it now, with the file named, rather than three stages
-                    # later out of a SASA worker.
-                    logger.warning(
-                        f"  resume: {struct_report.name} has no parseable "
-                        f"MODEL-READY HOTSPOTS table — the analysis stage needs "
-                        f"one and will refuse. Re-run with "
-                        f"--start-from structure.")
+        # Hotspot recovery on a PPI resume PAST the structure stage lived
+        # here. It served the retired `analysis` chain; the binder track solves
+        # the same problem for itself in B1 of `_run_binder_track`, which
+        # re-reads `21_interface.md` when resuming past the interface stage —
+        # and a binder-stage `start_from` is dispatched straight there above,
+        # never reaching this point. STAGE_ORDER now ends at `structure`, so
+        # there is no PPI index past it left to recover for.
 
         try:
             # ── Stage 0: pathway-expert ──────────────────────────────────────
@@ -944,48 +933,19 @@ class PipelineRunner:
             # `_bridge_ppi_to_binder_track`, UNIFY_DESIGN_BACKEND_NOTES.md
             # (foundry) and UNIFY_BOLTZGEN_BACKEND_NOTES.md (BoltzGen).
             #
-            # Only `boltzgen_legacy` falls through to the stages below, and
-            # only by being named. What it gives up by doing so: a trim, a
-            # MEASURED production size, `--stop-after`, a resumable
-            # per-stage manifest, and the per-modality gate.
+            # The gate is a tautology now that `boltzgen_legacy` is retired
+            # (there is nothing left for a PPI run to fall through TO), and it
+            # stays deliberately: `tests/test_audit_fixes.py` asserts by source
+            # inspection that this predicate gates `_designable_chain_sizes`,
+            # which is the lesson that a designable-size relaxation is only
+            # sound where a trim actually follows. See
+            # LEGACY_RETIREMENT_SCOPE.md.
             if self._bridges_to_binder_track:
                 return self._bridge_ppi_to_binder_track(
                     query, run_dir, result, auto_mode=auto_mode)
-
-            # ── Stage 3 skill: protein-design-script ─────────────────────────
-            # _stage_design reads modality / design_query / etc. from lit_handoff,
-            # which we pass as prev_handoff. Structure context is still attached
-            # so the design skill can reference MODEL-READY HOTSPOTS.
-            if start_idx <= 3:
-                ctx = [
-                    f for f in [
-                        result.stage_files.get("structure"),
-                        result.stage_files.get("literature"),
-                        context_file,
-                    ]
-                    if f and f.exists()
-                ]
-                self._stage_design(lit_handoff, run_dir, result, ctx)
-
-            # ── Stage 4: execution (boltzgen on workstation) ─────────────────
-            # Deterministic Python; raises PipelinePausedError("pilot_failed")
-            # when the pilot gate fails and force_production is False. The
-            # execution stage reads modality from the literature handoff.
-            if start_idx <= 4:
-                self._stage_execution(lit_handoff, run_dir, result, force_production=force_production)
-
-            # ── Stage 5: analysis (deterministic; no LLM) ────────────────────
-            if start_idx <= 5:
-                self._stage_analysis(run_dir, result)
-                self._generate_ppi_report(run_dir)
-
-            # ── Stage 6: summary (terminal LLM stage) ────────────────────────
-            # Pass the literature handoff so _stage_summary can read modality /
-            # design_intent / target_complex from a single source. It also
-            # falls back to parsing 03_design_report.md if needed.
-            if start_idx <= 6:
-                self._stage_summary(lit_handoff, run_dir, result)
-                self._generate_ppi_report(run_dir)
+            raise PipelineError(
+                f"design_engine={self._design_engine!r} has no PPI stages "
+                f"after the go/no-go decision. Use 'foundry' or 'boltzgen'.")
 
         except PipelineBlockedError:
             raise
@@ -3292,10 +3252,11 @@ class PipelineRunner:
         already happened, from a pathway report that still recommends the old
         entry eleven times over. On the CALCRL/RAMP1 run that produced a
         `01_literature.md` naming 6E3Y four times while the structure stage
-        analysed 3N7S — and `_stage_design` passes `design_query` verbatim to
-        the design-script skill, so on the `--design-engine boltzgen` path the
-        designer was being handed the wrong entry, not merely a stale
-        narrative.
+        analysed 3N7S — and the retired legacy design stage passed
+        `design_query` VERBATIM to the design-script skill, so the designer
+        was being handed the wrong entry, not merely a stale narrative. The
+        `*_query` fields are still instructions to whatever reads the report
+        next, so they still get corrected.
         """
         if not stale or not better or stale.upper() == better.upper():
             return
@@ -5261,9 +5222,9 @@ class PipelineRunner:
         # NO_GO. `_run_binder_track` sets NO_GO from the calibration verdict and
         # then calls this stage to report on what the trial did produce; an
         # unconditional assignment here let an LLM looking at a flattering
-        # top-20 flip a measured STOP back to GO. The PPI sibling
-        # (`_stage_summary`) has had the enum check for a while; this path had
-        # neither it nor the floor.
+        # top-20 flip a measured STOP back to GO. The retired PPI sibling
+        # (`_stage_summary`) had the enum check; this path had neither it nor
+        # the floor.
         go = (handoff.get("go_recommendation") or "").upper().replace("-", "_")
         if go in ("GO", "CONDITIONAL_GO", "NO_GO"):
             if result.go_recommendation == "NO_GO" and go != "NO_GO":
@@ -5563,28 +5524,12 @@ class PipelineRunner:
         logger.info(f"site comparison -> {out}")
         return out
 
-    def _generate_ppi_report(self, run_dir: Path) -> Path | None:
-        """Best-effort illustrated HTML report for one PPI-track run.
-
-        Deterministic (no LLM, no GPU) — see src/ppi_report.py. Called at
-        every natural stopping point in the PPI track (after analysis, and
-        after the final summary) so a report is always available for
-        whatever data actually exists, without gating the run on it: report
-        generation is a side effect of a completed stage, never a stage of
-        its own, so a bug here must never fail — or even pause — a real run.
-        """
-        from src.ppi_report import ReportError, build_report
-
-        try:
-            out = build_report(run_dir, cfg=self.config)
-        except ReportError as exc:
-            logger.info(f"run report not generated yet for {run_dir}: {exc}")
-            return None
-        except Exception as exc:  # noqa: BLE001 - reporting must never fail the run
-            logger.warning(f"run report generation failed for {run_dir}: {exc}")
-            return None
-        logger.info(f"run report -> {out}")
-        return out
+    # `_generate_ppi_report` lived here. Its only callers were the legacy
+    # `analysis` and `summary` stages, which are retired — a bridged PPI run
+    # gets `_generate_binder_report` instead. `src/ppi_report.py` stays: it
+    # is still the renderer for the archived legacy runs in `outputs/`, and
+    # `scripts/generate_ppi_report.py` imports it directly. See
+    # LEGACY_RETIREMENT_SCOPE.md.
 
     def _generate_binder_report(self, binder_dir: Path) -> Path | None:
         """Best-effort illustrated HTML report for one binder run directory.
@@ -6095,10 +6040,13 @@ class PipelineRunner:
                 f"{requested_complex!r} -> {delivered_complex!r}. Verifying "
                 f"chain assignment against the requested complex.")
         result.target_complex = delivered_complex
-        result.structure_handoff = handoff  # persist so _stage_design can compare modalities
+        # Persisted so later stages can read structure fields (the bridge
+        # reads `target_chain`/`partner_chain` off it) after `handoff` has been
+        # rebound.
+        result.structure_handoff = handoff
 
-        # Extract MODEL-READY HOTSPOTS as JSON so the analysis stage can compute
-        # hotspot-restricted SASA without re-reading the structure report.
+        # Extract MODEL-READY HOTSPOTS as JSON so the bridge and the trim can
+        # use them without re-reading the structure report.
         # Before parsing, auto-resolve any UNVERIFIED label_seq_id tokens via
         # gemmi (e.g. when the structure-tools tool_get_sequence_map call
         # failed inside the skill) and run a residue-name sanity check that
@@ -6205,874 +6153,15 @@ class PipelineRunner:
         pathway_ctx = [f for f in [result.stage_files.get("pathway")] if f and f.exists()]
         handoff = self._run_stage("molecular-biology-expert", query, pathway_ctx, output_file,
                                   stage="literature")
-        # Prompt guidance is best-effort; this is not. `design_query` is passed
-        # verbatim to the design-script skill by `_stage_design`.
+        # Prompt guidance is best-effort; this is not. `design_query` is read
+        # by the bridge and by whatever reads this report afterwards, so a
+        # stale PDB id in it names an entry the run is not using.
         if switch:
             self._retarget_stale_structure(handoff, switch["from"], switch["to"])
         result.stages_completed.append("literature")
         result.stage_files["literature"] = output_file
         result.literature_handoff = handoff
         return handoff
-
-    def _stage_design(
-        self,
-        prev_handoff: dict,
-        run_dir: Path,
-        result: PipelineResult,
-        context_files: list[Path],
-    ) -> None:
-        design_dir = run_dir / "03_design_inputs"
-        design_dir.mkdir(exist_ok=True)
-        design_report = run_dir / "03_design_report.md"
-
-        complex_name = result.target_complex or prev_handoff.get("target_complex", "the target complex")
-        pdb_id = result.pdb_id or prev_handoff.get("pdb_id", "")
-        # The operator decides; the literature stage only proposes. This used to
-        # read the handoff raw and fall back to the literal string
-        # "cyclic_peptide or mini_protein", which then travelled into the design
-        # query as if it were a modality — and on into `_MODALITY_TO_PROTOCOL`,
-        # where it matched nothing and silently selected the protein protocol.
-        modality = self._resolve_modality(prev_handoff.get("modality"),
-                                          source="the literature stage")
-
-        query = prev_handoff.get("design_query") or (
-            f"Generate {modality} design inputs for {complex_name}, PDB {pdb_id}."
-        )
-        if str(design_dir) not in query:
-            query += f"\n\nWrite all output files to: {design_dir}"
-
-        # Surface modality disagreement between mol-bio (literature) and the
-        # structure-analysis stage. Both can emit a `modality:` line in their
-        # handoff; mol-bio reasons from prior-art affinity precedent, structure
-        # reasons from interface BSA and patch geometry. They sometimes
-        # disagree (e.g. mol-bio says cyclic_peptide because of a 31 nM probe
-        # in the corpus; structure says mini_protein because BSA > 2000 Å²).
-        # Without surfacing it, the design-script silently follows mol-bio's
-        # recommendation. Let the design-script know and pick explicitly.
-        struct_modality = ((result.structure_handoff or {}).get("modality") or "").strip().lower()
-        lit_modality = (prev_handoff.get("modality") or "").strip().lower()
-        if struct_modality and lit_modality and struct_modality != lit_modality:
-            query += (
-                f"\n\nMODALITY DISAGREEMENT — literature stage recommended "
-                f"`{lit_modality}`; structure stage recommended `{struct_modality}`. "
-                f"Pick one and justify briefly in your report (one sentence on which "
-                f"signal you weighted higher: literature prior-art affinity, or "
-                f"interface size / hotspot patch geometry)."
-            )
-
-        logger.info("Stage 4: protein-design-script")
-        design_handoff = self._run_stage("protein-design-script", query, context_files,
-                                         design_report, stage="design")
-        result.stages_completed.append("design")
-        result.stage_files["design"] = design_report
-        result.design_files = [f for f in design_dir.iterdir() if f.is_file()]
-        # If literature was skipped, pull go_recommendation from design handoff;
-        # fall back to GO (design completing implies at least a conditional go-ahead).
-        if result.go_recommendation == "INCOMPLETE":
-            go = design_handoff.get("go_recommendation", "").upper().replace("-", "_")
-            result.go_recommendation = go or "GO"
-
-    # ------------------------------------------------------------------
-    # Stage 4 — execution (workstation, deterministic; no LLM)
-    # ------------------------------------------------------------------
-
-    _MODALITY_TO_PROTOCOL = {
-        "cyclic_peptide": "peptide-anything",
-        "mini_protein":   "protein-anything",
-        "either":         "protein-anything",  # default
-    }
-
-    def _find_design_yaml(self, run_dir: Path) -> tuple[Path, list[Path]]:
-        """Pick the boltzgen YAML out of 03_design_inputs/.
-
-        Prefers files matching ``*_boltzgen.yaml`` (the protein-design-script
-        skill's convention). Falls back to ``*.yaml`` if no match.
-        Raises :class:`PipelineError` if no YAML is present.
-
-        Returns ``(picked, skipped)`` where ``picked`` is the YAML stage 4
-        will actually execute and ``skipped`` is the list of additional
-        YAMLs found but not run (multi-region case; stage 4 is single-YAML
-        for now). Callers are expected to surface ``skipped`` so the
-        analyst can flag the unsampled design space — see ``_stage_execution``
-        which writes ``multi_region_skipped.txt`` and ``_stage_summary``
-        which forwards that file to the design-analyst.
-        """
-        design_dir = run_dir / "03_design_inputs"
-        if not design_dir.exists():
-            raise PipelineError(
-                f"design inputs directory missing: {design_dir}. "
-                "Stage 3 must run before stage 4."
-            )
-        bg_yamls = sorted(design_dir.glob("*_boltzgen.yaml"))
-        if not bg_yamls:
-            bg_yamls = sorted(p for p in design_dir.glob("*.yaml") if p.is_file())
-        if not bg_yamls:
-            raise PipelineError(
-                f"no design YAML found under {design_dir}. "
-                "Check stage 3 (protein-design-script) output."
-            )
-        picked = bg_yamls[0]
-        skipped = bg_yamls[1:]
-        if skipped:
-            logger.warning(
-                f"  multiple design YAMLs found ({[p.name for p in bg_yamls]}) — "
-                f"using first: {picked.name}. Multi-region runs are not "
-                "yet supported by the execution stage; remaining YAMLs will "
-                "be recorded in 04_execution_outputs/multi_region_skipped.txt "
-                "and surfaced in the design-analyst report."
-            )
-        return picked, skipped
-
-    def _stage_execution(
-        self,
-        prev_handoff: dict,
-        run_dir: Path,
-        result: PipelineResult,
-        *,
-        force_production: bool = False,
-    ) -> Path:
-        """Run boltzgen on the workstation: pilot → gate → production.
-
-        Reads ``design.workstation.*`` and ``design.pilot|production.*`` from
-        config. Writes outputs under ``<run_dir>/04_execution_outputs/`` and
-        a markdown summary at ``<run_dir>/04_execution.md``.
-
-        Raises :class:`PipelinePausedError` (``pilot_failed``) when the pilot
-        gate fails and ``force_production`` is False — the caller / web UI
-        is expected to either re-tune hotspots (and re-run from earlier) or
-        retry this stage with ``force_production=True``.
-
-        Returns the boltzgen output directory for downstream consumption by
-        :meth:`_stage_analysis`.
-        """
-        logger.info("Stage 4: execution (boltzgen on workstation)")
-        design_cfg = self.config.get("design", {})
-        ws_cfg = design_cfg.get("workstation", {})
-        pilot_cfg = design_cfg.get("pilot", {})
-        prod_cfg = design_cfg.get("production", {})
-
-        yaml_path, skipped_yamls = self._find_design_yaml(run_dir)
-        bg_output = run_dir / "04_execution_outputs"
-
-        # Stage 4 is single-YAML for now (no multi-region orchestration).
-        # When stage 3 emitted multiple YAMLs (typically Region 1 + Region 2
-        # for a wide interface), write a metadata file the analyst can read.
-        # Without this surfacing the half-sampled design space goes unnoticed.
-        if skipped_yamls:
-            bg_output.mkdir(parents=True, exist_ok=True)
-            skipped_path = bg_output / "multi_region_skipped.txt"
-            skipped_lines = [
-                "Stage 4 executes a single design YAML; the following were generated",
-                "by stage 3 (protein-design-script) but NOT run. The corresponding",
-                "design space is unsampled. To sample it, run boltzgen manually on",
-                "each YAML, place the outputs in a parallel run directory, and",
-                "re-run stage 5 ranking against the combined set.",
-                "",
-                f"Executed YAML : {yaml_path.name}",
-                "Skipped YAMLs :",
-                *[f"  - {p.name}" for p in skipped_yamls],
-            ]
-            skipped_path.write_text("\n".join(skipped_lines) + "\n", encoding="utf-8")
-            logger.warning(f"  wrote multi-region notice → {skipped_path}")
-
-        # Map modality → protocol. modality lives in the design handoff.
-        # Protocol selection must honour --modality, not whatever the design
-        # stage proposed: `_resolve_modality` is documented as the single place
-        # the two are reconciled, and this call site bypassed it. A run launched
-        # with --modality mini_protein logged `modality=either ->
-        # protocol=protein-anything` purely by accident of the default.
-        modality = self._resolve_modality(prev_handoff.get("modality"),
-                                          source="the design stage")
-        protocol = self._MODALITY_TO_PROTOCOL.get(modality, "protein-anything")
-        logger.info(f"  modality={modality} → protocol={protocol}")
-        logger.info(f"  yaml={yaml_path.name}  output={bg_output}")
-
-        executable = resolve_env_path(
-            "LPT_BOLTZGEN_EXECUTABLE", ws_cfg.get("boltzgen_executable")
-        ) or "boltzgen"
-
-        # `boltzgen check` first — abort fast on a malformed YAML.
-        try:
-            validate_yaml(yaml_path, executable=executable)
-        except BoltzGenValidationError as exc:
-            raise PipelineError(f"design YAML failed boltzgen check:\n{exc}") from exc
-
-        try:
-            pilot, prod = run_pilot_then_production(
-                yaml_path=yaml_path,
-                output_dir=bg_output,
-                protocol=protocol,
-                pilot_num_designs=int(pilot_cfg.get("num_designs", 1000)),
-                pilot_budget=int(pilot_cfg.get("budget", 30)),
-                production_num_designs=int(prod_cfg.get("num_designs", 20000)),
-                production_budget=int(prod_cfg.get("budget", 100)),
-                min_completion_rate=float(pilot_cfg.get("min_completion_rate", 0.5)),
-                min_final_fill_rate=float(pilot_cfg.get("min_final_fill_rate", 0.5)),
-                executable=executable,
-                cuda_device=ws_cfg.get("cuda_device", 0),
-                timeout_h=float(ws_cfg.get("timeout_hours", 24.0)),
-                force_production=force_production,
-            )
-        except BoltzGenRunError as exc:
-            raise PipelineError(f"boltzgen run failed during execution stage:\n{exc}") from exc
-
-        # Write the markdown report regardless of pilot outcome so reruns
-        # have a paper trail.
-        report = run_dir / "04_execution.md"
-        report.write_text(
-            self._render_execution_report(yaml_path, protocol, bg_output, pilot, prod),
-            encoding="utf-8",
-        )
-        result.stage_files["execution"] = report
-
-        if prod is None:
-            # Pilot gate failed and force_production=False — pause for user.
-            raise PipelinePausedError("pilot_failed", {
-                "pilot_completion_rate": pilot.completion_rate,
-                "pilot_final_fill_rate": pilot.final_fill_rate,
-                "gate_reason": pilot.gate_reason,
-                "pilot_log": str(pilot.log_path),
-                "output_dir": str(bg_output),
-                "yaml_path": str(yaml_path),
-            })
-
-        result.stages_completed.append("execution")
-        logger.info(f"  execution complete: production output at {bg_output}")
-        return bg_output
-
-    @staticmethod
-    def _render_execution_report(
-        yaml_path: Path,
-        protocol: str,
-        bg_output: Path,
-        pilot,
-        prod,
-    ) -> str:
-        """Human-readable summary of the execution stage outcome."""
-        lines = [
-            "# Stage 4 — Execution report",
-            "",
-            f"- design YAML: `{yaml_path}`",
-            f"- protocol:    `{protocol}`",
-            f"- output dir:  `{bg_output}`",
-            "",
-            "## Pilot",
-            f"- requested: {pilot.num_designs_requested} designs, budget {pilot.budget_requested}",
-            f"- completed: {pilot.total_completed}  ({pilot.completion_rate:.1%})",
-            f"- final-fill: {pilot.final_count}/{pilot.budget_requested}  ({pilot.final_fill_rate:.1%})",
-            f"- runtime: {pilot.runtime_s:.0f}s",
-            f"- gate: {'PASS' if pilot.passes_gate else 'FAIL'} — {pilot.gate_reason}",
-            f"- log: `{pilot.log_path}`",
-        ]
-        if prod is None:
-            lines += [
-                "",
-                "## Production",
-                "**Not run** — pilot gate failed.",
-            ]
-        else:
-            lines += [
-                "",
-                "## Production",
-                f"- requested: {prod.num_designs_requested} designs, budget {prod.budget_requested}",
-                f"- runtime: {prod.runtime_s:.0f}s",
-                f"- exit: rc={prod.returncode}",
-                f"- log: `{prod.log_path}`",
-            ]
-        return "\n".join(lines) + "\n"
-
-    # ------------------------------------------------------------------
-    # Stage 5 — analysis (deterministic; no LLM)
-    # ------------------------------------------------------------------
-
-    def _stage_analysis(self, run_dir: Path, result: PipelineResult) -> None:
-        """Parse boltzgen outputs → enrich top-K with hotspot SASA → rank.
-
-        Writes:
-
-        * ``05_metrics_enriched.csv`` — every design with SASA columns
-          appended (top-K is enriched; the tail has empty lpt_ cells).
-        * ``05_ranking/ranked.csv``    — filter survivors, composite-ranked.
-        * ``05_ranking/top_k.csv``     — MMR-diversified top-K.
-        * ``05_ranking/filter_stats.txt`` — drop reasons.
-        * ``05_analysis.md``           — markdown summary.
-        """
-        logger.info("Stage 5: analysis (deterministic, no LLM)")
-        design_cfg = self.config.get("design", {})
-        thresholds = design_cfg.get("thresholds", {})
-        ranking_cfg = design_cfg.get("ranking", {})
-        weights = ranking_cfg.get("weights", {})
-        mmr = ranking_cfg.get("mmr", {})
-        top_k = int(ranking_cfg.get("top_k", 20))
-        enrich_top_k = int(ranking_cfg.get("enrich_top_k", 200))
-
-        pyr_cfg = design_cfg.get("pyrosetta", {})
-        ws_cfg = design_cfg.get("workstation", {})
-
-        bg_output = run_dir / "04_execution_outputs"
-        if not bg_output.exists():
-            raise PipelineError(
-                f"execution output dir missing: {bg_output}. "
-                "Stage 4 must run before stage 5."
-            )
-
-        # Recover target chain + hotspot residues. hotspot_residues_json was
-        # populated in _stage_structure when the report had a MODEL-READY
-        # HOTSPOTS table; without it we can still rank on iptm/ipae but
-        # hotspot SASA filtering will drop everything.
-        if not result.hotspot_residues_json:
-            raise PipelineError(
-                "no hotspot residues parsed from the structure stage — cannot "
-                "compute target-hotspot SASA. Re-run from start_from=structure "
-                "with a structure report that includes a MODEL-READY HOTSPOTS table."
-            )
-        hs_data = json.loads(result.hotspot_residues_json)
-        target_chain = hs_data["target_chain"]
-        hotspots = hs_data["residues"]
-
-        # 1. Parse boltzgen output
-        records = parse_boltzgen_outputs(bg_output)
-
-        # IMPORTANT — boltzgen renumbers the target chain in its output CIFs.
-        # Specifically, the original mmCIF `label_seq` becomes the new
-        # `auth_seq_id`. So if the original 3KYS PHE314 had label_seq=122,
-        # the boltzgen output CIF has that residue at auth_seq_id=122, not
-        # 314. The SASA worker looks up residues by auth_seq_id via
-        # pdb_info.number(), so we must rewrite each hotspot's auth_seq_id
-        # to its original label_seq_id before passing to the worker.
-        #
-        # Without this remap, every hotspot is "missing" in the boltzgen
-        # output (auth=314 doesn't exist when output runs 3..217) and the
-        # worker reports sasa_delta=0.0 across the board — exactly the
-        # YAP-TEAD off-target signature.
-        hotspots_remapped = []
-        any_remapped = False
-        for hs in hotspots:
-            auth = int(hs["auth_seq_id"])
-            label = hs.get("label_seq_id")
-            if label is None or label == auth:
-                # Either no label resolution available or original CIF was
-                # already label-aligned (label_seq == auth_seq, common for
-                # de-novo designed targets and some experimental structures).
-                hotspots_remapped.append(hs)
-                continue
-            remapped = dict(hs)
-            remapped["auth_seq_id"] = int(label)
-            remapped["_original_auth_seq_id"] = auth  # kept for debug
-            hotspots_remapped.append(remapped)
-            any_remapped = True
-        if any_remapped:
-            logger.info(
-                f"  remapped {sum(1 for h in hotspots if h.get('label_seq_id') != h['auth_seq_id'])} "
-                f"hotspot auth_seq_ids → original label_seq_ids for "
-                f"BoltzGen-renumbered output CIFs"
-            )
-
-        # Chain ids in the OUTPUT frame, measured now that the hotspot ids are
-        # in that frame too. Both halves of a chain's identity are rewritten by
-        # BoltzGen and the pipeline previously handled only the numbering:
-        #
-        # * `skills/protein-design-script/SKILL.md` hardcodes the binder as
-        #   `id: B` while templating the target chain, and real LPT targets sit
-        #   on chain B (7CZD PD-L1, 3DI2 IL7RA). BoltzGen does not reject that
-        #   collision — it renames one entity to the first free letter and only
-        #   LOGS it, and which one loses its letter depends on YAML entity order.
-        # * The target itself is renamed to `A` regardless of its input letter
-        #   (measured: 3N7S chain D -> output chain A).
-        # * `design.workstation.binder_chain` was read here but has never
-        #   existed in config.yaml, so its "B" default always won anyway.
-        #
-        # Getting either wrong is silent in the worst way: the SASA worker
-        # matches by chain id, finds no atoms, and reports sasa_delta = 0.0 for
-        # every design — indistinguishable from a binder that missed the
-        # epitope, which is the exact signature the remap above exists to
-        # prevent. Config still wins if explicitly set, as an escape hatch.
-        target_chain, binder_chain = self._boltzgen_output_chains(
-            records, hotspots_remapped, target_chain)
-        if ws_cfg.get("binder_chain"):
-            binder_chain = ws_cfg["binder_chain"]
-        logger.info(
-            f"  target_chain={target_chain}  binder_chain={binder_chain}  "
-            f"hotspots={len(hotspots)}"
-        )
-
-        # 2. Enrich top-K by quality_score with hotspot SASA.
-        # We sort records in-place by quality_score (descending) so the
-        # first N get enriched. Records without quality_score sort last.
-        records.sort(
-            key=lambda r: (r.get("quality_score") if r.get("quality_score") is not None else -1.0),
-            reverse=True,
-        )
-        # PyRosetta is OPTIONAL. It is used only here (hotspot burial) and in
-        # the binder track's post-gate Rosetta scoring — never to generate
-        # anything — so a run without it is a real run with one fewer metric,
-        # not a broken one. Deciding up front (rather than letting every design
-        # fail individually) is what keeps the SASA gate in step with reality:
-        # when enrichment doesn't run, `rank_designs` skips that gate instead of
-        # dropping all 100 designs for "missing_hotspot_sasa" and reporting it
-        # as a design-quality problem.
-        from src.pyrosetta_sasa import check_available
-
-        # `design_cfg`, not `cfg`: this stage has no `cfg` local (unlike
-        # `_stage_binder_scoring`, whose `cfg = self._binder_cfg()` is the same
-        # `design` sub-tree). `check_available` reads `cfg["pyrosetta"]`, so
-        # `design_cfg` is the right object; passing an undefined name raised
-        # NameError here and failed the whole run with "name 'cfg' is not
-        # defined" three stages after the real work.
-        sasa_available, sasa_reason = check_available(design_cfg)
-        if sasa_available:
-            enrich_with_hotspot_sasa(
-                records,
-                target_chain=target_chain,
-                binder_chain=binder_chain,
-                hotspots=hotspots_remapped,
-                python_executable=resolve_env_path(
-                    "LPT_PYROSETTA_PYTHON", pyr_cfg.get("python_executable")
-                ),
-                init_flags=pyr_cfg.get("init_flags"),
-                max_designs=enrich_top_k,
-            )
-        else:
-            logger.warning(
-                f"hotspot-SASA enrichment skipped — {sasa_reason}. The "
-                f"hotspot_sasa_delta filter will not be applied; designs are "
-                f"ranked on iPTM/iPAE and the BoltzGen terms only.")
-
-        # Write enriched CSV before ranking so the artifact survives a
-        # later ranking-time crash.
-        enriched_path = run_dir / "05_metrics_enriched.csv"
-        write_enriched_csv(records, enriched_path)
-
-        # 3. Rank
-        ranking = rank_designs(
-            records,
-            thresholds=thresholds,
-            weights=weights,
-            mmr=mmr,
-            top_k=top_k,
-            hotspot_sasa_available=sasa_available,
-        )
-
-        ranking_dir = run_dir / "05_ranking"
-        ranked_p, top_k_p, stats_p = write_ranking_outputs(ranking, ranking_dir)
-
-        # 4. Markdown summary
-        report = run_dir / "05_analysis.md"
-        report.write_text(
-            self._render_analysis_report(
-                bg_output=bg_output,
-                hotspots=hotspots,
-                target_chain=target_chain,
-                binder_chain=binder_chain,
-                ranking=ranking,
-                enriched_path=enriched_path,
-                ranked_path=ranked_p,
-                top_k_path=top_k_p,
-                stats_path=stats_p,
-                sasa_skipped_reason=(None if sasa_available else sasa_reason),
-            ),
-            encoding="utf-8",
-        )
-        result.stage_files["analysis"] = report
-        result.stages_completed.append("analysis")
-        logger.info(
-            f"  analysis complete: {ranking.filter_stats.n_survivors} survivors, "
-            f"top-K={len(ranking.top_k)} written to {ranking_dir}"
-        )
-
-    # ------------------------------------------------------------------
-    # Stage 6 — summary (terminal LLM stage)
-    # ------------------------------------------------------------------
-
-    # Columns we slice out of top_k.csv before passing to the analyst skill.
-    # The full ranked CSV is ~300 columns wide; the LLM only needs these to
-    # form a verdict. Notably absent: `designed_chain_sequence`. Protein
-    # sequences are deliberately withheld from the LLM (a) because they
-    # trigger biosafety refusals on Sonnet-class models and (b) because
-    # the review task — composite_score + iPTM/iPAE/SASA — doesn't need
-    # them. `binder_length` is computed from the sequence and stamped in
-    # so the LLM can still reason about size.
-    _SUMMARY_CONTEXT_COLS = (
-        "design_id",
-        "mmr_rank",
-        "composite_rank",
-        "composite_score",
-        "design_to_target_iptm",
-        "min_design_to_target_pae",
-        "lpt_hotspot_sasa_delta",
-        "complex_plddt",
-        "binder_length",
-        "mmr_max_similarity",
-        # BoltzGen's developability / synthesis-risk signals. liability_score is
-        # a composite of cleavage motifs, oxidation hotspots, hydrophobic
-        # patches etc.; the high-severity count is the most important — those
-        # are the violations that would degrade a cyclic peptide in serum
-        # (DPP4 sites, ProtTryp sites) or fail at synthesis (Asp-Pro cleavage,
-        # disulfide misassembly). The analyst weighs these alongside binding
-        # metrics so the recommended designs are actually orderable.
-        "liability_score",
-        "liability_high_severity_violations",
-        "liability_num_violations",
-    )
-
-    def _stage_summary(
-        self,
-        prev_handoff: dict,
-        run_dir: Path,
-        result: PipelineResult,
-    ) -> None:
-        """Final LLM review of the top-K plus order-ready FASTA writeout.
-
-        Reads ``05_ranking/top_k.csv``, slices it to the columns the
-        design-analyst skill cares about, hands it to the skill as context,
-        and writes the resulting markdown to ``06_summary.md``.
-        Also writes ``06_top_k.fasta`` deterministically (not LLM-generated)
-        so the human always has a clean orderable artifact even if the LLM
-        botches the FASTA in its report.
-        """
-        logger.info("Stage 6: summary (design-analyst)")
-
-        top_k_path = run_dir / "05_ranking" / "top_k.csv"
-        if not top_k_path.exists():
-            raise PipelineError(
-                f"top_k.csv missing at {top_k_path}. Stage 5 must run before stage 6."
-            )
-
-        # Build slim context_text. If the CSV is empty (no survivors), still
-        # run the skill — it should produce a NO_GO verdict in that case.
-        context_text = self._slim_top_k_for_context(top_k_path)
-
-        # Recover modality from the design stage's handoff (passed in via
-        # prev_handoff) or, failing that, by re-parsing 03_design_report.md.
-        modality = (prev_handoff.get("modality") or "").strip().lower()
-        if not modality:
-            design_report = run_dir / "03_design_report.md"
-            if design_report.exists():
-                modality = (
-                    self._parse_handoff(design_report.read_text(encoding="utf-8"))
-                    .get("modality", "")
-                    .strip()
-                    .lower()
-                )
-        # Report what was ACTUALLY designed, for the same reason: the analyst's
-        # rubric differs by modality, so telling it "mini_protein" for a
-        # cyclic-peptide run mis-calibrates its verdict.
-        modality = self._resolve_modality(modality or None,
-                                          source="the design report")
-
-        # Build the human-readable hotspot summary for the query.
-        hotspots: list[str] = []
-        if result.hotspot_residues_json:
-            try:
-                hs = json.loads(result.hotspot_residues_json)
-                hotspots = [
-                    f"{r.get('residue', '?')}{r['auth_seq_id']}"
-                    for r in hs.get("residues", [])
-                ]
-            except (json.JSONDecodeError, KeyError, TypeError) as exc:
-                logger.warning(f"  could not parse hotspot_residues_json for summary: {exc}")
-
-        target_complex = result.target_complex or prev_handoff.get("target_complex", "the target complex")
-
-        # Surface the multi-region skipped metadata (if stage 4 found multiple
-        # YAMLs and ran only the first). The analyst SKILL.md instructs the
-        # model to flag this in section 3 — without it, half-sampled design
-        # campaigns get a clean GO verdict without anyone noticing.
-        skipped_path = run_dir / "04_execution_outputs" / "multi_region_skipped.txt"
-        multi_region_note = ""
-        if skipped_path.exists():
-            multi_region_note = (
-                f"\n**Multi-region status (surface this in your section 3 as a red flag):**\n"
-                f"```\n{skipped_path.read_text(encoding='utf-8').rstrip()}\n```\n"
-            )
-
-        # The slim CSV goes *inside* the query (not as context_text) so the
-        # model sees one coherent user message — passing tabular data as a
-        # "## Context from prior report" block confused both Sonnet (which
-        # refused) and Haiku (which hallucinated numbers).
-        query = (
-            f"Review the metrics table below and produce the structured "
-            f"candidate review specified in your system prompt.\n\n"
-            f"Run inputs:\n"
-            f"- Target complex: {target_complex}\n"
-            f"- Design intent: {prev_handoff.get('design_intent') or 'design binders that disrupt the target interface'}\n"
-            f"- Modality: {modality}\n"
-            f"- Hotspot residues ({len(hotspots)}): "
-            + (", ".join(hotspots) if hotspots else "_(none recorded)_")
-            + "\n"
-            + multi_region_note
-            + "\n"
-            f"Metrics table for the MMR-selected top-K (read every value from "
-            f"this CSV — do not invent or estimate numbers):\n\n"
-            f"{context_text}\n"
-            f"Artifact paths (quote these verbatim in your section 6):\n"
-            f"- top_k.csv: `{top_k_path}`\n"
-            f"- ranked.csv: `{run_dir / '05_ranking' / 'ranked.csv'}`\n"
-            f"- filter_stats.txt: `{run_dir / '05_ranking' / 'filter_stats.txt'}`\n"
-            f"- order-ready FASTA: `{run_dir / '06_top_k.fasta'}` (written by orchestrator)\n"
-            f"- per-design CIFs: `{run_dir / '04_execution_outputs' / 'intermediate_designs'}/`\n"
-        )
-
-        output_file = run_dir / "06_summary.md"
-        # Empty context_files — the data lives inline in the query above.
-        handoff = self._run_stage("design-analyst", query, [], output_file, stage="summary")
-        result.stage_files["summary"] = output_file
-        result.stages_completed.append("summary")
-
-        # Always write a deterministic FASTA — independent of whatever the
-        # LLM put in its report — so the human has an unambiguous file to
-        # send to the synthesis vendor.
-        fasta_path = self._write_top_k_fasta(top_k_path, run_dir / "06_top_k.fasta", modality)
-        logger.info(f"  wrote deterministic FASTA → {fasta_path}")
-
-        # Let the final verdict propagate to result.go_recommendation. The
-        # skill's handoff is the authoritative source at this stage.
-        go = (handoff.get("go_recommendation") or "").upper().replace("-", "_")
-        if go in ("GO", "CONDITIONAL_GO", "NO_GO"):
-            result.go_recommendation = go
-        if handoff.get("go_rationale"):
-            result.go_rationale = handoff["go_rationale"]
-
-    @staticmethod
-    def _slim_top_k_for_context(top_k_csv: Path) -> str:
-        """Return a CSV string containing only the columns the analyst skill
-        needs. Drops any column not in _SUMMARY_CONTEXT_COLS so we don't
-        blow context with z-scores and per-design metric noise.
-        """
-        import csv as _csv
-        import io as _io
-
-        with top_k_csv.open() as f:
-            reader = _csv.DictReader(f)
-            available = set(reader.fieldnames or ())
-            cols = [c for c in PipelineRunner._SUMMARY_CONTEXT_COLS if c in available or c == "binder_length"]
-            # binder_length is derived from designed_chain_sequence (which we
-            # don't pass through). Keep it in cols only if the source CSV has
-            # the sequence to derive from.
-            include_length = "designed_chain_sequence" in available
-            if not include_length:
-                cols = [c for c in cols if c != "binder_length"]
-            buf = _io.StringIO()
-            writer = _csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
-            writer.writeheader()
-            for row in reader:
-                out = {c: row.get(c, "") for c in cols if c != "binder_length"}
-                if include_length:
-                    out["binder_length"] = len((row.get("designed_chain_sequence") or "").strip())
-                writer.writerow(out)
-        return f"```csv\n{buf.getvalue()}```\n"
-
-    @staticmethod
-    def _write_top_k_fasta(top_k_csv: Path, fasta_path: Path, modality: str) -> Path:
-        """Emit FASTA from top_k.csv ordered by mmr_rank.
-
-        Header per record:
-            >design_NN mmr_rank=N comp=X iptm=X ipae=X sasa_delta=X
-        Last header line includes the modality so downstream tooling
-        (synthesis vendor portals, etc.) sees it without re-reading the
-        markdown report.
-        """
-        import csv as _csv
-
-        rows: list[dict] = []
-        with top_k_csv.open() as f:
-            for row in _csv.DictReader(f):
-                rows.append(row)
-
-        def _rank_key(r: dict) -> int:
-            try:
-                return int(r.get("mmr_rank") or 999999)
-            except (TypeError, ValueError):
-                return 999999
-
-        rows.sort(key=_rank_key)
-
-        def _fmt(value: str, ndigits: int) -> str:
-            try:
-                return f"{float(value):.{ndigits}f}"
-            except (TypeError, ValueError):
-                return "NA"
-
-        lines: list[str] = [f"; modality={modality}", f"; n_designs={len(rows)}"]
-        for i, r in enumerate(rows, start=1):
-            seq = (r.get("designed_chain_sequence") or "").strip()
-            if not seq:
-                continue
-            lines.append(
-                f">design_{i:02d} "
-                f"mmr_rank={r.get('mmr_rank', '?')} "
-                f"comp={_fmt(r.get('composite_score', ''), 2)} "
-                f"iptm={_fmt(r.get('design_to_target_iptm', ''), 3)} "
-                f"ipae={_fmt(r.get('min_design_to_target_pae', ''), 2)} "
-                f"sasa_delta={_fmt(r.get('lpt_hotspot_sasa_delta', ''), 1)}"
-            )
-            lines.append(seq)
-
-        fasta_path.parent.mkdir(parents=True, exist_ok=True)
-        fasta_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return fasta_path
-
-    @staticmethod
-    @staticmethod
-    def _boltzgen_output_chains(
-        records: list[dict], hotspots: list[dict], input_target_chain: str,
-    ) -> tuple[str, str]:
-        """`(target_chain, binder_chain)` AS THEY APPEAR IN BOLTZGEN'S OUTPUT.
-
-        BoltzGen rewrites both halves of a chain's identity, and the pipeline
-        only ever handled one of them:
-
-        * **Residue numbering** — the input mmCIF's `label_seq` becomes the
-          output `auth_seq_id`. Handled, by the remap at the call site.
-        * **Chain id** — the target is renamed to `A` and the design to `B`
-          whatever the input letters were, the same normalisation RFD3 applies
-          in reverse (binder `A`, target `B`). Measured on the RAMP1
-          calibration campaign: input `3N7S` chain **D** (84 aa, auth 27-110)
-          comes back as output chain **A** (84 aa, auth 6-89). This was NOT
-          handled — `_stage_analysis` addressed the output with the input
-          letter, so on any target not already sitting on chain A the SASA
-          worker would look for a chain that does not exist and report
-          `sasa_delta = 0.0` for every design. All three archived campaigns
-          used chain A, which is the only reason it never fired.
-
-        The target is identified by GROUNDING rather than by convention: it is
-        the polymer chain whose residues match the (already remapped) hotspot
-        ids AND names. That self-validates the remap at the same time, and it
-        is immune to a future change in BoltzGen's naming. The binder is then
-        the other polymer chain.
-
-        Falls back to the input letter plus `"B"` and warns loudly on anything
-        ambiguous. Deliberately never raises: a campaign whose designs are
-        already on disk should not be ended by an unreadable probe file.
-        """
-        import gemmi
-
-        want = {int(h["auth_seq_id"]): str(h.get("residue") or "").upper()
-                for h in hotspots}
-        for rec in records:
-            path = rec.get("cif_path")
-            if not path or not Path(path).is_file():
-                continue
-            try:
-                st = gemmi.read_structure(str(path))
-                st.setup_entities()
-                polymers = [c for c in st[0]
-                            if any(r.find_atom("CA", "*") for r in c)]
-            except Exception as exc:
-                logger.debug(f"  chain probe failed on {path}: {exc}")
-                continue
-
-            scored: list[tuple[int, str]] = []
-            for c in polymers:
-                by_auth = {r.seqid.num: r.name.upper() for r in c}
-                hits = sum(1 for num, name in want.items()
-                           if by_auth.get(num) == name)
-                scored.append((hits, c.name))
-            scored.sort(reverse=True)
-            names = [c.name for c in polymers]
-
-            if scored and scored[0][0] > 0 and len(polymers) == 2:
-                target_out = scored[0][1]
-                binder_out = next(n for n in names if n != target_out)
-                if target_out != input_target_chain:
-                    logger.info(
-                        f"  BoltzGen renamed the target chain "
-                        f"{input_target_chain} -> {target_out} in its output "
-                        f"(binder on {binder_out}); {scored[0][0]}/{len(want)} "
-                        f"hotspots grounded there by name.")
-                return target_out, binder_out
-
-            logger.warning(
-                f"  ⚠ could not ground the target in {Path(path).name}: "
-                f"polymer chains {names}, hotspot name matches {scored}. "
-                f"Falling back to target={input_target_chain!r} binder='B'. "
-                f"If every hotspot SASA reads 0.0, this is why.")
-            return input_target_chain, "B"
-
-        logger.warning(
-            f"  ⚠ no readable design structure to identify the output chains — "
-            f"falling back to target={input_target_chain!r} binder='B'. If "
-            f"hotspot SASA comes back 0.0 for every design, check this first.")
-        return input_target_chain, "B"
-
-    def _render_analysis_report(
-        *,
-        bg_output: Path,
-        hotspots: list[dict],
-        target_chain: str,
-        binder_chain: str,
-        ranking,
-        enriched_path: Path,
-        ranked_path: Path,
-        top_k_path: Path,
-        stats_path: Path,
-        sasa_skipped_reason: str | None = None,
-    ) -> str:
-        stats = ranking.filter_stats
-        lines = [
-            "# Stage 5 — Analysis report",
-            "",
-        ]
-        if sasa_skipped_reason:
-            # A reader comparing two runs must be able to see that they were
-            # filtered by different rubrics.
-            lines += [
-                "> **Note — hotspot-SASA filter not applied.** PyRosetta was "
-                f"not used for this run ({sasa_skipped_reason}), so no design "
-                "carries `lpt_hotspot_sasa_delta` and that gate was skipped "
-                "rather than failed. Ranking used iPTM, iPAE and the BoltzGen "
-                "terms only. Counts below are not comparable with a run that "
-                "had PyRosetta available.",
-                "",
-            ]
-        lines += [
-            f"- boltzgen output: `{bg_output}`",
-            f"- target chain: `{target_chain}`  binder chain: `{binder_chain}`",
-            f"- hotspot residues ({len(hotspots)}): "
-            + ", ".join(f"{h.get('residue','?')}{h['auth_seq_id']}" for h in hotspots),
-            "",
-            "## Funnel",
-            f"- input designs: {stats.n_input}",
-            f"- survived hard filters: {stats.n_survivors}",
-            f"- MMR top-K: {len(ranking.top_k)}",
-        ]
-        if stats.dropped:
-            lines.append("")
-            lines.append("### Drop reasons")
-            for reason, count in sorted(stats.dropped.items(), key=lambda kv: -kv[1]):
-                lines.append(f"- {reason}: {count}")
-
-        lines.append("")
-        lines.append("## Top-K (by MMR rank)")
-        if not ranking.top_k:
-            lines.append("- _(none — no survivors after hard filters)_")
-        else:
-            lines.append("| mmr | comp_rank | comp_score | iptm | ipae | sasa_delta | sequence |")
-            lines.append("|----:|---------:|---------:|----:|----:|----------:|:---------|")
-            for r in ranking.top_k:
-                seq = (r.get("designed_chain_sequence") or "")
-                if len(seq) > 60:
-                    seq = seq[:57] + "..."
-                lines.append(
-                    f"| {r.get('mmr_rank','?')} "
-                    f"| {r.get('composite_rank','?')} "
-                    f"| {r.get('composite_score', 0):+.2f} "
-                    f"| {r.get('design_to_target_iptm', 0):.3f} "
-                    f"| {r.get('min_design_to_target_pae', 0):.2f} "
-                    f"| {r.get('lpt_hotspot_sasa_delta', 0):.1f} "
-                    f"| `{seq}` |"
-                )
-
-        lines += [
-            "",
-            "## Artifacts",
-            f"- enriched metrics: `{enriched_path}`",
-            f"- ranked survivors: `{ranked_path}`",
-            f"- top-K:            `{top_k_path}`",
-            f"- filter stats:     `{stats_path}`",
-            f"- composite columns used: `{ranking.composite_columns}`",
-        ]
-        return "\n".join(lines) + "\n"
 
     def _write_no_go_report(self, result: PipelineResult, handoff: dict) -> None:
         path = result.run_dir / "02_campaign_recommendation.md"

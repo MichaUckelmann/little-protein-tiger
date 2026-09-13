@@ -1,12 +1,14 @@
 #!/usr/bin/env python
 """End-to-end pipeline test: cGAS-STING cancer therapeutics.
 
-Drives the full pathway → literature → structure → design → execution → analysis
-→ summary pipeline with capture_traces=True so every LLM stage dumps its full
-conversation (raw JSON + rendered markdown) under <run_dir>/<NN_stage>/traces/.
+Drives the full pathway → literature → structure pipeline and the binder
+track it bridges into, with capture_traces=True so every LLM stage dumps its
+full conversation (raw JSON + rendered markdown) under
+<run_dir>/<NN_stage>/traces/.
 
-BoltzGen pilot/production sizes are dialed down to 50/100 (same as chunk-3
-stress test) so total wall time is bounded to ~1h.
+--pilot writes `design.pilot`, which only the retired boltzgen_legacy chain
+read; it is inert on both live engines, which size themselves from the
+calibration verdict instead.
 
 Usage:
     .venv/bin/python scripts/test_e2e_cgas_sting.py

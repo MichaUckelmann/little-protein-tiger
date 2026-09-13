@@ -117,13 +117,13 @@ def test_an_empty_binding_list_is_refused():
 
 # ── modality plumbing ───────────────────────────────────────────────────────
 
-def test_protocols_match_the_pipeline_runners_table():
-    """Two tables, one meaning — a drift here sends a macrocycle through the
-    protein protocol, which silently skips the cyclic constraint."""
-    from src.pipeline_runner import PipelineRunner
-
-    for modality, protocol in PROTOCOL_BY_MODALITY.items():
-        assert PipelineRunner._MODALITY_TO_PROTOCOL[modality] == protocol
+# `test_protocols_match_the_pipeline_runners_table` lived here. It pinned
+# `PROTOCOL_BY_MODALITY` against `PipelineRunner._MODALITY_TO_PROTOCOL`; that
+# second table went with the retired legacy execution stage, so there is
+# nothing left to cross-check. The lesson it carried — a drift between two
+# copies of this mapping silently sends a macrocycle through
+# `protein-anything`, which skips the cyclic constraint — is recorded at
+# `PROTOCOL_BY_MODALITY`'s own definition. See LEGACY_RETIREMENT_SCOPE.md.
 
 
 def test_sizes_match_the_shipped_config():

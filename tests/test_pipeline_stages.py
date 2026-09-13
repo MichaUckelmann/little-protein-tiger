@@ -47,7 +47,12 @@ def test_shared_skills_exist_and_make_the_inversion_ambiguous():
     counts = Counter(_STAGE_TO_SKILL.values())
     shared = {sk for sk, n in counts.items() if n > 1}
     assert "complex-structure-analysis" in shared   # structure | interface
-    assert "design-analyst" in shared               # summary | binder_summary
+    # `design-analyst` used to be shared too (summary | binder_summary). The
+    # legacy `summary` stage is retired (LEGACY_RETIREMENT_SCOPE.md step 2),
+    # so it serves only `binder_summary` now — which does NOT make the
+    # inversion safe to rely on, since complex-structure-analysis is still
+    # many-to-one and a new stage reusing a skill would reintroduce it.
+    assert _STAGE_TO_SKILL["binder_summary"] == "design-analyst"
 
 
 def test_explicit_stage_beats_the_ambiguous_inversion(runner):
@@ -62,16 +67,17 @@ def test_explicit_stage_beats_the_ambiguous_inversion(runner):
         assert model == runner._default_model
         assert provider == "claude"
 
-    # Both design-analyst stages resolve to the provider default now. LPT
-    # ships NO per-stage model default: these two used to be pinned to
-    # claude-haiku-4-5 because Sonnet-class models decline the "review of
-    # designed binders" task, which made a smaller model produce content a
-    # larger one refused — the same pattern as the deleted fallback chain.
-    for stage in ("summary", "binder_summary"):
-        model, _, provider = runner._resolve_stage("design-analyst", stage)
-        assert model == runner._default_model, stage
-        assert "haiku" not in model.lower(), stage
-        assert provider == "claude"
+    # `binder_summary` resolves to the provider default now. LPT ships NO
+    # per-stage model default: it (and the retired `summary`) used to be
+    # pinned to claude-haiku-4-5 because Sonnet-class models decline the
+    # "review of designed binders" task, which made a smaller model produce
+    # content a larger one refused — the same pattern as the deleted fallback
+    # chain.
+    model, _, provider = runner._resolve_stage("design-analyst",
+                                               "binder_summary")
+    assert model == runner._default_model
+    assert "haiku" not in model.lower()
+    assert provider == "claude"
 
 
 def test_every_binder_llm_stage_maps_to_a_skill():
@@ -80,9 +86,11 @@ def test_every_binder_llm_stage_maps_to_a_skill():
 
 
 def test_deterministic_stages_have_no_skill_entry():
-    """Matches the execution/analysis convention for non-LLM stages."""
+    """A non-LLM stage carries no skill entry. (The convention this used to
+    cite — the legacy `execution`/`analysis` stages — is retired; the binder
+    track's own deterministic stages are the whole list now.)"""
     for stage in ("trim", "binder_spec", "pilot", "calibration",
-                  "production", "binder_scoring", "execution", "analysis"):
+                  "production", "binder_scoring"):
         assert stage not in _STAGE_TO_SKILL
 
 
@@ -128,9 +136,10 @@ def test_extended_thinking_upgrades_off_haiku(config):
     # case the upgrade exists for — Haiku cannot do extended thinking, and the
     # request must win over the pinned model rather than being dropped.
     cfg = json.loads(json.dumps(config))          # don't mutate the module fixture
-    cfg["models"]["claude"]["stages"] = {"summary": "claude-haiku-4-5"}
-    r = PipelineRunner(cfg, provider="claude", extended_thinking_stages={"summary"})
-    model, thinking, _ = r._resolve_stage("design-analyst", "summary")
+    cfg["models"]["claude"]["stages"] = {"binder_summary": "claude-haiku-4-5"}
+    r = PipelineRunner(cfg, provider="claude",
+                       extended_thinking_stages={"binder_summary"})
+    model, thinking, _ = r._resolve_stage("design-analyst", "binder_summary")
     assert thinking is True
     assert "haiku" not in model.lower()
 
@@ -348,8 +357,7 @@ def test_design_engine_rejects_an_unknown_value(config):
         PipelineRunner(config, workflow="ppi", design_engine="nonsense")
 
 
-@pytest.mark.parametrize("engine",
-                         ["foundry", "boltzgen", "boltzgen_legacy"])
+@pytest.mark.parametrize("engine", ["foundry", "boltzgen"])
 def test_every_engine_requires_a_project(config, tmp_path, engine):
     """
     Fails before creating a run dir or spending any tokens — every track now
@@ -358,9 +366,11 @@ def test_every_engine_requires_a_project(config, tmp_path, engine):
     UNIFY_DESIGN_BACKEND_NOTES.md's --project decision, widened to all three
     engines by UNIFY_BOLTZGEN_BACKEND_NOTES.md's decision 3).
 
-    `boltzgen_legacy` is the combination that used to run WITHOUT one, which
-    is also the one whose multi-hour campaign had nowhere to record that it
-    had started.
+    `boltzgen_legacy` was the combination that used to run WITHOUT one — also
+    the one whose multi-hour campaign had nowhere to record that it had
+    started. It is retired and refused at construction now, so it cannot be
+    parametrised here; `test_the_runner_refuses_the_retired_engine_on_every_track`
+    in tests/test_ppi_backend_routing.py covers it.
     """
     r = PipelineRunner(config, workflow="ppi", design_engine=engine,
                        output_dir=tmp_path / "should_not_be_created")

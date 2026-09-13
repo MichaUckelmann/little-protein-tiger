@@ -118,10 +118,10 @@ call `_record_stage` or `_binder_checkpoint` themselves. The `stages["design"]`
     locally while the operator waits for a submission script.
 11. `_boltzgen_backend` (`:3907`) — half its docstring is about legacy; the
     property is the live foundry-vs-BoltzGen dispatch seam.
-12. `PipelineRunner._MODALITY_TO_PROTOCOL` (`:6279`) — legacy-only table that a
-    LIVE-path test pins `boltzgen_spec.PROTOCOL_BY_MODALITY` against
-    (`tests/test_boltzgen_spec.py:119-126`, verified). Carry it forward or move
-    the assertion in the same commit.
+12. ~~`PipelineRunner._MODALITY_TO_PROTOCOL`~~ — RESOLVED at step 2 by
+    deleting both the table and the cross-check and recording the lesson at
+    `boltzgen_spec.PROTOCOL_BY_MODALITY`, which is now the single source of
+    the modality→protocol mapping.
 13. `src/pyrosetta_sasa.{check_available,resolve_interpreter,pyrosetta_mode}` —
     live. Only `compute_hotspot_sasa` (`:153`) becomes orphaned.
 14. `src/report_common.py` + `src/report_templates/_shared/` — shared with
@@ -170,20 +170,59 @@ the engine from two parametrisations in `tests/test_pipeline_stages.py:351`/`:37
 promise in the one place documented as the only safe way to run it. This step
 is a de-advertisement, not a retirement.
 
-**Step 1 — delete the dead drivers.** `scripts/resume_e2e_cgas_sting.py`,
-`scripts/stress_test_chunk3.py`. Zero importers, zero tests.
+**Step 1 — delete the dead drivers. DONE 2026-09-13.**
+`scripts/resume_e2e_cgas_sting.py`, `scripts/stress_test_chunk3.py`. Zero
+importers, zero tests — re-verified by grep before deleting (the only other
+mentions anywhere are in `diary.md`, which is a record and stays).
 
-**Step 2 — delete the stage chain.** The methods at `:6217-7075`, the
-`design_runner` import (`:50-54`), `STAGE_ORDER` indices 3-6,
-`_STAGE_TO_SKILL["design"]`/`["summary"]`, `PipelineResult.design_files`, plus
-`src/design_runner.py`, `scripts/run_boltzgen_campaign.py`,
-`scripts/e2e_ppi_boltzgen.py`, `scripts/calibrate_boltzgen_thresholds.py`.
-**Same commit: carry `_MODALITY_TO_PROTOCOL` forward or move
-`tests/test_boltzgen_spec.py:119-126`'s assertion.** With legacy gone,
-`_bridges_to_binder_track` becomes a tautology — leaving it is harmless and
-`tests/test_audit_fixes.py:695-720` asserts by source inspection that its gate
-precedes `_designable_chain_sizes(`, so deleting the property means deleting
-that test in the same commit.
+**Step 2 — delete the stage chain. DONE 2026-09-13.**
+Deleted `src/design_runner.py`, `scripts/run_boltzgen_campaign.py`,
+`scripts/e2e_ppi_boltzgen.py`, `scripts/calibrate_boltzgen_thresholds.py`; the
+stage methods and their helpers; `_MODALITY_TO_PROTOCOL`; the `run()`
+fall-through; `_generate_ppi_report`; `PipelineResult.design_files`;
+`STAGE_ORDER` indices 3-6; `_STAGE_TO_SKILL["design"]`/`["summary"]`. The
+runner-level refusal is widened to every workflow and names the retirement.
+`_bridges_to_binder_track`, `_BRIDGED_ENGINES` and `_boltzgen_backend` are
+kept exactly as they were, and so is the lazy `design_ranking`/`design_metrics`
+import trio inside the bridged-BoltzGen stages. `src/ppi_report.py` and its
+templates stay (step 5).
+
+**Done differently from the plan, or found wrong in it:**
+
+- The methods are at `:6217-7076`, not `:6217-7075` (the plan's count was one
+  line short — inventory line numbers, as its own Provenance section warns).
+- `_MODALITY_TO_PROTOCOL` was **not** carried forward. It was a duplicate of
+  `boltzgen_spec.PROTOCOL_BY_MODALITY`, so carrying it would have kept the
+  drift hazard the cross-check existed to catch while removing its only
+  consumer. `tests/test_boltzgen_spec.py::test_protocols_match_the_pipeline_runners_table`
+  is deleted and the lesson it carried is written at
+  `PROTOCOL_BY_MODALITY`'s own definition, which is now the single source.
+- **The top-level `from src.design_metrics import (...)` went entirely**, not
+  just the two names the plan listed. `parse_boltzgen_outputs` was the third,
+  and its only top-level consumer was `_stage_analysis`; the live use is the
+  LAZY import inside `_boltzgen_records`, which is kept. A
+  top-level import of it would now be dead.
+- **Two extra things in `run()` died with the chain** and the plan did not
+  list them: the `start_idx > 3` hotspot-recovery block (it existed so
+  `_stage_analysis` could compute hotspot SASA on a resume, and STAGE_ORDER no
+  longer HAS an index past 3), and the `force_production` kwarg (its only
+  consumer was `_stage_execution`; nothing in the repo ever passed it).
+- **The PPI track now has no stage name between `structure` and the bridge.**
+  `--start-from design` used to be the way to enter a run right after the
+  go/no-go decision, and `tests/test_ppi_backend_routing.py` used it for
+  exactly that. That test now stubs `_stage_structure` instead. Worth knowing
+  before adding another test that wants that entry point: a PPI campaign
+  resumes at a BINDER stage name, never at a PPI one past `structure`.
+- `scripts/run_pipeline.py`'s `is_legacy`/`runs_binder_stages` are gone; the
+  `--success-metric` and `--n-gpus` blocks they gated are now unconditional,
+  which is correct (every surviving track runs the binder-track stages). The
+  `--compute cluster`/`--n-gpus` refusal for **bridged** BoltzGen — item 10 of
+  "do NOT touch" — is untouched, as are `--hotspots` and `--project`.
+- `scripts/test_e2e.py` and `scripts/test_e2e_cgas_sting.py` survive but their
+  `--pilot`/`--production` flags are now inert: they write `design.pilot` /
+  `design.production`, which only the legacy chain read. Said so in their
+  docstrings rather than removing the flags, which belongs with step 4's
+  config pruning.
 
 **Step 3 — delete `skills/protein-design-script/`.** Requires the same commit
 to fix `tests/test_ortholog_check.py:985` (an unguarded

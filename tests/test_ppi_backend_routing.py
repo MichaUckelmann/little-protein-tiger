@@ -39,24 +39,20 @@ def _runner(config: dict, engine: str, **kw) -> PipelineRunner:
 
 # ── the routing predicate ───────────────────────────────────────────────────
 
-@pytest.mark.parametrize("engine,bridged", [
-    ("foundry", True), ("boltzgen", True), ("boltzgen_legacy", False),
-])
-def test_both_real_generators_bridge_and_only_legacy_does_not(config, engine,
-                                                              bridged):
-    assert _runner(config, engine)._bridges_to_binder_track is bridged
+@pytest.mark.parametrize("engine", _BRIDGED)
+def test_both_real_generators_bridge(config, engine):
+    """`boltzgen_legacy` was the only engine that answered False here, and it
+    is retired (LEGACY_RETIREMENT_SCOPE.md step 2) — the predicate is now a
+    tautology, kept because `tests/test_audit_fixes.py` pins it as the gate
+    in front of `_designable_chain_sizes`."""
+    assert _runner(config, engine)._bridges_to_binder_track is True
 
 
 def test_the_boltzgen_backend_flag_is_not_the_routing_flag(config):
     """Two different questions. `_boltzgen_backend` selects which GENERATOR a
     binder-track stage dispatches to; `_bridges_to_binder_track` selects
-    whether a PPI run reaches those stages at all. `boltzgen_legacy` answers
-    False to both — it neither bridges nor dispatches — and conflating them
-    would send it into the new stages under the old name."""
-    legacy = _runner(config, "boltzgen_legacy")
-    assert legacy._boltzgen_backend is False
-    assert legacy._bridges_to_binder_track is False
-
+    whether a PPI run reaches those stages at all. Conflating them is what
+    sent BoltzGen into the legacy stages under the new name for a release."""
     bg = _runner(config, "boltzgen")
     assert bg._boltzgen_backend is True and bg._bridges_to_binder_track is True
 
@@ -67,11 +63,9 @@ def test_the_boltzgen_backend_flag_is_not_the_routing_flag(config):
 # ── the hand-off after go/no-go ─────────────────────────────────────────────
 
 def _go_context(tmp_path: pathlib.Path) -> pathlib.Path:
-    """A literature handoff on disk, so `run()` can be entered at the stage
-    right after the go/no-go decision without stubbing the three LLM stages
-    (and without needing a structure on disk for stage 1.5). `tractability`
-    is what routes it into `literature_handoff` — see `run()`'s seeding
-    heuristic."""
+    """A literature handoff on disk, carrying the GO the bridge is reached
+    from. `tractability` is what routes it into `literature_handoff` — see
+    `run()`'s seeding heuristic."""
     path = tmp_path / "01_literature.md"
     path.write_text(
         "# Literature\n\n### PIPELINE HANDOFF\n"
@@ -89,44 +83,35 @@ def test_a_go_decision_enters_the_bridge_on_either_generator(
         config, tmp_path, monkeypatch, engine):
     """The bug C1 fixes, stated as a test: BoltzGen must take the same route
     foundry does, so that trim / spec / calibration / production / scoring all
-    dispatch through `_run_binder_track` rather than being skipped."""
+    dispatch through `_run_binder_track` rather than being skipped.
+
+    It used to enter at `--start-from design`, one index past the structure
+    stage. STAGE_ORDER ends at `structure` now that the legacy chain is
+    deleted, so there is no stage name between it and the bridge — the
+    structure stage is stubbed instead of started after.
+    """
     seen: dict = {}
     monkeypatch.setattr(
         PipelineRunner, "_bridge_ppi_to_binder_track",
         lambda self, q, rd, res, **kw: seen.setdefault("engine",
                                                        self._design_engine))
     monkeypatch.setattr(PipelineRunner, "_init_ledger", lambda self, rd: None)
-    monkeypatch.setattr(PipelineRunner, "_stage_design",
-                        lambda self, *a, **k: pytest.fail(
-                            "a bridged engine must not reach the legacy "
-                            "design stage"))
+    monkeypatch.setattr(PipelineRunner, "_ensure_structure",
+                        lambda self, pdb: tmp_path / f"{pdb}.cif")
+    monkeypatch.setattr(PipelineRunner, "_verify_pdb_identity",
+                        lambda self, path, expected: (True, "stubbed"))
+    monkeypatch.setattr(PipelineRunner, "_stage_structure",
+                        lambda self, h, rd, res, ctx: {})
 
     r = _runner(config, engine, project=object(), output_dir=tmp_path / "run")
-    r.run("q", start_from="design", context_file=_go_context(tmp_path))
+    r.run("q", start_from="structure", pdb_id="3N7S",
+          context_file=_go_context(tmp_path))
     assert seen["engine"] == engine
 
 
-def test_legacy_still_reaches_the_old_design_stage(config, tmp_path,
-                                                   monkeypatch):
-    """Decision 2: the legacy path stays alive as the regression check for the
-    one it replaced, so it must remain genuinely reachable — by name."""
-    reached: list[str] = []
-    monkeypatch.setattr(
-        PipelineRunner, "_bridge_ppi_to_binder_track",
-        lambda self, *a, **k: pytest.fail("legacy must not bridge"))
-    monkeypatch.setattr(PipelineRunner, "_init_ledger", lambda self, rd: None)
-    for stage in ("_stage_design", "_stage_execution", "_stage_analysis",
-                  "_stage_summary"):
-        monkeypatch.setattr(PipelineRunner, stage,
-                            lambda self, *a, s=stage, **k: reached.append(s))
-    monkeypatch.setattr(PipelineRunner, "_generate_ppi_report",
-                        lambda self, rd: None)
-
-    r = _runner(config, "boltzgen_legacy", project=object(),
-                output_dir=tmp_path / "run")
-    r.run("q", start_from="design", context_file=_go_context(tmp_path))
-    assert reached == ["_stage_design", "_stage_execution", "_stage_analysis",
-                       "_stage_summary"]
+# `test_legacy_still_reaches_the_old_design_stage` lived here. Its subject —
+# the design/execution/analysis/summary chain — is deleted, so there is no
+# stage left for it to reach. See LEGACY_RETIREMENT_SCOPE.md step 2.
 
 
 # ── resuming mid-campaign ───────────────────────────────────────────────────
@@ -147,15 +132,17 @@ def test_a_binder_stage_resume_dispatches_straight_into_the_track(
     assert captured.get("start_from") == "production"
 
 
-def test_a_binder_stage_name_is_refused_under_the_legacy_engine(
+def test_an_unknown_stage_name_is_refused_rather_than_silently_restarted(
         config, tmp_path, monkeypatch):
-    """It has no stage called "production", so the alternative to refusing is
-    starting at pathway and re-paying for every LLM stage."""
+    """The alternative to refusing is starting at pathway and re-paying for
+    every LLM stage. (This used to be checked through `boltzgen_legacy`, which
+    had no stage called "production"; both bridged engines dispatch that name
+    into the binder track, so the check now needs a name neither track has.)"""
     monkeypatch.setattr(PipelineRunner, "_init_ledger", lambda self, rd: None)
-    r = _runner(config, "boltzgen_legacy", project=object(),
+    r = _runner(config, "boltzgen", project=object(),
                 output_dir=tmp_path / "run")
-    with pytest.raises(pr.PipelineError, match="production"):
-        r.run("q", start_from="production")
+    with pytest.raises(pr.PipelineError, match="execution"):
+        r.run("q", start_from="execution")
 
 
 # ── the CLI's own gates ─────────────────────────────────────────────────────
@@ -231,28 +218,22 @@ def test_the_legacy_engine_is_refused_on_every_track_by_the_cli():
     assert ("invalid choice" in proc.stderr or "retired" in proc.stderr)
 
 
-def test_the_runner_still_accepts_it_for_a_library_caller_on_the_ppi_track():
-    """Step 0 is a DE-ADVERTISEMENT, not a removal, and this pins the seam.
+@pytest.mark.parametrize("workflow", ["ppi", "binder", "structure"])
+def test_the_runner_refuses_the_retired_engine_on_every_track(workflow):
+    """Step 2 of LEGACY_RETIREMENT_SCOPE.md. Step 0's refusal was scoped to
+    non-PPI tracks so `scripts/e2e_ppi_boltzgen.py` — documented as the only
+    safe way to run the chain — kept working; that driver is deleted with the
+    chain, so the seam it protected is gone and a library caller must be
+    refused too. `design.backend` in config.yaml can still name the engine,
+    which is why the runner checks and does not rely on the CLI's choices.
 
-    `UNIFY_BOLTZGEN_BACKEND_NOTES.md`'s decision 2 asked that the path stay
-    genuinely reachable while it is kept, and `scripts/e2e_ppi_boltzgen.py`
-    — documented there as the only safe way to run it, since a bare CLI
-    invocation would run 332 GPU-h uncapped — constructs `PipelineRunner`
-    directly. So the runner-level refusal stays scoped to non-PPI tracks
-    until the stage chain itself is deleted (step 2 of the scope). When that
-    happens, DELETE THIS TEST rather than loosening it.
+    Refused, never mapped onto 'boltzgen': the two were not the same campaign.
     """
     cfg = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8"))
-    runner = PipelineRunner(cfg, workflow="ppi",
-                            design_engine="boltzgen_legacy",
-                            project=None, round_id=None)
-    assert runner._design_engine == "boltzgen_legacy"
-    assert runner._boltzgen_backend is False
-    assert runner._bridges_to_binder_track is False
-
-    with pytest.raises(ValueError, match="ppi only"):
-        PipelineRunner(cfg, workflow="binder",
-                       design_engine="boltzgen_legacy")
+    with pytest.raises(ValueError, match="RETIRED"):
+        PipelineRunner(cfg, workflow=workflow,
+                       design_engine="boltzgen_legacy",
+                       project=None, round_id=None)
 
 
 def test_cluster_flags_are_refused_on_boltzgen_rather_than_run_locally():

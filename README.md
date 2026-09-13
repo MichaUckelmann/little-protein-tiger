@@ -376,20 +376,12 @@ PipelineRunner.run(query="Design therapeutics for ...")
   So a BoltzGen campaign is trimmed, MEASURED before it scales, stoppable at
   the calibration gate, and resumable — none of which the older path had.
 
-  boltzgen_legacy — RETIRED (2026-09-13), and no longer accepted by the CLI.
-  It was the older PPI-only path, kept as a regression check for what the
-  bridge replaced, and it never ran once after the bridge landed:
-  stage 3  protein-design-script      → BoltzGen YAML + RFD3 JSON
-  stage 4  design_runner              → BoltzGen pilot → gate → production
-                                          (workstation GPU subprocess)
-  stage 5  design_metrics + ranking   → enrich top-K with pyrosetta hotspot
-                                          SASA, MMR-rank by composite score
-  stage 6  design-analyst             → final candidate review + FASTA
-  It honoured neither `--stop-after` nor a calibration verdict and was sized
-  only by `design.pilot` / `design.production`, which is what made it worth
-  retiring once the bridged engine covered both entry points on evidence.
-  See LEGACY_RETIREMENT_SCOPE.md; reports of campaigns it already produced
-  still render.
+  boltzgen_legacy — RETIRED. The older PPI-only chain (protein-design-script
+  → design_runner → ranking → design-analyst) is deleted: the CLI and the
+  runner both refuse the name on every track. It honoured neither
+  `--stop-after` nor a calibration verdict, and the bridged engine above
+  covers both entry points on evidence. See LEGACY_RETIREMENT_SCOPE.md;
+  reports of campaigns it already produced still render.
 ```
 
 Stage 0 has two modes (`--pathway-mode`, or `design.pathway.mode` in
@@ -757,19 +749,15 @@ Run outputs land under `outputs/<slug>/`:
 - `0X_<stage>.md` — markdown report from each LLM-driven stage.
 - `traces/<stage>/{trace_raw.json, trace_rendered.md}` — full conversation
   history per LLM stage (only when `capture_traces=True`).
-- `03_design_inputs/*.yaml` + `*_submit.sh` — BoltzGen design YAMLs.
-  Stage 3 may emit multiple YAMLs (e.g. Region 1 + Region 2 for a wide
-  interface); stage 4 currently executes only the alphabetically first.
-- `04_execution_outputs/` — BoltzGen run dir (CIFs + `boltzgen.log` +
-  `final_ranked_designs/all_designs_metrics.csv`). When stage 3 emitted
-  multiple YAMLs, a `multi_region_skipped.txt` file lists the YAMLs that
-  were generated but not run; the design-analyst surfaces this in
-  `06_summary.md` so the human can manually run the unsampled regions.
-- `05_metrics_enriched.csv` — every design with hotspot SASA appended.
-- `05_ranking/{ranked.csv, top_k.csv, filter_stats.txt}` — filtered, ranked,
-  MMR-diversified output.
-- `06_summary.md` + `06_top_k.fasta` — analyst review + deterministic FASTA
-  for ordering.
+- `binder/` — everything the design campaign produced, from the trim onward
+  (`20_target_intel.md` .. `26_binder_summary.md`, `scoring/{ranked.csv,
+  top_k.csv, filter_stats.txt}`, `report.html`). A PPI run bridges into the
+  binder track after its structure stage, so this is where its designs land.
+- The `03_*` .. `06_*` artifacts (`03_design_inputs/`, `04_execution_outputs/`,
+  `05_metrics_enriched.csv`, `05_ranking/`, `06_summary.md`, `06_top_k.fasta`)
+  belonged to the retired `boltzgen_legacy` chain. No new run writes them; the
+  archived runs in `outputs/` that do still render — see
+  [LEGACY_RETIREMENT_SCOPE.md](LEGACY_RETIREMENT_SCOPE.md).
 
 A first-time setup also needs the RCSB metadata cache (used by
 `find_pdb_structures` to surface PDB titles + entity descriptions to the

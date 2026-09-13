@@ -56,8 +56,10 @@ from loguru import logger
 #: BoltzGen normalises its OUTPUT chain ids: target -> A, design -> B, whatever
 #: the input letters were. Measured: 3N7S chain D (84 aa, auth 27-110) comes
 #: back as chain A (auth 6-89). The mirror image of RFD3's binder-A/target-B
-#: convention, and the reason `pipeline_runner._boltzgen_output_chains` grounds
-#: the output chains rather than trusting the input letters.
+#: convention, and the reason the scorer must ground the output chains rather
+#: than trust the input letters. (The legacy `_boltzgen_output_chains` that
+#: did so on the retired PPI chain is gone; the bridged path reads these
+#: constants.)
 BOLTZGEN_OUT_TARGET_CHAIN = "A"
 BOLTZGEN_OUT_BINDER_CHAIN = "B"
 
@@ -69,10 +71,16 @@ DEFAULT_SIZES: dict[str, tuple[int, int]] = {
     "mini_protein": (70, 86),
 }
 
-#: Modality -> BoltzGen protocol, mirroring
-#: `PipelineRunner._MODALITY_TO_PROTOCOL`. Only these two are reachable from
-#: LPT; BoltzGen also ships protein-small_molecule / antibody / nanobody /
-#: protein-redesign protocols that nothing here selects.
+#: Modality -> BoltzGen protocol. This is now the SINGLE source of that
+#: mapping: `PipelineRunner._MODALITY_TO_PROTOCOL` was a second copy of it,
+#: pinned against this one by `tests/test_boltzgen_spec.py`, and both went
+#: with the retired legacy execution stage (LEGACY_RETIREMENT_SCOPE.md step
+#: 2). The knowledge that cross-check protected: a drift between the two sent
+#: a macrocycle through the `protein-anything` protocol, which silently skips
+#: the cyclic constraint — so a second table must not be reintroduced.
+#: Only these two are reachable from LPT; BoltzGen also ships
+#: protein-small_molecule / antibody / nanobody / protein-redesign protocols
+#: that nothing here selects.
 PROTOCOL_BY_MODALITY: dict[str, str] = {
     "cyclic_peptide": "peptide-anything",
     "mini_protein": "protein-anything",

@@ -1,12 +1,13 @@
 #!/usr/bin/env python
 """End-to-end pipeline test for any user prompt.
 
-Drives the full pathway → literature → structure → design → execution →
-analysis → summary pipeline with capture_traces=True so every LLM stage
-dumps its full conversation under <run_dir>/traces/<stage>/.
+Drives the full pathway → literature → structure pipeline and the binder
+track it bridges into, with capture_traces=True so every LLM stage dumps its
+full conversation under <run_dir>/traces/<stage>/.
 
-BoltzGen pilot/production sizes can be dialed down via --pilot/--production
-for fast verification runs; they only bite on --design-engine boltzgen.
+--pilot/--production write `design.pilot`/`design.production`, which only the
+retired boltzgen_legacy chain read; they are inert on both live engines,
+which size themselves from the calibration verdict instead.
 
 A persistent project is required, because design.backend defaults to
 foundry and the foundry stages downstream are multi-day GPU campaigns that
