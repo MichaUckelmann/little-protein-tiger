@@ -870,6 +870,39 @@ BoltzGen glue spec is a genuinely small change (per-chain `include` lists from
 `boltzgen_residue_indices`, which already returns per chain) with a real
 reference to validate against.
 
+**MEASURED 2026-09-13, and it narrows point 1's "convenience, not
+capability" to something sharper: on BoltzGen it is not even convenience.**
+Loading a real per-design `.npz` from the PD-L1 production campaign
+(`intermediate_designs_inverse_folded/fold_out_npz/`, 129 tokens, 1,056 atoms,
+5 diffusion samples) shows BoltzGen writes coordinates plus **pre-reduced
+confidence SCALARS and no matrix at all**. The PAE appears only as
+`interaction_pae`, `min_interaction_pae` and `min_design_to_target_pae`, each
+shape `(5,)`; the rest is `iptm`/`protein_iptm`/`ligand_iptm`/`design_iptm`/
+`design_iiptm`/`design_to_target_iptm`/`design_residue_iptm`, `ptm`/
+`design_ptm`/`target_ptm`, `complex_plddt`/`complex_iplddt`/`complex_pde`/
+`complex_ipde`, and its own `design_ipsae_min`/`design_to_target_ipsae`/
+`target_to_design_ipsae`.
+
+Two consequences:
+
+- **§4.2's recovery route is foundry-only.** `ipsae_from_pae_matrix` needs the
+  L x L matrix, which RF3 writes in `confidences.json` and BoltzGen does not
+  write anywhere. So an R-vs-P ipSAE over an arbitrary split is computable on
+  the foundry path and NOT on BoltzGen, whose reductions are fixed at whatever
+  it chose to emit. That is the opposite of the direction §4.3 leans, and it
+  reinforces foundry-first rather than qualifying it.
+- **Whether BoltzGen emits per-PAIR values for three chains is now an open
+  question, not a settled advantage.** The keys above are fixed CATEGORIES —
+  `design`, `target`, `ligand`, `complex` — not chain pairs, so a binder plus
+  TWO target chains may well collapse into one `design_to_target_*` number
+  with the R<->P interface unreported. Settle it before stage 7 leans on it:
+  one BoltzGen run on a three-chain YAML, then list the npz keys.
+
+Incidental confirmation of the refusal in CLAUDE.md: `design_ipsae_min` reads
+**0.0103-0.0114** on one design and 0.0114-0.0150 on another, inside the
+documented 0.0000-0.0289 span, against an RF3-calibrated bar of 0.5 — every
+campaign sized on it would verdict STOP.
+
 ---
 
 # 5. Question 4 — The GPU trimming benchmark
