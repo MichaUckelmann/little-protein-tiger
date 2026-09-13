@@ -315,13 +315,35 @@ may not be feasible without a hard trim.
   `00_pathway.md` and none reaches the pause message. Its skill should also
   have written `pdb_id: NOT_FOUND` rather than omitting the handoff block
   (the only such omission in 15 runs).
-- **No selector prompt forbids intracellular/cytoplasmic interfaces.**
-  Verified: `grep -c intracellular|cytoplasmic` = 0 in both selectors. The
-  "Not reachable" list (`wildcard-expert:613`) covers lipid-ligand orthosteric
-  pockets, deep aminergic pockets and TM surfaces only.
-  `wildcard_diabetes` duly picked **GPR17 / Gai (7Y89)**, a GPCR-G-protein
-  CYTOPLASMIC coupling interface, and called tractability "Excellent". A
-  protein binder cannot reach it. Pre-existing gap, not caused by the
+- **Intracellular interfaces are unmentioned by either selector, and that is
+  a REPORTING gap, not a missing prohibition.** Verified: `grep -c
+  intracellular|cytoplasmic` = 0 in both selectors; the "Not reachable" list
+  (`wildcard-expert:613`) covers lipid-ligand orthosteric pockets, deep
+  aminergic pockets and TM surfaces only. `wildcard_diabetes` picked
+  **GPR17 / Gai (7Y89)**, a GPCR-G-protein cytoplasmic coupling interface, and
+  called tractability "Excellent".
+
+  **OPERATOR DECISION (2026-09-13): do NOT make this a prohibition.** An
+  intracellular domain is harder to reach, not impossible — intrabodies,
+  intracellularly expressed nanobodies and cell-penetrating scaffolds are all
+  real routes — and for some targets the therapeutic effect genuinely lives
+  inside the cell. My earlier "a protein binder cannot reach it" was wrong.
+
+  The guidance wants THREE tiers, not the current two:
+  1. **Preferred** — extracellular, *when the extracellular part carries the
+     therapeutic effect*. For a membrane receptor it usually does, and that is
+     the case to prioritise.
+  2. **Possible, with the delivery burden STATED** — cytoplasmic and
+     intracellular domains. The defect in the GPR17 run is not the choice; it
+     is calling tractability "Excellent" without naming the delivery
+     requirement, so a downstream reader cannot see the cost.
+  3. **Not reachable** — TM surfaces, and pockets entered laterally from the
+     bilayer. This is the existing list and it is correct: those are
+     unreachable by any binder, not merely hard.
+
+  So the edit is to make tier 2 explicit and require the delivery route to be
+  named in `tractability`/`go_rationale` — not to add GPR17-class targets to
+  the refusal list. Pre-existing gap either way; not caused by the
   neutralisation (my edits to that section removed only the CALCRL example).
 - `wildcard_tuberculosis` was REFUSED by gemini (category OTHER, call #1) and
   the run stopped — the refusal contract working, no automatic retry. Standard
