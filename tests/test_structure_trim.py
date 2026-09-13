@@ -419,6 +419,16 @@ def test_a_modified_residue_with_no_known_parent_is_left_alone(tmp_path,
 
     monkeypatch.setitem(stools._CURATED_PARENTS, "P1L", None)
     monkeypatch.setattr(stools, "_CURATED_PARENTS", {})
+    # The CCD tier has to be disabled too, or this test no longer tests
+    # anything: the CCD knows P1L perfectly well (it is where the fourth tier
+    # gets 2MR, KCR and the rest from), so with only the curated table blanked
+    # the parent would still resolve. `LPT_CCD_OFFLINE` is the documented way
+    # to pin a run to local knowledge, and the memo is cleared so a lookup
+    # cached by an earlier test cannot answer either.
+    monkeypatch.setenv("LPT_CCD_OFFLINE", "1")
+    monkeypatch.setattr(stools, "_CCD_MEMO", {})
+    monkeypatch.setattr(stools, "_CCD_NAMES", {})
+    monkeypatch.setattr(stools, "_CCD_LOADED", True)
     msgs: list[str] = []
     hid = logger.add(lambda m: msgs.append(str(m)), level="WARNING")
     try:
@@ -679,3 +689,170 @@ def test_the_exposure_warning_reports_an_area_not_only_a_count(tmp_path):
     # LEU32 +58.9 and VAL36 +15.9 -> 75 A^2, against a 1,356 A^2 target side.
     assert "75 A^2" in w, w
     assert "6% of the target-side interface area" in w, w
+
+
+# ----------------------------------------------------------------------
+# The CCD tier, and saying so in the report
+# ----------------------------------------------------------------------
+
+def _isolated_ccd(monkeypatch, responder=None):
+    """Point the CCD tier at a canned response, with no cache and no network."""
+    import src.structure_tools as stools
+
+    monkeypatch.setattr(stools, "_CCD_MEMO", {})
+    monkeypatch.setattr(stools, "_CCD_NAMES", {})
+    monkeypatch.setattr(stools, "_CCD_LOADED", True)      # skip the disk cache
+    monkeypatch.setattr(stools, "_CCD_WARNED", False)
+    monkeypatch.setattr(stools, "_ccd_cache_store",
+                        lambda *a, **k: None)             # never write to data/
+    monkeypatch.delenv("LPT_CCD_OFFLINE", raising=False)
+    if responder is not None:
+        import requests
+        monkeypatch.setattr(requests, "get", responder)
+    return stools
+
+
+def _ccd_response(status=200, payload=None):
+    def go(*_a, **_k):
+        return type("R", (), {"status_code": status,
+                              "json": lambda self: payload or {}})()
+    return go
+
+
+def test_the_ccd_tier_resolves_what_gemmi_does_not(monkeypatch):
+    """The gap this tier exists for, on the residues that motivated it.
+
+    gemmi tabulates the acetyl/methyl lysines but NOT methylarginine or the
+    other acyl-lysines, and a deposited entry file never states a parent —
+    measured, 0 of 1,442 `_chem_comp` rows across 60 local structures. The
+    CCD states one for all of them.
+    """
+    stools = _isolated_ccd(monkeypatch, _ccd_response(payload={"chem_comp": {
+        "type": "L-peptide linking", "mon_nstd_parent_comp_id": "ARG",
+        "name": "N3, N4-DIMETHYLARGININE"}}))
+    assert stools.parent_residue("2MR") == "ARG"
+    assert stools.component_description("2MR") == "N3, N4-DIMETHYLARGININE"
+
+
+def test_a_ligand_never_acquires_a_parent_from_the_ccd(monkeypatch):
+    """A component that is not peptide-linking must not be converted, even if
+    the CCD names a parent for it. Converting a cofactor would invent a
+    residue that is not in the structure — the same class of error as the
+    SAH/zinc false positives the backbone gate fixed."""
+    stools = _isolated_ccd(monkeypatch, _ccd_response(payload={"chem_comp": {
+        "type": "non-polymer", "mon_nstd_parent_comp_id": "LYS",
+        "name": "some ligand"}}))
+    assert stools.parent_residue("XYZ") is None
+
+
+def test_a_parent_outside_the_twenty_is_refused(monkeypatch):
+    """Some components name another non-standard residue as their parent. One
+    hop only — resolving recursively would need a cycle guard for no measured
+    benefit — so an unrecognised parent is treated as unknown."""
+    stools = _isolated_ccd(monkeypatch, _ccd_response(payload={"chem_comp": {
+        "type": "L-peptide linking", "mon_nstd_parent_comp_id": "MLY",
+        "name": "something built on methyl-lysine"}}))
+    assert stools.parent_residue("XYZ") is None
+
+
+@pytest.mark.parametrize("responder,label", [
+    (_ccd_response(status=500), "HTTP 500"),
+    (_ccd_response(status=404), "HTTP 404"),
+    (_ccd_response(payload={"unexpected": True}), "200 with junk JSON"),
+    (_ccd_response(payload={}), "200 with empty JSON"),
+])
+def test_the_ccd_tier_fails_open(monkeypatch, responder, label):
+    """A trim must never depend on the network. Every failure returns None,
+    which callers already treat as "unknown parent": the residue is left as
+    deposited and `validate_spec` refuses a contig spanning it, so the run
+    stops before the GPU instead of guessing."""
+    stools = _isolated_ccd(monkeypatch, responder)
+    assert stools.parent_residue("XYZ") is None, label
+
+
+def test_a_connection_failure_fails_open_too(monkeypatch):
+    """The case that actually happens: no route, DNS down, TLS intercepted."""
+    import requests
+
+    def boom(*_a, **_k):
+        raise requests.exceptions.ConnectionError("no route to host")
+
+    stools = _isolated_ccd(monkeypatch, boom)
+    assert stools.parent_residue("XYZ") is None
+    # And it must not raise on the second call either, nor re-request.
+    assert stools.parent_residue("XYZ") is None
+
+
+def test_offline_mode_uses_only_what_is_cached(monkeypatch):
+    """`LPT_CCD_OFFLINE=1` is for a run that must be reproducible or is behind
+    a firewall: cached answers still resolve, uncached ones refuse, and no
+    request is attempted."""
+    import src.structure_tools as stools
+
+    called = []
+    monkeypatch.setattr(stools, "_CCD_MEMO", {"KCR": "LYS"})
+    monkeypatch.setattr(stools, "_CCD_NAMES", {"KCR": "N-6-crotonyl-L-lysine"})
+    monkeypatch.setattr(stools, "_CCD_LOADED", True)
+    monkeypatch.setenv("LPT_CCD_OFFLINE", "1")
+    import requests
+    monkeypatch.setattr(requests, "get",
+                        lambda *a, **k: called.append(1) or _ccd_response()())
+    assert stools.parent_residue("KCR") == "LYS"
+    assert stools.parent_residue("2MR") is None
+    assert not called, "offline mode must make no request"
+
+
+def test_selenocysteine_and_pyrrolysine_resolve(monkeypatch):
+    """gemmi ANSWERS for both, with UPPERCASE one-letter codes ('U', 'O') —
+    its convention for a residue in its own right rather than a modification
+    — so `parent_residue` found no parent and the run stopped at spec build.
+    SEC is in the shipped corpus. What a generator needs is the nearest
+    BUILDABLE canonical, which is the isosteric one; RFD3 has no selenium."""
+    monkeypatch.setenv("LPT_CCD_OFFLINE", "1")      # local knowledge only
+    from src.structure_tools import parent_residue
+
+    assert parent_residue("SEC") == "CYS"
+    assert parent_residue("PYL") == "LYS"
+
+
+@pytest.mark.skipif(not _3KYS.exists(), reason="3KYS not downloaded")
+def test_a_conversion_is_reported_prominently_not_just_logged(tmp_path):
+    """The trim report for 3KYS said NOTHING about A344 while replacing
+    S-palmitoyl-cysteine with plain cysteine and dropping a 16-carbon tail —
+    and that lipid is what the whole TEAD-inhibitor literature is about. The
+    conversion is necessary (RFD3 cannot parse P1L) but it changes the
+    chemistry being designed against, so it has to be visible."""
+    from src.pipeline_runner import PipelineRunner
+    from src.structure_trim import trim_target
+
+    res = trim_target(_3KYS, target_chain="A", partner_chain="B",
+                      hotspots=[{"auth_seq_id": n} for n in
+                                (240, 242, 246, 249, 274, 276, 314, 346)],
+                      out_dir=tmp_path, budget=220, pdb_id="3KYS")
+    mods = res.modified_residues
+    assert len(mods) == 1, mods
+    m = mods[0]
+    assert (m["chain"], m["auth_seq_id"], m["deposited"], m["parent"]) == \
+        ("A", 344, "P1L", "CYS")
+    assert "palmitoyl" in m["description"].lower(), m["description"]
+    # The palmitoyl tail is what was dropped, and saying how much matters.
+    assert len(m["atoms_dropped"]) == 17, m["atoms_dropped"]
+
+    note = "\n".join(PipelineRunner._modified_residue_notes(res))
+    assert "## " in note, "must be a headed section, not another bullet"
+    assert "A344" in note and "P1L" in note
+    assert "worth checking the biology" in note.lower()
+
+    # And it must survive a resume, which rebuilds the trim from disk.
+    import json
+    assert len(json.loads(res.mapping_path.read_text())["modified_residues"]) == 1
+
+
+def test_a_trim_with_no_modified_residues_adds_no_section():
+    """No false prominence: a target with no modified residue gets nothing."""
+    from src.pipeline_runner import PipelineRunner
+
+    class _Bare:
+        modified_residues: list = []
+
+    assert PipelineRunner._modified_residue_notes(_Bare()) == []

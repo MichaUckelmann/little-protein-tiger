@@ -145,6 +145,14 @@ class TrimResult:
     # Interface area carried by residues the trim removed, reported so a second
     # interface being discarded on purpose is visible rather than silent.
     bsa_dropped_A2: float = 0.0
+    # Modified residues the trim CONVERTED to their parent amino acid, so the
+    # stage report can say which and — more to the point — what the
+    # modification was. A conversion is silent otherwise: on 3KYS the
+    # S-palmitoyl-cysteine at A344 became a plain CYS with its 16-carbon tail
+    # dropped, and that lipid is what the whole TEAD-inhibitor literature is
+    # about. Persisted in `trim_map.json` so a `--start-from` resume, which
+    # rebuilds the trim from disk, still reports it.
+    modified_residues: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -1065,11 +1073,15 @@ def write_trimmed(
     structure_path: Path,
     out_path: Path,
     keep: dict[str, Sequence[int] | None],
+    record: list[dict] | None = None,
 ) -> Path:
     """
     Write a structure containing only the requested chains and residues.
 
     `keep` maps chain -> auth ids to retain, or None to keep the whole chain.
+    `record`, when given, is appended with one dict per modified residue
+    CONVERTED to its parent amino acid — the caller's only way to report a
+    conversion, which is otherwise just a log line.
     **Author numbering is preserved**, so hotspot ids stay valid; gemmi is used
     rather than biotite because it round-trips mmCIF entity/label bookkeeping
     that RFD3's parser relies on.
@@ -1078,6 +1090,7 @@ def write_trimmed(
 
     from src.structure_tools import (
         is_chain_residue, is_solvent_or_additive, parent_atom_names,
+        component_description,
         parent_residue,
     )
 
@@ -1129,6 +1142,10 @@ def write_trimmed(
     src = _model(structure_path)
     dropped: dict[str, int] = {}
     converted: dict[str, str] = {}
+    # Structured record of every conversion, for the caller's report. An
+    # out-parameter rather than a changed return type: `write_trimmed` returns
+    # a path and has several callers that want nothing else.
+    conversions: list[dict] = [] if record is None else record
     unconvertible: dict[str, int] = {}
     wanted = {c: (None if v is None else set(int(x) for x in v))
               for c, v in keep.items()}
@@ -1170,6 +1187,17 @@ def write_trimmed(
             parent = parent_residue(res.name)
             if parent is not None and parent != res.name.strip().upper():
                 converted[f"{ch.name}{res.seqid.num} {res.name}"] = parent
+                dropped_atoms = sorted(
+                    {a.name for a in res}
+                    - {a.name for a in as_parent(res, parent)})
+                conversions.append({
+                    "chain": ch.name,
+                    "auth_seq_id": int(res.seqid.num),
+                    "deposited": res.name,
+                    "parent": parent,
+                    "description": component_description(res.name),
+                    "atoms_dropped": dropped_atoms,
+                })
                 ch_out.add_residue(as_parent(res, parent))
                 continue
             if parent is None and _in_polymer(res):
@@ -1369,7 +1397,9 @@ def trim_target(
     keep_map: dict[str, Sequence[int] | None] = {target_chain: keep}
     if partner_chain:
         keep_map[partner_chain] = None
-    cif_path = write_trimmed(structure_path, out_dir / "trimmed.cif", keep_map)
+    modified: list[dict] = []
+    cif_path = write_trimmed(structure_path, out_dir / "trimmed.cif", keep_map,
+                             record=modified)
     write_trimmed(structure_path, out_dir / "trimmed.pdb", keep_map)
 
     kept_set = set(keep)
@@ -1486,6 +1516,7 @@ def trim_target(
         interface_bsa_after_A2=round(bsa_after, 1),
         bsa_retention=round(retention, 4),
         bsa_dropped_A2=round(dropped_bsa, 1),
+        modified_residues=modified,
         warnings=warnings,
     )
     _write_mapping(result, structure_path, pdb_id, target_chain, partner_chain,
@@ -1743,6 +1774,7 @@ def _write_mapping(result: TrimResult, source: Path, pdb_id: str | None,
         # Over the KEPT residues only — see trim_target.
         "bsa_retention": result.bsa_retention,
         "bsa_dropped_with_removed_residues_A2": result.bsa_dropped_A2,
+        "modified_residues": result.modified_residues,
         "warnings": result.warnings,
     }
     result.mapping_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

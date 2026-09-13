@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -21,7 +22,13 @@ import gemmi
 import numpy as np
 from Bio.PDB import PDBIO, MMCIFParser, PDBParser, Select
 from Bio.PDB.SASA import ShrakeRupley
+from loguru import logger
 from scipy.spatial import KDTree
+
+#: This module was pure numerics with no I/O of its own until the CCD tier
+#: (see `ccd_parent`), which needs somewhere to cache. `data/` is gitignored,
+#: so the cache is per checkout, like `pdb_metadata.json` next to it.
+_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ---------------------------------------------------------------------------
@@ -957,11 +964,228 @@ _ONE_TO_THREE = {
 #: it. P1L is 3KYS A344, the TEAD1 palmitoylation site.
 _CURATED_PARENTS = {
     "P1L": ("CYS", "S-palmitoyl-L-cysteine"),
+    # The 21st and 22nd proteinogenic amino acids, and the one case in this
+    # table that is NOT a modification: gemmi answers for both, with the
+    # UPPERCASE one-letter codes 'U' and 'O' — its convention for "a residue
+    # in its own right" against lowercase for "modified form of". So
+    # `parent_residue` correctly found no parent, and correctly refused, and
+    # the run stopped at spec build. What a generator needs is different from
+    # what chemistry says: RFD3 has no selenium and no pyrrolysine, so the
+    # nearest BUILDABLE canonical is the isosteric one. Selenocysteine is in
+    # the shipped corpus (2 occurrences), which is how this surfaced.
+    "SEC": ("CYS", "selenocysteine — Se substituted by S, not a modification"),
+    "PYL": ("LYS", "pyrrolysine — pyrroline ring dropped, not a modification"),
     # gemmi tabulates M3L/MLY/MLZ/ALY (all -> 'k' -> LYS) but not this older
     # dimethyl-lysine code, and a chromatin-weighted corpus meets methylated
     # lysines constantly.
     "M2L": ("LYS", "N,N-dimethyl-L-lysine"),
 }
+
+
+#: Where CCD answers are remembered between runs. Under `data/`, which is
+#: gitignored, next to `pdb_metadata.json` — the same convention as the other
+#: RCSB lookup cache in this repo.
+_CCD_CACHE_PATH = _ROOT / "data" / "ccd_parents.json"
+
+#: In-process memo, including NEGATIVE answers. `parent_residue` is called per
+#: residue by `write_trimmed`, so a target with 40 copies of one unknown
+#: component must not make 40 requests — or 40 failed ones.
+_CCD_MEMO: dict[str, str | None] = {}
+
+#: The component's own chemical name, kept because a report has to be able to
+#: say WHAT the modification was, not just that there was one. A conversion
+#: from P1L to CYS drops a palmitoyl tail, and on 3KYS that lipid is what the
+#: entire TEAD-inhibitor literature is about — so "converted A344" is not a
+#: useful thing for a human to read, and "A344 is S-palmitoyl-L-cysteine" is.
+_CCD_NAMES: dict[str, str] = {}
+_CCD_LOADED = False
+_CCD_WARNED = False
+
+#: Components the CCD says are peptide-linking. A parent is only accepted from
+#: a component that is itself an amino acid: a ligand must never acquire one.
+_CCD_PEPTIDE_TYPES = ("l-peptide linking", "d-peptide linking",
+                      "peptide linking", "l-peptide nh3 amino terminus",
+                      "l-peptide cooh carboxy terminus",
+                      "d-peptide nh3 amino terminus",
+                      "d-peptide cooh carboxy terminus")
+
+
+def _ccd_cache_load() -> None:
+    global _CCD_LOADED
+    if _CCD_LOADED:
+        return
+    _CCD_LOADED = True
+    try:
+        raw = json.loads(_CCD_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:                                          # noqa: BLE001
+        return                     # absent or corrupt: start empty, no warning
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if not isinstance(k, str):
+                continue
+            # Two shapes are accepted: a bare parent (the first version of
+            # this cache) and {"parent":..., "name":...}. A cache written by
+            # an older checkout must not need deleting.
+            if isinstance(v, dict):
+                par = v.get("parent")
+                if par is None or isinstance(par, str):
+                    _CCD_MEMO.setdefault(k.upper(), par)
+                if isinstance(v.get("name"), str):
+                    _CCD_NAMES.setdefault(k.upper(), v["name"])
+            elif v is None or isinstance(v, str):
+                _CCD_MEMO.setdefault(k.upper(), v)
+
+
+def _ccd_cache_store(name: str, parent: str | None,
+                    chem_name: str | None = None) -> None:
+    """Persist one answer, negatives included.
+
+    Written whole rather than appended, and a failure to write is ignored: the
+    cache is an optimisation, and a read-only checkout must still resolve.
+    """
+    try:
+        _CCD_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        current = {}
+        if _CCD_CACHE_PATH.exists():
+            try:
+                current = json.loads(_CCD_CACHE_PATH.read_text(encoding="utf-8"))
+            except Exception:                                  # noqa: BLE001
+                current = {}
+        if not isinstance(current, dict):
+            current = {}
+        current[name] = ({"parent": parent, "name": chem_name}
+                         if chem_name else parent)
+        tmp = _CCD_CACHE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(current, indent=1, sort_keys=True),
+                       encoding="utf-8")
+        tmp.replace(_CCD_CACHE_PATH)
+    except Exception as exc:                                   # noqa: BLE001
+        logger.debug(f"could not cache CCD parent for {name}: {exc}")
+
+
+def ccd_parent(name: str, timeout: float = 10.0) -> str | None:
+    """The PDB Chemical Component Dictionary's own parent for one component.
+
+    The tier that closes the real gap. The CCD states
+    `mon_nstd_parent_comp_id` for every modified amino acid checked — 2MR,
+    DA2, MMO (-> ARG), KCR, BTK, LYZ, SLL (-> LYS), HIP (-> HIS), TRO, OMT,
+    IYR, YOF, AHB, ALS, CYG — none of which gemmi tabulates and none of which
+    a deposited entry file carries. Consulted ONLY after every local source
+    has failed, so the common case makes no request at all.
+
+    **Fail-open by construction, because a trim must not depend on the
+    network.** Every failure mode — no `requests`, DNS down, timeout, TLS
+    interception, 404, a 200 with unexpected JSON, a parent naming something
+    that is not one of the twenty, a component that is not peptide-linking —
+    returns None, which `parent_residue`'s callers already treat as "unknown
+    parent": the residue is left as deposited and warned about, and
+    `validate_spec` refuses a contig spanning it. The run stops before the
+    GPU instead of guessing. The first failure logs once, at INFO, rather than
+    warning per residue.
+
+    Negative answers are memoised and cached too, so a genuinely unknown
+    component costs one request per machine, not one per residue. Set
+    `LPT_CCD_OFFLINE=1` to skip the network entirely and use only what is
+    already cached — the right setting for a run that must be reproducible or
+    is behind a firewall.
+    """
+    global _CCD_WARNED
+
+    name = (name or "").strip().upper()
+    if not name:
+        return None
+    _ccd_cache_load()
+    if name in _CCD_MEMO and name in _CCD_NAMES:
+        return _CCD_MEMO[name]
+    if name in _CCD_MEMO and _CCD_MEMO[name] is None:
+        # A known negative: nothing to gain from asking again for a name.
+        return None
+
+    if os.environ.get("LPT_CCD_OFFLINE", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        _CCD_MEMO[name] = None
+        return None
+
+    parent: str | None = None
+    try:
+        import requests
+
+        resp = requests.get(
+            f"https://data.rcsb.org/rest/v1/core/chemcomp/{name}",
+            timeout=timeout)
+        if resp.status_code == 200:
+            comp = (resp.json() or {}).get("chem_comp") or {}
+            # RCSB returns some fields as a single value and some as a
+            # one-element list depending on the component; normalise.
+            def _one(v):
+                if isinstance(v, list):
+                    return v[0] if v else None
+                return v
+
+            ctype = str(_one(comp.get("type")) or "").strip().lower()
+            cand = str(_one(comp.get("mon_nstd_parent_comp_id")) or "").strip().upper()
+            chem_name = str(_one(comp.get("name")) or "").strip()
+            if chem_name:
+                _CCD_NAMES[name] = chem_name
+            if ctype in _CCD_PEPTIDE_TYPES and cand in _PARENT_ATOMS:
+                parent = cand
+                logger.info(
+                    f"  CCD: {name} is a modified {parent} "
+                    f"({chem_name or 'no name'})")
+            elif cand and cand not in _PARENT_ATOMS:
+                # A modification OF a modification (KCX -> LYS is fine, but
+                # some components name another non-standard as their parent).
+                # One hop only: resolving recursively would need a cycle guard
+                # for no measured benefit.
+                logger.info(
+                    f"  CCD: {name} names parent {cand}, which is not one of "
+                    f"the twenty — treating the parent as unknown")
+        elif resp.status_code != 404:
+            raise RuntimeError(f"HTTP {resp.status_code}")
+    except Exception as exc:                                   # noqa: BLE001
+        # Fail open, and say so ONCE. A trim on a laptop with no network must
+        # still run; it simply cannot resolve a component nothing local knows.
+        if not _CCD_WARNED:
+            _CCD_WARNED = True
+            logger.info(
+                f"CCD lookup unavailable ({type(exc).__name__}: {exc}); "
+                f"modified residues that neither gemmi nor the curated table "
+                f"knows will be left as deposited. Set LPT_CCD_OFFLINE=1 to "
+                f"stop trying, or pre-warm data/ccd_parents.json.")
+        _CCD_MEMO[name] = None     # this run only; not persisted as a fact
+        return None
+
+    _CCD_MEMO[name] = parent
+    _ccd_cache_store(name, parent, _CCD_NAMES.get(name))
+    return parent
+
+
+def component_description(res_name: str) -> str:
+    """The component's chemical name, for a human reading a report.
+
+    Tried in the same order as the parent itself: the curated table's own
+    description, then gemmi, then whatever the CCD returned (already cached
+    by `ccd_parent`, so this makes no request of its own — it is called after
+    a conversion has already happened, by which point the lookup is done).
+    Returns "" when nothing knows, and a caller should then say only what it
+    is sure of.
+    """
+    name = (res_name or "").strip().upper()
+    entry = _CURATED_PARENTS.get(name)
+    if entry and len(entry) > 1 and entry[1]:
+        return str(entry[1])
+    _ccd_cache_load()
+    if name in _CCD_NAMES:
+        return _CCD_NAMES[name]
+    # Nothing local knows the NAME even when gemmi knew the parent — gemmi's
+    # table carries a one-letter code, not a chemical name. So ask the CCD,
+    # through the same fail-open path: a description is a nicety, and a
+    # network failure must cost the note's detail, never the trim.
+    if name not in _PARENT_ATOMS:
+        ccd_parent(name)                 # populates _CCD_NAMES as a side effect
+        if name in _CCD_NAMES:
+            return _CCD_NAMES[name]
+    return ""
 
 
 def parent_residue(res_name: str, cif_parent: str | None = None) -> str | None:
@@ -971,17 +1195,31 @@ def parent_residue(res_name: str, cif_parent: str | None = None) -> str | None:
     the cases that arise:
 
     1. `cif_parent` — the deposited file's own
-       `_chem_comp.mon_nstd_parent_comp_id`. Authoritative, and absent more
-       often than not: 3KYS declares `_chem_comp` for every component and
-       states a parent for NONE of them.
+       `_chem_comp.mon_nstd_parent_comp_id`. Authoritative in principle and
+       **empty in practice**: measured over 60 local structures, that field is
+       populated in 0 of 1,442 `_chem_comp` rows. RCSB's per-entry mmCIF
+       carries the component list without the parent, so this tier answers
+       essentially never and is kept only because a hand-built or
+       differently-sourced file may state it.
     2. gemmi's residue table, via `one_letter_code`. It answers for the
-       modifications it tabulates (MSE -> 'm' -> MET) and returns empty for
-       anything it does not know.
+       modifications it tabulates — MSE -> 'm' -> MET, and the common
+       histone marks ALY/MLY/MLZ/M3L -> 'k' -> LYS — and returns empty for
+       anything it does not know, which includes methylarginine (2MR, DA2,
+       MMO), the non-acetyl acyl-lysines (KCR crotonyl, BTK butanoyl),
+       hydroxylysine (LYZ) and phosphohistidine (HIP).
     3. `_CURATED_PARENTS`, for residues neither source states.
+    4. `ccd_parent` — the PDB Chemical Component Dictionary over REST, cached
+       on disk. This is the tier that actually closes the gap: the CCD states
+       `mon_nstd_parent_comp_id` for every one of the residues in the list
+       above, even though the entry files never do. Network-optional and
+       fail-open (see `ccd_parent`).
 
     Returns None when nothing knows, which callers must treat as a refusal
     rather than a default — inventing a parent would silently change which
-    amino acid a generator designs against.
+    amino acid a generator designs against. That refusal is safe rather than
+    silent: `write_trimmed` leaves the residue as deposited and warns, and
+    `foundry_spec.validate_spec` then refuses a contig spanning a HETATM, so
+    the run stops before the GPU rather than mis-modelling.
     """
     name = (res_name or "").strip().upper()
     if name in _PARENT_ATOMS:
@@ -996,7 +1234,9 @@ def parent_residue(res_name: str, cif_parent: str | None = None) -> str | None:
         if code in _ONE_TO_THREE:
             return _ONE_TO_THREE[code]
     entry = _CURATED_PARENTS.get(name)
-    return entry[0] if entry else None
+    if entry:
+        return entry[0]
+    return ccd_parent(name)
 
 
 def parent_atom_names(parent: str) -> frozenset[str]:

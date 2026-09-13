@@ -205,6 +205,12 @@ class _TrimFromDisk:
         self.partner_chain = mapping.get("partner_chain", "")
         self.pdb_id = mapping.get("pdb_id", "")
         self.warnings = list(mapping.get("warnings") or [])
+        # Read back so a `--start-from` resume still reports a modified
+        # residue the trim converted. The reflection test in
+        # tests/test_audit_fixes.py requires every `trim.<attr>` the runner
+        # reads to exist here, and that test is what caught the missing
+        # `n_residues_after` that killed ten days of fresh-process resumes.
+        self.modified_residues = list(mapping.get("modified_residues") or [])
 
 
 def _stage_for_skill(skill_name: str) -> str:
@@ -3700,6 +3706,7 @@ class PipelineRunner:
             f"{len(res.hotspots_retained) + len(res.hotspots_lost)}",
             "",
             *(f"- warning: {w}" for w in res.warnings),
+            *self._modified_residue_notes(res),
         ])
         self._write_binder_report(out, "Target trimming", body, {
             "trimmed_structure": str(res.trimmed_path),
@@ -3717,6 +3724,52 @@ class PipelineRunner:
         result.stage_files["trim"] = out
         result.stages_completed.append("trim")
         return {"result": res, "report": out}
+
+    @staticmethod
+    def _modified_residue_notes(res) -> list[str]:
+        """A prominent note for every modified residue the trim CONVERTED.
+
+        The conversion is necessary — RFD3 builds its polymer from ATOM
+        records and cannot parse a component it does not know, which aborted a
+        real campaign ten times on 3KYS's `Residue A344 not found in atom
+        array` — but it is also a change to the chemistry the target is being
+        designed against, and it was previously invisible. The 3KYS trim
+        report said nothing at all about A344 while silently replacing
+        S-palmitoyl-cysteine with plain cysteine and dropping a 16-carbon
+        tail, and that lipid is what the entire TEAD-inhibitor literature is
+        about.
+
+        So this is deliberately a HEADED section rather than another
+        `- warning:` bullet: an operator reading the report has to see that a
+        post-translational modification was present, what it was, and that
+        the design will not account for it. The pipeline cannot judge whether
+        the modification matters — sometimes it is a crystallography artifact
+        (selenomethionine), sometimes it is the mechanism (palmitoylation,
+        an acetyl-lysine an epigenetic reader binds) — so it says what
+        happened and asks the reader to make that call.
+        """
+        mods = list(getattr(res, "modified_residues", None) or [])
+        if not mods:
+            return []
+        out = ["", "## ⚠ Modified residues converted for the generator", ""]
+        for m in mods:
+            where = f"{m.get('chain', '?')}{m.get('auth_seq_id', '?')}"
+            dep = m.get("deposited", "?")
+            desc = m.get("description") or ""
+            atoms = m.get("atoms_dropped") or []
+            out.append(
+                f"- **Residue {where} was modified in the target structure: "
+                f"{dep}" + (f" ({desc})" if desc else "")
+                + f"**. It has been converted to {m.get('parent', '?')} so the "
+                f"generator's parser can read it"
+                + (f", dropping {len(atoms)} atom(s) ({', '.join(atoms[:8])}"
+                   + ("…" if len(atoms) > 8 else "") + ")" if atoms else "")
+                + ". **The designed binder therefore does not account for "
+                  "this modification — worth checking the biology behind it.** "
+                  "A modification at or near the epitope may be the point of "
+                  "the target rather than an artifact.")
+        out.append("")
+        return out
 
     def _stage_binder_spec(self, intel: dict[str, str], hotspots_json: str,
                            trim, dirs: dict[str, Path],
