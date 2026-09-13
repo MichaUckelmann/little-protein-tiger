@@ -585,23 +585,91 @@ the hold was lifted before pushing.
 
 ---
 
-## Still in flight
+## Still in flight — state as of 2026-09-13 15:20
 
-- **PD-L1 macrocycle showcase**, GPU, `projects/pdl1_macrocycle/runs/round-1`,
-  production 4,605 designs sized from its own calibration (SCALE_UP, bar
-  auto-raised iptm 0.50 -> 0.65). All designed + inverse-folded; was at
-  ~85/4,605 refolds mid-morning, ~10 GPU-h total. Log:
-  scratchpad `run5_pdl1_production.log`. Its parent `queue.sh` writes
-  `queue done` to `diversity/../queue_status.txt` when finished.
-- **`queue3.sh` armed** behind the showcase (scratchpad), running in order:
-  (1) A344 fix check — `--workflow structure --pdb 3KYS --chains A,B
-  --design-engine foundry --project a344_fix_check --stop-after calibration`
-  (pinned so the fix is tested regardless of what selection now picks);
-  (2) `div`-style PPI+foundry retry on mesothelioma, project `e2e_foundry_r2`;
-  (3) legacy BoltzGen driver retry, project `e2e_ppi_legacy_r2`.
-  Both retries exist because runs 2 and 3 failed on bugs fixed in `2ce8ae4`.
-- **Two agent reports not yet seen**: `a1a289a778a5fa5c6` (220-residue budget
-  / OOM benchmark) and `a7409bc393a05d960` (multi-chain glue design).
+Scratchpad root for everything below (session-keyed, and the same after a
+compaction):
+
+    SP=/tmp/claude-1203219884/-home-m-uckelmann-cbs-niob-local-code-little-protein-tiger/76d1526a-badb-4580-ac86-4726aecba6fa/scratchpad
+    OLD=/tmp/claude-1203219884/-home-m-uckelmann-cbs-niob-local-code-little-protein-tiger/57c3bc50-257a-49a9-96e2-1e54f129c732/scratchpad
+
+### PAUSED, resumable: the PD-L1 macrocycle showcase
+
+Stopped deliberately at **1,891 of 4,610 refolds** (41%) to free the card,
+exit 143. `projects/pdl1_macrocycle/runs/round-1`. **Verified resumable
+before killing it**: `fold_out_npz` held exactly 1,891 files against a
+progress bar reading 1,891, so BoltzGen writes per design in lockstep, and
+`--reuse` (already on the command) sets `skip_existing_kind="folded"`, which
+filters out every input whose `.npz` exists BEFORE the predict loop starts.
+The newest `.npz` and `.cif` both load cleanly, so nothing was truncated and
+nothing needed deleting. Resume with:
+
+    .venv/bin/python scripts/run_pipeline.py --workflow binder --target PD-L1 \
+      --modality cyclic_peptide --project pdl1_macrocycle \
+      --start-from production --budget 5
+
+Costs the one in-flight design plus a few minutes of CPU re-enumerating the
+~9,200 completed designs of steps 1-2, which fast-forward rather than
+recompute.
+
+### The GPU chain, armed and serialised
+
+Each waits on the previous by polling for its process, so killing one starts
+the next. All launched with `setsid nohup ... & disown`.
+
+1. **`$OLD/queue3.sh` — RUNNING.** Three jobs: (a) the **A344 fix check**
+   (`--workflow structure --pdb 3KYS --chains A,B --design-engine foundry
+   --project a344_fix_check --stop-after calibration`), (b) the PPI+foundry
+   mesothelioma retry (`--project e2e_foundry_r2`, which doubles as the
+   neutralised-prompt leakage experiment), (c) the legacy BoltzGen driver
+   retry (`--project e2e_ppi_legacy_r2`). Status: `$OLD/queue_status.txt`;
+   logs `run6_a344_structure.log`, `run2b_ppi_foundry.log`,
+   `run3b_ppi_legacy.log`.
+2. **`$SP/queue4.sh` — armed.** Stage 1 of `GLUE_PIPELINE_SCOPE.md`, ~2
+   GPU-min. Runs `$SP/stage1/probe_merge.py` then `$SP/stage1/check_merge.py`,
+   which reads the verdict off the sidecar mechanically. Status
+   `$SP/queue4_status.txt`.
+3. **`$SP/queue5.sh` — armed.** Phase A of the trimming benchmark, 13 rungs
+   ONE AT A TIME (concurrency would corrupt the free size-law measurement),
+   ~5.9 GPU-h. Status `$SP/queue5_status.txt`, logs
+   `$SP/phaseA_ladder_{6vjj,3kys}.log`.
+
+### What each of those is waiting to tell us
+
+- **A344 fix check** — already effectively PASSED on the evidence so far, and
+  this is the last unverified piece of the parent-conversion work.
+  `converted 1 modified residue(s) ... A344 P1L -> CYS`, trim 208 -> 208 in
+  **2 segments not 3** (`A239-411` spans A344, where
+  `mesothelioma_showcase` ran `A239-343,A345-411` and paid a chain break for
+  nothing), `validate_spec` OK, and RFD3 ran 100/100 designs + MPNN 316 +
+  refolds where it previously aborted ten times. Zero errors in the log.
+  What remains is the calibration verdict. **It also found a real defect: 16
+  hotspots declared against the 12 cap** — `build_rfd3_spec` warns rather
+  than truncating (it has no per-residue ddG to choose), so the campaign runs
+  with a weaker `hotspot_engagement`. That is the structure-first interface
+  stage overshooting.
+- **Stage 1 (merge probe)** — the CPU half has ALREADY PASSED: the unmodified
+  `validate_spec` accepts `70-86,/0,A29-128,B10-37` on 4ZGM,
+  `target_spans: [["A",29,128],["B",10,37]]`, 128 target residues, 7
+  hotspots, 2 segments. The GPU half checks `extra.num_chains == 2`, that
+  `diffused_index_map` keys span BOTH `A*` and `B*` while every value is
+  `B*`, and 128 consecutive target res_ids. **If it fails, stages 3-7 of the
+  scope are void.**
+- **Phase A** — the ladders and specs are BUILT and validated (13 rungs,
+  `$SP/ladder_6vjj/`, `$SP/ladder_3kys/`, each `ladder.json` carrying the
+  per-rung exposed-patch residue set). Only the RFD3 designs and the `score`
+  pass remain. See the scope's stage-2 section for the three findings already
+  in hand, including that 3KYS reproduces its table exactly and 6VJJ's
+  rung-153 number does not.
+
+A monitor is watching all of those status files and run logs, filtered to
+verdicts, refusals, `not found in atom array`, tracebacks and per-rung lines.
+
+### Not started
+
+Glue stages 2 (GPU half) through 7, and the six defects in this document.
+Stage 0 is DONE (`6220a2a`) and so is the CCD parent tier plus the
+modified-residue report note (`314d844`), which came out of the same thread.
 
 ## How to run things here
 
