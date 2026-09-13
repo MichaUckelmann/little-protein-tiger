@@ -651,91 +651,97 @@ the hold was lifted before pushing.
 
 ---
 
-## Still in flight — state as of 2026-09-13 15:20
+## Still in flight — state as of 2026-09-13 21:15
 
-Scratchpad root for everything below (session-keyed, and the same after a
-compaction):
+Scratchpad root for everything below (session-keyed, survives a compaction):
 
     SP=/tmp/claude-1203219884/-home-m-uckelmann-cbs-niob-local-code-little-protein-tiger/76d1526a-badb-4580-ac86-4726aecba6fa/scratchpad
     OLD=/tmp/claude-1203219884/-home-m-uckelmann-cbs-niob-local-code-little-protein-tiger/57c3bc50-257a-49a9-96e2-1e54f129c732/scratchpad
 
-### PAUSED, resumable: the PD-L1 macrocycle showcase
+Tree clean, everything pushed through `ae9e723`, suite 1250 passed.
 
-Stopped deliberately at **1,891 of 4,610 refolds** (41%) to free the card,
-exit 143. `projects/pdl1_macrocycle/runs/round-1`. **Verified resumable
-before killing it**: `fold_out_npz` held exactly 1,891 files against a
-progress bar reading 1,891, so BoltzGen writes per design in lockstep, and
-`--reuse` (already on the command) sets `skip_existing_kind="folded"`, which
-filters out every input whose `.npz` exists BEFORE the predict loop starts.
-The newest `.npz` and `.cif` both load cleanly, so nothing was truncated and
-nothing needed deleting. Resume with:
+### The queue: ONE script, `$SP/queue11.sh`, and why each job is in it
 
-    .venv/bin/python scripts/run_pipeline.py --workflow binder --target PD-L1 \
-      --modality cyclic_peptide --project pdl1_macrocycle \
-      --start-from production --budget 5
+Status file is `$SP/queue10_status.txt` — queue11 deliberately appends to its
+predecessor's file so the live monitor kept working across the swap. Progress
+is read from **disk counts**, never `pgrep -f <pattern>`: that pattern matched
+the OPERATOR'S OWN monitoring command lines and deadlocked queue8 for ten
+minutes behind a rung that had already finished.
 
-Costs the one in-flight design plus a few minutes of CPU re-enumerating the
-~9,200 completed designs of steps 1-2, which fast-forward rather than
-recompute.
+1. **Phase A tail — 3KYS ladder.** rung 200 at 160/300 in flight (pid 86603),
+   then 173 / 140 / 120 / 100 / 90, ~2.8 GPU-h, ETA ~00:30. Then
+   `benchmark_trim score` on both ladders (CPU, seconds). The 6VJJ ladder is
+   DONE and scored — its result is in `GLUE_PIPELINE_SCOPE.md` (H1 falsified:
+   enrichment 0.29-0.48, falling with dose, engagement 1.000 at every rung).
+2. **PD-L1 macrocycle showcase**, wanted early tomorrow. Resumes production
+   at 1,891/4,610 refolds, ~6 GPU-h, ETA ~06:30. `--reuse` filters completed
+   inputs before the predict loop, so this resumes rather than restarts; log
+   `$SP/run8_pdl1_resume.log`.
+3. **Phase B, only if `$SP/phaseB.sh` exists by then.** It does NOT yet — the
+   selection code is unwritten. queue11 logs "Phase B skipped" rather than
+   silently doing nothing, so job 2 and the rest still run in order. Scope and
+   pre-registered decision rule are in `GLUE_PIPELINE_SCOPE.md`; it needs the
+   3KYS score pass for rung selection, which job 1 produces.
 
-### The GPU chain, armed and serialised
+**The bridge retry is NO LONGER in the queue — it is DONE**, run standalone
+with `--stop-after spec` because its GPU half duplicated `a344_fix_check`
+(byte-identical contig `70-86,/0,A195-229,A239-411`). Log
+`$SP/run9_ppi_spec_only.log`, project `e2e_foundry_r2` round-4, $0.54, no GPU.
+Three results:
 
-Each waits on the previous by polling for its process, so killing one starts
-the next. All launched with `setsid nohup ... & disown`.
+- **The leakage experiment is answered: the prompt was not the cause.** With
+  every plausible target scrubbed from the selector prompts, a mesothelioma
+  query still returns YAP1/TEAD1 on 3KYS, GO, tractability Excellent, with
+  rationale naming NF2 loss at 30-40% and the IAG933 / K-975 programmes. What
+  this does NOT establish is general freedom from bias — that needs the
+  `div_standard_*` / `div_wildcard_*` sweep, where answers are less canonical.
+- The A344 fix holds on the PPI route, and the hotspot-region fix cut this
+  target's declared set from **19 (pre-fix) to 10**.
+- It surfaced the site-adoption defect, now fixed (`ae9e723`) — see section 5.
 
-1. **`$OLD/queue3.sh` — RUNNING.** Three jobs: (a) the **A344 fix check**
-   (`--workflow structure --pdb 3KYS --chains A,B --design-engine foundry
-   --project a344_fix_check --stop-after calibration`), (b) the PPI+foundry
-   mesothelioma retry (`--project e2e_foundry_r2`, which doubles as the
-   neutralised-prompt leakage experiment), (c) the legacy BoltzGen driver
-   retry (`--project e2e_ppi_legacy_r2`). Status: `$OLD/queue_status.txt`;
-   logs `run6_a344_structure.log`, `run2b_ppi_foundry.log`,
-   `run3b_ppi_legacy.log`.
-2. **`$SP/queue4.sh` — armed.** Stage 1 of `GLUE_PIPELINE_SCOPE.md`, ~2
-   GPU-min. Runs `$SP/stage1/probe_merge.py` then `$SP/stage1/check_merge.py`,
-   which reads the verdict off the sidecar mechanically. Status
-   `$SP/queue4_status.txt`.
-3. **`$SP/queue5.sh` — armed.** Phase A of the trimming benchmark, 13 rungs
-   ONE AT A TIME (concurrency would corrupt the free size-law measurement),
-   ~5.9 GPU-h. Status `$SP/queue5_status.txt`, logs
-   `$SP/phaseA_ladder_{6vjj,3kys}.log`.
+### Not queued, deliberately
 
-### What each of those is waiting to tell us
+- **A344 calibration** — dropped as redundant once the pilot proved the fix
+  (520 RFD3 artifacts banked under `projects/a344_fix_check` if ever wanted).
+- **PPI + BoltzGen through production** — the one real end-to-end gap left.
+  `e2e_boltzgen` round-2 stopped at `25_calibration.md` with SCALE_UP; only
+  `mesothelioma_showcase` (foundry) has `20`..`28`. ~45 GPU-h at that target's
+  measured size, so it needs a decision, not a queue slot.
+- **Retirement steps 5 and 6.** Step 5 deletes `src/ppi_report.py` and takes
+  `design.thresholds` with it — it is the only renderer for the two archived
+  legacy runs, ~35 tests across three files, plus the showcase's side-by-side.
+  Step 6 moves `mmr_select`/`_seq_identity` into `binder_ranking` and the
+  BoltzGen block out of `design_ranking`, so those modules can go; it touches
+  both live engines' ranking and deserves its own scope. Steps 0-4 are DONE
+  (`58711c5`, `27dd80c`, `67c7bda`); `LEGACY_RETIREMENT_SCOPE.md` has the
+  staged plan and the sixteen things that look legacy-only and are not.
 
-- **A344 fix check** — already effectively PASSED on the evidence so far, and
-  this is the last unverified piece of the parent-conversion work.
-  `converted 1 modified residue(s) ... A344 P1L -> CYS`, trim 208 -> 208 in
-  **2 segments not 3** (`A239-411` spans A344, where
-  `mesothelioma_showcase` ran `A239-343,A345-411` and paid a chain break for
-  nothing), `validate_spec` OK, and RFD3 ran 100/100 designs + MPNN 316 +
-  refolds where it previously aborted ten times. Zero errors in the log.
-  What remains is the calibration verdict. **It also found a real defect: 16
-  hotspots declared against the 12 cap** — `build_rfd3_spec` warns rather
-  than truncating (it has no per-residue ddG to choose), so the campaign runs
-  with a weaker `hotspot_engagement`. That is the structure-first interface
-  stage overshooting.
-- **Stage 1 (merge probe)** — the CPU half has ALREADY PASSED: the unmodified
-  `validate_spec` accepts `70-86,/0,A29-128,B10-37` on 4ZGM,
-  `target_spans: [["A",29,128],["B",10,37]]`, 128 target residues, 7
-  hotspots, 2 segments. The GPU half checks `extra.num_chains == 2`, that
-  `diffused_index_map` keys span BOTH `A*` and `B*` while every value is
-  `B*`, and 128 consecutive target res_ids. **If it fails, stages 3-7 of the
-  scope are void.**
-- **Phase A** — the ladders and specs are BUILT and validated (13 rungs,
-  `$SP/ladder_6vjj/`, `$SP/ladder_3kys/`, each `ladder.json` carrying the
-  per-rung exposed-patch residue set). Only the RFD3 designs and the `score`
-  pass remain. See the scope's stage-2 section for the three findings already
-  in hand, including that 3KYS reproduces its table exactly and 6VJJ's
-  rung-153 number does not.
+### The benchmark worktree
 
-A monitor is watching all of those status files and run logs, filtered to
-verdicts, refusals, `not found in atom array`, tracebacks and per-rung lines.
+`../lpt-glue-bench`, detached at `67c7bda`, for GPU runs whose code must stay
+pinned while main moves under them — a live hazard, since queue11 launches
+from the primary checkout using whatever is on disk at that moment. `data/`
+(58 GB), `.env`, `.venv` and `.mcp.json` are SYMLINKS, with a worktree-local
+exclude because git's `data/` pattern does not match a symlink. Glue work
+still lands on main behind opt-in gates rather than on a long-lived branch:
+main changes daily in exactly the files the glue work touches, and this
+repo's convention is a loud refusal, not isolation.
 
-### Not started
+### Monitors
 
-Glue stages 2 (GPU half) through 7, and the six defects in this document.
-Stage 0 is DONE (`6220a2a`) and so is the CCD parent tier plus the
-modified-residue report note (`314d844`), which came out of the same thread.
+Two are armed: one on `$SP/queue10_status.txt` (rung transitions, showcase,
+Phase B, exits) and one on `$SP/run9_ppi_spec_only.log` (now finished, safe to
+stop). Both watch by PID and by disk, never by `pgrep -f <pattern>`.
+
+### The free measurement Phase A is producing
+
+RFD3 cost per design, from sidecar mtimes rather than log ticks:
+6.12 s at 195 tokens, 6.90 at 218, 7.30 at 231, 7.89 at 246 (6VJJ) and 11.0 at
+286 (3KYS). Implied exponent **~1.5**, against `SEC_PER_RFD3_DESIGN = 5.4`
+flat — which is ~2x low at the top of the range, and close to the RF3 runtime
+law's 1.62 and the disk law's 1.49. Fit it over all 13 rungs once both ladders
+are scored; two targets are involved, so target identity and token count are
+not yet separated.
 
 ## How to run things here
 
