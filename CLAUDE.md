@@ -664,6 +664,32 @@ them without re-reading this list is how they get silently reverted.
   third segment that cost a chain break. Both the residue enumeration and `write_trimmed`
   now keep anything carrying N/CA/C, whatever it is called — found by benchmarking the
   trim across 19 complexes, not by a test.
+- **Keeping it is only half the job: it must also reach the generator as something
+  the generator can PARSE.** A344 is deposited as a **HETATM** record between two
+  ATOM records, and RFD3 builds its polymer from ATOM records — so a contig spanning
+  it aborted a real campaign ten times with `Residue A344 not found in atom array`,
+  for a residue plainly in the file. The unrecognised NAME alone would not have done
+  it; the record type is what bit. `write_trimmed` therefore converts a modified
+  residue to its parent amino acid — name, atom set trimmed to the parent's own
+  atoms, and `het_flag` 'H' → 'A' — so A344 is written as CYS with six atoms and the
+  C7–C22 palmitoyl tail dropped (a lipid RFD3 cannot model, buried in TEAD1's central
+  pocket rather than on the designable surface). The parent comes from ordered tiers
+  and is **never guessed**: the deposited CIF's `mon_nstd_parent_comp_id`
+  (authoritative, and absent for every component of 3KYS), gemmi's `one_letter_code`
+  (answers for MSE/SEP/TPO/PTR), then `structure_tools._CURATED_PARENTS`. An unknown
+  parent is left as deposited and warned about, and `foundry_spec.validate_spec`
+  refuses a contig spanning a HETATM residue — failing at spec-build rather than on
+  the GPU. **This stayed invisible for weeks** because no foundry run touched 3KYS
+  after the keep-A344 fix: `projects/mesothelioma_showcase` predates it and carries
+  the old 3-segment contig with A344 excluded, which is exactly why that run worked.
+- **Converting it changes what the exposure guard sees, and both sides must match.**
+  biotite counts P1L as an amino acid, so dropping the tail from the trimmed
+  structure while the deposited one still had it reported MET347 +28.9 Å² and PHE392
+  +21.7 Å² — the residues lining the pocket the palmitoyl fills — and refused a trim
+  that had cut NOTHING (208 → 208). Same shape as the water bug
+  `_exposed_hydrophobic` already documents ("amino acids only and one chain only in
+  BOTH"), so its SASA now also restricts both sides to parent-canonical atoms:
+  compare only atoms that survive INTO the design structure.
 - **The trim only runs when the target does NOT fit.** It used to reduce to the
   hotspot-carrying domain(s) regardless of size, so a 252-residue chain became 205 and a
   364-residue one became 19 even though the budget is 220. If the whole chain fits
