@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import re
 
+from loguru import logger
+
 
 def parse_handoff(text: str) -> dict[str, str]:
     """
@@ -65,16 +67,79 @@ def _clean_atom_list(raw: str) -> str:
     return ",".join(atoms) if atoms else raw.strip()
 
 
+#: A region heading looks like
+#: "Target chain A — Region 1: Central Hydrophobic Core — selected 9 of 18 ..."
+_REGION_LABEL = re.compile(r"(Region\s*\d+[^\n—-]*)", re.IGNORECASE)
+
+#: "Primary target: Region 1 (Central Hydrophobic Core) — Excellent"
+_PRIMARY_REGION = re.compile(r"Primary target:\s*Region\s*(\d+)",
+                             re.IGNORECASE)
+
+#: `| PHE | 314 | 122 | CD2,CZ |` and `| PHE314 | 314 | 122 | CD2,CZ |`
+_ROW = re.compile(r"^\|\s*([A-Z]{3})\d*\s*\|\s*(\d+)\s*\|",
+                  re.MULTILINE)
+
+
+def _region_label(section: str) -> str:
+    m = _REGION_LABEL.search(section)
+    return m.group(1).strip() if m else ""
+
+
+def _section_residue_ids(section: str) -> list[str]:
+    return [f"{m.group(1)}{m.group(2)}" for m in _ROW.finditer(section)]
+
+
+def _primary_section(sections: list[str], text: str) -> str:
+    """The region the report itself calls primary, else the first.
+
+    The explicit statement is preferred over position because a model that
+    lists regions out of rank order would otherwise hand the campaign its
+    second choice — and position is only a proxy for ranking.
+    """
+    m = _PRIMARY_REGION.search(text)
+    if m:
+        wanted = re.compile(rf"Region\s*{int(m.group(1))}\b", re.IGNORECASE)
+        for sec in sections:
+            if wanted.search(sec):
+                return sec
+    return sections[0]
+
+
 def parse_hotspot_residues(text: str, handoff: dict) -> str | None:
     """
     Parse the MODEL-READY HOTSPOTS table(s) from structure stage output.
 
     Returns a JSON string:
         {"target_chain": "A", "partner_chain": "B",
+         "region": "Region 1: Central Hydrophobic Core",
+         "regions_declared": 2,
          "residues": [{"residue": "LEU", "auth_seq_id": 245,
                        "label_seq_id": 245, "rfd3_atoms": "CD1,CG2"}, ...]}
 
     Returns None if the section is absent (non-fatal).
+
+    **ONE region reaches the spec, not all of them.** The structure skill
+    emits a `### MODEL-READY HOTSPOTS` section PER REGION, ranked, each
+    capped at `foundry_spec.MAX_HOTSPOTS` (12) and each labelled
+    "Separability: Independent — separate design submission required". This
+    used to concatenate every section, which is how one 3KYS run reached
+    `build_rfd3_spec` with **16 hotspots against the 12 cap**: Region 1's 9
+    plus Region 2's 7, two patches ~20 A apart fused into a single declared
+    epitope. The consequences are not just a warning:
+
+    * RFD3 conditions on the union, so it is steered at no one site.
+    * `hotspot_engagement` is a FRACTION of the declared set with a 0.75 gate,
+      so a binder docked perfectly on the primary region scores 9/16 = 0.56
+      and is REJECTED for missing residues it was never meant to touch.
+    * More hotspots is not stricter — RFD3's hit rate falls as the declared
+      set grows (see CLAUDE.md), so merging weakens the gate twice over.
+
+    The region used is the one the report names as primary ("Primary target:
+    Region N" in DESIGN RECOMMENDATIONS) when that resolves to a section, and
+    otherwise the FIRST section, because the skill emits them ranked by
+    suitability. Dropped regions are logged with their residues — they stay
+    in the report for a human, and designing against one is a separate
+    campaign (`--hotspots`, or a second run).
     """
     # target_chain / partner_chain were added to the PIPELINE HANDOFF
     # template after some runs were created.  Fall back to chain_a / chain_b
@@ -89,6 +154,24 @@ def parse_hotspot_residues(text: str, handoff: dict) -> str | None:
     )
     if not sections:
         return None
+
+    regions_declared = len(sections)
+    chosen = _primary_section(sections, text)
+    if regions_declared > 1:
+        logger.warning(
+            f"the interface stage declared {regions_declared} independent "
+            f"hotspot regions; designing against "
+            f"{_region_label(chosen) or 'the primary one'} and DROPPING the "
+            f"rest — "
+            + "; ".join(
+                f"{_region_label(sec) or f'section {i + 1}'}: "
+                f"{', '.join(_section_residue_ids(sec)) or 'no parsable rows'}"
+                for i, sec in enumerate(sections) if sec is not chosen)
+            + ". They are separate campaigns: each region is independently "
+              "separable, and merging them would steer RFD3 at no one site "
+              "and make hotspot_engagement unsatisfiable. Re-run with "
+              "--hotspots to design against another region.")
+    sections = [chosen]
 
     # label_seq_id is allowed to be non-integer (e.g. "UNVERIFIED" or
     # similar when tool_get_sequence_map could not be called). Match any
@@ -141,5 +224,7 @@ def parse_hotspot_residues(text: str, handoff: dict) -> str | None:
     return json.dumps({
         "target_chain": target_chain,
         "partner_chain": partner_chain,
+        "region": _region_label(chosen),
+        "regions_declared": regions_declared,
         "residues": residues,
     })

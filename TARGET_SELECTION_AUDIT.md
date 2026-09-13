@@ -473,6 +473,46 @@ gemmi; I reproduced both before changing anything, and measured that 63 of the
 
 ### 5. Related, smaller
 
+- **FIXED (2026-09-13).** `handoff.parse_hotspot_residues` concatenated EVERY
+  `### MODEL-READY HOTSPOTS` section, so a report with two independent regions
+  reached `build_rfd3_spec` with the union. Measured on the 3KYS A344 check
+  run: Region 1's 9 residues plus Region 2's 7 = **16 against the 12 cap**,
+  two patches ~20 A apart declared as one epitope. The skill was blameless —
+  it wrote 9 and 7, each within the cap, each labelled "Separability:
+  Independent — separate design submission required" — and `build_rfd3_spec`
+  only warns, deliberately, because a builder has no per-residue ddG and
+  cannot choose which to drop. The report CAN choose: it ranks the regions and
+  names a primary, so the choice now happens at the parse. One region reaches
+  the spec (the named primary, else the first, since the skill emits them
+  ranked), the dropped ones are logged with their residues, and the payload
+  carries `region` / `regions_declared`. Beyond the cap, the merge broke the
+  gate: `hotspot_engagement` is a fraction of the DECLARED set at 0.75, so a
+  binder docked perfectly on the primary region scored 9/16 = 0.56 and was
+  rejected for missing residues it was never steered at.
+  `tests/test_hotspot_regions.py`.
+
+  A false lead worth recording, because it nearly became a second "fix": a
+  resume produced 9 hotspots where the original run produced 16, which looked
+  like two code paths disagreeing about regions. It was **model variance** —
+  the second call emitted one region, and named it differently ("Central
+  Hydrophobic Groove — 9 of 45" against "Central Hydrophobic Core — 9 of 18").
+  Two identical code paths, two different answers.
+
+- **NEW, not fixed: `--start-from binder_spec` re-paid for an LLM stage.**
+  The same resume spent a fresh `interface` call rather than reading the
+  artifact already on disk — `projects/a344_fix_check/ledger.jsonl` carries
+  two `interface` entries (11:15 and 15:55 UTC) for one campaign, and the
+  second wrote `binder/sites/primary/binder/21_interface.md` while the
+  original sat at `binder/21_interface.md`. The structure-first resume enters
+  the site machinery, which prepares a "primary" site from scratch; the
+  top-level artifacts of a run that completed WITHOUT sites are not adopted.
+  CLAUDE.md says `_prepared_site` exists precisely so "a multi-day campaign
+  never re-pays for the LLM stages", so this is that promise failing in the
+  no-sites case. Cheap on gemini-flash; it is the correctness that matters —
+  the resumed campaign designed against a DIFFERENT epitope than the run it
+  claimed to resume.
+
+
 - **FIXED (`9965bb6`).** `_verify_hotspot_grounding`'s message blamed
   numbering when the real cause was the wrong chain; it now searches the other
   chains and names the one that carries every claimed residue under its
