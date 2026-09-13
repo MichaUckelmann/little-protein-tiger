@@ -289,9 +289,51 @@ chain P (GLP-1, auth 7-37) really has ALA30/GLY35/ARG36/GLY37; chain R
 (GLP-1R, auth 29-421) really has VAL30/THR35/VAL36/GLN37. So every residue is
 correct on its own chain and the run still hard-failed grounding.
 
-**DESIGNED — agent `a7409bc393a05d960`, report received 2026-09-13.**
-Medium change: ~6 files, ~10 functions, 250-350 lines. Not started; the
-framing decision below wants a human yes before anyone writes it.
+**SCOPED PROPERLY — see `GLUE_PIPELINE_SCOPE.md`** (agent
+`a19e8b4f701d9f90e`, 2026-09-13, 1,487 lines). That file supersedes this
+section: it carries the trimming benchmark design, the glue-site selection
+criteria, the evaluation plan, the 8-stage build order with go/no-go gates,
+and the risk register. **FOUR of the claims condensed below are WRONG** and
+are corrected there — read it rather than this. The corrections, because they
+are the kind that get re-introduced:
+
+1. **There is NO clean 5VAI trim.** The "2 exposed / 0 near — passes" result
+   below is an artefact of the blind measure: `_exposed_hydrophobic` compares
+   each chain against ITSELF in isolation, so chain P kept whole reports zero
+   by construction. In assembly context `R29-128 + P7-37` opens **492 A^2
+   across 8 hydrophobic residues on chain P** (PHE12 +122, LEU20 +88, TYR19
+   +70, TRP31 +64) — GLP-1's N-terminal half, which inserts into the TM bundle
+   the cut removes. Re-measured independently against 5VAI_ba1 with biotite,
+   R+P context only so removing the G protein is not counted as cutting;
+   numbers agree to the residue. **4ZGM is the right first glue target**: 1.8
+   A, two chains, 128 residues, 100% sidechain completeness, 206 tokens, and
+   NO TRIM NEEDED at all.
+2. **`foundry_spec.py:120` is not the only generator-side blocker** —
+   `build_contig` takes one chain, and is the real one. Fixing :120 alone
+   changes nothing, because `validate_spec` gates a chain-B hotspot on a
+   chain-B contig span.
+3. **5VAI is not backbone-only** (83.6%/93.0% sidechain completeness). A
+   global "models no sidechains" guard would have missed it. What is true is
+   narrower: 3 of the 7 chosen hotspots fall in the truncated 16%, and
+   `validate_spec` already catches exactly that.
+4. **Apo-vs-holo is ONE fold per CAMPAIGN (~10 s), not one per design**, and
+   the holo half is computable from data already on disk
+   (`ipsae_from_confidences` accepts arbitrary chain labels, so any split of
+   the merged chain scores). It belongs in the first implementation, not
+   deferred.
+
+**And the fact that reframes the whole trimming question: no production
+campaign has ever trimmed more than 9 residues.** Verified over all 22
+`trim_map.json` files — 19 cut ZERO, `trial_kras`/`validate_bridge_kras` cut
+1, `il7ra_e2e` cuts 9. So every exposure guard, every retention gate and every
+threshold in the trim has been carried by 13 calibrated campaigns without once
+firing on a real cut. Glue work would be the first thing to exercise them
+heavily, which is why the GPU benchmark comes before the build.
+
+The mechanics summary below is still accurate on the merge itself (points 1.1
+and 1.2 of the scope confirm it independently). Medium change: ~6 files, ~10
+functions, 250-350 lines for the single-chain-glue path; two-chain trimming is
+a further ~6 days and is needed for 88% of real complexes. Not started.
 
 **The recommended framing: merge at the CONTIG, not in the file.** Keep the
 trimmed structure a genuine two-chain file with author numbering intact
