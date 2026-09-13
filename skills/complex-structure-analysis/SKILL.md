@@ -127,7 +127,7 @@ the query from the orchestrator). Set the operating mode for this entire run:
   priority residues.
 - Not present → default to **DISRUPT mode**.
 
-### Membrane proteins: hotspots go on ONE extracellular face, never in the bilayer
+### Membrane proteins: hotspots go on ONE face, never in the bilayer
 
 If the target is a membrane protein — any GPCR, any receptor tyrosine kinase, any
 single-pass or multi-pass receptor — the only residues a designed binder can
@@ -138,11 +138,21 @@ a binder against it cannot work.
 
 Concretely, when picking hotspots on such a target:
 
-- Keep to ONE face. The extracellular side is almost always the designable one:
-  the extracellular domain (class B/C GPCRs), the N-terminus, and the
-  extracellular loops.
+- Keep to ONE face, and let the INTERFACE YOU WERE ASKED ABOUT decide which.
+  For a cell-surface receptor the extracellular side is usually the one that
+  carries the effect — the extracellular domain (class B/C GPCRs), the
+  N-terminus, the extracellular loops — and it is the right default when the
+  upstream stage did not pin a face. But the cytoplasmic face is a legitimate
+  choice when that is where the complex being disrupted actually sits (an
+  effector-recruitment surface, or any protein in an intracellular-organelle
+  membrane, where "extracellular" names no real surface at all). The
+  downstream trim follows your residues to whichever face they are on; it does
+  not assume the outer one. Say in COMPLEX OVERVIEW which face you picked and
+  why, so the operator can see the delivery question a cytoplasmic epitope
+  raises rather than discover it later.
 - Never select a residue in a transmembrane span, and never select an epitope
-  that straddles both faces — no single binder can engage that.
+  that straddles both faces — no single binder can engage that, and a
+  straddling set leaves the trim no face to restrict to.
 - The orthosteric pocket of a class A GPCR sits INSIDE the helical bundle. For
   lipid ligands (cannabinoid, S1P, LPA, prostaglandin) it is also reached
   laterally from within the membrane. It is a small-molecule site, not a

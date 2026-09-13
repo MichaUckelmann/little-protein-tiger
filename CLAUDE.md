@@ -287,9 +287,11 @@ degrade to a log line.
 
 **Known gaps, not yet addressed** (see `diary.md`'s 2026-08-24 "First step
 of the PPI/binder-track unification" entry for the fuller list): no
-membrane-topology resolution for a PPI-bridged target (falls back to
-`_stage_trim`'s "extracellular" default rather than binder-target-intel's
-own UniProt-topology check); `--trial-sites` multi-epitope comparison isn't
+membrane-topology resolution for a PPI-bridged target beyond whatever
+accession `target_resolve` happens to find offline — the bridge writes no
+`membrane_side`, so `_stage_trim` infers the side from the hotspots, which is
+the right default but is not binder-target-intel's own UniProt-topology
+check; `--trial-sites` multi-epitope comparison isn't
 wired into the bridge (PPI's structure stage picks exactly one interface).
 **The "no real GPU run has proven the bridge" gap is CLOSED** (2026-08-28):
 `projects/mesothelioma_showcase` went from the one-sentence query "Design cancer
@@ -576,12 +578,23 @@ them without re-reading this list is how they get silently reverted.
   is still a physical pose, so relax and InterfaceAnalyzer return well-defined,
   meaningless numbers for it. `src/rosetta_metrics.py` scores only gate survivors
   (capped at 300) and its terms enter the final composite only.
-- **Membrane targets are designed against the extracellular side**, and
-  transmembrane residues are dropped on BOTH sides. In an isolated structure a TM
-  helix is an exposed hydrophobic slab that preferentially attracts binders which
-  cannot work in a cell, where that surface is buried in lipid. Topology comes
-  from UniProt (`src/membrane_topology.py`) and is mapped into author numbering
-  through the RCSB entity alignment. It is applied AFTER domain segmentation:
+- **Transmembrane residues are dropped on BOTH sides; WHICH side to design
+  against is inferred, not fixed.** In an isolated structure a TM helix is an
+  exposed hydrophobic slab that preferentially attracts binders which cannot
+  work in a cell, where that surface is buried in lipid — that part is physics
+  and unconditional. The side is not: `membrane_side` defaults to `"auto"` and
+  `_infer_membrane_side` reads it off where the declared hotspots actually sit,
+  because for an intracellular-organelle membrane protein (SCAP in the ER)
+  "extracellular" names no real surface at all, and the interface stage has
+  already read the structure. Extracellular is where the effect usually lives
+  for a cell-surface receptor, so that is what inference usually returns — it is
+  not a rule, and a cytoplasmic epitope is designed against normally (the
+  operator owes the delivery route, which the four target-selecting skills now
+  ask for by name, rather than the pipeline owing a refusal). Only two things
+  still fail: a hotspot INSIDE the membrane, and hotspots split across both
+  faces — neither is one epitope. Topology comes from UniProt
+  (`src/membrane_topology.py`) and is mapped into author numbering through the
+  RCSB entity alignment. It is applied AFTER domain segmentation:
   filtering first removes the contact-density drop that marks the ectodomain
   boundary, which turned a clean CD79B 42-145 trim into 58-159.
 - **`os.scandir`, never `ls` or a glob.** Stage directories hold 50–100k entries;

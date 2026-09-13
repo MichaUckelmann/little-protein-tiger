@@ -142,10 +142,14 @@ log is the A344 validation incident (`e2e_foundry/.../rfd3.log:13,162,178`).
   sidecar's `num_tokens_in`. **Must run on an IDLE card** — peak VRAM measured
   beside another tenant measures the wrong thing.
 
-Two stale `scripts/doctor.py` checks found in passing: the 31 GB warning
-(`:408`) cites `config.yaml`'s deleted `gpu_memory_gb`, and `check_disk`
-(`:418-421`) still cites "~2.5 MB per RF3 design" after `229dae7` replaced it
-with the measured 0.59-1.57 MB size law.
+Two stale `scripts/doctor.py` checks found in passing, **both now fixed**: the
+31 GB warning cited `config.yaml`'s deleted `gpu_memory_gb` and is now worded
+as what it actually is — "below the only card every campaign here was run on",
+with the real demonstrated ceiling (308 tokens) and the knob to turn
+(`target_residue_budget`) — and `check_disk` cited "~2.5 MB per RF3 design"
+after `229dae7` replaced that flat constant with the measured 0.6-1.9 MB size
+law. The threshold values are unchanged; only the claims about what they mean.
+The VRAM BENCHMARK above is still unrun and still needs an idle card.
 
 ### 2. Every PPI structure guard is inert for a non-human target, silently
 
@@ -345,6 +349,33 @@ may not be feasible without a hard trim.
   named in `tractability`/`go_rationale` — not to add GPR17-class targets to
   the refusal list. Pre-existing gap either way; not caused by the
   neutralisation (my edits to that section removed only the CALCRL example).
+
+  **IMPLEMENTED.** Tier 2 written into all four target-selecting skills
+  (`pathway-expert`, `wildcard-expert`, `molecular-biology-expert`,
+  `complex-structure-analysis`; `binder-target-intel` already deferred to the
+  operator's ask). `molecular-biology-expert` carried the actual prohibition —
+  "**Never propose**: ... any intracellular residue" — and that clause is gone.
+  Two things changed shape rather than being appended:
+
+  - **The antibody test was load-bearing and wrong for tier 2.** "Would an
+    antibody work here?" is a good test of whether a site is inside the bundle
+    and a bad test of whether it is reachable at all — an antibody's own
+    inability to cross a membrane says nothing about geometry. It is now scoped
+    to the OUTER face explicitly, with the general test restated as "is this
+    site solvent-exposed on one face, or inside the bundle?".
+  - **The pipeline was already correct and two docs said otherwise.**
+    `membrane_side` has defaulted to `"auto"` since `_infer_membrane_side`
+    landed — the side is read off where the declared hotspots sit, so a
+    coherently cytoplasmic epitope is trimmed to the cytoplasmic face and
+    designed against normally. `CLAUDE.md:579` still claimed "membrane targets
+    are designed against the extracellular side" and `CLAUDE.md:291` still
+    named a "`_stage_trim` 'extracellular' default" that no longer exists. Both
+    corrected. The prohibition was only ever in the prompts.
+
+  What still fails, unchanged: a hotspot INSIDE the membrane, and hotspots
+  split across both faces. Neither is one epitope, and the second is the one
+  case inference genuinely cannot resolve — a straddling set leaves the trim no
+  face to restrict to. The skills now say that is why.
 - `wildcard_tuberculosis` was REFUSED by gemini (category OTHER, call #1) and
   the run stopped — the refusal contract working, no automatic retry. Standard
   mode on the same disease was not refused.

@@ -402,10 +402,18 @@ def check_gpu(rep: Report) -> None:
         gb = int("".join(ch for ch in mem if ch.isdigit())) / 1024
     except ValueError:
         gb = 0.0
+    # 31 GB is the reference workstation's card, not a measured requirement.
+    # Nothing in the codebase reads a VRAM figure — `gpu_memory_gb` was deleted
+    # from config.yaml as unread in 2996fe8 — and no campaign here has ever
+    # OOMed; time and disk are what have actually stopped one. So this is a
+    # "you are below the only configuration ever exercised" note, not a limit.
     rep.add("GPU", OK if gb >= 31.0 else WARN,
             f"{name.strip()}, {gb:.0f} GB",
             "" if gb >= 31.0 else
-            "config.yaml assumes ~32 GB; smaller cards may OOM on large targets.",
+            "Below the ~32 GB card every campaign here was run on. No VRAM "
+            "ceiling is enforced anywhere, and the largest complex ever folded "
+            "was 308 tokens; a smaller card may still OOM above that, "
+            "unmeasured. Lower design.foundry.target_residue_budget if it does.",
             tracks=tracks)
 
 
@@ -415,7 +423,8 @@ def check_disk(rep: Report) -> None:
     rep.add("Free disk", OK if free_gb >= 120 else WARN,
             f"{free_gb:.0f} GB at {_ROOT}",
             "" if free_gb >= 120 else
-            "A full production campaign needs ~120 GB (~2.5 MB per RF3 design). "
+            "A full production campaign needs ~120 GB (0.6-1.9 MB per RF3 "
+            "refold, scaling with complex size — foundry_runner.refold_bytes). "
             "plan_campaign will clamp the campaign to fit.",
             tracks=tracks)
 

@@ -235,16 +235,32 @@ tries to design against, and the run is refused several stages later.
 
 A designed binder is a folded protein in solution. On any membrane protein —
 GPCR, receptor kinase, ion channel, single-pass receptor — it can only engage
-surface exposed on ONE face of the bilayer:
+surface exposed on ONE face of the bilayer. Which face is a judgement about
+where the therapeutic effect lives, not a fixed answer:
 
-- **Propose**: extracellular domains (class B/C GPCR ECDs, receptor
-  ectodomains), N-termini, extracellular loops, and the ligand-binding surfaces
-  of secreted-factor / receptor pairs.
-- **Never propose**: any transmembrane residue, any intracellular residue, or
-  the orthosteric pocket of a class A GPCR — the last is inside the helical
-  bundle and, for lipid ligands, is reached laterally from within the membrane.
+- **Prefer the extracellular / lumenal face** where the effect lives there,
+  which for a cell-surface receptor it usually does: extracellular domains
+  (class B/C GPCR ECDs, receptor ectodomains), N-termini, extracellular loops,
+  and the ligand-binding surfaces of secreted-factor / receptor pairs. This
+  face needs no delivery argument — the binder and the site are in the same
+  compartment.
+- **The cytoplasmic face is allowed when that is where the mechanism is**, and
+  a cytoplasmic epitope is NOT refused: the pipeline reads the face off your
+  residues and trims to it. Many real mechanisms live there — a receptor's
+  kinase or effector-recruitment surface, or an intracellular-organelle
+  membrane protein, where "extracellular" names no real surface at all. What
+  you owe in exchange is the delivery requirement, **stated**: a protein binder
+  reaching the cytosol needs a route (fusion to a delivery module, intracellular
+  expression, a degrader/glue format), and a target whose effect requires one
+  cannot be scored `tractability: Excellent` without naming it. Naming the
+  burden is the requirement; pretending it is absent is the error.
+- **Never propose**: any transmembrane residue, or the orthosteric pocket of a
+  class A GPCR — the last is inside the helical bundle and, for lipid ligands,
+  is reached laterally from within the membrane. Neither is on any face; a TM
+  surface is buried in lipid in a cell, whichever side you approach from.
 - **Never mix faces** in one hint. An epitope split across the membrane is not
-  a site one binder can engage.
+  a site one binder can engage — and it is the one case the pipeline cannot
+  resolve for you, since a straddling set gives it no face to trim to.
 
 Literature reports the residues that matter *mechanistically*, which for a
 receptor routinely includes pocket-lining transmembrane residues. Those are

@@ -591,8 +591,11 @@ A binder is a folded protein in solution. It can only engage surface that is
 solvent-exposed on ONE face of the membrane. This rules out large parts of a
 GPCR, and the constraint is chemical, not a limitation of the pipeline — so
 choose the site accordingly rather than proposing one that will be refused.
+WHICH face is a judgement about where the therapeutic effect lives; only the
+lipid-buried surface itself is ruled out on both.
 
-**Reachable, and clinically validated:**
+**Reachable, and clinically validated — prefer these where the effect lives
+here, which for a cell-surface receptor it usually does:**
 
 - **Class B ECDs.** These use a two-domain mechanism: the peptide hormone's
   C-terminus binds a genuine extracellular domain, its N-terminus then inserts
@@ -610,6 +613,21 @@ choose the site accordingly rather than proposing one that will be refused.
 - **Receptor / accessory-protein interfaces**, where the interface itself sits
   outside the membrane.
 
+**Reachable, but only with a delivery route you must name:**
+
+- **Cytoplasmic domains and intracellular faces.** Harder to reach, not
+  impossible, and NOT refused by this pipeline — it reads the membrane face off
+  the residues you propose and trims to that face, so a coherently cytoplasmic
+  epitope is designed against normally. Many mechanisms only exist there: a
+  receptor's effector-recruitment or kinase surface, and any protein in an
+  intracellular-organelle membrane, where "extracellular" names no real surface
+  at all. Propose one when that is where the effect is — and say in the same
+  breath what gets the binder into the cytosol (fusion to a delivery module,
+  intracellular expression, a degrader/glue format). A target needing
+  intracellular delivery cannot carry `tractability: Excellent` with the route
+  unstated; the delivery burden belongs in `go_rationale` where a reader can
+  weigh it. Understating it is the error — choosing the target is not.
+
 **Not reachable — do not propose these:**
 
 - **The orthosteric pocket of a receptor whose ligand is a lipid or a
@@ -625,9 +643,13 @@ choose the site accordingly rather than proposing one that will be refused.
 - **Any transmembrane surface at all.** In an isolated structure a TM helix
   looks like an attractive hydrophobic patch; in a cell it is buried in lipid.
 
-A practical test before proposing a membrane target: *would an antibody work
-here?* If the answer is no because the site is inside the bundle, a designed
-mini-protein will not work either.
+A practical test before proposing a membrane target: *is this site
+solvent-exposed on one face, or is it inside the bundle?* If it is inside the
+bundle, no designed mini-protein reaches it from either side. "Would an
+antibody work here?" is the sharper version of that test for the OUTER face
+only — an antibody's own inability to reach the cytosol says nothing about a
+site's geometry, and a cytoplasmic domain that fails the antibody test can
+still be a real target for a delivered binder.
 
 The pipeline enforces this deterministically further down — UniProt topology is
 mapped into author numbering and the trim drops the transmembrane span and the
