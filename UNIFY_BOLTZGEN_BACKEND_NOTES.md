@@ -289,6 +289,37 @@ The reference snapshot for this machine lives in the session scratchpad
 
 ## Open, deliberately
 
+- **`sec_per_design_observed` measures a DIFFERENT quantity from the law it
+  overrides, and under-costs — the one place the estimate is not
+  conservative.** It is refold-mtime spacing, i.e. the `folding` step alone;
+  the law (`SEC_PER_DESIGN_REF`) was fitted on END-TO-END `boltzgen run` wall
+  clock from `campaign_timing.jsonl`. Excluded from the observed rate:
+  `design`, `inverse_folding`, `design_folding` (protein protocol only) and
+  the CPU-bound `analysis`/`filtering` tail. Measured on the acceptance runs —
+
+      campaign                 refold spacing   end-to-end   ratio
+      PD-L1 cyclic (5-step)         7.77          ~10.2      1.31x
+      YAP1/TEAD1 mini (6-step)     15.13           26.20     1.73x
+
+  and the observed rate takes PRECEDENCE, so an estimate flips from ~1.4x
+  conservative (law) to ~1.7x optimistic the moment a stage clears
+  `MIN_DESIGNS_FOR_RATE`. On the YAP1/TEAD1 acceptance run the pessimistic
+  production estimate read 44.9 GPU-h where end-to-end implies ~78; the
+  SCALE_UP verdict still stands (both are inside the 120 h budget) but the
+  budget check is the thing this number gates.
+
+  **Imported from foundry, where it is valid.** There the refold (RF3) IS the
+  dominant cost and `sec_per_refold_observed` tracked production within
+  10-17%; BoltzGen spends a much larger share off the folding step, and the
+  6-step protein protocol more than the 5-step peptide one — which is exactly
+  the 1.31x/1.73x split above.
+
+  Fix deferred on purpose: changing it mid-queue would mean the remaining
+  acceptance runs test different code from the ones already finished. The
+  candidate fix is to measure what the law measures — job start (the registry
+  has it) to last refold, or completed-stage wall clock — rather than to add a
+  correction factor.
+
 - **The time law over-costs its interior points, and is DELIBERATELY NOT
   refitted.** Operator decision, 2026-09-12: an over-estimate is the right way
   to be wrong. Four at-scale peptide-protocol points now exist —
