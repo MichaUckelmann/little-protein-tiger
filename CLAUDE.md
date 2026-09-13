@@ -88,7 +88,14 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
   (`assets/vendor/molstar/`, MIT-licensed, ~5 MB) is vendored and inlined at
   build time — a generated report has no runtime network dependency.
 
-  **`src/ppi_report.py`** is the same idea for the PPI track: one
+  **`src/ppi_report.py`** is the same idea for the PPI track — but read
+  the next sentence before assuming a PPI run produces it: it is reachable
+  ONLY from the `boltzgen_legacy` fall-through (`_generate_ppi_report` is
+  called at `run()`'s `:980`/`:988`, after `_stage_analysis`/`_stage_summary`,
+  and a BRIDGED PPI run returns at `:952` and never reaches them — it gets
+  `binder_report` instead), and it hard-requires artifacts only
+  `_stage_analysis` writes. It stays the renderer for the archived legacy runs
+  in `outputs/`. It is: one
   illustrated `report.html` over `00_pathway.md` .. `06_summary.md` (target
   rationale, prior art, hotspots, the BoltzGen design-generation stats,
   filter-gate funnel, top-K design cards, and the design-analyst's final
