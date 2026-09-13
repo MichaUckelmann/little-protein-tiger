@@ -541,6 +541,50 @@ def geometric_domains(residues: Sequence[dict], budget: int,
     return domains
 
 
+def _domains_cover_hotspots(domains: Sequence[Domain],
+                            hotspots: Sequence[int] | None,
+                            chain: str) -> bool:
+    """Is an externally-annotated domain set usable for THIS epitope?
+
+    `segment_domains` preferred the RCSB tier (CATH/SCOP2/ECOD) uncondition-
+    ally, and a wrong annotation there beats a correct geometric partition.
+    Measured on 5VAI chain R, a class-B GPCR: RCSB returns two ECOD domains
+    96-204 and 208-421 labelled "Sulfatase,SGSH_C" — nonsense for this
+    molecule — and NEITHER contains any of the hotspots 66/67/70. They were
+    then force-kept as orphans and the trim accreted through the
+    transmembrane bundle, ending at 220 residues in two segments and REFUSED
+    for opening 33 exposed hydrophobics. The geometric partition, on the same
+    structure, returns exactly 29-128 and passes at 2 — and 4ZGM, an
+    unrelated GLP-1R ectodomain X-ray entry, deposits its ECD as auth 29-128,
+    which corroborates the boundary independently.
+
+    So the test is not "is the annotation plausible" (unanswerable here) but
+    "does it place the residues we were asked to design against inside a
+    domain". An annotation that does not is describing a different molecule,
+    a different numbering, or a different entity, and the segmenter below is
+    a better answer than any of those.
+
+    A hotspot inside ANY domain is enough — an epitope legitimately spans a
+    domain boundary. With no hotspots given (a caller that is segmenting for
+    its own reasons) nothing is claimed and the tier is trusted, which is the
+    previous behaviour exactly.
+    """
+    if not hotspots:
+        return True
+    uncovered = [h for h in hotspots
+                 if not any(d.contains(int(h)) for d in domains)]
+    if not uncovered:
+        return True
+    src = domains[0].source if domains else "rcsb"
+    logger.warning(
+        f"  ⚠ the {src} domain annotation for chain {chain} "
+        f"({', '.join(f'{d.start_auth}-{d.end_auth}' for d in domains)}"
+        + (f', "{domains[0].label}"' if domains[0].label else "")
+        + f") does not contain hotspot(s) {uncovered} — falling through to "
+        f"the next domain source rather than accreting from orphans")
+    return False
+
+
 def segment_domains(
     structure_path: Path,
     chain: str,
@@ -551,6 +595,7 @@ def segment_domains(
     method: str = "auto",
     chainsaw_cmd: Sequence[str] | None = None,
     residues: Sequence[dict] | None = None,
+    hotspots: Sequence[int] | None = None,
 ) -> tuple[list[Domain], str]:
     """
     Domain spans for one chain, trying each source in turn.
@@ -558,6 +603,10 @@ def segment_domains(
     Returns (domains, method_used). Never raises for a missing optional tool —
     an absent Chainsaw or an RCSB timeout falls through to the next tier and is
     logged.
+
+    `hotspots` (author ids) is used ONLY to decide whether to TRUST the RCSB
+    tier — see `_domains_cover_hotspots`. It never changes the spans a source
+    returns.
     """
     residues = residues or chain_residues(structure_path, chain)
     # The residues the trim actually works with — the backbone-filtered
@@ -568,9 +617,17 @@ def segment_domains(
     if method in ("auto", "rcsb") and pdb_id and auth_to_label:
         doms = rcsb_domains(pdb_id, chain, auth_to_label,
                             observed=observed_auth)
-        if doms:
+        if doms and _domains_cover_hotspots(doms, hotspots, chain):
             return doms, doms[0].source
         if method == "rcsb":
+            if doms:
+                # Named explicitly, so the refusal is the operator's answer
+                # rather than a silent fall-through to a source they did not
+                # ask for.
+                raise TrimError(
+                    f"the RCSB domain annotation for {pdb_id} chain {chain} "
+                    f"does not cover the hotspots; re-run with "
+                    f"method=geometric or method=auto")
             raise TrimError(f"no RCSB domain annotation for {pdb_id} chain {chain}")
 
     if method in ("auto", "chainsaw"):
@@ -1275,7 +1332,7 @@ def trim_target(
     domains, method_used = segment_domains(
         structure_path, target_chain, budget=budget, pdb_id=pdb_id,
         auth_to_label=auth_to_label, method=method, chainsaw_cmd=chainsaw_cmd,
-        residues=residues)
+        residues=residues, hotspots=hot)
 
     # Measure the BEFORE interface on a solvent-stripped copy, because the
     # AFTER one is measured on `write_trimmed`'s output, which always strips
@@ -1361,9 +1418,32 @@ def trim_target(
     away, near = ([], []) if max_exposed_hydrophobic is None else _exposed_hydrophobic(
         structure_path, cif_path, target_chain, retained,
         clearance_A=exposed_hotspot_clearance_A)
+    # The AREA, not just the count. A residue count is not scale-free: six
+    # residues at +16 A^2 each and two at +190 A^2 read as "6 over the limit"
+    # and "2, within tolerance" while the second opens more surface. The sum
+    # is the physically meaningful number, it was never computed anywhere, and
+    # every threshold in this file is currently expressed in the other unit —
+    # so it is reported alongside rather than instead, and nothing gates on it
+    # yet. Also reported as a fraction of the epitope's own interface area,
+    # (the target-side interface BSA) which IS scale-free: measured 5.5% on
+    # a 5VAI ECD cut against 175% on an
+    # over-aggressive 6VJJ cut. See GLUE_PIPELINE_SCOPE.md section 2.2 — that
+    # fraction is the candidate for a future gate, and this is the measurement
+    # a campaign needs to have recorded before anyone calibrates it.
+    def _area(rows: Sequence[tuple]) -> float:
+        return sum(float(r[2]) for r in rows)
+
+    def _scale(rows: Sequence[tuple]) -> str:
+        a = _area(rows)
+        if target_side_before <= 0:
+            return f"{a:.0f} A^2"
+        return (f"{a:.0f} A^2, {a / target_side_before:.0%} of the "
+                f"target-side interface area")
+
     if near:
         raise TrimError(
-            f"the trim exposed hydrophobic residues at the epitope itself: "
+            f"the trim exposed hydrophobic residues at the epitope itself "
+            f"({_scale(near)}): "
             f"{', '.join(f'{n}{a} +{d} A^2' for n, a, d, _ in near[:4])}. A fresh "
             f"hydrophobic face within {exposed_hotspot_clearance_A:.0f} A of a "
             f"hotspot competes with the site being designed for. Choose a cut "
@@ -1372,6 +1452,7 @@ def trim_target(
     if max_exposed_hydrophobic is not None and len(away) > max_exposed_hydrophobic:
         raise TrimError(
             f"the trim newly exposed {len(away)} hydrophobic residues "
+            f"({_scale(away)}) "
             f"({', '.join(f'{n}{a}' for n, a, _, _ in away[:6])}), over the "
             f"{max_exposed_hydrophobic} tolerated. That is buried core turned "
             f"into an artificial binding surface, which RFD3 will preferentially "
@@ -1380,7 +1461,8 @@ def trim_target(
     if away:
         warnings.append(
             f"the trim exposed {len(away)} hydrophobic residue(s) away from the "
-            f"epitope ({', '.join(f'{n}{a} +{d} A^2' for n, a, d, _ in away)}) — "
+            f"epitope, {_scale(away)} "
+            f"({', '.join(f'{n}{a} +{d} A^2' for n, a, d, _ in away)}) — "
             f"within tolerance, but they are new surface RFD3 can see")
 
     # A disulfide whose partner was cut leaves a free cysteine that will not

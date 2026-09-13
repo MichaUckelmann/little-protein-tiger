@@ -1834,6 +1834,7 @@ class PipelineRunner:
             handoff, result.pdb_id or pdb,
             source="The target-intel stage")
         self._verify_hotspot_grounding(hotspots, result.pdb_id or pdb)
+        self._check_hotspot_atoms_are_buildable(hotspots, result.pdb_id or pdb)
         self._check_ortholog_conservation(hotspots, result.pdb_id or pdb, result)
         result.hotspot_residues_json = hotspots
         result.stage_files["interface"] = out
@@ -2367,6 +2368,107 @@ class PipelineRunner:
                 f"textbook/literature numbering for a well-known protein instead "
                 f"of reading this specific structure's residues — re-run the "
                 f"stage, or pick a different structure.")
+
+    #: A hotspot whose only atoms are backbone, or CB on a residue whose
+    #: sidechain IS a CB, tells RFD3 almost nothing about what to pack
+    #: against. Measured on 5VAI's 7-hotspot glue table: 3 hotspots name
+    #: atoms the file does not model at all and the 4 that pass are two ALA
+    #: (CB is the whole sidechain) and two GLY (`CA,C` is pure backbone), for
+    #: a net informative sidechain steer of ZERO.
+    _BACKBONE_ATOMS = frozenset({"N", "CA", "C", "O", "OXT"})
+    _NO_SIDECHAIN_AA = frozenset({"GLY", "ALA"})
+
+    def _check_hotspot_atoms_are_buildable(self, hotspots_json: str,
+                                           pdb_id: str) -> None:
+        """Do the declared `rfd3_atoms` exist, and do they steer anything?
+
+        `foundry_spec.validate_spec` already refuses a hotspot naming an atom
+        its residue does not have — and on 5VAI it was the ONLY check that
+        caught anything. But it runs at SPEC-BUILD time, which is after the
+        interface stage's LLM call, after grounding, and after the trim. The
+        same question is answerable the moment the hotspot table is parsed,
+        off a file already on disk.
+
+        Deliberately a WARNING, not a refusal, in both places it is called.
+        Whether the atoms matter depends on the GENERATOR: BoltzGen steers
+        from `binding:` label_seq entries and never reads `rfd3_atoms`, so a
+        hard failure here would end a legitimate BoltzGen campaign over a
+        column its engine ignores. The run that does build an RFD3 contig
+        still hard-fails at `validate_spec`, unchanged — this only moves the
+        DIAGNOSIS earlier, to where an operator can still pick a different
+        structure without paying for another stage.
+
+        Two separate findings, because they have different causes and
+        different fixes:
+
+        * **Atoms that do not exist** — usually a low-resolution structure
+          with truncated sidechains. 5VAI is 3.3 A cryo-EM at 83.6%/93.0%
+          sidechain completeness, so a global "this file models no
+          sidechains" test (which an earlier scope proposed) would NOT have
+          fired; what is wrong is the specific residues chosen. The fix is a
+          better entry, and `human_alternatives` in the pathway checkpoint
+          usually names one.
+        * **Atoms that exist but steer weakly** — backbone-only or
+          CB-on-ALA/GLY. Resolution-independent, and no spec check catches it
+          because every named atom is really there.
+        """
+        import gemmi
+
+        try:
+            data = json.loads(hotspots_json)
+        except (TypeError, ValueError):
+            return
+        residues = data.get("residues") or []
+        chain = data.get("target_chain")
+        if not residues or not chain:
+            return
+        structures_dir = _ROOT / (
+            (self.config.get("paths") or {}).get("structures_dir", "data/structures"))
+        ba1 = structures_dir / f"{pdb_id.upper()}_ba1.cif"
+        path = ba1 if ba1.exists() else structures_dir / f"{pdb_id.upper()}.cif"
+        try:
+            st = gemmi.read_structure(str(path))
+            st.setup_entities()
+            atoms_at = {(ch.name, int(res.seqid.num)): (res.name, {a.name for a in res})
+                        for ch in st[0] for res in ch}
+        except Exception as exc:                                  # noqa: BLE001
+            logger.warning(f"could not check hotspot atoms against {path}: {exc}")
+            return
+
+        absent, weak = [], []
+        for h in residues:
+            auth = h.get("auth_seq_id")
+            if auth is None:
+                continue
+            found = atoms_at.get((str(h.get("chain") or chain), int(auth)))
+            if found is None:
+                continue            # _verify_hotspot_grounding owns this case
+            res_name, have = found
+            wanted = [a.strip() for a in str(h.get("rfd3_atoms") or "").split(",")
+                      if a.strip()]
+            missing = [a for a in wanted if a not in have]
+            if missing:
+                absent.append(f"{res_name}{auth} wants {','.join(missing)} "
+                              f"(has {','.join(sorted(have))})")
+            elif (res_name.upper() in self._NO_SIDECHAIN_AA
+                  or all(a in self._BACKBONE_ATOMS for a in wanted)):
+                weak.append(f"{res_name}{auth} ({','.join(wanted)})")
+
+        if absent:
+            logger.warning(
+                f"  ⚠ {len(absent)} of {len(residues)} hotspots name atoms "
+                f"{pdb_id} does not model: {'; '.join(absent[:4])}"
+                + (f" (+{len(absent) - 4} more)" if len(absent) > 4 else "")
+                + ". RFD3 spec-building will REFUSE these. Truncated "
+                  "sidechains in a low-resolution entry are the usual cause; "
+                  "a higher-resolution structure of the same complex is the "
+                  "fix, not a re-run.")
+        if len(weak) >= max(1, len(residues) // 2):
+            logger.warning(
+                f"  ⚠ {len(weak)} of {len(residues)} hotspots steer weakly — "
+                f"backbone-only atoms, or CB on a residue whose sidechain is "
+                f"CB: {', '.join(weak[:6])}. RFD3 accepts these and they "
+                f"carry little information about what to pack against.")
 
     @staticmethod
     def _chain_holding_residues(path: Path, wanted: list[tuple[str, int]],
@@ -5999,6 +6101,7 @@ class PipelineRunner:
         # loudly rather than letting "no table" read as "table verified".
         if hotspots_json:
             self._verify_hotspot_grounding(hotspots_json, verify_pdb)
+            self._check_hotspot_atoms_are_buildable(hotspots_json, verify_pdb)
             self._check_ortholog_conservation(hotspots_json, verify_pdb, result)
         else:
             logger.warning(

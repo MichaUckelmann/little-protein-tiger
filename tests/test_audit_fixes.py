@@ -495,10 +495,12 @@ def test_partner_guard_runs_on_both_entry_points():
         assert "_verify_partner_chain_is_requested" in src
     # nothing removed from the binder track
     for guard in ("_verify_target_chain_assignment", "_verify_hotspot_grounding",
+                  "_check_hotspot_atoms_are_buildable",
                   "_check_ortholog_conservation"):
         assert guard in binder, f"{guard} disappeared from the binder track"
     # nothing removed from the PPI track
     for guard in ("_verify_ppi_chain_assignment", "_verify_hotspot_grounding",
+                  "_check_hotspot_atoms_are_buildable",
                   "_check_ortholog_conservation"):
         assert guard in ppi, f"{guard} disappeared from the PPI track"
 

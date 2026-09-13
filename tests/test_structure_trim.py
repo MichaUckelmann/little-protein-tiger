@@ -609,3 +609,73 @@ def test_the_common_chromatin_ptms_all_resolve_to_lysine():
     # residue that is not there.
     for code in ("SAH", "ZN", "GOL", "EDO", "ATP", "HOH"):
         assert parent_residue(code) is None, code
+
+
+# ----------------------------------------------------------------------
+# An external domain annotation is trusted only if it covers the epitope
+# ----------------------------------------------------------------------
+
+@pytest.mark.skipif(not (_ROOT / "data" / "structures" / "5VAI_ba1.cif").exists(),
+                    reason="5VAI not downloaded")
+def test_an_annotation_that_misses_the_hotspots_falls_through(tmp_path):
+    """`segment_domains` preferred the RCSB tier unconditionally, so a wrong
+    annotation beat a correct geometric partition.
+
+    5VAI chain R is a class-B GPCR and RCSB returns two ECOD domains 96-204 /
+    208-421 labelled "Sulfatase,SGSH_C" — neither containing hotspots
+    66/67/70. They were force-kept as orphans, the trim accreted through the
+    transmembrane bundle to 220 residues in two segments, and it was REFUSED
+    for opening 33 exposed hydrophobics. The geometric partition returns
+    exactly 29-128, which 4ZGM — an unrelated GLP-1R ectodomain entry
+    depositing its ECD as auth 29-128 — corroborates independently.
+    """
+    from src.structure_trim import trim_target
+
+    res = trim_target(_ROOT / "data" / "structures" / "5VAI_ba1.cif",
+                      target_chain="R", partner_chain="P",
+                      hotspots=[{"auth_seq_id": n} for n in (66, 67, 70)],
+                      out_dir=tmp_path, budget=220, pdb_id="5VAI")
+    assert res.method == "geometric", (
+        f"the ECOD annotation should have been rejected, got {res.method}")
+    assert res.kept_segments == [(29, 128)], res.kept_segments
+    assert res.n_segments == 1
+
+
+def test_an_annotation_that_covers_the_hotspots_is_still_trusted():
+    """The predicate must not reject a GOOD annotation — that would silently
+    demote every target to the geometric tier."""
+    from src.structure_trim import Domain, _domains_cover_hotspots
+
+    doms = [Domain(index=0, start_auth=10, end_auth=100, n_residues=91,
+                   source="cath", label="Ig-like"),
+            Domain(index=1, start_auth=101, end_auth=200, n_residues=100,
+                   source="cath", label="Ig-like")]
+    assert _domains_cover_hotspots(doms, [45, 60, 150], "A")
+    # An epitope legitimately spanning a boundary is fine: ANY hit is enough.
+    assert _domains_cover_hotspots(doms, [99, 101], "A")
+    # No hotspots given claims nothing — the previous behaviour exactly.
+    assert _domains_cover_hotspots(doms, None, "A")
+    assert _domains_cover_hotspots(doms, [], "A")
+    # One uncovered hotspot is enough to distrust the whole annotation.
+    assert not _domains_cover_hotspots(doms, [45, 250], "A")
+
+
+@pytest.mark.skipif(not (_ROOT / "data" / "structures" / "5VAI_ba1.cif").exists(),
+                    reason="5VAI not downloaded")
+def test_the_exposure_warning_reports_an_area_not_only_a_count(tmp_path):
+    """A residue count is not scale-free: two residues at +190 A^2 read as
+    "within tolerance" while six at +16 A^2 read as over the limit. The sum,
+    and its ratio to the target-side interface area, are the physically
+    meaningful numbers and were never computed. Nothing gates on them yet."""
+    from src.structure_trim import trim_target
+
+    res = trim_target(_ROOT / "data" / "structures" / "5VAI_ba1.cif",
+                      target_chain="R", partner_chain="P",
+                      hotspots=[{"auth_seq_id": n} for n in (66, 67, 70)],
+                      out_dir=tmp_path, budget=220, pdb_id="5VAI")
+    exposure = [w for w in res.warnings if "hydrophobic residue(s) away" in w]
+    assert exposure, res.warnings
+    w = exposure[0]
+    # LEU32 +58.9 and VAL36 +15.9 -> 75 A^2, against a 1,356 A^2 target side.
+    assert "75 A^2" in w, w
+    assert "6% of the target-side interface area" in w, w

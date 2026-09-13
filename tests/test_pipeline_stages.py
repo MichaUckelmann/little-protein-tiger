@@ -1340,3 +1340,99 @@ def test_a_correct_row_is_still_corrected(config):
     )
     fixed, _ = r._resolve_unverified_label_seq_ids(text, cif, "R")
     assert "| PHE | 66 | 105 |" in fixed
+
+
+# ----------------------------------------------------------------------
+# Are the declared hotspot atoms buildable, and do they steer anything?
+# ----------------------------------------------------------------------
+
+def _caplog_warnings(fn) -> list[str]:
+    """Collect loguru WARNING lines emitted by `fn`."""
+    from loguru import logger
+    msgs: list[str] = []
+    hid = logger.add(lambda m: msgs.append(str(m)), level="WARNING")
+    try:
+        fn()
+    finally:
+        logger.remove(hid)
+    return msgs
+
+
+#: 5VAI's real glue hotspot table, verbatim from
+#: projects/div_standard_diabetes/runs/round-1/02_structure.md.
+_5VAI_HOTSPOTS = {
+    "target_chain": "R", "partner_chain": "P",
+    "residues": [
+        {"residue": "PHE", "auth_seq_id": 66, "rfd3_atoms": "CD2,CZ", "chain": "R"},
+        {"residue": "ASP", "auth_seq_id": 67, "rfd3_atoms": "CG,OD1", "chain": "R"},
+        {"residue": "ALA", "auth_seq_id": 70, "rfd3_atoms": "CB,CA", "chain": "R"},
+        {"residue": "ALA", "auth_seq_id": 30, "rfd3_atoms": "CB,CA", "chain": "P"},
+        {"residue": "GLY", "auth_seq_id": 35, "rfd3_atoms": "CA,C", "chain": "P"},
+        {"residue": "ARG", "auth_seq_id": 36, "rfd3_atoms": "CZ,NH1", "chain": "P"},
+        {"residue": "GLY", "auth_seq_id": 37, "rfd3_atoms": "CA,C", "chain": "P"},
+    ],
+}
+
+
+def test_atoms_the_structure_does_not_model_are_reported_at_interface_time(config):
+    """`validate_spec` catches this, but only at spec-build time — after the
+    LLM call, grounding and the trim. 3 of 5VAI's 7 hotspots name sidechain
+    atoms this 3.3 A entry does not model (it is 83.6%/93.0% complete, so a
+    global "no sidechains" test would NOT fire — the chosen residues are what
+    fall in the truncated fraction)."""
+    if _local("5VAI") is None:
+        pytest.skip("5VAI not downloaded")
+    r = PipelineRunner(config, workflow="binder")
+    msgs = _caplog_warnings(
+        lambda: r._check_hotspot_atoms_are_buildable(
+            json.dumps(_5VAI_HOTSPOTS), "5VAI"))
+    absent = [m for m in msgs if "does not model" in m]
+    assert absent, msgs
+    assert "3 of 7" in absent[0], absent[0]
+    for res in ("PHE66", "ASP67", "ARG36"):
+        assert res in absent[0], absent[0]
+
+
+def test_a_hotspot_set_that_steers_weakly_is_reported_too(config):
+    """The four 5VAI hotspots that PASS the atom check are two ALA (CB is the
+    whole sidechain) and two GLY (`CA,C` is pure backbone) — net informative
+    sidechain steer zero. No spec check catches this: every named atom is
+    really there."""
+    if _local("5VAI") is None:
+        pytest.skip("5VAI not downloaded")
+    r = PipelineRunner(config, workflow="binder")
+    msgs = _caplog_warnings(
+        lambda: r._check_hotspot_atoms_are_buildable(
+            json.dumps(_5VAI_HOTSPOTS), "5VAI"))
+    weak = [m for m in msgs if "steer weakly" in m]
+    assert weak, msgs
+    assert "4 of 7" in weak[0], weak[0]
+
+
+def test_a_complete_structure_with_real_sidechain_atoms_is_silent(config):
+    """No false positives — 3KYS models 100% of its sidechains and these are
+    genuine sidechain atoms, so neither warning may fire."""
+    if _local("3KYS") is None:
+        pytest.skip("3KYS not downloaded")
+    r = PipelineRunner(config, workflow="binder")
+    good = json.dumps({"target_chain": "A", "partner_chain": "B", "residues": [
+        {"residue": "LEU", "auth_seq_id": 276, "rfd3_atoms": "CD1,CG"},
+        {"residue": "PHE", "auth_seq_id": 314, "rfd3_atoms": "CZ,CE1"},
+    ]})
+    msgs = _caplog_warnings(
+        lambda: r._check_hotspot_atoms_are_buildable(good, "3KYS"))
+    assert not msgs, msgs
+
+
+def test_the_atom_check_never_raises(config):
+    """It is a WARNING by design: BoltzGen steers from `binding:` label_seq
+    entries and never reads `rfd3_atoms`, so a refusal here would end a
+    legitimate campaign over a column its engine ignores. The RFD3 path still
+    hard-fails at `validate_spec`."""
+    if _local("5VAI") is None:
+        pytest.skip("5VAI not downloaded")
+    r = PipelineRunner(config, workflow="binder")
+    r._check_hotspot_atoms_are_buildable(json.dumps(_5VAI_HOTSPOTS), "5VAI")
+    r._check_hotspot_atoms_are_buildable("not json at all", "5VAI")
+    r._check_hotspot_atoms_are_buildable(json.dumps({"residues": []}), "5VAI")
+    r._check_hotspot_atoms_are_buildable(json.dumps(_5VAI_HOTSPOTS), "0000")
