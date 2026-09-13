@@ -1077,7 +1077,108 @@ RFD3 output size, **measured** rather than taken from the docstring's "rfd3 ~2 %
 **Phase A fits in one working day on one card, with room to spare.**
 (At 150/rung: 1.35 + 1.57 = 2.92 GPU-h, 111 MB.)
 
-### Phase B — add MPNN + RF3, only if Phase A warrants it
+### Phase B — REVISED after Phase A: a paired within-rung contrast
+
+**Phase A's 6VJJ ladder is done, and it falsified H1**, which changes what
+Phase B should measure. Measured over 6 rungs x 300 RFD3 designs, patch
+contacts scored at 8.0 A heavy-atom:
+
+| rung | tokens | patch A^2 (away/near) | patch % of target | enrichment | engagement |
+|---|---|---|---|---|---|
+| 168 | 246 | 0 / 0 | 0.000 | — (no-trim control) | 1.000 |
+| 153 | 231 | 335 / 263 | 0.028 | 0.43 | 1.000 |
+| 140 | 218 | 450 / 350 | 0.051 | 0.48 | 1.000 |
+| 117 | 195 | 746 / 350 | 0.051 | 0.36 | 1.000 |
+| 106 | 178 | 721 / 387 | 0.054 | 0.34 | 1.000 |
+| 90  | 168 | 743 / 451 | 0.056 | 0.29 | 1.000 |
+
+H1 predicted enrichment **> 1.0 rising with dose**. Measured: **0.29-0.48,
+i.e. 2-3x LESS than area-proportional, falling as the patch grows**, with
+hotspot engagement **1.000 at every rung** — cutting 168 -> 90 residues cost
+no epitope contact at all. A fresh hydrophobic face did not attract
+hotspot-conditioned RFD3 backbones. Note the scope of that claim: RFD3 is
+STEERED by `select_hotspots`, so this measures whether exposure diverts a
+conditioned binder, not whether it would attract an unconditioned one.
+
+**Two facts kill the original two-point dose plan below.** First, the dose
+axis has little signal left to find at the design stage. Second, and worse,
+comparing rung 207 against rung 90 varies exposure, target size, token count
+AND segment count together, so any yield difference is uninterpretable —
+"smaller target is an easier design problem" predicts the same result.
+
+**The feasibility number that shapes the replacement**: at the top rungs
+~290/300 designs touch the patch at all, but the MEDIAN patch contact
+fraction is 0.056 — about 2 of 36 target contacts. So "contacting vs not" is
+not a contrast. Designs with >= 3 patch residues number 42 / 40 / 29 / 21 / 9
+at rungs 90 / 106 / 117 / 140 / 153, which is enough for a per-rung split at
+the three highest rungs.
+
+**Design: within-rung, patch-heavy vs patch-light, matched.**
+
+- **Unit**: an RFD3 design. Primary analysis is design-level (best refold per
+  design, the way `binder_ranking` already picks); refold-level is secondary,
+  because 4 sequences off one backbone are correlated.
+- **Arms**: top ~40 designs by patch contact fraction against 40 matched
+  patch-light designs FROM THE SAME RUNG — so target size, token count,
+  contig, segment count and `max_chainbreaks` are identical by construction.
+  That is the whole point of pairing within a rung.
+- **Matching** (nearest-neighbour, in this order): binder length,
+  design-stage `hotspot_engagement`, RFD3 clash count, chainbreak count.
+- **Rungs**: 6VJJ 90 / 106 / 117 (the three with >= 29 patch-heavy designs),
+  plus rung 168 — the no-trim control — as 100 unmatched designs for a
+  baseline quality distribution. Repeat on 3KYS once that ladder lands,
+  choosing its rungs by NEAR-epitope exposure, which is the H2 question 6VJJ
+  cannot answer.
+- **Measured per refold** via `binder_metrics` (not a second implementation):
+  `iptm`, `binder_rmsd_dock`, `binder_plddt`, `hotspot_engagement`,
+  gate-pass, and **patch-contact survival** — the fraction of design-stage
+  patch contacts still present in the refold, remapped through the sidecar's
+  `diffused_index_map` (never the spec).
+- **Statistics**: Mann-Whitney U on iptm / dock-RMSD; gate-pass rate ratio
+  with a Wilson interval.
+
+**Cost, from the pipeline's own size laws** at the measured 0.79 prefilter
+rate and `n_seq = 4`:
+
+| set | tokens | designs | refolds | GPU-h | disk |
+|---|---|---|---|---|---|
+| 6VJJ rung 90 | 168 | 80 | 253 | 0.50 | 0.20 GB |
+| 6VJJ rung 106 | 178 | 80 | 253 | 0.55 | 0.21 GB |
+| 6VJJ rung 117 | 195 | 80 | 253 | 0.64 | 0.25 GB |
+| 6VJJ rung 168 (control) | 246 | 100 | 316 | 1.16 | 0.43 GB |
+| **6VJJ total** | | **340** | **1,074** | **2.86** | **1.09 GB** |
+| + 3KYS equivalent (198-286 tok) | | | | ~4.6 | ~1.8 GB |
+
+**~7.5 GPU-h for both ladders** — against 26.4 for the full original Phase B
+and 7.7 for its two-point restriction, while answering the sharper question.
+
+**Power** (normal approximation, two-sided alpha 0.05, power 0.80): at a 0.18
+baseline gate-pass rate, design-level 40+40 per rung pooled to ~120/arm
+detects a drop to **0.06**; the secondary refold-level test at ~380/arm
+detects **0.10**. Anything subtler than that is out of reach at this cost and
+should not be claimed.
+
+**Pre-registered decision rule** — written before the refolds run, so the
+result cannot be rationalised afterwards:
+
+1. **If patch-heavy designs are NOT worse** (no significant iptm / dock
+   difference, gate-pass ratio interval containing 1.0) **and patch contacts
+   do not survive refolding**: `MAX_EXPOSED_HYDROPHOBIC` rises from 2 to the
+   largest patch actually tested without effect (rung 90's 17 residues /
+   ~1,190 A^2), and `EXPOSED_HOTSPOT_CLEARANCE_A` drops from 10 A to the
+   smallest near-epitope distance tested without effect. Both become
+   `trim_target` kwargs with the measurement in the docstring.
+2. **If patch-heavy designs ARE worse**: the guards stay, and the glue track
+   needs a trim strategy that does not open patches — which is stage 4's
+   two-chain trim problem, and it gets harder, not easier.
+3. **If contacts survive but quality is unaffected**: the guards stay as a
+   RANKING input rather than a refusal — a patch contact becomes a scored
+   liability like `neg_rosetta_vbuns`, not a gate.
+4. **Either way**, no threshold moves on the 6VJJ ladder alone: 3KYS's
+   near-epitope exposure is the case the 10 A clearance exists for.
+
+### Phase B as originally planned — SUPERSEDED, kept for the numbers
+
 
 At the measured 3KYS prefilter rate of 0.829 and `n_seq = 4`:
 
