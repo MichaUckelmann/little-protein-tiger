@@ -498,7 +498,33 @@ gemmi; I reproduced both before changing anything, and measured that 63 of the
   Hydrophobic Groove — 9 of 45" against "Central Hydrophobic Core — 9 of 18").
   Two identical code paths, two different answers.
 
-- **NEW, not fixed: `--start-from binder_spec` re-paid for an LLM stage.**
+- **FIXED (2026-09-13): a single site adopts the interface analysis already
+  on disk.** `_run_site_trials` called `_stage_binder_interface`
+  unconditionally, and `--stop-after spec|trial` routes into it
+  (`pipeline_runner.py:5634`) — so a PPI-bridged run paid for a SECOND
+  `complex-structure-analysis` call after `_bridge_ppi_to_binder_track` had
+  already copied the structure stage's report to `21_interface.md` and entered
+  at `trim` specifically to avoid that. Caught live on
+  `projects/e2e_foundry_r2` round-4: the two calls disagreed about which
+  region was primary — the structure stage kept the Central Hydrophobic Core
+  and dropped the Basic/Aromatic Flank, the second call did the reverse — and
+  the spec was built from the LATER one, i.e. against the region the structure
+  stage had rejected (`A240, A242, A246, A249, A274, A276, A391, A402, A404,
+  A406`). `_prepared_site` reuses that spec on every resume, so the divergence
+  would have outlived the run that made it, and `--stop-after spec` — which
+  exists to preview the campaign — was previewing a different one. The $0.09
+  per call was the lesser half.
+  Single-site only: with `--trial-sites N` each site is a different epitope and
+  must get its own analysis. Verified live (ledger delta 0, spec rebuilt on the
+  Core: `A314, A318, A319, A320, A322, A346, A350, A366, A368`) and by
+  `tests/test_site_interface_adoption.py`.
+  **Not a regression**: `mesothelioma_showcase` and `e2e_boltzgen` used
+  `--stop-after calibration`, took the dispatched single-site route, and their
+  ledgers carry one `structure` call and zero duplicate `interface` calls.
+
+- **The earlier note below is the same defect, found from the other end.**
+
+- **`--start-from binder_spec` re-paid for an LLM stage.**
   The same resume spent a fresh `interface` call rather than reading the
   artifact already on disk — `projects/a344_fix_check/ledger.jsonl` carries
   two `interface` entries (11:15 and 15:55 UTC) for one campaign, and the

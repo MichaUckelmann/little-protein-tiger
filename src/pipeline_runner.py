@@ -5236,6 +5236,71 @@ class PipelineRunner:
                 result.go_recommendation = go
         return handoff
 
+    def _adopt_parent_interface(
+        self, dirs: dict[str, Path], site_dirs: dict[str, Path],
+        site_intel: dict[str, str], result: PipelineResult,
+    ) -> str | None:
+        """The interface analysis ALREADY on disk, adopted for a single site.
+
+        `--stop-after spec|trial` routes into `_run_site_trials` (see its
+        caller), which used to call `_stage_binder_interface` unconditionally.
+        On a PPI-bridged run that is a SECOND `complex-structure-analysis`
+        call: `_bridge_ppi_to_binder_track` has already copied the structure
+        stage's own report to the parent `21_interface.md` and entered at
+        `trim` precisely so the analysis is not paid for twice.
+
+        Measured on `projects/e2e_foundry_r2` round-4 (2026-09-13), which is
+        what found this: the two calls DISAGREED about which region was
+        primary — the structure stage kept the Central Hydrophobic Core and
+        dropped the Basic/Aromatic Flank, the second call did the reverse —
+        and the spec was built from the later one, i.e. against the region the
+        structure stage had rejected. `_prepared_site` then reuses that spec on
+        every resume, so the divergence would have outlived the run that made
+        it. Cost was the lesser half ($0.09 a call); a preview that previews a
+        different campaign is the real defect, since `--stop-after spec` exists
+        to show what the GPU run will do.
+
+        Single-site ONLY, and the caller enforces that: with `--trial-sites N`
+        each site is a DIFFERENT epitope and must get its own analysis — that
+        is the whole point of comparing sites on measured yield.
+
+        Returns the hotspot JSON, or None when there is nothing to adopt (a
+        `--workflow binder` run with no prior artifact), in which case the
+        caller runs the stage as before.
+        """
+        src_path = dirs["binder"] / self._BINDER_STAGE_FILES["interface"]
+        if not src_path.exists():
+            return None
+        text = src_path.read_text(encoding="utf-8")
+        handoff = self._parse_handoff(text)
+        hotspots_json = self._parse_hotspot_residues(text, handoff)
+        if not hotspots_json:
+            # A file that exists but yields no table is a real problem, and
+            # re-running the stage is the right recovery — not a hard failure.
+            logger.warning(
+                f"  {src_path.name} has no parsable MODEL-READY HOTSPOTS "
+                f"table; running the interface stage instead of adopting it")
+            return None
+
+        pdb_id = (handoff.get("pdb_id") or site_intel.get("pdb_id") or "")
+        # The guards `_stage_binder_interface` would have run. An adopted
+        # artifact is exactly the case a stale file could poison, and both
+        # checks read files already on disk.
+        self._verify_target_chain_assignment(site_intel, handoff, pdb_id)
+        self._verify_hotspot_grounding(hotspots_json, pdb_id)
+
+        dst = site_dirs["binder"] / self._BINDER_STAGE_FILES["interface"]
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(text, encoding="utf-8")
+        result.stage_files["interface"] = dst
+        result.hotspot_residues_json = hotspots_json
+        n = len(json.loads(hotspots_json).get("residues", []))
+        logger.info(
+            f"  adopting the interface analysis already on disk "
+            f"({src_path}) — {n} hotspot(s), no second LLM call. The epitope "
+            f"is the one the upstream stage chose.")
+        return hotspots_json
+
     def _run_site_trials(
         self,
         intel: dict[str, str],
@@ -5302,8 +5367,17 @@ class PipelineRunner:
                         f"site {site_id}: reusing the prepared spec "
                         f"({spec.name}, contig {trim.contig})")
                 else:
-                    _, hotspots_json = self._stage_binder_interface(
-                        site_intel, site_dirs, site_result)
+                    # One site: adopt whatever analysis is already on disk
+                    # rather than paying for a second, possibly DIFFERENT one.
+                    # Several sites: each is its own epitope, so each needs
+                    # its own analysis.
+                    hotspots_json = (
+                        self._adopt_parent_interface(
+                            dirs, site_dirs, site_intel, site_result)
+                        if len(sites) == 1 else None)
+                    if hotspots_json is None:
+                        _, hotspots_json = self._stage_binder_interface(
+                            site_intel, site_dirs, site_result)
                     trim = self._stage_trim(site_intel, hotspots_json, site_dirs,
                                             site_result)["result"]
                     spec = self._stage_binder_spec(site_intel, hotspots_json,
