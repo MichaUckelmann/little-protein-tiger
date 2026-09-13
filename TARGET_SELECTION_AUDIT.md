@@ -289,24 +289,165 @@ chain P (GLP-1, auth 7-37) really has ALA30/GLY35/ARG36/GLY37; chain R
 (GLP-1R, auth 29-421) really has VAL30/THR35/VAL36/GLN37. So every residue is
 correct on its own chain and the run still hard-failed grounding.
 
-**Agent `a7409bc393a05d960` was dispatched to design the multi-chain glue
-pipeline with 5VAI as the test case and its report has NOT been seen.** It was
-asked about: a backward-compatible data shape and every consumer; whether an
-RFD3 contig can express two target chains and what that does to
-`max_chainbreaks`; whether BoltzGen's label_seq-based `binding:`/`res_index:`
-expresses it more naturally; what breaks in scoring (`hotspot_engagement`,
-`binder_rmsd_dock`, chain-pair iPTM indexing at `[0][1]`, RFD3's
-binder=A/target=B convention with a three-chain output); the alternative of
-merging two chains into one pseudo-chain; and a staged plan. Note 5VAI chain R
-alone is 387 modelled residues, far over the 220 budget, so this specific case
-may not be feasible without a hard trim.
+**DESIGNED — agent `a7409bc393a05d960`, report received 2026-09-13.**
+Medium change: ~6 files, ~10 functions, 250-350 lines. Not started; the
+framing decision below wants a human yes before anyone writes it.
+
+**The recommended framing: merge at the CONTIG, not in the file.** Keep the
+trimmed structure a genuine two-chain file with author numbering intact
+(`write_trimmed` already writes any number of chains with any residue subsets
+— it needs NO change) and emit `70-86,/0,R29-128,P7-37`, with no `/0` between
+the two target chains. Read out of foundry's own source
+(`rfd3/inference/input_parsing.py:1319-1324`): `/0` is the chain-INCREMENT
+token, and components not separated by one accumulate into the same output
+chain with a monotonically increasing res_id, whatever input chain they came
+from. So RFD3 merges the two target chains ITSELF, and the input->output
+mapping stays recorded per residue in the sidecar's `diffused_index_map`.
+Confirmed empirically on the shipped 3-segment YAP1/TEAD1 campaign:
+`contig: "70-86,/0,A195-229,A239-343,A345-411"`, `extra.num_chains: 2`, map
+keys all `A*` and values all `B*`.
+
+That is what makes this affordable: the RFD3 output stays TWO chains, so
+`binder_metrics`, `binder_ranking`, the prefilter, MPNN's
+`designed_chains: ["A"]`, `_pair`'s `[0][1]`, ipSAE A-vs-B and
+`hotspots_from_rfd3(sidecar, "B")` are all **unchanged**. `max_chainbreaks` is
+correct for free, since it is derived from `trim.n_segments` — provided that
+becomes the total across both chains.
+
+**Verified, not argued: `foundry_spec.validate_spec` already handles a
+two-chain target.** The agent built a real glue spec against
+`data/structures/5VAI_ba1.cif` and ran the shipped validator unmodified:
+`spec OK: glp1r_glue_001 | binder 70-86 | 131 target residues in 2 segment(s)
+| 7 hotspots`, `target_spans: [["R",29,128],["P",7,37]]`. `parse_contig`
+returns per-chain spans and the hotspot loop already parses the chain out of
+the key. **One line in that file is the entire generator-side blocker**
+(`foundry_spec.py:120`, `_hotspot_key(target_chain, auth)`). The weak spot is
+the trim cross-check at `:309-315`, which discards the chain
+(`sorted((lo, hi) for _, lo, hi in spans)`) and would compare equal to the
+wrong thing for two chains sharing an author range.
+
+**The real work is `trim_target`.** It takes one `target_chain` and one flat
+hotspot list, and needs a per-chain trim plan: `segment_domains` + `plan_trim`
+per chain, a budget allocation across them, `kept_by_chain` ADDED ALONGSIDE
+`kept_segments` (leaving `_TrimFromDisk`, `trim_map.json` readers and every
+disrupt path byte-identical), and `build_contig` over multiple chains. Two
+guards change MEANING rather than shape:
+
+- `_exposed_hydrophobic`'s `sasa()` measures one chain in isolation in both
+  files, so for a two-chain target it cannot see a face opened by cutting the
+  OTHER chain away. Measured: keeping `R29-145 + P7-37` reports 0 newly
+  exposed hydrophobics on chain P by construction, though chain P residues
+  7-25 thread into the GLP-1R TM bundle that was just removed. A glue needs
+  per-chain SASA in the context of the whole kept assembly.
+- `min_bsa_retention` measures target-vs-partner, and for a glue both chains
+  ARE the target — the R<->P interface is the thing being stabilised, not
+  discarded. Measuring that interface before and after is the single most
+  important glue-specific trim guard and it does not exist.
+- `MIN_TARGET_RESIDUES = 80` must apply to the total; chain P's 31 residues
+  fail it individually.
+
+**5VAI is feasible on size and geometry, and blocked on two other things.**
+A clean trim exists at **R29-128 + chain P whole = 131 residues** (2 newly
+exposed hydrophobics away from the epitope, 0 near — passes). The measured
+boundary scan is worth keeping, because the obvious cut fails:
+
+| trim | residues | R exposed (away/near) | P (away/near) |
+|---|---|---|---|
+| R29-128 + P7-37 | 131 | 2 / 0 PASS | 0 / 0 |
+| R29-135 + P7-37 | 138 | 2 / 0 PASS | 0 / 0 |
+| R29-145 + P7-37 | 148 | 5 / 0 FAIL (TYR145 +189 A^2) | 0 / 0 |
+| R29-128 + P26-37 | 112 | 2 / 0 | 0 / **1** FAIL (PHE28, 5.6 A from a hotspot) |
+| R29-160 + P7-37 | 163 | 12 / 0 FAIL | 0 / 0 |
+
+Cutting at 145 — the textbook ECD boundary — fails, and cutting chain P at all
+fails. **Unverified and worth one call before writing code**: whether
+`plan_trim`'s segmenter lands on 128 or on ~145. CA-CA across the two patches
+is 9.9-16.3 A, which a 70-86mer spans trivially.
+
+**Blocker: 5VAI models no sidechains.** It is 3.3 A cryo-EM and every glue
+hotspot carries backbone + CB only, so the skill's `CD2,CZ` / `CG,OD1` /
+`CZ,NH1` do not exist and `validate_spec` refuses the spec correctly. Re-run
+with `CB,CA` passes, but a 5-of-7 backbone-only hotspot set is a weak steer.
+The better answer is a better entry — that run's own pathway checkpoint
+already lists `human_alternatives: ['27XK','3C59','3C5T','3IOL','4ZGM']`, and
+the GLP-1R **ECD-only** X-ray complexes are higher resolution AND already
+inside the residue budget. So `_select_designable_structure` should prefer a
+small, high-resolution entry containing BOTH partners when
+`design_intent: stabilize`. **And a "this structure models no sidechains"
+guard is worth adding regardless of glue work** — one pass over the contig
+span, and it would have saved this run an LLM stage.
+
+**The scoring gap is scientific, not mechanical, and it is where a glue
+campaign silently produces the wrong molecule.** `hotspot_engagement` is a
+pooled fraction gated at 0.75, so with 7 hotspots a design engaging one side
+heavily and the other barely still passes — **nothing in the gate set
+distinguishes a glue from an ordinary competitive binder that happened to grab
+one partner.** The fix is cheap because the input chain SURVIVES the merge
+inside `diffused_index_map` (keys are input-numbered `"R66"`/`"P30"`, values
+output-numbered `"B1"`/`"B57"`): have `hotspots_from_rfd3` also return
+output-resid -> input-chain, emit `hotspot_engagement_target` /
+`_partner`, and gate on `min(...)` rather than the pool. Also promote
+`target_rmsd` to a gate — under the merge it fits on the whole R+P assembly,
+so a refold that lets the partner slip out of the groove shows up. **The one
+way to break 119 existing runs**: a column absent from a record FAILS its
+criterion (`binder_ranking.py:169-173`), so both new gates must ship `null`
+and be set per-run.
+
+**BoltzGen expresses a glue more naturally and is still not the first step.**
+Its `include` and `binding_types` are both LISTS of per-chain entries
+(`boltzgen/data/parse/schema.py:1888-1976`, `:2187-2210`) with chain-relative
+1-based indices, which is exactly what `boltzgen_residue_indices` already
+returns per chain — ~60 lines, no invented format, and it keeps the two target
+chains DISTINCT in the output, so the R<->P chain-pair confidence a glue is
+actually about survives. RFD3's merge destroys that (though it is recoverable
+from the raw PAE: `ipsae_from_pae_matrix` takes a bare N x N matrix and
+synthesises `token_chain_ids`, so given the index map an R-half-vs-P-half
+ipSAE is a handful of lines). First campaign still goes on foundry, because
+that is where the validated stage machine and every calibrated threshold are.
+
+**Rejected: merging the two chains in the trimmed FILE.** It breaks author
+numbering — which every trim preserves deliberately, and which
+`_verify_hotspot_grounding` needs — makes `trim_map.json`'s
+`identity_numbering: True` a lie, and for 5VAI the ranges collide (R29-128 vs
+P7-37 overlap at 29-37) so chain P would have to be offset, at which point the
+skill's own hotspot ids no longer address the structure. **Also rejected for
+now: three output chains** (`/0` between the targets). Scientifically the most
+honest, but it reworks 8 functions in the one module every threshold in
+`config.yaml` was calibrated against on two-chain complexes — that is how you
+silently invalidate 13 campaigns of calibration. Get it via BoltzGen instead.
+
+**Deferred, explicitly: apo-vs-holo.** The only real proof a glue glues is
+folding R+P WITHOUT the binder and comparing. That is a second fold per design
+and a new stage. Until it exists, the summary the design-analyst sees must say
+so, so nobody reads a passing glue campaign as demonstrated stabilisation.
+
+**Two findings were NOT glue-specific and are FIXED (`9965bb6`)** — see the
+"Related, smaller" list below, which they came out of: the absent-residue and
+absent-chain fail-opens in `_verify_hotspot_grounding`, and
+`_resolve_unverified_label_seq_ids` rewriting a row's label from another
+residue's map. The agent found the second by checking the 5VAI report against
+gemmi; I reproduced both before changing anything, and measured that 63 of the
+67 stage reports on disk with a local structure are unaffected.
 
 ### 5. Related, smaller
 
-- `_verify_hotspot_grounding`'s message blames numbering when the real cause
-  may be the wrong chain. It should search the OTHER chains before erroring:
-  "these four residues match chain P exactly; your target_chain is R" is a
-  diagnosis. The 5VAI case sent me looking for an offset that did not exist.
+- **FIXED (`9965bb6`).** `_verify_hotspot_grounding`'s message blamed
+  numbering when the real cause was the wrong chain; it now searches the other
+  chains and names the one that carries every claimed residue under its
+  claimed name. Two fail-opens went with it — an ABSENT residue used to hit a
+  `continue` and count as agreement (`div_wildcard_tnbc`, chain U's 447-453
+  under `target_chain: A`, which then poisoned `_check_ortholog_conservation`
+  into a `fraction_conserved: 0.625` over six residues that do not exist), and
+  an absent target CHAIN landed in the "could not read the file" except branch
+  because `get_sequence_map` returns `{"error": ...}` rather than raising
+  (`div_standard_tuberculosis`, 11 hotspots on a chain A that 3FLN has never
+  had — it has one chain, C). Also fixed:
+  `_resolve_unverified_label_seq_ids` warned on a residue-name mismatch and
+  then overwrote the label anyway, with the label of whatever residue the
+  target chain has at that auth id — on 5VAI's glue table it replaced chain
+  P's correct 24/29/30/31 with chain R's 69/74/75/76. Measured first: 63 of the
+  67 stage reports on disk with a local structure are clean, and the 4
+  affected come from the two runs above, both of which already failed.
 - For a GENUINE offset, alignment-based remapping is feasible and safe:
   `structure_tools.sequence_identity` (BLOSUM62 local) already exists and
   `_chain_identity_to_uniprot` already aligns modelled residues to a UniProt
