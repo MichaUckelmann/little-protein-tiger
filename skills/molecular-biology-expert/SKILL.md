@@ -64,8 +64,8 @@ If the target is ambiguous (e.g., "KRAS" without specifying which effector), ask
 user to clarify before proceeding.
 
 **Common name normalisation:** Use canonical protein names in queries. Examples:
-- YAP1 / YAP / hYAP → "YAP"
-- TEAD1/2/3/4 → "TEAD" (search broadly, then filter to isoform if needed)
+- TP53 / p53 / hp53 → "p53"
+- JAK1/2/3 → "JAK" (search broadly, then filter to isoform if needed)
 - p53 / TP53 / tumor protein p53 → "p53"
 
 ---
@@ -424,13 +424,13 @@ Rules for `### PIPELINE HANDOFF`:
   - `mode`: `"ppi_interface"` (for disrupt / stabilize) or `"single_protein_pocket"` (for inhibit_active_site)
   - `target_protein`: the protein whose surface the binder engages
   - `priority_residues`: array of residue identifiers from the corpus (numbers and/or one-letter+number, e.g. `["F69", "L91", "R89"]` or `["245", "247", "250"]`); leave empty `[]` if literature gave no specific residues
-  - `notes`: short string explaining the source of the residues AND the numbering convention used. If the literature numbers are from a paralog, from another species' ortholog, or from a full-length canonical sequence while the PDB structure may be a truncated construct or a different family member, say so. Examples: `"alanine scan ΔΔG > 2 kcal/mol from doi:..., YAP1 numbering"`, `"hTEAD4 canonical numbering — mapping to PDB target chain must be confirmed by structure stage"`, `"catalytic triad from inhibitor co-crystal doi:..."`.
+  - `notes`: short string explaining the source of the residues AND the numbering convention used. If the literature numbers are from a paralog, from another species' ortholog, or from a full-length canonical sequence while the PDB structure may be a truncated construct or a different family member, say so. Examples: `"alanine scan ΔΔG > 2 kcal/mol from doi:..., <partner> numbering"`, `"<target> canonical numbering — mapping to PDB target chain must be confirmed by structure stage"`, `"catalytic triad from inhibitor co-crystal doi:..."`.
 
-  Example: `- target_site_hint: {"mode":"ppi_interface","target_protein":"TEAD4","priority_residues":["F69","L91","R89"],"notes":"Alanine scan ΔΔG > 1.5 kcal/mol from doi:10.7554/eLife.25068; YAP1 numbering"}`
+  Example (placeholder names — substitute your own): `- target_site_hint: {"mode":"ppi_interface","target_protein":"GENE_B","priority_residues":["L24","W57","K61"],"notes":"Alanine scan ΔΔG > 1.5 kcal/mol from doi:...; GENE_A numbering"}`
 
 **Residue-numbering guardrail.** Do NOT claim that residue numbers from one
-paralog (e.g. hTEAD4 D272) map directly to another paralog (e.g. hTEAD1 in
-PDB 3KYS) without structural verification. TEAD1/2/3/4 share high sequence
+paralog map directly onto another paralog, or onto a specific PDB entry,
+without structural verification. Close paralogs share high sequence
 identity but have offset numbering when crystallised as truncated
 constructs; literature numbers are corpus-side identifiers, not PDB
 auth_seq_ids. State the numbering convention in `target_site_hint.notes`;
@@ -484,7 +484,7 @@ traced to a DOI and then to a `source_span` within the full fingerprint.
   `doi:` prefix.
 - **Residue name normalisation.** When cross-referencing structure-tools hotspots
   against fingerprint `key_amino_acid_residues`, treat "Phe69", "F69", "PHE 69",
-  and "hYAP Phe69" as equivalent. Match on residue number + one-letter or three-letter
+  and "hTP53 Arg273" as equivalent. Match on residue number + one-letter or three-letter
   amino acid code.
 - **Corpus bias.** The corpus is focused on biochemistry and biophysics. In vivo
   validation, clinical data, and ADMET properties are rarely in the corpus — flag

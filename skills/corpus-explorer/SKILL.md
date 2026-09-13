@@ -57,7 +57,7 @@ supporting DOIs + tightest Kd/Ki.
 `human_only: bool = True` and `taxa: list[int] | None = None`. The default
 is correct for ~90% of queries — it restricts results to proteins that
 sprint 2 resolved to a human gene symbol (covers human-native AND
-ortholog-mapped, e.g. mouse Yap1 → YAP1). Yeast / bacterial / Drosophila
+ortholog-mapped, e.g. mouse Trp53 → TP53). Yeast / bacterial / Drosophila
 proteins are excluded.
 
 When to override:
@@ -286,12 +286,12 @@ distinguishing absence-of-evidence from evidence-of-absence. Examples:
 > measurement not existing. A targeted PubMed search for "MYBPC3 titin SPR"
 > would clarify.
 
-> No corpus papers report YAP1 → AMOTL2 direct binding; YAP1 → AMOT and
-> YAP1 → AMOTL1 are both present. AMOTL2 may genuinely not have been
+> No corpus papers report GENE_A → GENE_X direct binding; GENE_A → GENE_Y and
+> GENE_A → GENE_Z are both present. GENE_X may genuinely not have been
 > assayed, or the curated corpus may have skipped the relevant paper.
 
 Skip this section for trivial single-fact lookups (e.g. "what's the Kd of
-YAP1/TEAD4?" answered with one number).
+GENE_A/GENE_B?" answered with one number).
 
 ## Proposing search keywords for corpus extension
 
@@ -365,8 +365,8 @@ End the keyword block with a one-line action hint:
   pharmacokinetic data are sparse. Flag their absence explicitly rather
   than treating the corpus as exhaustive.
 - **Aliases vary across fingerprints.** `get_interactions_for` already
-  normalises ("YAP" matches "YAP1"), but when the user names a paralog
-  family ("TEAD"), expect partners to span multiple paralogs — clarify
+  normalises ("JAK" matches "JAK1"), but when the user names a paralog
+  family ("JAK"), expect partners to span multiple paralogs — clarify
   with the user if it matters which one.
 - **`[uncited]` is allowed and encouraged.** Don't withhold useful
   background knowledge just because no corpus paper supports it; tag it

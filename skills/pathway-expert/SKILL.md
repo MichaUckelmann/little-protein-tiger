@@ -18,7 +18,7 @@ description: >
   complex-structure-analysis (provides PDB ID + binding mode). Requires literature-db
   MCP server.
   Trigger on: "which target in", "pathway analysis for", "what to target in",
-  "disease mechanism", "KRAS pathway in", "Hippo pathway in", "what's dysregulated in",
+  "disease mechanism", "<pathway> pathway in", "what's dysregulated in",
   "target selection for", "which node should we target", or any question pairing a
   pathway name with a disease or cancer subtype without specifying a PDB or protein pair.
 ---
@@ -47,7 +47,7 @@ target (PPI or direct-inhibition) and PDB ID(s) ready to pass downstream.
 ## Phase 1: Extract Context from User Input
 
 Identify:
-- `disease_or_cancer` — e.g. "mesothelioma", "PDAC", "NSCLC", "HCC", "AML", "Alzheimer's", "rheumatoid arthritis"
+- `disease_or_cancer` — e.g. "PDAC", "NSCLC", "HCC", "AML", "Alzheimer's", "rheumatoid arthritis", "idiopathic pulmonary fibrosis"
 - `pathway_hint` — optional; a pathway name supplied by the caller. Use it only if
   given; never invent one, and never carry an example from this prompt into a report.
 - `constraint` — optional; e.g. "focus on extracellular PPIs", "cyclic peptide accessible"
@@ -134,8 +134,9 @@ biochemistry papers have incidental pathway context in their situational_context
 
 ### Graph tools — use before declaring the corpus thin
 
-For any disease pathway involving well-known central nodes (KRAS pathway, cGAS-STING,
-JAK/STAT, Hippo, Wnt, etc.) the literature corpus is almost certainly **not** the
+For any disease pathway involving well-known central nodes (a canonical growth,
+innate-immune, cytokine or developmental signalling axis) the corpus is almost
+certainly **not** the
 limiting signal — but `search_corpus` with small `top_k` can miss it. Before
 concluding that the corpus is sparse on the pathway, run at least one of:
 
@@ -183,7 +184,7 @@ any of the Phase 2 query strings. These are high-value expansion candidates:
 | `pathway_context.target_nodes[].protein` | Gene symbols of newly surfaced target proteins |
 | `pathway_context.upstream_regulators` | Regulator gene/protein names not in original query |
 | `pathway_context.downstream_effectors` | Effector gene/protein names not in original query |
-| `pathway_context.disease_associations[].mutation_frequency` | Specific mutation types (e.g. "NF2 loss", "LATS1/2 deletion") |
+| `pathway_context.disease_associations[].mutation_frequency` | Specific mutation types (formatted "<GENE> loss", "<GENE> amplification", "<GENE> fusion") |
 
 **Always run Phase 3.5.** The only exception is when Phase 2 returned ≥ 12 unique papers
 with scores ≥ 0.40 — in that case the corpus is saturated and expansion yields diminishing
@@ -495,14 +496,18 @@ Rules for `### PIPELINE HANDOFF`:
 - `structure_query` is the verbatim query string passed to complex-structure-analysis by the programmatic orchestrator; make it self-contained (include the local file path `data/structures/{pdb_id}.cif`).
 - `choices_json` must be a single-line JSON array listing every candidate from TARGET OPPORTUNITY LANDSCAPE in the same order. Each element has exactly these keys:
   - `tier`: one of `"VALIDATED"`, `"BIOLOGICALLY_JUSTIFIED"`, `"PATHWAY_INFERRED"`, or `"DIRECT_INHIBITION"`
-  - `complex`: the protein pair name exactly as written in the `####` header (e.g. `"YAP1 / TEAD4"`). For DIRECT_INHIBITION candidates, the single-protein label (e.g. `"DPP4 (active site)"`)
+  - `complex`: the protein pair name exactly as written in the `####` header (formatted `"GENE_A / GENE_B"`). For DIRECT_INHIBITION candidates, the single-protein label (formatted `"GENE_A (active site)"`)
   - `pdb_ids`: array of PDB accession strings from corpus only — empty array `[]` if none found
   - `evidence_basis`: one sentence summary of the evidence (no newlines, no quotes inside the string)
   - `key_uncertainty`: one sentence summary of the key uncertainty (no newlines, no quotes inside the string)
   - `design_intent`: `"disrupt"`, `"stabilize"`, or `"inhibit_active_site"` from Phase 4a reasoning for this candidate
 
-  Example (must be on ONE line, no line breaks inside):
-  `- choices_json: [{"tier":"VALIDATED","complex":"YAP1 / TEAD4","pdb_ids":["5GN0","8J9A"],"evidence_basis":"Mesothelioma xenograft regression confirmed upon YAP-TEAD inhibition.","key_uncertainty":"TAZ paralog redundancy may require dual targeting."},{"tier":"BIOLOGICALLY_JUSTIFIED","complex":"NF2 / LATS1","pdb_ids":[],"evidence_basis":"CRISPR dependency confirmed in NF2-null cell lines.","key_uncertainty":"No structural data in corpus."}]`
+  Example (must be on ONE line, no line breaks inside). The gene names below
+  are DELIBERATE PLACEHOLDERS, not candidates — this example shows the SHAPE
+  of the field and nothing about which target to pick. Substitute the
+  proteins your own analysis arrived at; if `GENE_A` ever appears in a report
+  it means an example was copied instead of answered.
+  `- choices_json: [{"tier":"VALIDATED","complex":"GENE_A / GENE_B","pdb_ids":["1ABC","2DEF"],"evidence_basis":"One sentence from the corpus, citing the strongest evidence for this pair.","key_uncertainty":"One sentence naming what would falsify it.","design_intent":"disrupt"},{"tier":"BIOLOGICALLY_JUSTIFIED","complex":"GENE_C / GENE_D","pdb_ids":[],"evidence_basis":"One sentence; e.g. a genetic dependency with no structure in corpus.","key_uncertainty":"No structural data in corpus.","design_intent":"disrupt"}]`
 
   Use straight double-quotes only. No trailing commas. Escape any double-quote inside a string value as `\"`.
 

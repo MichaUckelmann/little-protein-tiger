@@ -150,7 +150,7 @@ _TOOL_DEFS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Gene symbols of proteins to look up, e.g. ['YAP1', 'TEAD4', 'NF2']. "
+                        "Gene symbols of proteins to look up, e.g. ['GENE_A', 'GENE_B']. "
                         "Include all proteins from all candidate PPIs in one call."
                     ),
                 },
@@ -176,7 +176,7 @@ _TOOL_DEFS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Gene symbols of proteins to search for, e.g. ['YAP1', 'TEAD4']. "
+                        "Gene symbols of proteins to search for, e.g. ['GENE_A', 'GENE_B']. "
                         "Focus on the primary target proteins — 2–3 gene symbols is sufficient."
                     ),
                 },
@@ -369,7 +369,8 @@ _TOOL_DEFS: list[dict[str, Any]] = [
             "quantitative anchors (Kd / Ki) from the same key_findings entry. "
             "Reach for this tool early on 'which proteins interact with X?' questions — "
             "search_corpus misses the long tail because top-k is small. Aliases are "
-            "normalised (YAP matches YAP1 / hYAP); paralogs stay distinct."
+            "normalised (a family head matches its numbered member); paralogs stay "
+            "distinct."
         ),
         "parameters": {
             "type": "object",
@@ -492,7 +493,7 @@ _TOOL_DEFS: list[dict[str, Any]] = [
             "Returns the four input counts (mentions, pdb_papers, prior_targeting, "
             "quantitative_findings) alongside the score so a reviewer can recompute "
             "by hand. Use during wildcard-expert Phase 2.5 to triage candidates: "
-            "well-characterised targets (TP53, KRAS, YAP1) score near 0.0; novel "
+            "well-characterised targets (e.g. TP53, KRAS) score near 0.0; novel "
             "or under-explored proteins score near 1.0. Do NOT hard-threshold — "
             "paralog-substring matching can inflate counts for short queries; "
             "check the caveats field."
@@ -510,7 +511,7 @@ _TOOL_DEFS: list[dict[str, Any]] = [
         "description": (
             "Write a depth-bounded interaction neighbourhood around seed proteins "
             "to disk as Cytoscape.js JSON for visual exploration. Each seed expands "
-            "to all matching nodes (seed 'TEAD' pulls TEAD1/2/3/4). The graph goes "
+            "to all matching nodes (a family-head seed pulls every paralog). The graph goes "
             "to disk, not the conversation — only a small confirmation dict is "
             "returned. Use when the user asks for a visual / external view of an "
             "interaction neighbourhood. Optional `with_depmap=True` attaches "

@@ -8,7 +8,7 @@ description: >
   carries the biology the user asked to disrupt or stabilise. Invoke ONLY as
   stage 0 of the binder workflow, when the target is already named and no
   literature discovery is wanted (e.g. "design binders against KRAS", "design
-  binders to TEAD1 to disrupt downstream interactions"). Do NOT invoke for
+  binders to <TARGET> to disrupt downstream interactions"). Do NOT invoke for
   disease-first questions (use pathway-expert) or novelty triage (wildcard-expert).
 ---
 
@@ -67,7 +67,7 @@ Work through:
    demonstrably druggable epitope — but say so explicitly if you pick one.
 2. **Does blocking it interrupt the pathway the user named?** For "disrupt
    downstream interactions", prefer the interface the target uses to *recruit or
-   activate its effector* (KRAS→RAF1 RBD; TEAD1→YAP1) over one that merely
+   activate its effector* (e.g. KRAS→RAF1 RBD) over one that merely
    involves the target.
 3. **Is the target chain tractable?** Prefer a chain within the residue budget
    given in the query, at good resolution, with a compact contiguous interface.

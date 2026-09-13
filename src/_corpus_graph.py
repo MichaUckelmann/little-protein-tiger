@@ -136,8 +136,8 @@ def get_interactions_for(
     caveats = [
         "Matching uses light alias normalisation (case-insensitive, species "
         "prefix stripped, internal hyphens dropped) plus substring/prefix "
-        "containment — paralogs like TEAD1/TEAD2/TEAD3/TEAD4 are kept distinct, "
-        "but a query of 'TEAD' will match all of them.",
+        "containment — numbered paralogs of a family are kept distinct, but a "
+        "query naming only the family head will match all of them.",
         "Corpus is biochemistry-biased; in vivo and clinical interaction "
         "partners may be undercounted. Absence of a partner here is not "
         "evidence that the interaction does not exist in the wider literature.",

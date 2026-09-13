@@ -17,7 +17,7 @@ description: >
   "molecular glue", "PPI stabilizer", "PPI analysis", "design a binder",
   "cyclic peptide target", "mini-protein target", or when a multi-chain structure is
   provided and the user asks which surface to target. Also trigger for known complexes
-  (YAP-TEAD, PD-1/PD-L1, p53-MDM2). Requires structure-tools MCP.
+  (e.g. PD-1/PD-L1, p53-MDM2). Requires structure-tools MCP.
 ---
 
 # PPI Interface Analysis for Peptide / Mini-Protein Design
@@ -161,7 +161,7 @@ visible throughout the analysis.
 
 **Also parse `target_site_hint`** (if present in the query). It looks like:
 ```
-target_site_hint: {"mode":"ppi_interface","target_protein":"TEAD4","priority_residues":["F69","L91","R89"],"notes":"…"}
+target_site_hint: {"mode":"ppi_interface","target_protein":"GENE_B","priority_residues":["L24","W57","K61"],"notes":"…"}
 ```
 The `priority_residues` list comes from the mol-bio-expert literature pass and should
 be the authoritative starting set for hotspot selection — confirm their geometry but
@@ -207,17 +207,17 @@ Adjudication rules (apply before any geometry call):
   descriptions.
 - **MISMATCH but same protein under canonical RCSB long form** → proceed,
   note the synonymy in your report. Examples:
-  - Expected `YAP1` vs entity `"65 kDa Yes-associated protein"` → same, proceed.
-  - Expected `TEAD1` vs entity `"Transcriptional enhancer factor TEF-1"` → same, proceed.
+  - Expected `TP53` vs entity `"Cellular tumor antigen p53"` → same, proceed.
+  - Expected `CTNNB1` vs entity `"Catenin beta-1"` → same, proceed.
   - Expected `EGFR` vs entity `"Epidermal growth factor receptor"` → same, proceed.
   - Expected `ENPP1` vs entity `"Ectonucleotide pyrophosphatase/phosphodiesterase family member 1"` → same, proceed.
 - **MISMATCH = different paralogs / family members** → **NO_GO**. Emit a stub
   PIPELINE HANDOFF naming both the expected target and the actual entity.
   Examples:
   - Expected `ENPP1` vs entity `"... family member 2"` → ENPP2, NO_GO.
-  - Expected `TEAD4` vs entity `"Transcriptional enhancer factor TEF-1"` → TEAD1, NO_GO (different TEAD paralog).
+  - Expected `JAK1` vs entity `"Tyrosine-protein kinase JAK2"` → JAK2, NO_GO (different JAK paralog).
   - Expected `JAK1` vs entity for JAK2 → NO_GO.
-  - Expected `YAP1 / TEAD4` vs TAZ-TEAD complex → NO_GO (TAZ ≠ YAP1, paralog).
+  - Expected `AKT1 / <partner>` vs an AKT2 complex → NO_GO (AKT2 ≠ AKT1, paralog).
 - **MISMATCH = different species / orthologs but same gene** (e.g. mouse vs
   human ENPP1) → **proceed.** An ortholog is often the only structure that
   exists for a complex, and a site conserved between it and the human protein

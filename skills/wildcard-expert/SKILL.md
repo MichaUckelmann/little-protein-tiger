@@ -44,7 +44,7 @@ downstream pipeline.
 
 Identify:
 - `biological_context` — the system being explored. May be a disease
-  ("mesothelioma", "PDAC", "NSCLC", "HCC", "AML", "ALS", "type-2 diabetes"),
+  ("PDAC", "NSCLC", "HCC", "AML", "ALS", "type-2 diabetes", "IPF"),
   a pathway in normal physiology ("unfolded protein response",
   "DNA replication initiation", "hematopoietic stem-cell quiescence"),
   or a process ("ciliogenesis", "macroautophagy initiation", "spindle assembly
@@ -172,9 +172,10 @@ Record `novelty_score` ∈ [0, 1] and `counts.mentions` per candidate.
 **Call 3 — Connectivity to the anchor node** (for each non-anchor candidate):
 
 Identify an `anchor_node` for connectivity queries:
-- `disease_anchored` mode → the canonical driver gene of the disease (e.g.
-  YAP1 for Hippo / mesothelioma; KRAS for KRAS-driven cancers; NF2 for
-  NF2-loss tumours).
+- `disease_anchored` mode → the canonical driver gene of the disease, as
+  established by the Phase-2 fingerprints and your own knowledge. Derive it;
+  do not import one. (Where a disease is NAMED for its driver lesion, that
+  lesion is usually the anchor.)
 - `basic_biology` mode → the most-mentioned hub node in the Phase-2
   fingerprints that participates in the pathway of interest (e.g. ATG1 /
   ULK1 for autophagy initiation, PERK for the UPR).
@@ -492,8 +493,8 @@ search_corpus
   query="<pathway_hint OR anchor_node> <adjacent_context> mechanism interaction"
 ```
 Use the closest well-characterised context neighbour you identified in Phase 3:
-- Disease mode: e.g. if context is PDAC and pathway is Hippo, try "mesothelioma"
-  or "HCC".
+- Disease mode: another tumour type or indication driven by the same pathway
+  lesion as the one in context.
 - Basic-biology mode: a different tissue / cell type / developmental stage where
   the same pathway has been better characterised (e.g. UPR in plasma cells if
   the context is UPR in pancreatic β-cells).
@@ -798,8 +799,8 @@ For each candidate:
 - **Novelty rationale**: <why this is non-obvious — 1 sentence>
 - **Novelty signal**: novelty_score=<value>, classification=<SATURATED | CONNECTED-NOVEL | PERIPHERY-NOVEL | DEPMAP-COUPLED | UNCHARTED | MID-NOVEL>, DepMap max_r vs hubs=<value> with <hub>, neighbourhood top=<partner (r=<value>) or "—" if Call 7 not run>
 - **Hypothesis**: <one sentence — the mechanistic claim. "PROTEIN_X drives DISEASE via interaction with PROTEIN_Y in CONTEXT.">
-- **Predicted consequence**: <one sentence — what should happen biologically if the hypothesis is true and we disrupt the interaction. Name the cellular or molecular readout. e.g. "CTGF and CYR61 transcript reduction ≥ 50% at 24h in NF2-null cells">
-- **Falsifying readout**: <one sentence — the assay + threshold that decides. e.g. "qPCR of CTGF/CYR61 at 24h post-treatment; ≥50% reduction = consistent with hypothesis; ≤20% = falsifies">
+- **Predicted consequence**: <one sentence — what should happen biologically if the hypothesis is true and we disrupt the interaction. Name the cellular or molecular readout. e.g. "<direct transcriptional target> transcript reduction >= 50% at 24h in <relevant genotype> cells">
+- **Falsifying readout**: <one sentence — the assay + threshold that decides. e.g. "qPCR of <two direct target genes> at 24h post-treatment; >=50% reduction = consistent with hypothesis; <=20% = falsifies">
 - **Corpus support**: <for HYPOTHESIS only — what was found, or "Nothing found in corpus">
 - **Suggested PDB ID(s)**: <verbatim from fingerprint fields only; "Not found in corpus" if absent>
 
@@ -911,7 +912,7 @@ Rules for `### PIPELINE HANDOFF`:
   in the TARGET OPPORTUNITY LANDSCAPE block.
 
   Example (must be on ONE line):
-  `- choices_json: [{"tier":"PERIPHERY_NOVEL","complex":"VGLL4 / TEAD4","pdb_ids":[],"evidence_basis":"Training knowledge plus Phase-4 hit: VGLL4 competes with YAP at the TEAD interface; corpus has 2 papers in gastric cancer.","key_uncertainty":"No mesothelioma-specific evidence; whether stabilising VGLL4-TEAD displaces YAP in NF2-null context is untested.","design_intent":"stabilize","novelty_score":0.71,"classification":"PERIPHERY-NOVEL","depmap_r_to_anchor":0.33,"depmap_max_r_to_hubs":{"r":0.41,"hub":"TEAD1","n_cell_lines":1208},"depmap_neighborhood":[{"partner":"TEAD1","r":0.41,"n_cell_lines":1208,"in_corpus_graph":true,"in_hub_top20":true},{"partner":"YAP1","r":0.36,"n_cell_lines":1208,"in_corpus_graph":true,"in_hub_top20":true},{"partner":"MOB1A","r":0.32,"n_cell_lines":1208,"in_corpus_graph":false,"in_hub_top20":false}],"predicted_consequence":"VGLL4-TEAD stabilisation reduces YAP-TEAD chromatin occupancy by >50% and rescues NF2-null cell-cycle arrest.","falsifying_readout":"ChIP-seq YAP signal at canonical TEAD-binding sites 24h post-treatment; <20% reduction falsifies."}]`
+  `- choices_json: [{"tier":"PERIPHERY_NOVEL","complex":"GENE_A / GENE_B","pdb_ids":[],"evidence_basis":"Training knowledge plus Phase-4 hit: one sentence on why this pair is plausible and what the corpus does or does not have.","key_uncertainty":"One sentence naming the untested step.","design_intent":"stabilize","novelty_score":0.71,"classification":"PERIPHERY-NOVEL","depmap_r_to_anchor":0.33,"depmap_max_r_to_hubs":{"r":0.41,"hub":"GENE_B","n_cell_lines":1208},"depmap_neighborhood":[{"partner":"GENE_B","r":0.41,"n_cell_lines":1208,"in_corpus_graph":true,"in_hub_top20":true},{"partner":"GENE_C","r":0.36,"n_cell_lines":1208,"in_corpus_graph":true,"in_hub_top20":true},{"partner":"GENE_D","r":0.32,"n_cell_lines":1208,"in_corpus_graph":false,"in_hub_top20":false}],"predicted_consequence":"One sentence with a quantitative molecular readout.","falsifying_readout":"One assay plus the threshold that decides; state what falsifies."}]`
 
 ---
 

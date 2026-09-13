@@ -206,9 +206,10 @@ def get_interactions_for(
 
     Args:
         protein:      Protein name (gene symbol or common name). Matching is
-                      case-insensitive and aliases are normalised, so "YAP"
-                      will match "YAP1" / "hYAP". Paralogs are kept distinct
-                      (TEAD1 ≠ TEAD2) but a query of "TEAD" hits all four.
+                      case-insensitive and aliases are normalised, so a
+                      family head matches its numbered member. Paralogs are
+                      kept distinct, but a query naming only the family head
+                      hits every member.
         depth:        1 (default) returns direct partners only. 2 also returns
                       partners-of-partners (capped at 50).
         min_mentions: Filter out partners mentioned fewer than this many times
@@ -275,7 +276,8 @@ def shortest_interaction_path(
     questions. Use get_interactions_for instead for "what does X bind?".
 
     Args:
-        protein_a:  Source protein. Aliases are normalised (YAP matches YAP1).
+        protein_a:  Source protein. Aliases are normalised (a family head
+                    matches its numbered member).
         protein_b:  Target protein.
         max_hops:   Maximum path length in edges. Default 4.
         k:          Number of distinct shortest paths to return. Default 1.
@@ -370,8 +372,9 @@ def export_subgraph(
     """
     Export a depth-bounded neighbourhood around seed proteins as Cytoscape.js JSON.
 
-    Each seed expands to all matching nodes (so a seed of 'TEAD' pulls in
-    TEAD1/2/3/4). BFS up to `depth`; capped at `max_nodes` (BFS-order). The
+    Each seed expands to all matching nodes (so a family-head seed pulls in
+    every numbered paralog). BFS up to `depth`; capped at `max_nodes`
+    (BFS-order). The
     output file opens in Cytoscape Desktop or any Cytoscape.js viewer.
 
     Use when the user asks for a visual exploration of an interaction
@@ -564,11 +567,11 @@ def find_pdb_structures(proteins: list[str]) -> str:
     connects to your target, whereas RCSB full-text search returns anything
     whose title happens to match.
 
-    Matching is case-insensitive substring, so "YAP1" matches a stored
-    "YAP/TAZ". Queries shorter than 3 characters are ignored.
+    Matching is case-insensitive substring, so a gene symbol matches a stored
+    compound label containing it. Queries shorter than 3 characters are ignored.
 
     Args:
-        proteins: Gene symbols to look up, e.g. ["YAP1", "TEAD4", "NF2"].
+        proteins: Gene symbols to look up, e.g. ["GENE_A", "GENE_B"].
     """
     from src.skill_runner import _find_pdb_structures
 
@@ -588,11 +591,11 @@ def search_rcsb_pdb(proteins: list[str]) -> str:
 
     Results are from RCSB, NOT the corpus: nothing here is vouched for by a
     paper you have read. Check the entity descriptions actually match your
-    intended complex before using an ID — a full-text hit on "TEAD" can easily
+    intended complex before using an ID — a full-text hit on a gene symbol can easily
     be a different family member, or a fragment-screening entry.
 
     Args:
-        proteins: Gene symbols to search for, e.g. ["YAP1", "TEAD4"].
+        proteins: Gene symbols to search for, e.g. ["GENE_A", "GENE_B"].
     """
     from src.skill_runner import _search_rcsb_pdb
 

@@ -93,8 +93,8 @@ Pass the run folder path explicitly to the **protein-design-script** at Stage 4:
 Stage 0 has two variants depending on the starting point. Choose the right one:
 
 **Skip conditions — proceed directly to Stage 1:**
-- User provides a PDB ID (e.g. "PDB 3KYS")
-- User provides a protein pair (e.g. "YAP/TEAD4", "KRAS/RAF")
+- User provides a PDB ID (e.g. "PDB 1ABC")
+- User provides a protein pair (e.g. "KRAS/RAF1", "PD-1/PD-L1")
 - A PPI target has already been agreed upon earlier in the conversation
 - User provides a path to a pre-existing pathway expert or complex expert report (see below)
 
@@ -103,7 +103,7 @@ Stage 0 has two variants depending on the starting point. Choose the right one:
 ### Stage 0A: Disease → Target (pathway-expert)
 
 **Trigger**: User provides only a disease or cancer type without a specific PPI target.
-(e.g. "mesothelioma", "PDAC", "which node in the Hippo pathway?")
+(e.g. "PDAC", "NSCLC", "which node in <pathway> is most tractable?")
 
 Invoke the **pathway-expert** skill with the disease context and any pathway hint
 from the user.
@@ -150,7 +150,7 @@ complex-structure-analysis skill explicitly:
 ### Pre-existing Stage 0 report
 
 If the user provides a file path to a prior pathway-expert or complex-expert output
-(e.g. `"the pathway expert output is at results/yap_pathway.md"`), read the file
+(e.g. `"the pathway expert output is at results/00_pathway.md"`), read the file
 using the filesystem MCP tool and treat its contents as the Stage 0 output.
 
 - For a pathway-expert report: extract `RECOMMENDED PPI TARGET`, `REDUNDANCY AND RESISTANCE RISKS`
@@ -182,7 +182,7 @@ complex-structure-analysis skill ask — do not anticipate this yourself.
 
 Wait for the full `## PPI ANALYSIS REPORT` to be produced. Then extract:
 
-- **Complex name** — e.g. "YAP / TEAD4"
+- **Complex name** — e.g. "GENE_A / GENE_B"
 - **Target chain** — chain ID and protein name
 - **Buried surface area (BSA)** — in Å²
 - **Structural tractability rating** — Excellent / Good / Marginal / Poor (from the
@@ -206,9 +206,9 @@ and the top hotspot residues. Then ask:
 Invoke the **molecular-biology-expert** skill. When doing so, provide it with the
 following context from the Stage 1 report:
 
-- Complex name (e.g. "YAP / TEAD4")
-- Target protein name (e.g. "TEAD4")
-- Hotspot residues (e.g. "Phe69, Leu91, Arg89 on TEAD4")
+- Complex name (e.g. "GENE_A / GENE_B")
+- Target protein name (e.g. "GENE_B")
+- Hotspot residues (e.g. "Leu24, Trp57, Lys61 on GENE_B")
 - PDB ID
 
 This context enables the literature skill to run targeted residue-level searches and
@@ -239,7 +239,7 @@ synthesise signals from both reports and produce a `CAMPAIGN RECOMMENDATION`.
 
 Compare the structure-tools MODEL-READY HOTSPOTS against the literature
 `INTERFACE INSIGHTS FROM LITERATURE` validated residues. Normalise naming conventions
-when comparing (e.g. "Phe69" = "F69" = "PHE69" = "hYAP Phe69" — match on residue
+when comparing (e.g. "Arg273" = "R273" = "ARG273" = "hTP53 Arg273" — match on residue
 number + amino acid identity).
 
 Classify each hotspot residue as:
@@ -378,4 +378,4 @@ After Stage 4 completes, present a brief campaign summary:
   skip Stage 2, produce a limited CAMPAIGN RECOMMENDATION based on structural signals
   only, and flag the missing literature context explicitly.
 - **Residue naming normalisation.** When cross-referencing hotspots, treat "Phe69",
-  "F69", "PHE69", and "hYAP Phe69" as equivalent.
+  "R273", "ARG273", and "hTP53 Arg273" as equivalent.

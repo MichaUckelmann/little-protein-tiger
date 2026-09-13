@@ -15,7 +15,7 @@
 
 ### Open from PDB
 ```
-chimerax:open_structure  identifier="3kys"
+chimerax:open_structure  identifier="1abc"
 ```
 
 ### Get model overview

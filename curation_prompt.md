@@ -26,11 +26,11 @@ Deconstruct the provided paper into a **concise** structured JSON object. The fi
 
 6. **Protein-Protein Interactions**: Map domains and amino acid residues critical for binding. Report affinity measures if available. Populate `protein_pair` and `experimental_context` for each relevant finding. Structural data: X-ray crystallography and cryo-EM structures of protein complexes are evidence of interaction, map amino acid residues and domains in interfaces.
 
-   **`protein_pair` contains exactly two PROTEIN NAMES** — gene symbols or canonical protein labels (e.g. `"YAP1"`, `"TEAD4"`, `"human YAP (hYAP50-171)"`). Never put amino-acid residues, mutations, domain identifiers, or small molecules in this field — those belong in `key_amino_acid_residues` or `entities.chemicals` instead. Every `key_findings` entry must use the same two proteins in `protein_pair`, even if the finding discusses a specific residue-residue contact between them.
+   **`protein_pair` contains exactly two PROTEIN NAMES** — gene symbols or canonical protein labels (e.g. `"TP53"`, `"MDM2"`, `"human p53 (hp53 94-312)"`). Never put amino-acid residues, mutations, domain identifiers, or small molecules in this field — those belong in `key_amino_acid_residues` or `entities.chemicals` instead. Every `key_findings` entry must use the same two proteins in `protein_pair`, even if the finding discusses a specific residue-residue contact between them.
 
-   - ✅ Correct:   `"protein_pair": ["YAP1", "TEAD4"]`, with `"key_amino_acid_residues": ["YAP Phe69", "TEAD4 Lys376"]`
-   - ❌ Wrong:    `"protein_pair": ["YAP Phe69", "TEAD4 Lys376"]`   (these are residues, not proteins)
-   - ❌ Wrong:    `"protein_pair": ["YAP-TBD", "YAP"]`              (a domain is not a separate protein)
+   - ✅ Correct:   `"protein_pair": ["TP53", "MDM2"]`, with `"key_amino_acid_residues": ["p53 Phe19", "MDM2 Leu54"]`
+   - ❌ Wrong:    `"protein_pair": ["p53 Phe19", "MDM2 Leu54"]`   (these are residues, not proteins)
+   - ❌ Wrong:    `"protein_pair": ["p53-TAD", "TP53"]`            (a domain is not a separate protein)
 
 # UNIT CONVERSION RULES
 - `affinities_kd_Molar` and `inhibitory_constant_Ki` MUST be expressed as Molar floats.
@@ -86,15 +86,15 @@ When in doubt between `host_pathogen` and `biochemistry`: if the interacting pro
 
 When extracting pathway context, apply the same factual provenance rules — `source_span` is required for every `disease_associations` and `target_nodes` entry. Do not infer; only extract what is explicitly stated.
 
-- `pathways`: list the named signalling pathways covered (e.g., ["Hippo", "YAP-TAZ", "mTOR"])
+- `pathways`: list the named signalling pathways covered (e.g., ["p53/MDM2", "mTOR", "NF-kB"])
 - `disease_associations`: for each disease discussed, extract:
   - `disease`: disease or cancer subtype name
-  - `mechanism`: the mechanistic link (e.g., "NF2 loss → LATS1/2 inactivation → YAP nuclear accumulation")
-  - `mutation_frequency`: if stated (e.g., "~50% of mesothelioma cases"); null if not stated
+  - `mechanism`: the mechanistic link (e.g., "<upstream> loss → <kinase> inactivation → <effector> nuclear accumulation")
+  - `mutation_frequency`: if stated (e.g., "~50% of <indication> cases"); null if not stated
   - `genetic_evidence_type`: type of evidence (patient sequencing / TCGA analysis / CRISPR screen / animal model / cell line); null if unclear
   - `source_span`: provenance
 - `target_nodes`: for each protein discussed as a pathway node or therapeutic target:
-  - `protein`: gene symbol (e.g., "YAP1", "LATS1", "TEAD4")
+  - `protein`: gene symbol (e.g., "TP53", "ATM", "MDM2")
   - `pathway_position`: one of [upstream_regulator, kinase, effector, transcription_factor, adaptor, ligand, receptor]
   - `dysregulation`: how it is dysregulated in disease (e.g., "hyperactivated via nuclear translocation in NF2-null tumours")
   - `genetic_dependency_evidence`: CRISPR essentiality scores, siRNA knockdown phenotype, or null
@@ -102,11 +102,11 @@ When extracting pathway context, apply the same factual provenance rules — `so
   - `suggested_pdb_structures`: any PDB IDs mentioned in the paper for this protein; empty list if none
   - `source_span`: provenance
 - `pathway_logic`: compact ON/OFF logic of the cascade (max 50 words); null if not described
-- `redundancy_risks`: compensatory proteins that could rescue loss of a given node (e.g., ["TAZ compensates for YAP loss"])
+- `redundancy_risks`: compensatory proteins that could rescue loss of a given node (e.g., ["<paralog> compensates for <node> loss"])
 - `upstream_regulators`: gene symbols of upstream suppressors or activators (e.g., ["NF2", "MST1", "MST2", "LATS1", "LATS2"])
-- `downstream_effectors`: gene symbols of downstream targets (e.g., ["TEAD1", "CTGF", "CYR61"])
+- `downstream_effectors`: gene symbols of downstream targets (e.g., ["CDKN1A", "BBC3", "MDM2"])
 
-For `key_findings` in `pathway_biology` papers: capture genetic dependency evidence and disease association claims. `affinities_kd_Molar` and `inhibitory_constant_Ki` are not expected and should be null. `protein_pair` should capture the regulatory relationship (e.g., ["LATS1", "YAP1"]). `confidence_score` rubric applies normally.
+For `key_findings` in `pathway_biology` papers: capture genetic dependency evidence and disease association claims. `affinities_kd_Molar` and `inhibitory_constant_Ki` are not expected and should be null. `protein_pair` should capture the regulatory relationship (e.g., ["ATM", "TP53"]). `confidence_score` rubric applies normally.
 
 # LENGTH LIMITS — strictly enforced
 - `situational_context_hook`: 100–150 words
