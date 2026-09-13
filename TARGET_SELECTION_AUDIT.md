@@ -651,14 +651,14 @@ the hold was lifted before pushing.
 
 ---
 
-## Still in flight — state as of 2026-09-13 21:15
+## Still in flight — state as of 2026-09-14 01:00
 
 Scratchpad root for everything below (session-keyed, survives a compaction):
 
     SP=/tmp/claude-1203219884/-home-m-uckelmann-cbs-niob-local-code-little-protein-tiger/76d1526a-badb-4580-ac86-4726aecba6fa/scratchpad
     OLD=/tmp/claude-1203219884/-home-m-uckelmann-cbs-niob-local-code-little-protein-tiger/57c3bc50-257a-49a9-96e2-1e54f129c732/scratchpad
 
-Tree clean, everything pushed through `ae9e723`, suite 1250 passed.
+Tree clean, everything pushed through `a418c10`, suite 1268 passed.
 
 ### The queue: ONE script, `$SP/queue11.sh`, and why each job is in it
 
@@ -668,20 +668,38 @@ is read from **disk counts**, never `pgrep -f <pattern>`: that pattern matched
 the OPERATOR'S OWN monitoring command lines and deadlocked queue8 for ten
 minutes behind a rung that had already finished.
 
-1. **Phase A tail — 3KYS ladder.** rung 200 at 160/300 in flight (pid 86603),
-   then 173 / 140 / 120 / 100 / 90, ~2.8 GPU-h, ETA ~00:30. Then
-   `benchmark_trim score` on both ladders (CPU, seconds). The 6VJJ ladder is
-   DONE and scored — its result is in `GLUE_PIPELINE_SCOPE.md` (H1 falsified:
-   enrichment 0.29-0.48, falling with dose, engagement 1.000 at every rung).
-2. **PD-L1 macrocycle showcase**, wanted early tomorrow. Resumes production
-   at 1,891/4,610 refolds, ~6 GPU-h, ETA ~06:30. `--reuse` filters completed
-   inputs before the predict loop, so this resumes rather than restarts; log
-   `$SP/run8_pdl1_resume.log`.
-3. **Phase B, only if `$SP/phaseB.sh` exists by then.** It does NOT yet — the
-   selection code is unwritten. queue11 logs "Phase B skipped" rather than
-   silently doing nothing, so job 2 and the rest still run in order. Scope and
-   pre-registered decision rule are in `GLUE_PIPELINE_SCOPE.md`; it needs the
-   3KYS score pass for rung selection, which job 1 produces.
+1. **Phase A is DONE** (00:28), both ladders, 3,900 designs, and both are
+   scored. Results and the two dose tables are in `GLUE_PIPELINE_SCOPE.md`
+   ("Phase A — COMPLETE"): H1 falsified on 6VJJ; on 3KYS a signal at the
+   bottom rung only — enrichment 1.27 and median engagement 9/12, with
+   **37.7 % of designs below the 0.75 production gate** against 2.3-10.0 %
+   at every other rung. It also produced the RFD3 size law for free (below).
+2. **PD-L1 macrocycle showcase**, in flight since 00:29 and the only thing on
+   the card. 110 of 2,718 remaining refolds done at 00:44, 0.13 it/s, **ETA
+   ~06:20** — as wanted. Log `$SP/run8_pdl1_resume.log`, campaign log
+   `projects/pdl1_macrocycle/.../production/boltzgen.log`. `--reuse` filtered
+   the 1,892 already on disk, so this is a resume and not a restart.
+3. **Phase B, and its driver now EXISTS** — `$SP/phaseB.sh`, executable, so
+   queue11 will pick it up when the showcase exits (it checks `-x`). ~5.4
+   GPU-h, 1,784 refolds, ETA ~12:00. It selects arms, then runs one rung at a
+   time (MPNN + RF3 via `foundry_stages`, detached through `JobRegistry`,
+   waits on disk counts with a 40-min stall timeout), then scores and
+   analyses both ladders. Status goes to `$SP/phaseB_status.txt`, output to
+   `$SP/phaseB.log`; it is idempotent, so a rung already at its expected
+   refold count is skipped on a re-run.
+
+   **The GPU path was smoke-tested first**, because MPNN had never run on
+   this machine — nothing under `projects/` has an `mpnn_out`. One design
+   went MPNN -> RF3 -> `score_campaign` -> gates cleanly (15 s/refold at 168
+   tokens, contended). Those two refolds were deleted afterwards: they came
+   from a 2-sequence pass and `--skip-existing` would have let the real
+   4-sequence run inherit refolds of sequences it never generated.
+
+   What changed from the pre-registered plan, and why, is in the scope under
+   "Design: within-rung" — the short version is that hard calipers on total
+   contacts turn 40 requested pairs into 26/20/13, 3KYS rung 100 collapses
+   to 5 pairs and is abandoned, and design-stage engagement was removed from
+   the matching because it is a mediator rather than a nuisance covariate.
 
 **The bridge retry is NO LONGER in the queue — it is DONE**, run standalone
 with `--stop-after spec` because its GPU half duplicated `a344_fix_check`
@@ -729,19 +747,28 @@ repo's convention is a loud refusal, not isolation.
 
 ### Monitors
 
-Two are armed: one on `$SP/queue10_status.txt` (rung transitions, showcase,
-Phase B, exits) and one on `$SP/run9_ppi_spec_only.log` (now finished, safe to
-stop). Both watch by PID and by disk, never by `pgrep -f <pattern>`.
+One is armed, on `$SP/queue10_status.txt` — rung transitions, the score pass,
+the showcase, Phase B, and a line if the queue process dies, so silence
+cannot be mistaken for progress. The pre-compaction duplicate was stopped.
+Phase B writes its own `$SP/phaseB_status.txt`, which is worth a second
+monitor once it starts.
 
-### The free measurement Phase A is producing
+### The free measurement Phase A produced, and the change it implies
 
-RFD3 cost per design, from sidecar mtimes rather than log ticks:
-6.12 s at 195 tokens, 6.90 at 218, 7.30 at 231, 7.89 at 246 (6VJJ) and 11.0 at
-286 (3KYS). Implied exponent **~1.5**, against `SEC_PER_RFD3_DESIGN = 5.4`
-flat — which is ~2x low at the top of the range, and close to the RF3 runtime
-law's 1.62 and the disk law's 1.49. Fit it over all 13 rungs once both ladders
-are scored; two targets are involved, so target identity and token count are
-not yet separated.
+RFD3 per-design cost HAS a size law. From sidecar mtimes within each rung
+(first 10 dropped, so model load is excluded), 13 rungs x 300 designs:
+**6.24 s at 195 tokens, exponent 1.28** (R^2 0.963; 1.33 on 3KYS over
+168-286, 1.06 on 6VJJ over 168-246). The two targets agree where they overlap
+— 6.96 vs 6.94 s at 218 tokens, 5.40 vs 5.29 at 168 — so this is a size law
+and not a target effect, the same shape as the RF3 runtime law (1.62) and the
+disk law (1.49).
+
+`foundry_runner.SEC_PER_RFD3_DESIGN = 5.4` is flat: right at 168 tokens and
+**2.0x low at 286**. **Deliberately NOT changed yet** — it feeds
+`plan_campaign` and through it `campaign_calibration`'s budget check, i.e.
+the SCALE_UP/STOP verdict, which is the same blast radius the RF3 law has.
+It wants its own small change with the tests that go with it, not a
+drive-by edit in a benchmark commit.
 
 ## How to run things here
 
