@@ -289,6 +289,42 @@ The reference snapshot for this machine lives in the session scratchpad
 
 ## Open, deliberately
 
+- **Every deterministic structure guard on the PPI track is INERT for a
+  non-human target, silently.** Found by the 2026-09-13 target-diversity
+  sweep, in which 2 of 8 prompts produced non-human targets and both ran with
+  no structural cross-check at all.
+
+  `target_resolve.resolve_target` is human-only — its own warning says "could
+  not resolve 'EsxB' to a human UniProt accession" — and
+  `_select_designable_structure` needs TWO resolved accessions before it does
+  anything (`if len(accs) < 2: return None`). So for a pathogen protein it
+  returns None before reaching its partner-absent check, and the same UniProt
+  keying disables `_verify_target_chain_assignment` and
+  `_check_structure_organism`.
+
+  Measured consequence. The `tuberculosis` prompt produced target_complex
+  "EsxB / p38" with pdb_id 3FLN. The BIOLOGY is real and correctly cited
+  (EsxB/CFP-10 disrupting host p38-TAB1, doi:10.1038/s41421-024-00653-4), and
+  the id obeyed the prompt's sourcing rule — 3FLN IS in a corpus paper's
+  `pdb_accessions`. But that paper is "Drug Design in the Exascale Era", a
+  computational-methods paper that used 3FLN as a BENCHMARK, and 3FLN is
+  "P38 kinase crystal structure in complex with R1487": one polymer entity
+  (MAPK14), one small molecule, no EsxB, and no chain A. The accession rule
+  guarantees an id is REAL, never that it contains the claimed complex; with
+  no EsxB/p38 co-structure in existence, the stage reached for the only
+  p38-bearing accession the corpus had.
+
+  It failed at `_correct_label_seq_ids` ("cannot build the auth->label map for
+  chain A") — by luck, on a technicality, rather than by the guard built for
+  exactly this shape.
+
+  Fix direction, NOT yet implemented: when a name does not resolve, fall back
+  to matching the entry's chain DESCRIPTIONS (`entry_metadata` already returns
+  them) for both named proteins, and say loudly in the report that the
+  UniProt-keyed guards are inert — which is what `--workflow structure`
+  already does and the PPI track does not. Deferred so the sweep's remaining
+  runs test one code path.
+
 - **`sec_per_design_observed` measures a DIFFERENT quantity from the law it
   overrides, and under-costs — the one place the estimate is not
   conservative.** It is refold-mtime spacing, i.e. the `folding` step alone;
