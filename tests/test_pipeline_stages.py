@@ -858,9 +858,12 @@ def test_hotspots_must_be_grounded_in_the_actual_structure(config, reference_dat
     Real failure, caught during the four-target trial: the interface stage was
     asked to analyse 8ZNL and returned PD-L1's canonical literature numbering
     (Tyr56, Gln66, ...) verbatim, but 8ZNL uses a different numbering offset —
-    chain B residue 56 there is VAL, not TYR. `validate_spec` caught this
-    instance only by luck (the stated atoms didn't exist on VAL); a mismatch
-    that happened to share atom names would have silently designed against the
+    chain B residue 56 there is VAL, not TYR. Measured since: the offset is
+    exactly +1 (deposited Q9NZQ7 19-132 <-> auth 20-133), so the tyrosine the
+    literature calls 56 is auth 57 on this entry. The right residues in the
+    wrong frame, not the wrong epitope. `validate_spec` caught this instance
+    only by luck (the stated atoms didn't exist on VAL); a mismatch that
+    happened to share atom names would have silently designed against the
     wrong residues.
     """
     r = PipelineRunner(config, workflow="binder")

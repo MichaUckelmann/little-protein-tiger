@@ -74,8 +74,12 @@ INTERFACE_CASES = [
      "Disrupt this interface: select model-ready hotspots on the target chain "
      "for a mini-protein binder."),
     # The canonical-numbering trap: asked for 8ZNL, a model once returned
-    # 7CZD's textbook PD-L1 hotspots (Tyr56, Gln66, ...) verbatim, and chain B
-    # residue 56 here is not TYR.
+    # PD-L1's textbook hotspots by their CANONICAL numbers (Tyr56, Gln66, ...)
+    # verbatim. Those are the right residues in the wrong frame — 8ZNL numbers
+    # chain B canonical + 1 (Q9NZQ7 19-132 <-> auth 20-133), so residue 56
+    # here is a valine and the tyrosine meant is auth 57. 7CZD, above, numbers
+    # author == canonical, which is why the same numbers pass there and this
+    # entry is the one that scores the difference.
     ("pdl1_8znl", "8ZNL", "",
      "Disrupt this interface: select model-ready hotspots on the target chain "
      "for a mini-protein binder."),

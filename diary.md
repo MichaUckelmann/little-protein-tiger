@@ -2935,7 +2935,22 @@ site (`denovo_precedent`, structure 8ZNL) got a hotspot table with PD-L1's
 actually VAL. `validate_spec` caught this instance only by luck (the stated
 atoms don't exist on valine); a mismatch that happened to share atom names
 would have sailed through and silently designed against the wrong residues for
-days. Fixed: `PipelineRunner._verify_hotspot_grounding()` reads the real residue
+days.
+
+> **Correction, 2026-09-14.** "Correct for a different PD-L1 structure (7CZD)
+> but not for 8ZNL" overstates it, and the entry is left as written with this
+> note rather than edited. Measured from the two deposited CIFs: 8ZNL numbers
+> chain B exactly `canonical + 1` (`_struct_ref_seq` maps Q9NZQ7 19-132 onto
+> auth 20-133) and 7CZD numbers author == canonical. So the model returned the
+> RIGHT residues in canonical numbering and the frame was wrong — the
+> tyrosine the literature calls Tyr56 is auth 57 on 8ZNL, and the shipped
+> 8ZNL campaign selected it (`projects/pdl1_rc1`'s `21_interface.md`:
+> `TYR57 | 57 | 38`). All ten hotspots in that table map to canonical - 1,
+> uniformly. It was a numbering-frame error, not a wrong-epitope error, and
+> the guard below caught it on the residue-name disagreement exactly as
+> designed. See CLAUDE.md for what grounding does and does not cover.
+
+Fixed: `PipelineRunner._verify_hotspot_grounding()` reads the real residue
 name at each hotspot's `auth_seq_id` from the downloaded structure
 (`structure_tools.get_sequence_map`) and hard-fails on any mismatch, before a
 trim or spec is ever built. Verified against the real failure case.

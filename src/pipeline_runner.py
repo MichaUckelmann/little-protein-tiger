@@ -2225,10 +2225,28 @@ class PipelineRunner:
         asked to analyse 8ZNL and returned PD-L1's canonical literature numbering
         (Tyr56, Gln66, Arg113, ...) verbatim, but chain B residue 56 in 8ZNL is
         actually VAL — a different numbering offset from the structure the model
-        clearly had memorised. `validate_spec` caught THIS case only by luck (the
-        stated atoms happened not to exist on VAL); a mismatch that happened to
-        share atom names would have silently trimmed and designed against the
-        wrong residues. Fail loud here, before a design spec is even built.
+        clearly had memorised. Measured since: 8ZNL numbers chain B exactly
+        `canonical + 1` (its deposited `_struct_ref_seq` maps Q9NZQ7 19-132 onto
+        auth 20-133), while 7CZD numbers author == canonical, so the same
+        remembered numbers are RIGHT on 7CZD and one short on 8ZNL. The residues
+        were the right ones; the frame was wrong. `validate_spec` caught THIS
+        case only by luck (the stated atoms happened not to exist on VAL); a
+        mismatch that happened to share atom names would have silently trimmed
+        and designed against the wrong residues. Fail loud here, before a design
+        spec is even built.
+
+        **What this check does and does not cover.** It answers "is the residue
+        at auth N what the table claims", never "is auth N the residue the
+        literature means". Against a uniform frame offset it is therefore a
+        PROXY, and a measured one: over 8ZNL chain B's modelled span a +1 offset
+        is caught at 105 of 113 positions and silent at 8, where the neighbour
+        happens to share a residue type — ~93% per hotspot, so a whole table
+        slipping through is vanishingly unlikely but a single row can. The
+        primitive that would answer the second question directly exists
+        (`membrane_topology.uniprot_to_auth` returns a uniform {+1} here and {0}
+        for 7CZD); nothing routes a hotspot through it, and hardening that would
+        be ADVISORY rather than a gate, since a non-zero offset is ordinary and
+        legal in a deposited structure.
         """
         from src.structure_tools import get_sequence_map
 
