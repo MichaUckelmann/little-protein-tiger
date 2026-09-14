@@ -1313,15 +1313,28 @@ and the refold-level test (336 / 236 per arm, correlated within backbone)
 somewhat better. So read the medians and the U tests first, and treat the
 gate-pass ratio as corroboration rather than the headline.
 
-**The GPU path is smoke-tested** (2026-09-14): MPNN had never run on this
-workstation — no campaign under `projects/` has an `mpnn_out` — so one 3KYS
-rung-90 design was taken end to end before queueing 5.4 GPU-h. MPNN produced
-2 structures from the `solublempnn` alias and RF3 refolded both (15 s each at
-168 tokens, contended with the showcase), `score_campaign` scored them and
-the gate attributed both failures to `binder_rmsd_dock <= 5`. Those two
-refolds were then DELETED rather than kept: they came from a 2-sequence MPNN
-pass, and `--skip-existing` would have let the real 4-sequence run inherit
-refolds of sequences it never generated.
+**The GPU path is smoke-tested** (2026-09-14): one 3KYS rung-90 design was
+taken end to end before queueing 5.4 GPU-h. MPNN produced 2 structures from
+the `solublempnn` alias and RF3 refolded both (15 s each at 168 tokens,
+contended with the showcase), `score_campaign` scored them and the gate
+attributed both failures to `binder_rmsd_dock <= 5`. Those two refolds were
+then DELETED rather than kept: they came from a 2-sequence MPNN pass, and
+`--skip-existing` would have let the real 4-sequence run inherit refolds of
+sequences it never generated.
+
+**What that test did and did not establish.** An earlier revision of this
+paragraph, and the commit message at `a418c10`, claimed MPNN had never run on
+this workstation because "no campaign under `projects/` has an `mpnn_out`".
+**That is false.** MPNN runs in every foundry campaign on both tracks — 31
+`mpnn_out` directories, up to 7,288 threaded structures in one campaign
+(`il7ra_e2e` production), 11,188 `.fa` files in total, at all three modes and
+inside site trials. The claim came from a glob one level too shallow:
+`FoundryPaths.under` is handed `campaign/<mode>`, so the directory is
+`campaign/production/mpnn_out` and a check of `campaign/mpnn_out` finds zero
+every time. So the smoke test verified the PHASE B WIRING — a hand-built
+symlink directory of chosen designs, a non-default `--n-seq`, and a per-rung
+parent so `.rf3_staging` cannot be shared — on a stage chain that was already
+well proven. Cheap insurance, not the first run of MPNN here.
 
 **Pre-registered decision rule** — written before the refolds run, so the
 result cannot be rationalised afterwards:

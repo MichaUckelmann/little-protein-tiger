@@ -688,12 +688,22 @@ minutes behind a rung that had already finished.
    `$SP/phaseB.log`; it is idempotent, so a rung already at its expected
    refold count is skipped on a re-run.
 
-   **The GPU path was smoke-tested first**, because MPNN had never run on
-   this machine — nothing under `projects/` has an `mpnn_out`. One design
-   went MPNN -> RF3 -> `score_campaign` -> gates cleanly (15 s/refold at 168
-   tokens, contended). Those two refolds were deleted afterwards: they came
-   from a 2-sequence pass and `--skip-existing` would have let the real
-   4-sequence run inherit refolds of sequences it never generated.
+   **The GPU path was smoke-tested first**: one design went MPNN -> RF3 ->
+   `score_campaign` -> gates cleanly (15 s/refold at 168 tokens, contended).
+   Those two refolds were deleted afterwards: they came from a 2-sequence
+   pass and `--skip-existing` would have let the real 4-sequence run inherit
+   refolds of sequences it never generated.
+
+   **Correction to what that test was for.** I wrote here, and in
+   `a418c10`'s message, that MPNN had never run on this workstation. That is
+   false — it runs in every foundry campaign on both tracks (31 `mpnn_out`
+   directories, 11,188 `.fa` files, up to 7,288 threaded structures in
+   `il7ra_e2e` production alone). The claim came from a subagent glob one
+   level too shallow — the directory is `campaign/<mode>/mpnn_out`, not
+   `campaign/mpnn_out` — which I repeated without checking it with a `find`.
+   What the smoke test actually covered is the Phase B wiring: a hand-built
+   symlink dir of chosen designs, a non-default `--n-seq`, and a per-rung
+   parent so `.rf3_staging` is never shared.
 
    What changed from the pre-registered plan, and why, is in the scope under
    "Design: within-rung" — the short version is that hard calipers on total
