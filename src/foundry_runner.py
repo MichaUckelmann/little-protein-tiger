@@ -800,7 +800,8 @@ def run_design(
             1.0 + float(_foundry.get("target_budget_overshoot", 0.15))))
     try:
         validate_spec(spec_path, kept_segments=kept_segments,
-                      max_target_residues=max_target)
+                      max_target_residues=max_target,
+                      max_complex_tokens=_foundry.get("max_complex_tokens"))
     except Exception as exc:
         raise FoundryValidationError(str(exc)) from exc
 

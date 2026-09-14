@@ -176,6 +176,7 @@ def validate_spec(
     *,
     kept_segments: Sequence[tuple[int, int]] | None = None,
     max_target_residues: int | None = None,
+    max_complex_tokens: int | None = None,
 ) -> dict[str, Any]:
     """
     Check an RFD3 spec against the structure it references.
@@ -348,6 +349,35 @@ def validate_spec(
                 f"{max_target_residues} budget — RF3 cost grows with the square "
                 f"of the token count")
 
+        # A TOKEN ceiling, because tokens are what the GPU runs out of and the
+        # residue budget above counts the TARGET only — never the binder — so
+        # it is ~28% short of the real complex across modalities by
+        # construction. Measured on this card (32.6 GB, idle but for a 2.0 GB
+        # desktop), RFD3 at the production `diffusion_batch_size: 4`:
+        #
+        #     589 tokens -> 25.4 GB peak   (7.2 GB spare, comfortable)
+        #     665 tokens -> 32.0 GB peak   (0.58 GB spare — at the cliff)
+        #
+        # and RF3 folding one refold: 698 tokens -> 32.0 GB (0.59 GB spare),
+        # 848 tokens -> CUDA OOM ("tried to allocate 9.09 GiB, 7.93 GiB
+        # free"). Both stages are quadratic above ~400 tokens, so the margin
+        # collapses fast: RFD3 net VRAM fits 0.0675 MiB/token^2, which puts
+        # its own ceiling at ~674 tokens. 665 "worked" with 1.8% of the card
+        # to spare, which is not headroom — any second tenant (a browser, a
+        # bigger desktop, a stray process) turns it into an OOM hours into a
+        # campaign. The cap is what keeps a spec that validates from being a
+        # spec that dies on the GPU.
+        n_tokens = binder[1] + n_target
+        if max_complex_tokens and n_tokens > max_complex_tokens:
+            raise SpecError(
+                f"design {name!r} is {n_tokens} tokens "
+                f"({binder[1]} binder + {n_target} target), over the "
+                f"{max_complex_tokens}-token ceiling. Measured on this card, "
+                f"RFD3 peaks at 32.0 of 32.6 GB by 665 tokens and RF3 OOMs by "
+                f"848, both quadratically — so this would very likely die on "
+                f"the GPU. Trim further, shorten the binder, or raise "
+                f"design.foundry.max_complex_tokens if your card is bigger.")
+
         hotspots = entry.get("select_hotspots") or {}
         if not hotspots:
             raise SpecError(f"design {name!r} has no select_hotspots")
@@ -388,6 +418,7 @@ def validate_spec(
             "binder_range": list(binder),
             "target_spans": [[c, lo, hi] for c, lo, hi in spans],
             "n_target_residues": n_target,
+            "n_tokens": binder[1] + n_target,
             "n_hotspots": len(hotspots),
             "n_segments": len(spans),
         }

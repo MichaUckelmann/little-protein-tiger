@@ -812,11 +812,44 @@ them without re-reading this list is how they get silently reverted.
   `_exposed_hydrophobic` already documents ("amino acids only and one chain only in
   BOTH"), so its SASA now also restricts both sides to parent-canonical atoms:
   compare only atoms that survive INTO the design structure.
+- **The size ceiling is a TOKEN ceiling, and both GPU stages were bisected to
+  find it** (2026-09-14, this card: RTX PRO 4500 Blackwell, 32.6 GB, idle but
+  for a 2.0 GB desktop). `design.foundry.target_residue_budget` is **500**,
+  raised from a 220 that came from ONE ~175-token complex and whose own config
+  comment admitted it. Measured, single-tenant:
+
+  | stage | tokens | peak VRAM | spare |
+  |---|---|---|---|
+  | RF3, one refold | 195 | 6.1 GB | — |
+  | RF3 | 568 | 21.5 GB | 11.1 GB |
+  | RF3 | 698 | 32.0 GB | 0.59 GB |
+  | RF3 | 848 | **CUDA OOM** | "tried to allocate 9.09 GiB, 7.93 GiB free" |
+  | RFD3, `diffusion_batch_size: 4` | 589 | 25.4 GB | 7.2 GB |
+  | RFD3, batch 4 | 665 | 32.0 GB | 0.58 GB |
+
+  Three facts follow. **RFD3 is the binding stage, not RF3** — it holds one
+  diffusion trajectory per batch member, so its ceiling (~674 tokens by its
+  fitted `0.0675 MiB/token^2`) arrives before RF3's. **Both are quadratic
+  above ~400 tokens** (RF3 net ~= `385 + 0.0588*tok^2` MiB, reproducing the
+  698-token point to -3%), so margin collapses rather than tapering. And **the
+  residue budget cannot express the limit**: it counts the target only, never
+  the binder, so it is ~28% short of the complex across modalities — with the
+  budget at 500 and `target_budget_overshoot: 0.15`, a 575-residue target
+  validates at 665 tokens, i.e. 1.8% of the card free. `max_complex_tokens:
+  600` is the guard that refuses that at spec-build time rather than on the
+  GPU hours in, and it is what makes the raise safe; it leaves ~19% free at
+  the measured quadratic and permits ~514 residues with an 86mer binder.
+  **`rf3_seconds_per_refold` was NOT re-fitted and now under-predicts**: its
+  exponent 1.62 was fitted over 195-285 tokens and predicts 72 s at 698
+  tokens against ~144 s measured, so `plan_campaign` under-costs a
+  large-target campaign by ~2x. Sizing one at the new ceiling without fixing
+  that is the mash_e2e failure again (gate costed 63 GPU-h, planner 138).
 - **The trim only runs when the target does NOT fit.** It used to reduce to the
   hotspot-carrying domain(s) regardless of size, so a 252-residue chain became 205 and a
-  364-residue one became 19 even though the budget is 220. If the whole chain fits
-  `design.foundry.target_residue_budget` it is now kept whole — 200 residues is
-  comfortable on a local GPU, and dropping a second interface is the operator's call,
+  364-residue one became 19 even though the budget was then 220. If the whole chain fits
+  `design.foundry.target_residue_budget` it is now kept whole — and at 500 that
+  is most single-domain targets, which is the point: not trimming is the best
+  outcome, and dropping a second interface is the operator's call,
   not a silent default. Three refusals guard what remains, all measured on a 19-complex
   benchmark: `MIN_TARGET_RESIDUES = 80` (a 19-residue "target" passed every other check
   because its 4 hotspots survived), and the newly-exposed-hydrophobic rules below.

@@ -341,15 +341,44 @@ design:
     # Exported as CUDA_VISIBLE_DEVICES by the generated run_campaign.sh.
     cuda_device: 0
 
-    # Calibrated at ONE point (a ~175-token complex ran comfortably). RF3
-    # attention is O(N^2) in tokens; re-measure by bisecting n_batches=2 runs at
-    # increasing target size until OOM, then take 80% of the last passing value.
-    target_residue_budget: 220
+    # MEASURED 2026-09-14 on this card (RTX PRO 4500 Blackwell, 32.6 GB,
+    # otherwise idle but for a 2.0 GB desktop). The bisection this comment used
+    # to ask for has been run, for BOTH gpu stages, and the numbers are in
+    # `docs/` + TARGET_SELECTION_AUDIT.md:
+    #
+    #   RF3, one refold      195 tok  4.1 GB net ... 698 tok 30.0 GB net (fits,
+    #                        0.59 GB spare); 848 tok -> CUDA OOM.
+    #   RFD3, batch 4        589 tok 25.4 GB peak (7.2 GB spare);
+    #                        665 tok 32.0 GB peak (0.58 GB spare).
+    #
+    # Both are quadratic above ~400 tokens (RF3 net ~= 385 + 0.0588*tok^2 MiB;
+    # RFD3 ~= 0.0675*tok^2), so margin collapses fast and RFD3 — not RF3 — is
+    # the binding stage, because it holds one diffusion trajectory per batch
+    # member. 500 target residues is 586-590 tokens with a 86-90mer binder,
+    # which measured 25.4 GB: 22% of the card free. That is the operating
+    # point this number now encodes, and it is a measurement rather than the
+    # single ~175-token data point 220 was set from.
+    #
+    # `max_complex_tokens` below is what actually keeps a campaign off the
+    # cliff; raising this without raising that will simply be refused at
+    # spec-build time rather than dying on the GPU hours later.
+    target_residue_budget: 500
+    # The TOKEN ceiling, which is the one the GPU cares about: the residue
+    # budget above counts the target only and never the binder, so it is ~28%
+    # short of the real complex. 600 keeps ~19% of the card free at the
+    # measured quadratic; 665 tokens ran with 1.8% free, which is not headroom
+    # — one browser tab turns it into an OOM mid-campaign. Raise it if your
+    # card is bigger, and re-measure rather than extrapolating: the exponent
+    # steepens with size.
+    max_complex_tokens: 600
     # If a trim fails one of its own quality guards (a cut that opens
     # hydrophobic core, or loses too much interface) AND the target is within
     # this fraction over target_residue_budget, keep the target whole instead
     # of failing the campaign. Keeping it whole is strictly safer for the
     # design; it costs only GPU time, and RF3 scales as (tokens/195)**1.62.
+    # NOTE this multiplies the budget: at 500 it would permit 575 residues =
+    # 665 tokens, which measured 32.0 of 32.6 GB. `max_complex_tokens` is what
+    # stops that, so the overshoot now yields ~514 residues in practice.
     target_budget_overshoot: 0.15
     # RF3 output is ~2.5 MB per design directory, so disk — not GPU — is the
     # binding constraint. This is a CAP, not an estimate: 48,000 refolds is
