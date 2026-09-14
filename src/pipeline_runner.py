@@ -6319,6 +6319,21 @@ class PipelineRunner:
                     self._run_gpu_stage("pilot", spec_path, trim, dirs, result,
                                         attach=attach, n_batches=n_batches)
 
+            if self._stop_after == "pilot":
+                # The smallest stop that still proves the GPU path end to end:
+                # a spec was built, the generator accepted it, and files landed
+                # on disk. `--stop-after spec` stops one step short of the GPU
+                # and `--stop-after calibration` is 300 backbones x 4 refolds —
+                # hours, not minutes — so neither answers "is the pipeline
+                # still working" cheaply. The pilot is 100 designs on foundry
+                # (`design.foundry.pilot.n_batches: 25` x a diffusion batch of
+                # 4) and 24 on BoltzGen.
+                raise PipelinePausedError("pilot_complete", {
+                    "designs": "see the pilot directory",
+                    "spec": str(spec_path),
+                    "resume": "--start-from calibration",
+                })
+
             # ── B5: calibration — MEASURE the scale production needs ────────
             calib = locals().get("calib")
             if start_idx <= 5:

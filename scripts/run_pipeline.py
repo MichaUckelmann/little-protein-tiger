@@ -368,9 +368,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--stop-after",
-        choices=["spec", "trial", "calibration"], default=None, dest="stop_after",
+        choices=["spec", "pilot", "trial", "calibration"], default=None,
+        dest="stop_after",
         help=(
-            "'spec' prepares and validates everything up to the GPU and "
+            "'pilot' additionally runs the pilot — 100 designs on foundry, 24 on "
+        "BoltzGen — and stops, which is the cheapest check that the whole "
+        "chain from a query to a generator writing files still works; "
+        "'spec' prepares and validates everything up to the GPU and "
             "stops, so specs can be reviewed before committing days of "
             "compute; 'trial' stops after the design trial and site "
             "comparison, before a production campaign; 'calibration' stops "
