@@ -651,61 +651,94 @@ the hold was lifted before pushing.
 
 ---
 
-## Still in flight — NOTHING. State as of 2026-09-14 13:30
+## Still in flight — NOTHING. State as of 2026-09-14 15:30
 
-**The GPU is idle and the queue is empty.** Everything that was running
-through the night finished cleanly; `queue11.sh` logged `queue done` and
-exited 0, and both monitors are stopped.
+GPU idle (2.0 GB desktop only), queue empty, no worktrees but the main one,
+tree clean at `f03af05`, CI green, suite 1318.
 
-Scratchpad root for the benchmark data (session-keyed, survives a compaction):
+### What landed since the last handover
 
-    SP=/tmp/claude-1203219884/-home-m-uckelmann-cbs-niob-local-code-little-protein-tiger/76d1526a-badb-4580-ac86-4726aecba6fa/scratchpad
+- **Phase A + Phase B, complete.** Both answered; results and the branch-3
+  verdict are in `GLUE_PIPELINE_SCOPE.md`. Raw data kept at
+  `$SP/ladder_3kys` (1.2 GB) and `$SP/ladder_6vjj` (978 MB) — keep until the
+  branch-3 change lands, since it is what any threshold would be fitted on.
+- **PD-L1 macrocycle showcase**, GO, 1,700 gated of 4,329, `top_k.fasta`
+  written, `report.html` renders. Video + page + carousel all carry it.
+- **The GPU size ceiling is MEASURED and raised to 500 residues**
+  (`1254085`), with `max_complex_tokens: 600` as the real guard. Data in
+  `docs/gpu-size-ceiling.tsv`.
+- **Both GPU cost laws re-fitted, two-term** (`f03af05`). See CLAUDE.md.
 
-### What completed
+### Next: items 3-5, in this order. Everything needed is on disk.
 
-1. **PD-L1 macrocycle showcase** — done 07:08, `rc=0`, 6.64 h for the
-   resumed leg. 4,329 designs scored, **1,700 through the gate**, 20 ranked,
-   lead `cd274_boltzgen_4175` = `SLPEELKAVAPDSKM` at ipTM 0.741 / iPAE
-   2.25 A / complex pLDDT 0.784. Its write-up initially said NO_GO over an
-   empty candidate set; that was a summary-stage bug (foundry column
-   vocabulary applied to BoltzGen output), fixed in `234d159`, and the
-   re-run says **GO** with `scoring/top_k.fasta` now written. The campaign
-   also reaches `report.html` since `97a6bfd`.
-2. **Phase A** — 13 rungs x 300 RFD3 designs, both ladders, ~5.9 GPU-h.
-   H1 falsified on 6VJJ; a signal on 3KYS's bottom rung only. Produced the
-   RFD3 size law (6.24 s at 195 tokens, exponent 1.28) as a by-product.
-3. **Phase B** — 9 rungs, 1,784 refolds, 143 matched pairs, ~5.4 GPU-h.
-   **No detectable quality cost from patch contact on either ladder**
-   (pooled gate ratio 1.125 [0.711-1.781] on 6VJJ, 0.882 [0.488-1.597] on
-   3KYS). Full tables, the branch-3 verdict and the three things it does NOT
-   establish are in `GLUE_PIPELINE_SCOPE.md` ("Phase B — COMPLETE").
+**3. The trim priority-order fixes — `GLUE_PIPELINE_SCOPE.md` §2.2, "What I
+would actually change, in priority order".** This is the formalization of
+"no trim if it fits > obvious cut points > exposure-limited only if
+necessary". Three sub-items, each independent:
 
-### The open decisions, all of them now needing a person
+   a. **Domain-source preference** (`structure_trim.segment_domains`,
+      `src/structure_trim.py:544-584`): prefer RCSB CATH/SCOP2/ECOD only when
+      the returned domains COVER the hotspots, else fall through to
+      Chainsaw/geometric. ~20 lines. Measured payoff: on 5VAI it converts the
+      worst outcome (ECOD, 2 segments, refused at 33 newly-exposed
+      hydrophobics) into the best (geometric, 1 segment `R29-128`, 2 exposed,
+      passes). NOTE the fall-through already partly exists — 5XEZ logged
+      "the cath domain annotation ... does not contain hotspot(s) [...] —
+      falling through" during yesterday's ceiling test, so check what
+      `_domains_cover_hotspots` already does before writing anything.
+   b. **Scale-free exposure measure**: replace the residue COUNT
+      (`MAX_EXPOSED_HYDROPHOBIC = 2`) with newly-exposed hydrophobic AREA as
+      a fraction of the target-side interface BSA. Measured: 5VAI 74.8/1356.0
+      = 5.5% (a clean cut), 3KYS@140 81%, 6VJJ@117 175%. A 20-30% threshold
+      separates them and scales with the epitope. **This is a proposal, not a
+      calibration** — and Phase B did NOT calibrate it (it held total contacts
+      fixed, so it answers a different question).
+   c. **Report exposure as an AREA** in the stage report, not just residues
+      and deltas. The sum is the physically meaningful number and is never
+      computed. One line.
 
-- **Phase B's branch-3 consequence is NOT implemented**: the exposure guards
-  should become a ranking input rather than a refusal. That touches
-  `structure_trim`'s guards and the composite, and the scope puts it with
-  stage 6's two-chain trim work.
-- **`SEC_PER_RFD3_DESIGN = 5.4` is still flat** against a measured law with
-  exponent 1.28 (2.0x low at 286 tokens). Deliberately unchanged: it feeds
-  `plan_campaign` and through it the SCALE_UP/STOP verdict.
-- **A hotspot's numbering FRAME is never checked.** `uniprot_to_auth` proves
-  8ZNL is canonical+1 and 7CZD canonical+0, but nothing routes a hotspot
-  through it; grounding catches a frame error only ~93% of the time per
-  residue. Advisory log line, not a gate — see CLAUDE.md.
-- **PPI + BoltzGen through production** — still the one end-to-end gap,
-  ~45 GPU-h.
-- **Retirement steps 5 and 6** — unchanged, see `LEGACY_RETIREMENT_SCOPE.md`.
-- **`binder_report` renders no PPI-track BoltzGen campaign report** beyond
-  what `97a6bfd` added for the binder track; `ppi_report` is still
-  foundry-shaped.
+   Do NOT add capping/patching (§2.2 item 3): RFD3 conditions on the fixed
+   target coordinates, so a synthetic cap is atoms that do not exist in the
+   real protein and the binder gets designed against them.
 
-### Housekeeping
+**4. Phase B's branch-3 consequence.** The exposure guards become a RANKING
+input rather than a refusal — a patch contact scored like
+`neg_rosetta_vbuns`. Touches `structure_trim`'s guards and
+`design.binder_ranking`'s weights. Read the "Phase B — COMPLETE" section's
+three caveats first, especially that 3KYS's interval does not exclude a
+halving, so this is "no detectable effect at 143 pairs", not "no effect".
 
-`$SP/ladder_3kys` (1.2 GB) and `$SP/ladder_6vjj` (978 MB) hold every design,
-refold and score behind the two results — keep until the branch-3 change is
-implemented, since it is the data any threshold would be fitted on. The
-`../lpt-glue-bench` worktree is no longer pinning anything and can go.
+**5. Hotspot numbering-frame advisory.** `membrane_topology.uniprot_to_auth`
+already answers it (returns a uniform `{+1}` for 8ZNL, `{0}` for 7CZD) but
+nothing routes a hotspot through it; `_verify_hotspot_grounding` catches a
+frame error only ~93% of the time per residue (105 of 113 positions on 8ZNL
+chain B; silent at 8 where the neighbour shares a residue type). Add it as a
+**log line inside `_verify_hotspot_grounding`, fail-open, NOT a gate** — a
+non-zero offset is ordinary and legal in a deposited structure, as 8ZNL is.
+Only fires when a target UniProt accession is already resolved.
+
+### Still open beyond 3-5
+
+- PPI + BoltzGen through production (~45 GPU-h) — the last end-to-end gap.
+- Retirement steps 5 and 6 (`LEGACY_RETIREMENT_SCOPE.md`).
+- A macrocycle slide for the FIRST carousel (`build_carousel.py`); the PD-L1
+  deck has one, that one does not.
+- `ppi_report` renders no BoltzGen campaign (still foundry-shaped).
+- ruff backlog: 138 I001 + a long tail. Lint is non-blocking BY POLICY
+  ("the codebase predates any linter"). Ruff is not installed in the venv —
+  use `uvx ruff@latest check .`, which is what CI runs.
+- Carried audit defects: non-human guards, the corpus-accession
+  contradiction, alignment-based hotspot remapping, and the
+  `structure_needed` pause that names no target.
+
+### Two traps worth re-reading before touching the GPU
+
+- **Do not extrapolate either cost law past ~700 tokens** — that is where the
+  card OOMs, and both laws are now quadratic-ish, so error compounds fast.
+- **`scripts/benchmark_trim.py`'s `--binder-min/--binder-max` are INERT on
+  the spec path**: the binder range comes from the trim's own contig. Patch
+  `spec.json`'s contig and re-run `validate_spec` if you need a specific
+  binder length (that is how the 90mer ceiling test was built).
 
 ## How to run things here
 
