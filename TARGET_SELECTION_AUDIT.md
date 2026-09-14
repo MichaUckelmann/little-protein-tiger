@@ -651,134 +651,61 @@ the hold was lifted before pushing.
 
 ---
 
-## Still in flight — state as of 2026-09-14 01:00
+## Still in flight — NOTHING. State as of 2026-09-14 13:30
 
-Scratchpad root for everything below (session-keyed, survives a compaction):
+**The GPU is idle and the queue is empty.** Everything that was running
+through the night finished cleanly; `queue11.sh` logged `queue done` and
+exited 0, and both monitors are stopped.
+
+Scratchpad root for the benchmark data (session-keyed, survives a compaction):
 
     SP=/tmp/claude-1203219884/-home-m-uckelmann-cbs-niob-local-code-little-protein-tiger/76d1526a-badb-4580-ac86-4726aecba6fa/scratchpad
-    OLD=/tmp/claude-1203219884/-home-m-uckelmann-cbs-niob-local-code-little-protein-tiger/57c3bc50-257a-49a9-96e2-1e54f129c732/scratchpad
 
-Tree clean, everything pushed through `a418c10`, suite 1268 passed.
+### What completed
 
-### The queue: ONE script, `$SP/queue11.sh`, and why each job is in it
+1. **PD-L1 macrocycle showcase** — done 07:08, `rc=0`, 6.64 h for the
+   resumed leg. 4,329 designs scored, **1,700 through the gate**, 20 ranked,
+   lead `cd274_boltzgen_4175` = `SLPEELKAVAPDSKM` at ipTM 0.741 / iPAE
+   2.25 A / complex pLDDT 0.784. Its write-up initially said NO_GO over an
+   empty candidate set; that was a summary-stage bug (foundry column
+   vocabulary applied to BoltzGen output), fixed in `234d159`, and the
+   re-run says **GO** with `scoring/top_k.fasta` now written. The campaign
+   also reaches `report.html` since `97a6bfd`.
+2. **Phase A** — 13 rungs x 300 RFD3 designs, both ladders, ~5.9 GPU-h.
+   H1 falsified on 6VJJ; a signal on 3KYS's bottom rung only. Produced the
+   RFD3 size law (6.24 s at 195 tokens, exponent 1.28) as a by-product.
+3. **Phase B** — 9 rungs, 1,784 refolds, 143 matched pairs, ~5.4 GPU-h.
+   **No detectable quality cost from patch contact on either ladder**
+   (pooled gate ratio 1.125 [0.711-1.781] on 6VJJ, 0.882 [0.488-1.597] on
+   3KYS). Full tables, the branch-3 verdict and the three things it does NOT
+   establish are in `GLUE_PIPELINE_SCOPE.md` ("Phase B — COMPLETE").
 
-Status file is `$SP/queue10_status.txt` — queue11 deliberately appends to its
-predecessor's file so the live monitor kept working across the swap. Progress
-is read from **disk counts**, never `pgrep -f <pattern>`: that pattern matched
-the OPERATOR'S OWN monitoring command lines and deadlocked queue8 for ten
-minutes behind a rung that had already finished.
+### The open decisions, all of them now needing a person
 
-1. **Phase A is DONE** (00:28), both ladders, 3,900 designs, and both are
-   scored. Results and the two dose tables are in `GLUE_PIPELINE_SCOPE.md`
-   ("Phase A — COMPLETE"): H1 falsified on 6VJJ; on 3KYS a signal at the
-   bottom rung only — enrichment 1.27 and median engagement 9/12, with
-   **37.7 % of designs below the 0.75 production gate** against 2.3-10.0 %
-   at every other rung. It also produced the RFD3 size law for free (below).
-2. **PD-L1 macrocycle showcase**, in flight since 00:29 and the only thing on
-   the card. 110 of 2,718 remaining refolds done at 00:44, 0.13 it/s, **ETA
-   ~06:20** — as wanted. Log `$SP/run8_pdl1_resume.log`, campaign log
-   `projects/pdl1_macrocycle/.../production/boltzgen.log`. `--reuse` filtered
-   the 1,892 already on disk, so this is a resume and not a restart.
-3. **Phase B, and its driver now EXISTS** — `$SP/phaseB.sh`, executable, so
-   queue11 will pick it up when the showcase exits (it checks `-x`). ~5.4
-   GPU-h, 1,784 refolds, ETA ~12:00. It selects arms, then runs one rung at a
-   time (MPNN + RF3 via `foundry_stages`, detached through `JobRegistry`,
-   waits on disk counts with a 40-min stall timeout), then scores and
-   analyses both ladders. Status goes to `$SP/phaseB_status.txt`, output to
-   `$SP/phaseB.log`; it is idempotent, so a rung already at its expected
-   refold count is skipped on a re-run.
+- **Phase B's branch-3 consequence is NOT implemented**: the exposure guards
+  should become a ranking input rather than a refusal. That touches
+  `structure_trim`'s guards and the composite, and the scope puts it with
+  stage 6's two-chain trim work.
+- **`SEC_PER_RFD3_DESIGN = 5.4` is still flat** against a measured law with
+  exponent 1.28 (2.0x low at 286 tokens). Deliberately unchanged: it feeds
+  `plan_campaign` and through it the SCALE_UP/STOP verdict.
+- **A hotspot's numbering FRAME is never checked.** `uniprot_to_auth` proves
+  8ZNL is canonical+1 and 7CZD canonical+0, but nothing routes a hotspot
+  through it; grounding catches a frame error only ~93% of the time per
+  residue. Advisory log line, not a gate — see CLAUDE.md.
+- **PPI + BoltzGen through production** — still the one end-to-end gap,
+  ~45 GPU-h.
+- **Retirement steps 5 and 6** — unchanged, see `LEGACY_RETIREMENT_SCOPE.md`.
+- **`binder_report` renders no PPI-track BoltzGen campaign report** beyond
+  what `97a6bfd` added for the binder track; `ppi_report` is still
+  foundry-shaped.
 
-   **The GPU path was smoke-tested first**: one design went MPNN -> RF3 ->
-   `score_campaign` -> gates cleanly (15 s/refold at 168 tokens, contended).
-   Those two refolds were deleted afterwards: they came from a 2-sequence
-   pass and `--skip-existing` would have let the real 4-sequence run inherit
-   refolds of sequences it never generated.
+### Housekeeping
 
-   **Correction to what that test was for.** I wrote here, and in
-   `a418c10`'s message, that MPNN had never run on this workstation. That is
-   false — it runs in every foundry campaign on both tracks (31 `mpnn_out`
-   directories, 11,188 `.fa` files, up to 7,288 threaded structures in
-   `il7ra_e2e` production alone). The claim came from a subagent glob one
-   level too shallow — the directory is `campaign/<mode>/mpnn_out`, not
-   `campaign/mpnn_out` — which I repeated without checking it with a `find`.
-   What the smoke test actually covered is the Phase B wiring: a hand-built
-   symlink dir of chosen designs, a non-default `--n-seq`, and a per-rung
-   parent so `.rf3_staging` is never shared.
-
-   What changed from the pre-registered plan, and why, is in the scope under
-   "Design: within-rung" — the short version is that hard calipers on total
-   contacts turn 40 requested pairs into 26/20/13, 3KYS rung 100 collapses
-   to 5 pairs and is abandoned, and design-stage engagement was removed from
-   the matching because it is a mediator rather than a nuisance covariate.
-
-**The bridge retry is NO LONGER in the queue — it is DONE**, run standalone
-with `--stop-after spec` because its GPU half duplicated `a344_fix_check`
-(byte-identical contig `70-86,/0,A195-229,A239-411`). Log
-`$SP/run9_ppi_spec_only.log`, project `e2e_foundry_r2` round-4, $0.54, no GPU.
-Three results:
-
-- **The leakage experiment is answered: the prompt was not the cause.** With
-  every plausible target scrubbed from the selector prompts, a mesothelioma
-  query still returns YAP1/TEAD1 on 3KYS, GO, tractability Excellent, with
-  rationale naming NF2 loss at 30-40% and the IAG933 / K-975 programmes. What
-  this does NOT establish is general freedom from bias — that needs the
-  `div_standard_*` / `div_wildcard_*` sweep, where answers are less canonical.
-- The A344 fix holds on the PPI route, and the hotspot-region fix cut this
-  target's declared set from **19 (pre-fix) to 10**.
-- It surfaced the site-adoption defect, now fixed (`ae9e723`) — see section 5.
-
-### Not queued, deliberately
-
-- **A344 calibration** — dropped as redundant once the pilot proved the fix
-  (520 RFD3 artifacts banked under `projects/a344_fix_check` if ever wanted).
-- **PPI + BoltzGen through production** — the one real end-to-end gap left.
-  `e2e_boltzgen` round-2 stopped at `25_calibration.md` with SCALE_UP; only
-  `mesothelioma_showcase` (foundry) has `20`..`28`. ~45 GPU-h at that target's
-  measured size, so it needs a decision, not a queue slot.
-- **Retirement steps 5 and 6.** Step 5 deletes `src/ppi_report.py` and takes
-  `design.thresholds` with it — it is the only renderer for the two archived
-  legacy runs, ~35 tests across three files, plus the showcase's side-by-side.
-  Step 6 moves `mmr_select`/`_seq_identity` into `binder_ranking` and the
-  BoltzGen block out of `design_ranking`, so those modules can go; it touches
-  both live engines' ranking and deserves its own scope. Steps 0-4 are DONE
-  (`58711c5`, `27dd80c`, `67c7bda`); `LEGACY_RETIREMENT_SCOPE.md` has the
-  staged plan and the sixteen things that look legacy-only and are not.
-
-### The benchmark worktree
-
-`../lpt-glue-bench`, detached at `67c7bda`, for GPU runs whose code must stay
-pinned while main moves under them — a live hazard, since queue11 launches
-from the primary checkout using whatever is on disk at that moment. `data/`
-(58 GB), `.env`, `.venv` and `.mcp.json` are SYMLINKS, with a worktree-local
-exclude because git's `data/` pattern does not match a symlink. Glue work
-still lands on main behind opt-in gates rather than on a long-lived branch:
-main changes daily in exactly the files the glue work touches, and this
-repo's convention is a loud refusal, not isolation.
-
-### Monitors
-
-One is armed, on `$SP/queue10_status.txt` — rung transitions, the score pass,
-the showcase, Phase B, and a line if the queue process dies, so silence
-cannot be mistaken for progress. The pre-compaction duplicate was stopped.
-Phase B writes its own `$SP/phaseB_status.txt`, which is worth a second
-monitor once it starts.
-
-### The free measurement Phase A produced, and the change it implies
-
-RFD3 per-design cost HAS a size law. From sidecar mtimes within each rung
-(first 10 dropped, so model load is excluded), 13 rungs x 300 designs:
-**6.24 s at 195 tokens, exponent 1.28** (R^2 0.963; 1.33 on 3KYS over
-168-286, 1.06 on 6VJJ over 168-246). The two targets agree where they overlap
-— 6.96 vs 6.94 s at 218 tokens, 5.40 vs 5.29 at 168 — so this is a size law
-and not a target effect, the same shape as the RF3 runtime law (1.62) and the
-disk law (1.49).
-
-`foundry_runner.SEC_PER_RFD3_DESIGN = 5.4` is flat: right at 168 tokens and
-**2.0x low at 286**. **Deliberately NOT changed yet** — it feeds
-`plan_campaign` and through it `campaign_calibration`'s budget check, i.e.
-the SCALE_UP/STOP verdict, which is the same blast radius the RF3 law has.
-It wants its own small change with the tests that go with it, not a
-drive-by edit in a benchmark commit.
+`$SP/ladder_3kys` (1.2 GB) and `$SP/ladder_6vjj` (978 MB) hold every design,
+refold and score behind the two results — keep until the branch-3 change is
+implemented, since it is the data any threshold would be fitted on. The
+`../lpt-glue-bench` worktree is no longer pinning anything and can go.
 
 ## How to run things here
 

@@ -1157,7 +1157,7 @@ half. Changing it moves `plan_campaign`'s estimate and through it
 `campaign_calibration`'s budget check, i.e. SCALE_UP/STOP verdicts — the same
 blast radius the RF3 law has, so it is a deliberate change and not a drive-by.
 
-### Phase B — REVISED after Phase A: a paired within-rung contrast
+### Phase B — the design, as revised after Phase A (results above)
 
 **Both ladders are now done — see "Phase A — COMPLETE" above for the two
 tables.** H1 is falsified on 6VJJ (enrichment 0.29-0.48, falling with dose,
@@ -1361,6 +1361,82 @@ mediator effect showing up as predicted: the light arm's designs carry lower
 design-stage engagement (median 0.875 vs 1.000 on this rung), so they lose
 more refolds to the 0.75 `hotspot_engagement` gate. Had engagement stayed in
 the matching, that difference would have been balanced away.
+
+### Phase B — COMPLETE (2026-09-14). No detectable quality cost, on either ladder.
+
+1,784 refolds over 9 rungs and 143 matched pairs, ~5.4 GPU-h. Design-level
+(best refold per design by composite, i.e. `max_per_backbone=1`), gate =
+every hard gate in `design.binder_ranking.thresholds`:
+
+| ladder | rung | arm | designs | pass | rate | 95% CI | med iptm | dock<=5 | patch surv |
+|---|---|---|---|---|---|---|---|---|---|
+| 6VJJ | 168 | control | 60 | 25 | 0.417 | 0.301-0.543 | 0.714 | 0.82 | — |
+| 6VJJ | 117 | heavy | 26 | 10 | 0.385 | 0.224-0.575 | 0.588 | 0.69 | 1.000 |
+| 6VJJ | 117 | light | 26 | 3 | 0.115 | 0.040-0.290 | 0.466 | 0.65 | 0.000 |
+| 6VJJ | 106 | heavy | 28 | 6 | 0.214 | 0.102-0.395 | 0.494 | 0.68 | 0.500 |
+| 6VJJ | 106 | light | 28 | 8 | 0.286 | 0.153-0.471 | 0.499 | 0.68 | 1.000 |
+| 6VJJ | 90 | heavy | 30 | 11 | 0.367 | 0.219-0.545 | 0.644 | 0.77 | 1.000 |
+| 6VJJ | 90 | light | 30 | 13 | 0.433 | 0.274-0.608 | 0.615 | 0.70 | 1.000 |
+| 3KYS | 208 | control | 60 | 23 | 0.383 | 0.271-0.510 | 0.734 | 0.67 | — |
+| 3KYS | 173 | heavy | 26 | 8 | 0.308 | 0.165-0.500 | 0.455 | 0.46 | 1.000 |
+| 3KYS | 173 | light | 26 | 6 | 0.231 | 0.110-0.421 | 0.641 | 0.58 | — |
+| 3KYS | 140 | heavy | 20 | 4 | 0.200 | 0.081-0.416 | 0.305 | 0.35 | 0.583 |
+| 3KYS | 140 | light | 20 | 6 | 0.300 | 0.146-0.519 | 0.283 | 0.45 | 1.000 |
+| 3KYS | 120 | heavy | 13 | 3 | 0.231 | 0.082-0.503 | 0.216 | 0.46 | 0.691 |
+| 3KYS | 120 | light | 13 | 5 | 0.385 | 0.177-0.645 | 0.622 | 0.62 | 1.000 |
+| 3KYS | 90 | heavy | 40 | **0** | 0.000 | 0.000-0.088 | 0.607 | 0.15 | 1.000 |
+
+**Pooled, paired rungs only:**
+
+| ladder | pairs | gate ratio (heavy/light) | 95% CI | iptm U | dock U |
+|---|---|---|---|---|---|
+| 6VJJ | 84 | 1.125 | 0.711-1.781 | p=0.578 | p=0.508 |
+| 3KYS | 59 | 0.882 | 0.488-1.597 | p=0.180 | p=0.146 |
+
+Both intervals span 1.0 and every per-rung U test is null. Per-rung ratios
+scatter on both sides (3.33 / 0.75 / 0.85 on 6VJJ, 1.33 / 0.67 / 0.60 on
+3KYS) with heavily overlapping intervals, which is what 13-30 pairs buys.
+The heavy arms are also not worse than their **no-trim controls** — 0.385,
+0.214, 0.367 against 0.417 on 6VJJ; 0.308, 0.200, 0.231 against 0.383 on
+3KYS — with one exception, below. And the null is not an artifact of a
+target where nothing docks: 6VJJ's arms dock at 0.65-0.77 within 5 A.
+
+**Verdict against the pre-registered rule: branch 3, not branch 1.** Branch 1
+required patch-heavy designs to be no worse AND patch contacts NOT to survive
+refolding. They are no worse — but **the contacts survive**: patch survival is
+1.000 in five of seven heavy arms and 0.58-0.69 in the other two. So the
+reading is "contacts survive, quality unaffected", which the rule assigns to
+branch 3: `MAX_EXPOSED_HYDROPHOBIC` and `EXPOSED_HOTSPOT_CLEARANCE_A` stay,
+but as a RANKING input rather than a refusal — a patch contact becomes a
+scored liability like `neg_rosetta_vbuns`. **Not implemented here**; it is a
+change to the trim guards and the composite, and it belongs with stage 6's
+two-chain trim work rather than bolted onto a benchmark commit.
+
+**Three things this does NOT establish, stated so the null is not overread.**
+
+1. **"No detectable effect" is not "no effect", and the intervals say how
+   much.** 6VJJ's lower bound of 0.711 excludes a ~30% reduction in pass
+   rate; 3KYS's lower bound of **0.488 does not exclude a halving**. A real
+   effect of that size would need ~4x the pairs to see, which is ~20 GPU-h,
+   not 5.
+2. **3KYS rung 90 is the one signal pointing the other way, and the pairing
+   cannot isolate it.** At the highest near-epitope dose — 678 A^2 over 15
+   residues, median 19 patch contacts per design — **0 of 40 designs cleared
+   the gates** against the control's 23 of 60, and only 15% docked within
+   5 A. It is saturated (298 of 300 designs have >= 5 patch contacts), so no
+   patch-light arm exists at that rung and it contributes one unmatched arm.
+   It is also the smallest target (168 vs 286 tokens) with a different
+   segment count, and "a smaller target is a harder design problem" predicts
+   the same result. Its design-stage engagement collapse (37.7% below the
+   0.75 gate) is consistent with either story. **Pooling it into the paired
+   comparison is what produced a spurious "significant" result** — gate ratio
+   0.526 with an interval excluding 1.0, dock p=0.013 — before the pooling
+   was fixed to admit only rungs with both arms.
+3. **Both measurements are at a matched total contact count.** The contrast
+   is "given the same number of target contacts, does having more of them on
+   the fresh patch cost anything" — not "does exposing a patch cost
+   anything". The trim guards answer the second question and Phase B does not
+   test it.
 
 **Pre-registered decision rule** — written before the refolds run, so the
 result cannot be rationalised afterwards:
@@ -1782,7 +1858,7 @@ decisive experiment in the plan and it must come first. (`validate_spec` may
 refuse the trim cross-check — pass `kept_segments=None` for this probe, and note
 that the refusal is item 12, not a surprise.)
 
-### Stage 2 — Phase A: the driver is BUILT and costed; the GPU half is queued
+### Stage 2 — Phase A and Phase B: DONE (2026-09-14). Both hypotheses answered.
 
 `scripts/benchmark_trim.py` gained four subcommands — `ladder`, `spec`,
 `designs`, `score` — and everything that does not need the GPU has been run.
