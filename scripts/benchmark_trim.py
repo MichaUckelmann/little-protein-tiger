@@ -950,6 +950,47 @@ def _design_level(rows: list[dict]) -> list[dict]:
     return list(best.values())
 
 
+def _dock_fraction(rows: list[dict], thresh: float) -> dict:
+    """Fraction of records docked within `thresh` A, with a Wilson interval.
+
+    **This, not the median, is the dock summary to read**, because the
+    distribution is strongly BIMODAL: on 3KYS rung 173, refolds sit either
+    under 5 A or beyond 30 A, with 2 of 104 in between. The median then
+    reports which side of the gap the middle record happens to fall on — the
+    design-level medians came out 20.94 A (heavy) against 2.26 A (light),
+    a 9x "difference" that a rank test put at p=0.21, while the two refold
+    distributions were 32.8 vs 30.5 A and the real contrast was 28 % vs 37 %
+    of refolds docking at all. A median of a bimodal distribution is a coin
+    flip dressed as an effect size.
+    """
+    from src.campaign_calibration import wilson_interval
+
+    vals = [r["binder_rmsd_dock"] for r in rows
+            if isinstance(r.get("binder_rmsd_dock"), (int, float))]
+    if not vals:
+        return {"n": 0, "frac": None}
+    k = sum(1 for v in vals if v <= thresh)
+    lo, hi = wilson_interval(k, len(vals))
+    return {"n": len(vals), "k": k, "frac": round(k / len(vals), 4),
+            "ci95": [round(lo, 4), round(hi, 4)], "threshold_A": thresh}
+
+
+def _is_bimodal(rows: list[dict], lo: float = 5.0, hi: float = 15.0) -> bool:
+    """True when both tails are populated and the middle is nearly empty.
+
+    Deliberately crude — it exists to stop a median being quoted as an effect,
+    not to characterise the distribution.
+    """
+    vals = [r["binder_rmsd_dock"] for r in rows
+            if isinstance(r.get("binder_rmsd_dock"), (int, float))]
+    if len(vals) < 10:
+        return False
+    below = sum(1 for v in vals if v <= lo)
+    middle = sum(1 for v in vals if lo < v < hi)
+    above = sum(1 for v in vals if v >= hi)
+    return below >= 3 and above >= 3 and middle <= 0.1 * len(vals)
+
+
 def _medians(rows: list[dict]) -> dict:
     """Median of each reported metric over one arm, skipping missing values.
 
@@ -999,6 +1040,17 @@ def phaseb_analyze(out_root: Path) -> dict:
 
     from src.campaign_calibration import wilson_interval
 
+    import yaml
+
+    from src.binder_ranking import DEFAULT_THRESHOLDS
+
+    cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    thr = {**DEFAULT_THRESHOLDS,
+           **((((cfg.get("design") or {}).get("binder_ranking")) or {})
+              .get("thresholds") or {})}
+    # The same number the gate uses, so the reported fraction and the
+    # gate-pass rate cannot disagree about what "docked" means.
+    dock_max = float(thr.get("binder_rmsd_dock_max") or 5.0)
     rows = json.loads(
         (out_root / "phaseb_scores.json").read_text(encoding="utf-8"))
     by_rung: dict[int, list[dict]] = {}
@@ -1041,7 +1093,10 @@ def phaseb_analyze(out_root: Path) -> dict:
                  # rung, so a control or single arm would otherwise report no
                  # numbers at all — and the control IS the baseline the
                  # paired arms are read against.
-                 "medians": {a: _medians(v) for a, v in dl.items() if v}}
+                 "medians": {a: _medians(v) for a, v in dl.items() if v},
+                 "dock_ok": {a: _dock_fraction(v, dock_max)
+                             for a, v in dl.items() if v},
+                 "dock_bimodal": any(_is_bimodal(v) for v in arms.values())}
         if dl["heavy"] and dl["light"]:
             entry["iptm"] = _mwu([r.get("iptm") for r in dl["heavy"]],
                                  [r.get("iptm") for r in dl["light"]])
@@ -1063,7 +1118,9 @@ def phaseb_analyze(out_root: Path) -> dict:
     out["pooled"] = {
         "design_level": {a: _rate(v) for a, v in dl.items()},
         "refold_level": {a: _rate(v) for a, v in pooled.items() if v},
-        "medians": {a: _medians(v) for a, v in dl.items()}}
+        "medians": {a: _medians(v) for a, v in dl.items()},
+        "dock_ok": {a: _dock_fraction(v, dock_max) for a, v in dl.items()},
+        "dock_bimodal": any(_is_bimodal(v) for v in pooled.values() if v)}
     if dl.get("heavy") and dl.get("light"):
         out["pooled"]["iptm"] = _mwu([r.get("iptm") for r in dl["heavy"]],
                                      [r.get("iptm") for r in dl["light"]])
@@ -1081,7 +1138,8 @@ def phaseb_analyze(out_root: Path) -> dict:
 
 def _print_phaseb(stats: dict) -> None:
     print(f"\n{'rung':>6} {'arm':>8} {'designs':>8} {'pass':>6} {'rate':>7} "
-          f"{'95% CI':>15} {'med iptm':>9} {'med dock':>9} {'patch surv':>10}")
+          f"{'95% CI':>15} {'med iptm':>9} {'dock<=5':>8} {'~med dock':>10} "
+          f"{'patch surv':>10}")
     for e in stats["rungs"]:
         for arm in ("heavy", "light", "control"):
             d = e["design_level"].get(arm)
@@ -1090,12 +1148,15 @@ def _print_phaseb(stats: dict) -> None:
             med = (e.get("medians") or {}).get(arm) or {}
             med_i, med_d = med.get("iptm"), med.get("binder_rmsd_dock")
             surv = (e.get("patch_survival") or {}).get(arm, {}).get("median")
+            dok = ((e.get("dock_ok") or {}).get(arm) or {}).get("frac")
+            c_i = f"{med_i:.3f}" if med_i is not None else "-"
+            c_k = f"{dok:.2f}" if dok is not None else "-"
+            c_d = f"{med_d:.2f}" if med_d is not None else "-"
+            c_s = f"{surv:.3f}" if surv is not None else "-"
+            rate = d["rate"] if d["rate"] is not None else 0
             print(f"{e['budget']:>6} {arm:>8} {d['n']:>8} {d['k']:>6} "
-                  f"{(d['rate'] if d['rate'] is not None else 0):>7.3f} "
-                  f"{str(d['ci95']):>15} "
-                  f"{(f'{med_i:.3f}' if med_i is not None else '-'):>9} "
-                  f"{(f'{med_d:.2f}' if med_d is not None else '-'):>9} "
-                  f"{(f'{surv:.3f}' if surv is not None else '-'):>10}")
+                  f"{rate:>7.3f} {str(d['ci95']):>15} "
+                  f"{c_i:>9} {c_k:>8} {c_d:>10} {c_s:>10}")
         if e.get("iptm", {}).get("p") is not None:
             print(f"{'':>6} heavy vs light: iptm p={e['iptm']['p']:.4f}, "
                   f"dock p={e['binder_rmsd_dock']['p']:.4f}, "
@@ -1105,6 +1166,12 @@ def _print_phaseb(stats: dict) -> None:
         print(f"\npooled (design level): iptm p={p['iptm']['p']}, "
               f"dock p={p['binder_rmsd_dock']['p']}, "
               f"gate ratio {p['gate_ratio_design']}")
+    if any(e.get("dock_bimodal") for e in stats["rungs"]):
+        print("\nNOTE: the dock-RMSD distribution is BIMODAL (docked under "
+              "~5 A or lost beyond ~30 A, almost nothing between), so "
+              "`~med dock` is marked and must not be read as an effect size "
+              "— the middle record only reports which side of the gap it fell "
+              "on. Read `dock<=5` and the U test instead.")
     print("\nThe decision rule is pre-registered in GLUE_PIPELINE_SCOPE.md "
           "(\"Pre-registered decision rule\") — read it BEFORE these numbers.")
 

@@ -232,3 +232,53 @@ def test_mwu_reports_a_p_value_and_both_medians(bench):
     out = bench._mwu(a, b)
     assert out["p"] is not None and out["p"] < 0.05
     assert out["median_a"] > out["median_b"]
+
+
+# ── the dock readout: a bimodal median is not an effect size ────────────────
+
+def test_the_dock_summary_is_a_fraction_not_a_median(bench):
+    """Measured on 3KYS rung 173: refolds dock under 5 A or are lost beyond
+    30 A, with 2 of 104 in between. The design-level medians came out 20.94 A
+    (heavy) against 2.26 A (light) — a 9x gap that a rank test put at p=0.21,
+    because both refold distributions sat at ~31-33 A and the real contrast
+    was 28 % vs 37 % of refolds docking at all."""
+    rows = ([{"binder_rmsd_dock": 1.5}] * 3 + [{"binder_rmsd_dock": 40.0}] * 7)
+    out = bench._dock_fraction(rows, 5.0)
+    assert out["k"] == 3 and out["n"] == 10
+    assert out["frac"] == 0.3
+    assert out["ci95"][0] < 0.3 < out["ci95"][1]
+    assert out["threshold_A"] == 5.0
+
+
+def test_the_dock_threshold_comes_from_the_gate(bench):
+    """The reported fraction and the gate-pass rate must not disagree about
+    what "docked" means, so both read `binder_rmsd_dock_max`."""
+    import inspect
+
+    src = inspect.getsource(bench.phaseb_analyze)
+    assert "binder_rmsd_dock_max" in src
+    assert "DEFAULT_THRESHOLDS" in src
+
+
+def test_bimodality_is_detected_when_the_middle_is_empty(bench):
+    rows = ([{"binder_rmsd_dock": 1.2}] * 20 + [{"binder_rmsd_dock": 38.0}] * 20)
+    assert bench._is_bimodal(rows) is True
+
+
+def test_a_unimodal_distribution_is_not_flagged(bench):
+    rows = [{"binder_rmsd_dock": v} for v in
+            (6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 6.5, 7.5, 8.5)]
+    assert bench._is_bimodal(rows) is False
+
+
+def test_too_few_records_are_never_called_bimodal(bench):
+    """The check exists to stop a median being quoted as an effect, and on
+    nine records there is nothing to characterise either way."""
+    assert bench._is_bimodal([{"binder_rmsd_dock": 1.0},
+                              {"binder_rmsd_dock": 40.0}]) is False
+
+
+def test_no_dock_values_reports_nothing_rather_than_zero(bench):
+    """A rung whose refolds all failed scoring must not read as 0 % docked."""
+    out = bench._dock_fraction([{"error": "boom"}], 5.0)
+    assert out["frac"] is None and out["n"] == 0

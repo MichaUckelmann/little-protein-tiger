@@ -1336,6 +1336,32 @@ symlink directory of chosen designs, a non-default `--n-seq`, and a per-rung
 parent so `.rf3_staging` cannot be shared — on a stage chain that was already
 well proven. Cheap insurance, not the first run of MPNN here.
 
+**The dock readout is a FRACTION, not a median, and rung 173 is why.** On
+3KYS rung 173's 208 refolds the dock-RMSD distribution is strongly bimodal —
+under 5 A or beyond 30 A, with **2 of 104 per arm in between**. The
+design-level medians came out **20.94 A (heavy) against 2.26 A (light)**,
+which looks like a 9x effect and is not one: the two refold distributions sit
+at 32.8 and 30.5 A, a rank test gives p=0.21, and the real contrast is 28 %
+vs 37 % of refolds docking at all. The median of a bimodal distribution only
+reports which side of the gap the middle record fell on. `phaseb-analyze`
+therefore reports `dock<=5` with a Wilson interval as the dock summary, keeps
+the median but marks it `~med dock`, and prints a bimodality warning — and
+the threshold is read from `design.binder_ranking.thresholds.
+binder_rmsd_dock_max`, so the reported fraction and the gate-pass rate cannot
+disagree about what "docked" means.
+
+**First rung, for the record, and it settles nothing** (26 pairs, powered to
+detect roughly a halving): gate-pass 8/26 heavy vs 6/26 light (ratio 1.33,
+95 % CI 0.54-3.31), `dock<=5` 0.46 vs 0.58, median iptm 0.455 vs 0.641,
+U-test p=0.49 (iptm) and p=0.21 (dock). Patch survival in the heavy arm is
+**1.000** — every design-stage patch contact re-formed in the refold — which
+is the one number already pointing at a branch of the decision rule.
+Note the heavy arm passes MORE gates while docking LESS often, which is the
+mediator effect showing up as predicted: the light arm's designs carry lower
+design-stage engagement (median 0.875 vs 1.000 on this rung), so they lose
+more refolds to the 0.75 `hotspot_engagement` gate. Had engagement stayed in
+the matching, that difference would have been balanced away.
+
 **Pre-registered decision rule** — written before the refolds run, so the
 result cannot be rationalised afterwards:
 
