@@ -358,6 +358,33 @@ against RAMP1, `3N7S` chain D), not by reading its docs.
   design-vs-refold dock RMSD of 3.12 Å with 94% under 5 Å, against 8.89 Å /
   16.3% over the full set and 8.01 Å / 29% for iPTM-ranking. This is what
   `binder_ranking.DEFAULT_Z_CLIP` was learned from.
+- **The analyst stage reads a DIFFERENT set of columns on this track, and
+  nothing in the run tells it so.** `top_k.csv` here carries
+  `design_id`/`final_rank`/`design_to_target_iptm`/
+  `min_design_to_target_pae`/`complex_plddt`/`pass_filters`/
+  `designed_chain_sequence` — not one foundry column. So the summary stage's
+  two readers must both be vocabulary-aware, and were not:
+  `_slim_binder_top_k` intersected the header with foundry's names, got an
+  EMPTY column list, and handed the analyst a table with no columns; and
+  `_write_binder_fasta` keyed on `binder_seq` where BoltzGen writes
+  `designed_chain_sequence`, so a completed cyclic campaign got **no orderable
+  FASTA at all** — the one artifact a macrocycle run exists to produce.
+  Measured on `projects/pdl1_macrocycle`: 1,700 of 4,329 designs passed the
+  gate, 20 real macrocycles sat in `top_k.csv`, and the analyst wrote "the
+  campaign returned an empty candidate set", NO_GO — which
+  `run_pipeline.py` turns into **exit 1** (deliberately, for NO_GO), so a
+  successful 6.6 GPU-h campaign looked like a failed run to anything reading
+  the exit code. `_top_k_vocabulary` now decides foundry-vs-BoltzGen from the
+  COLUMNS rather than from `self._design_engine`, so the track named in the
+  prompt is provably the track whose columns the analyst was shown, and
+  `--start-from binder_summary` in a fresh process needs no runner state to
+  get it right. An unrecognised vocabulary shows the file's own columns and
+  warns, because a misread scorer must look like a surprise and not like an
+  empty run.
+- **`src/binder_report.py` still does not render a BoltzGen campaign**: it
+  hard-requires foundry refold scores and logs "No refold scores found ...
+  run at least a calibration trial" on a finished BoltzGen run. The stage
+  reports and `top_k.fasta` are the deliverables there for now.
 - **`quality_score` is not a score.** It is 994 evenly-spaced distinct values,
   i.e. `1 - (final_rank-1)/(n-1)` — a rank percentile carrying no information
   beyond the ordering. Fine for sorting — the retired `design.ranking.
