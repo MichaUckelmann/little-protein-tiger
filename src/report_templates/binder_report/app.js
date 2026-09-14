@@ -41,7 +41,7 @@ function renderSiteSection() {
   document.getElementById('site-decision-callout').innerHTML = `
     <div class="tag">Decision: ${esc(d.pdb_id)}, ${esc(d.target_chain)}–${esc(d.partner_chain)} (${esc(d.partner_name)})</div>
     <p><strong>${esc(d.interface_rationale || '')}</strong></p>
-    <p>Design intent: <b>${esc(d.design_intent || '—')}</b> · Modality: <b>${esc(d.modality || '—')}</b> ·
+    <p>Design intent: <b>${esc(d.design_intent || '—')}</b> · Modality: <b>${esc(d.modality || '—')}</b>${d.modality_note ? ` <span class="cap">(${esc(d.modality_note)})</span>` : ''} ·
        <span class="tag-chip ${goKind === 'good' ? 'phys' : ''}">${esc(d.go_recommendation || '')}</span> — ${esc(d.go_rationale || '')}</p>
     ${alt}
   `;
@@ -111,13 +111,25 @@ function renderConfidenceSection() {
       </div>`;
   }
 
+  // The second chart and the scatter's y-axis differ by track: BoltzGen
+  // writes no PAE matrix and therefore no ipSAE, so it shows complex pLDDT.
+  // Labels come from REPORT.vocab rather than being hardcoded here.
+  const V = REPORT.vocab || { unit: 'refolds', second: {}, has_geometry: true };
+  const sec = V.second || {};
   document.getElementById('chart-iptm-cap').textContent =
-    `all ${REPORT.metrics.n_total.toLocaleString()} refolds · excellence bar ${c ? c.success_metric + ' ≥ ' + c.excellence_bar : ''}`;
+    `all ${REPORT.metrics.n_total.toLocaleString()} ${V.unit || 'refolds'} · excellence bar ${c ? c.success_metric + ' ≥ ' + c.excellence_bar : ''}`;
   document.getElementById('chart-scatter-cap').textContent =
     `${REPORT.metrics.scatter.length}-point sample · green = clears every hard gate and the excellence bar`;
+  if (sec.title) document.getElementById('chart-second-title').innerHTML = sec.title;
+  if (sec.cap) document.getElementById('chart-second-cap').textContent = sec.cap;
+  if (V.scatter_title) document.getElementById('chart-scatter-title').innerHTML = V.scatter_title;
+  // The epitope cross-check block describes measurements BoltzGen does not
+  // make. Replace its prose rather than leaving claims the data cannot back.
+  if (V.geometry_dek) document.getElementById('geom-dek').innerHTML = V.geometry_dek;
+  if (V.geometry_body) document.getElementById('geom-body').innerHTML = V.geometry_body;
 
   renderHistogram('chart-iptm', REPORT.metrics.iptm_hist, { threshold: c ? c.excellence_bar : undefined });
-  renderHistogram('chart-ipsae', REPORT.metrics.ipsae_hist, { threshold: 0.5 });
+  renderHistogram('chart-second', REPORT.metrics.second_hist, { threshold: sec.threshold });
   renderFunnel();
   renderScatter();
 }
@@ -158,7 +170,7 @@ function renderScatter() {
     s += `<circle class="pt ${p[2] ? 'pt-hit' : ''}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.4"/>`;
   });
   s += `<text class="axislabel" x="${padL + plotW / 2}" y="${H - 6}" text-anchor="middle" style="font-size:11px">ipTM</text>`;
-  s += `<text class="axislabel" x="12" y="${padT + plotH / 2}" text-anchor="middle" transform="rotate(-90 12 ${padT + plotH / 2})" style="font-size:11px">ipSAE min</text>`;
+  s += `<text class="axislabel" x="12" y="${padT + plotH / 2}" text-anchor="middle" transform="rotate(-90 12 ${padT + plotH / 2})" style="font-size:11px">${esc(((REPORT.vocab || {}).second || {}).axis || 'ipSAE min')}</text>`;
   svg.innerHTML = s;
 }
 
@@ -174,15 +186,18 @@ function renderDesignCards(explorer) {
     const d = REPORT.top_designs[i];
     const engaged = Math.round((d.hotspot_engagement || 0) * nHotspots);
     const ok = (d.hotspot_engagement || 0) >= 1;
+    // `d.metrics` is built per track in Python (_design_metric_list): the
+    // two tracks measure different things, and hardcoding one track's
+    // columns here rendered four em-dashes for the other.
+    const metrics = (d.metrics || []).map(m =>
+      `<div class="metric"><span>${esc(m.label)}</span><b>${esc(m.value)}</b></div>`).join('');
+    const check = (REPORT.vocab && REPORT.vocab.has_geometry === false)
+      ? `<div class="check ${d.pass_filters === false ? 'partial' : 'ok'}">BoltzGen self-consistency: ${d.pass_filters === false ? 'fail' : 'pass'}</div>`
+      : `<div class="check ${ok ? 'ok' : 'partial'}">${engaged}/${nHotspots} hotspots engaged</div>`;
     const card = el('div', 'designcard', `
       <div class="id">${esc(d.family || d.name)} · ${d.binder_len} aa</div>
-      <div class="metrics">
-        <div class="metric"><span>ipTM</span><b>${fmt(d.iptm, 3)}</b></div>
-        <div class="metric"><span>ipSAE min</span><b>${fmt(d.ipsae_min, 3)}</b></div>
-        <div class="metric"><span>RMSD dock</span><b>${fmt(d.rmsd_dock, 2)} Å</b></div>
-        <div class="metric"><span>Epitope recall</span><b>${pct(d.epitope_recall)}</b></div>
-      </div>
-      <div class="check ${ok ? 'ok' : 'partial'}">${engaged}/${nHotspots} hotspots engaged</div>
+      <div class="metrics">${metrics}</div>
+      ${check}
       <div class="seqline">${esc(d.seq || '')}</div>
     `);
     card.dataset.key = key;
@@ -256,8 +271,10 @@ function updateCaption(key) {
     const d = REPORT.top_designs[i];
     const engaged = Math.round((d.hotspot_engagement || 0) * nHotspots);
     cap.innerHTML = `<b>${esc(d.family || d.name)}</b> (${d.binder_len} aa de novo binder, chain A / copper) refolded against the trimmed target (chain B / teal). ` +
-      `ipTM <b>${fmt(d.iptm, 3)}</b> · ipSAE<sub>min</sub> <b>${fmt(d.ipsae_min, 3)}</b> · dock RMSD <b>${fmt(d.rmsd_dock, 2)} Å</b> · ` +
-      `${engaged}/${nHotspots} hotspots engaged · epitope recall <b>${pct(d.epitope_recall)}</b>.`;
+      ((REPORT.vocab && REPORT.vocab.has_geometry === false)
+        ? (d.metrics || []).map(m => `${esc(m.label)} <b>${esc(m.value)}</b>`).join(' · ') + '.'
+        : `ipTM <b>${fmt(d.iptm, 3)}</b> · ipSAE<sub>min</sub> <b>${fmt(d.ipsae_min, 3)}</b> · dock RMSD <b>${fmt(d.rmsd_dock, 2)} Å</b> · ` +
+          `${engaged}/${nHotspots} hotspots engaged · epitope recall <b>${pct(d.epitope_recall)}</b>.`);
   }
 }
 

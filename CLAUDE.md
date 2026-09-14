@@ -381,10 +381,33 @@ against RAMP1, `3N7S` chain D), not by reading its docs.
   get it right. An unrecognised vocabulary shows the file's own columns and
   warns, because a misread scorer must look like a surprise and not like an
   empty run.
-- **`src/binder_report.py` still does not render a BoltzGen campaign**: it
-  hard-requires foundry refold scores and logs "No refold scores found ...
-  run at least a calibration trial" on a finished BoltzGen run. The stage
-  reports and `top_k.fasta` are the deliverables there for now.
+- **`src/binder_report.py` renders a BoltzGen campaign too, and the
+  vocabulary decides four things.** It used to hard-require foundry's
+  `refold_scores.csv` and raise "No refold scores found ... run at least a
+  calibration trial" on a finished cyclic run. `_load_boltzgen_designs` now
+  reads the FULL population through `design_metrics.parse_boltzgen_outputs`
+  — `scoring/ranked.csv` holds only the gate survivors (1,700 of 4,329), so
+  reading that would draw every histogram over the passing tail — takes
+  survivors from BoltzGen's own `pass_filters` (foundry's `filter_records`
+  fails a record for a MISSING gated column, so it would report zero
+  survivors), and deserializes the funnel from the frozen
+  `scoring/filter_stats.txt` rather than re-deriving it. `complex_plddt` is
+  NOT mapped onto `binder_plddt` — whole complex vs binder alone — so it
+  travels under its own name, and the report's second histogram, scatter
+  y-axis, design-card metrics and epitope-check prose all come from a
+  `vocab` block chosen by the track. The track is read off the ROWS, not a
+  config engine key, so a report regenerated for an archived campaign cannot
+  disagree with the numbers it renders.
+- **A report must state the modality the run RAN, not the one a stage
+  proposed.** `20_target_intel.md`'s handoff is a proposal that
+  `_resolve_modality` may have overridden, and reading it titled the
+  macrocycle showcase's report "Does a de novo mini_protein occupy ...?" over
+  a 15-residue cyclic-peptide campaign. `_run_modality` prefers
+  `calibration.json`'s frozen value, then the binder-spec handoff, then the
+  proposal — the same "read what the run decided" discipline already applied
+  to `excellence_bar` and `success_metric`. The site-decision block names the
+  proposal only when it was overridden, which is exactly the case a reader
+  needs to see.
 - **`quality_score` is not a score.** It is 994 evenly-spaced distinct values,
   i.e. `1 - (final_rank-1)/(n-1)` — a rank percentile carrying no information
   beyond the ordering. Fine for sorting — the retired `design.ranking.
@@ -822,13 +845,36 @@ them without re-reading this list is how they get silently reverted.
   stage can report a well-known protein's canonical *literature* numbering
   verbatim instead of grounding in the specific structure it was asked to
   analyse. Caught in practice — asked to analyse 8ZNL, it returned PD-L1's
-  textbook hotspots (Tyr56, Gln66, ...), correct for a *different* PD-L1
-  structure (7CZD) but not for 8ZNL, where chain B residue 56 is actually VAL.
+  textbook hotspots by their **canonical UniProt numbers** (Tyr56, Gln66,
+  Arg113). Those are the right RESIDUES; what was wrong was the numbering
+  FRAME. 8ZNL's deposited author numbering runs `canonical + 1`
+  (`_struct_ref_seq`: Q9NZQ7 19-132 <-> auth 20-133), so the correct ids
+  there are Tyr**57**, Gln**67**, Arg**114** — auth 56 in 8ZNL really is VAL
+  — while 7CZD, which the model had evidently memorised, numbers author ==
+  canonical and the same numbers are right on it. (Tyr56 is canonical
+  precursor numbering, not mature: the signal peptide is 1-18, which would
+  make it Tyr38.) The shipped 8ZNL campaign designed against the correct
+  epitope — `projects/pdl1_rc1`'s `21_interface.md` lists `TYR57 | 57 | 38`
+  — so do not read this as a wrong-epitope incident.
   `validate_spec` caught that one only by luck (the stated atoms don't exist on
   valine); a mismatch that happened to share atom names would have sailed
   through. `_verify_hotspot_grounding` reads the real residue name at each
   hotspot's `auth_seq_id` from the downloaded structure and hard-fails on any
   mismatch, before a trim or spec is ever built.
+
+  **It answers "is the residue at auth N what the report claims", not "is
+  auth N the residue the literature means"**, and against a numbering-frame
+  error it is therefore a PROXY: measured over 8ZNL chain B's modelled span,
+  a uniform +1 offset is caught at 105 of 113 positions and silent at 8,
+  where the neighbour happens to share a residue type — ~93% per hotspot, so
+  a ten-row table slipping through is ~1e-11 but a single row can. The
+  primitive that answers the second question exists and is proven
+  (`membrane_topology.uniprot_to_auth` returns a uniform `{+1}` for 8ZNL
+  chain B and `{0}` for 7CZD), but nothing translates a literature-numbered
+  hotspot through it: its three callers are membrane-side inference, the
+  chimera check, and ortholog conservation — and that last returns early for
+  a human target. Hardening this would be ADVISORY, not a gate: a non-zero
+  offset is ordinary and legal in a deposited structure, as 8ZNL shows.
 - **`target_chain`/`partner_chain` can be silently swapped by the interface stage**,
   and hotspot grounding cannot catch it: a swap produces real, correctly-numbered
   residues on the *wrong protein*, not a fabricated residue. Caught in practice —

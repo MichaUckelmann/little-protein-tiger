@@ -25,6 +25,7 @@ Reuses (never re-implements) the pipeline's own logic:
 from __future__ import annotations
 
 import base64
+import csv
 import gzip
 import json
 import random
@@ -32,6 +33,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from loguru import logger
 
 from src import handoff as handoff_mod
 from src.binder_ranking import (
@@ -279,14 +282,196 @@ def _resolve_designs(binder_dir: Path, rcfg: dict) -> tuple[list[dict], str, lis
         label = f"calibration trial ({n_backbones:,} backbones, {len(rows):,} refolds)"
         return rows, label, ranking.top_k, ranking.filter_stats
 
+    bg = _load_boltzgen_designs(binder_dir)
+    if bg is not None:
+        return bg
+
     raise ReportError(
         f"No refold scores found under {binder_dir} — run at least a "
         "calibration trial (--stop-after trial) before generating a report.")
 
 
-def _design_summary(row: dict) -> dict:
+# BoltzGen's scoring stage writes its OWN vocabulary and no `refold_scores.csv`
+# at all, so `_load_scores` used to raise on a finished cyclic-peptide
+# campaign — `projects/pdl1_macrocycle` produced 1,700 gate survivors and got
+# "run at least a calibration trial" instead of a report.
+_BOLTZGEN_COLS = ("design_to_target_iptm", "min_design_to_target_pae",
+                  "complex_plddt", "pass_filters")
+
+
+def _is_boltzgen_csv(path: Path) -> bool:
+    try:
+        with path.open(encoding="utf-8") as fh:
+            header = next(csv.reader(fh), [])
+    except OSError:
+        return False
+    return any(c in header for c in _BOLTZGEN_COLS)
+
+
+def _load_boltzgen_designs(binder_dir: Path):
+    """Rows, label, top-K and the frozen funnel for a BoltzGen campaign.
+
+    Three deliberate choices:
+
+    * The FULL population comes from `design_metrics.parse_boltzgen_outputs`,
+      the pipeline's own parser — not a second CSV reader here. `ranked.csv`
+      holds only the gate survivors (1,700 of 4,329 on pdl1_macrocycle), so
+      reading it would draw the histograms over the survivors and make every
+      distribution look like the passing tail. The parser also resolves each
+      design's CIF to the REFOLD, which is the only one of BoltzGen's three
+      per-design structures whose binder sidechains are real coordinates.
+    * `filter_stats` is DESERIALIZED from the frozen `scoring/filter_stats.txt`
+      the scoring stage wrote, never re-derived against today's config — the
+      same discipline `ppi_report._parse_filter_stats` exists for. A BoltzGen
+      campaign gated on `require_boltzgen_pass` + `ipae_max`, and re-running
+      foundry's thresholds over these rows would drop all of them (every
+      foundry column is absent, and a missing gated column FAILS its gate).
+    * Survivors are `pass_filters`, BoltzGen's own nine-check AND, rather than
+      anything recomputed here.
+    """
+    scoring_dir = binder_dir / "scoring"
+    ranked, top_k = scoring_dir / "ranked.csv", scoring_dir / "top_k.csv"
+    if not (ranked.exists() and top_k.exists() and _is_boltzgen_csv(ranked)):
+        return None
+
+    from src.design_metrics import parse_boltzgen_outputs
+
+    rows: list[dict] = []
+    label = "BoltzGen campaign"
+    for mode in ("production", "calibration", "pilot"):
+        run_dir = binder_dir / "campaign" / mode
+        if not (run_dir / "final_ranked_designs").is_dir():
+            continue
+        try:
+            rows = [_boltzgen_row(r) for r in parse_boltzgen_outputs(run_dir)]
+        except (FileNotFoundError, OSError) as exc:
+            logger.debug(f"boltzgen metrics unreadable under {run_dir}: {exc}")
+            continue
+        label = f"BoltzGen {mode} ({len(rows):,} designs)"
+        break
+    if not rows:
+        # The metrics CSV is gone but the ranked survivors are not: report on
+        # what exists and say so, rather than raising on a finished campaign.
+        rows = [_boltzgen_row(r) for r in read_scores(ranked)]
+        label = f"BoltzGen campaign ({len(rows):,} gate survivors only)"
+
+    top_rows = [_boltzgen_row(r) for r in read_scores(top_k)]
+    stats_txt = scoring_dir / "filter_stats.txt"
+    stats = (_parse_frozen_filter_stats(stats_txt) if stats_txt.exists()
+             else _boltzgen_stats_from_rows(rows))
+    return rows, label, top_rows, stats
+
+
+def _boltzgen_row(row: dict) -> dict:
+    """One BoltzGen design in the report's own vocabulary.
+
+    Only columns that genuinely correspond are renamed. `complex_plddt` is
+    NOT mapped onto `binder_plddt`: it is the whole complex's confidence,
+    while foundry's is the binder alone, and quietly equating them would put
+    a different measurement under the same label. It travels under its own
+    name and the template asks for it by name.
+    """
+    out = dict(row)
+    out["name"] = row.get("design_id") or row.get("id")
+    # BoltzGen refolds one sequence per design, so a design IS its family —
+    # `max_per_backbone` has nothing to collapse here.
+    out["design_family"] = out["name"]
+    out["iptm"] = _as_float(row, "design_to_target_iptm")
+    out["iface_pae_min"] = _as_float(row, "min_design_to_target_pae")
+    out["complex_plddt"] = _as_float(row, "complex_plddt")
+    seq = row.get("designed_chain_sequence") or ""
+    out["binder_seq"] = seq
+    out["binder_len"] = len(seq) or None
+    cif = row.get("cif_path")
+    out["refold_cif"] = str(cif) if cif else None
+    out["pass_filters"] = str(row.get("pass_filters", "")).strip().lower() in (
+        "true", "1", "yes")
+    return out
+
+
+def _parse_frozen_filter_stats(path: Path) -> FilterStats:
+    """Read back the funnel the scoring stage froze.
+
+    `binder_ranking.FilterStats.render()` writes thousands separators
+    (`input:     4,329`), and `ppi_report`'s parser reads the legacy
+    `design_ranking` wording (`input designs: 4329`). Both spellings are
+    accepted so one reader serves both formats.
+    """
+    text = path.read_text(encoding="utf-8")
+    n_in = re.search(r"input(?:\s+designs)?:\s*([\d,]+)", text)
+    n_surv = re.search(r"survivors:\s*([\d,]+)", text)
+
+    def _n(m) -> int:
+        return int(m.group(1).replace(",", "")) if m else 0
+
+    dropped: dict[str, int] = {}
+    alone: dict[str, int] = {}
+    bucket: dict[str, int] | None = None
+    for line in text.splitlines():
+        low = line.strip().lower()
+        if low.startswith("dropped by"):
+            bucket = dropped
+            continue
+        if low.startswith("passing each"):
+            bucket = alone
+            continue
+        if not line.startswith(("  ", "\t")) or bucket is None:
+            continue
+        m = re.match(r"\s+(.+?)\s{2,}([\d,]+)", line)
+        if m:
+            bucket[m.group(1).strip()] = int(m.group(2).replace(",", ""))
+    return FilterStats(n_input=_n(n_in), n_survivors=_n(n_surv),
+                       dropped=dropped, passing_alone=alone)
+
+
+def _boltzgen_stats_from_rows(rows: list[dict]) -> FilterStats:
+    """Last resort when the frozen funnel is missing: count `pass_filters`.
+
+    Labelled as BoltzGen's own gate so a reader can tell this funnel from a
+    foundry one, and deliberately NOT a re-run of `filter_records`.
+    """
+    k = sum(1 for r in rows if r.get("pass_filters"))
+    return FilterStats(n_input=len(rows), n_survivors=k,
+                       dropped={"boltzgen_pass": len(rows) - k},
+                       passing_alone={"boltzgen_pass": k})
+
+
+def _design_metric_list(row: dict, track: str) -> list[dict]:
+    """The metrics a design card shows, chosen by TRACK and formatted here.
+
+    In Python rather than in `app.js` because the two tracks do not merely
+    format the same numbers differently — they measure different things, and
+    a template that hardcodes one track's column names silently renders
+    `—` four times for the other. (That is exactly what
+    `_stage_binder_summary` did to the analyst before the same fix landed
+    there.) The card renders whatever list it is given.
+    """
+    def f(key: str, digits: int, suffix: str = "") -> str:
+        v = _as_float(row, key)
+        return "—" if v is None else f"{v:.{digits}f}{suffix}"
+
+    if track == "boltzgen":
+        return [
+            {"label": "ipTM", "value": f("iptm", 3)},
+            {"label": "iPAE min", "value": f("iface_pae_min", 2, " Å")},
+            {"label": "complex pLDDT", "value": f("complex_plddt", 3)},
+            {"label": "BoltzGen filters",
+             "value": "pass" if row.get("pass_filters") else "fail"},
+        ]
+    return [
+        {"label": "ipTM", "value": f("iptm", 3)},
+        {"label": "ipSAE min", "value": f("ipsae_min", 3)},
+        {"label": "RMSD dock", "value": f("binder_rmsd_dock", 2, " Å")},
+        {"label": "Epitope recall",
+         "value": ("—" if _as_float(row, "epitope_recall") is None
+                   else f"{_as_float(row, 'epitope_recall') * 100:.0f}%")},
+    ]
+
+
+def _design_summary(row: dict, track: str = "foundry") -> dict:
     binder_len = _as_float(row, "binder_len")
     return {
+        "metrics": _design_metric_list(row, track),
         "name": row.get("name"),
         "family": row.get("design_family"),
         "iptm": _as_float(row, "iptm"),
@@ -302,14 +487,15 @@ def _design_summary(row: dict) -> dict:
 
 
 def _scatter_sample(rows: list[dict], survivor_ids: set[int], success_metric: str,
-                     excellence_bar: float, n: int = 700, seed: int = 7) -> list[list]:
+                     excellence_bar: float, n: int = 700, seed: int = 7,
+                     y_key: str = "ipsae_min") -> list[list]:
     rng = random.Random(seed)
     idxs = list(range(len(rows)))
     rng.shuffle(idxs)
     out: list[list] = []
     for i in idxs[:n]:
         r = rows[i]
-        x, y = _as_float(r, "iptm"), _as_float(r, "ipsae_min")
+        x, y = _as_float(r, "iptm"), _as_float(r, y_key)
         if x is None or y is None:
             continue
         metric_val = _as_float(r, success_metric)
@@ -336,19 +522,44 @@ def _site_decision(target_intel: dict) -> dict:
         "go_recommendation": target_intel.get("go_recommendation", ""),
         "go_rationale": target_intel.get("go_rationale", ""),
         "design_intent": target_intel.get("design_intent", ""),
-        "modality": target_intel.get("modality", ""),
+        # The proposal; the hero shows what actually ran (`_run_modality`).
+        "modality_proposed": target_intel.get("modality", ""),
         "alternatives": alternatives,
     }
 
 
+def _run_modality(binder_dir: Path, target_intel: dict,
+                  calibration: dict | None) -> str:
+    """The modality the campaign RAN, not the one a stage proposed.
+
+    `--modality` is the operator's choice and `_resolve_modality` overrides
+    whatever `binder-target-intel` suggested, so `20_target_intel.md`'s
+    handoff is a PROPOSAL. Reading it made the macrocycle showcase's report
+    ask "Does a de novo mini_protein occupy ...?" over a 15-residue cyclic
+    peptide campaign — the headline naming a modality the run had explicitly
+    rejected. Same discipline as `excellence_bar` and `success_metric` above:
+    prefer what the run froze (`calibration.json`, then the binder-spec
+    handoff, which is written by the stage that builds the real spec) and
+    fall back to the proposal only when neither exists.
+    """
+    frozen = (calibration or {}).get("modality")
+    if frozen:
+        return str(frozen)
+    spec_handoff = handoff_mod.parse_handoff(
+        _read_text(binder_dir / "23_binder_spec.md") or "")
+    if spec_handoff.get("modality"):
+        return str(spec_handoff["modality"])
+    return str(target_intel.get("modality") or "binder")
+
+
 def _hero_and_rail(target_intel: dict, calibration: dict | None, source_label: str,
-                    n_total: int, n_top: int, best_ipsae: float | None) -> tuple[dict, dict]:
+                    n_total: int, n_top: int, best_ipsae: float | None,
+                    modality: str = "binder") -> tuple[dict, dict]:
     gene = target_intel.get("target_gene", "target")
     pdb_id = target_intel.get("pdb_id", "—")
     partner_full = target_intel.get("partner_name", "the native partner")
     partner = partner_full.split(" (", 1)[0]  # drop a parenthetical qualifier for the headline only
     intent = target_intel.get("design_intent", "disrupt")
-    modality = target_intel.get("modality", "binder")
 
     verdict = (calibration or {}).get("verdict")
     pills = []
@@ -492,19 +703,60 @@ def build_report(binder_dir: Path, out_path: Path | None = None,
         success_metric = calibration.get("success_metric") or success_metric
 
     rows, source_label, top_rows, filter_stats = _resolve_designs(binder_dir, rcfg)
+    # Which vocabulary these rows are in decides the gate, the second
+    # histogram, the scatter axes and the design-card metrics. Read off the
+    # ROWS rather than from a config engine key, so a report regenerated by
+    # `scripts/generate_binder_report.py` for an archived campaign cannot
+    # disagree with the numbers it is rendering.
+    track = "boltzgen" if (rows and "design_to_target_iptm" in rows[0]) else "foundry"
     # "production campaign" is the only fixed source_label string; every
     # other label (the calibration-trial one is dynamic, includes counts)
     # means the calibration campaign was scored instead. Same mode names
     # _run_gpu_stage/_binder_paths use.
     resolved_mode = "production" if source_label == "production campaign" else "calibration"
     design_hotspot_ids = _design_hotspot_auth_seq_ids(binder_dir, resolved_mode)
-    survivors, _ = filter_records(rows, rcfg.get("thresholds"))
+    if track == "boltzgen":
+        # BoltzGen's own nine-check AND, not foundry's thresholds: every
+        # foundry column is absent from these rows and `filter_records`
+        # FAILS a record for a missing gated column, so running it here
+        # would report a campaign with 1,700 survivors as having none.
+        survivors = [r for r in rows if r.get("pass_filters")]
+    else:
+        survivors, _ = filter_records(rows, rcfg.get("thresholds"))
     survivor_ids = {id(r) for r in survivors}
-    top_designs = [_design_summary(r) for r in top_rows[:top_n_structures]]
+    top_designs = [_design_summary(r, track) for r in top_rows[:top_n_structures]]
 
     iptm_vals = [v for v in (_as_float(r, "iptm") for r in rows) if v is not None]
     ipsae_vals = [v for v in (_as_float(r, "ipsae_min") for r in rows) if v is not None]
     best_ipsae = max(ipsae_vals) if ipsae_vals else None
+    # The second histogram and the scatter's y-axis: ipSAE on foundry,
+    # complex pLDDT on BoltzGen, which writes no PAE matrix and therefore no
+    # ipSAE at all (an `ipsae_min` bar of 0.5 against its 0.0000-0.0289 range
+    # is why `--success-metric ipsae_min` is refused on that engine).
+    if track == "boltzgen":
+        second = {
+            "key": "complex_plddt", "axis": "complex pLDDT",
+            "axis_html": "complex pLDDT",
+            "title": "Complex pLDDT distribution",
+            "cap": ("BoltzGen's whole-complex confidence — not the binder "
+                    "alone, which it does not report separately"),
+            "threshold": 0.70, "lo": 0.0, "hi": 1.0,
+        }
+    else:
+        second = {
+            "key": "ipsae_min", "axis": "ipSAE min",
+            # Plain text for the SVG axis (no markup in <text>), marked-up
+            # for the headings — the old shell hardcoded the marked-up form
+            # and dropping it would silently downgrade the foundry report's
+            # typography.
+            "axis_html": "ipSAE<sub>min</sub>",
+            "title": "ipSAE<sub>min</sub> distribution",
+            "cap": ("stricter than ipTM — d0 scales with locally-aligned "
+                    "residues, not target size"),
+            "threshold": 0.5, "lo": 0.0, "hi": 1.0,
+        }
+    second_vals = [v for v in (_as_float(r, second["key"]) for r in rows)
+                   if v is not None]
 
     passing_alone = [
         {"criterion": k, "n": n, "pct": round(100.0 * n / max(filter_stats.n_input, 1), 1)}
@@ -512,9 +764,20 @@ def build_report(binder_dir: Path, out_path: Path | None = None,
     ]
     dropped_by = [{"criterion": k, "n": n} for k, n in filter_stats.dropped.items() if k != "scoring error"]
 
-    hero, rail = _hero_and_rail(target_intel, calibration, source_label, len(rows), len(top_designs), best_ipsae)
+    run_modality = _run_modality(binder_dir, target_intel, calibration)
+    hero, rail = _hero_and_rail(target_intel, calibration, source_label,
+                                len(rows), len(top_designs), best_ipsae,
+                                modality=run_modality)
 
     site_decision = _site_decision(target_intel)
+    # The site-decision block states what RAN, and names the proposal only
+    # when the operator's `--modality` overrode it — which is exactly the
+    # case a reader needs to see, and the one the report used to hide.
+    site_decision["modality"] = run_modality
+    if (site_decision.get("modality_proposed") or run_modality) != run_modality:
+        site_decision["modality_note"] = (
+            f"proposed {site_decision['modality_proposed']}, "
+            f"overridden to {run_modality}")
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     report_data: dict[str, Any] = {
@@ -541,8 +804,39 @@ def build_report(binder_dir: Path, out_path: Path | None = None,
         "metrics": {
             "n_total": len(rows),
             "iptm_hist": _histogram(iptm_vals, 0.0, 1.0, 25),
-            "ipsae_hist": _histogram(ipsae_vals, 0.0, 1.0, 25),
-            "scatter": _scatter_sample(rows, survivor_ids, success_metric, excellence_bar),
+            "second_hist": _histogram(second_vals, second["lo"], second["hi"], 25),
+            "scatter": _scatter_sample(rows, survivor_ids, success_metric,
+                                       excellence_bar, y_key=second["key"]),
+        },
+        # What this track calls things. The template reads labels from here
+        # instead of hardcoding one engine's column names.
+        "vocab": {
+            "track": track,
+            "unit": "designs" if track == "boltzgen" else "refolds",
+            "second": {k: second[k] for k in ("axis", "title", "cap",
+                                              "threshold")},
+            "scatter_title": f"ipTM vs. {second['axis_html']}, per "
+                             + ("design" if track == "boltzgen" else "refold"),
+            # BoltzGen reports neither hotspot engagement nor epitope recall,
+            # so the geometric cross-check block has nothing to show on that
+            # track and says so rather than rendering empty rows.
+            "has_geometry": track != "boltzgen",
+            "geometry_dek":
+                ("ipTM and BoltzGen's own filters say the model is confident "
+                 "and self-consistent. Neither says the binder is sitting on "
+                 "the intended epitope: this track reports no hotspot "
+                 "engagement and no epitope recall, so the epitope check "
+                 "that the foundry track performs is not available here."
+                 if track == "boltzgen" else None),
+            "geometry_body":
+                ("<b>pass_filters</b> is the AND of nine BoltzGen checks and "
+                 "is dominated by one of them \u2014 a 2.0 \u00c5 "
+                 "design-vs-refold RMSD, i.e. its own self-consistency "
+                 "measure. Below are the top designs by BoltzGen's "
+                 "<code>final_rank</code>, a MAXIMIN over six per-metric "
+                 "ranks, so a design must be decent on all six rather than "
+                 "excellent at one."
+                 if track == "boltzgen" else None),
         },
         "funnel": {"passing_alone": passing_alone, "dropped_by": dropped_by},
         "top_designs": top_designs,

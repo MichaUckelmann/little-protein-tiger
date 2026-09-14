@@ -6,7 +6,7 @@
 <style>
 /*@@BASE_CSS@@*/
 
-#chart-iptm, #chart-ipsae{ height:170px; }
+#chart-iptm, #chart-second{ height:170px; }
 #chart-funnel{ height:230px; }
 #chart-scatter{ height:320px; }
 
@@ -60,9 +60,9 @@
           <svg id="chart-iptm" viewBox="0 0 320 170"></svg>
         </div>
         <div class="chartcard">
-          <h4>ipSAE<sub>min</sub> distribution</h4>
-          <div class="cap">stricter than ipTM — d0 scales with locally-aligned residues, not target size</div>
-          <svg id="chart-ipsae" viewBox="0 0 320 170"></svg>
+          <h4 id="chart-second-title">ipSAE<sub>min</sub> distribution</h4>
+          <div class="cap" id="chart-second-cap">stricter than ipTM — d0 scales with locally-aligned residues, not target size</div>
+          <svg id="chart-second" viewBox="0 0 320 170"></svg>
         </div>
         <div class="chartcard wide">
           <h4>What each gate alone would keep, vs. what it actually cost</h4>
@@ -70,7 +70,7 @@
           <svg id="chart-funnel" viewBox="0 0 640 210"></svg>
         </div>
         <div class="chartcard wide">
-          <h4>ipTM vs. ipSAE<sub>min</sub>, per refold</h4>
+          <h4 id="chart-scatter-title">ipTM vs. ipSAE<sub>min</sub>, per refold</h4>
           <div class="cap" id="chart-scatter-cap"></div>
           <svg id="chart-scatter" viewBox="0 0 640 320"></svg>
         </div>
@@ -79,9 +79,9 @@
 
     <section class="block tint" id="designs">
       <div class="blockhead"><span class="num">04</span><h2>Do the winners actually bind where intended?</h2></div>
-      <p class="blockdek">ipTM and ipSAE say the model is confident. They don't say the binder is sitting on the intended epitope rather than confidently docked somewhere else. Two more measurements close that gap.</p>
+      <p class="blockdek" id="geom-dek">ipTM and ipSAE say the model is confident. They don't say the binder is sitting on the intended epitope rather than confidently docked somewhere else. Two more measurements close that gap.</p>
       <div class="prose">
-        <p><b>Hotspot engagement</b> — the fraction of the intended hotspot residues actually contacted by the refolded binder (all-atom, 8&nbsp;Å) — and <b>epitope recall</b> — how much of the binder's contact footprint overlaps the target-intel stage's intended epitope — are the two checks that catch a confidently mis-docked design that ipTM alone would miss. Below are the top designs by the campaign's ranking, one per backbone family.</p>
+        <p id="geom-body"><b>Hotspot engagement</b> — the fraction of the intended hotspot residues actually contacted by the refolded binder (all-atom, 8&nbsp;Å) — and <b>epitope recall</b> — how much of the binder's contact footprint overlaps the target-intel stage's intended epitope — are the two checks that catch a confidently mis-docked design that ipTM alone would miss. Below are the top designs by the campaign's ranking, one per backbone family.</p>
       </div>
       <div class="designgrid" id="design-cards"></div>
 
