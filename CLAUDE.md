@@ -901,17 +901,36 @@ them without re-reading this list is how they get silently reverted.
   7CZD "exposed" Met18 by 71 Å². All three are `trim_target` kwargs, like
   `min_bsa_retention`; tests that force an aggressive cut pass
   `max_exposed_hydrophobic=None`, which still disables BOTH measures.
-  - **0.25 is a proposal, not a calibration, and the production corpus cannot
-    calibrate it.** 22 of the 25 trims in `projects/` are NO-OPS — the target already
-    fitted the budget — and every one measures exactly 0.0%, so the guard has
-    essentially never judged a real cut in a real campaign. Forcing cuts by sweeping
-    the budget gives: 5VAI R→100 (`R29-128`, a real domain boundary) 74.8 Å² = **5.5%**;
-    3KYS A→190, shearing the fold, 525.4 Å² = **32.5%**; 5VAI R→200 and →150, accreting
-    into the TM bundle, **90.5%** and **92.1%**. Nothing lands between 5.5% and 32.5%,
-    so the whole 10–30% band fits equally well. Note the gate only ever decides cuts
-    with NO near-epitope exposure, because any at all raises first — which is why the
-    older `away + near` totals in `GLUE_PIPELINE_SCOPE.md` (81%, 175%) describe cuts
-    that were already refused and cannot set this threshold.
+  - **0.25 is well placed and MARGINAL, and the production corpus cannot judge it at
+    all.** 22 of the 25 trims in `projects/` are NO-OPS — the target already fitted the
+    budget — and every one measures exactly 0.0%, so the guard has essentially never
+    judged a real cut in a real campaign. `scripts/benchmark_trimming.py` exists to
+    supply cuts: **198 rungs over 23 targets (112–582 residues), 133 real cuts**, each
+    against a real `complex-structure-analysis` epitope. The verdict-preserving window
+    is **21.4%–26.2%** — the threshold can move anywhere in it without changing a single
+    verdict, and 27 of 133 cuts land within 0.6–1.6× of it. Do NOT read the earlier
+    "the whole 10–30% band fits equally well": that came from four hand-forced cuts and
+    the 133-cut set contradicts it. Full results and the per-target table in
+    `docs/trim-benchmark.md`; raw rows in `docs/trim-ladder.tsv`.
+  - **What the fraction actually measures is whether the cut followed a structural
+    unit** — the scope's physical claim, confirmed against two variables the threshold
+    does not define. By segment count (pure geometry): 1 segment n=89 median **7.6%**,
+    2–5 n=33 **35.6%**, ≥6 n=11 **43.5%** — monotonic over 5.7×. By how much was
+    removed: <20% n=46 **16.1%**, 20–40% n=27 **71.4%**, ≥40% n=60 **7.2%** —
+    ANTI-predictive, the cuts removing the most open the least. So it is not a proxy
+    for cut size, and an exposure-minimising search over cut positions would be
+    optimising the wrong variable. Near-epitope exposure is not a correlate either
+    (14.3% with none vs 16.1% with some), so the two exposure gates are independent
+    and neither is redundant. All 24 no-op rungs measure exactly 0.0%, which is the
+    control that licenses reading a non-zero fraction as a property of the cut.
+  - The gate only ever decides cuts with NO near-epitope exposure, because any at all
+    raises first — which is why the older `away + near` totals in
+    `GLUE_PIPELINE_SCOPE.md` (81%, 175%) describe cuts that were already refused and
+    cannot set this threshold.
+  - **It measures geometry, not design outcomes.** Nothing in the benchmark folds
+    anything, so it cannot say a 30% cut yields worse binders than a 20% one — only
+    that they are different kinds of cut and the fraction sorts them as the structural
+    argument predicts. Calibrating against measured yield is a GPU experiment.
   - **Every trim now RECORDS its exposure**, because nothing did and a calibration has
     to be fitted on something: `exposed_hydrophobic_A2`, `n_exposed_hydrophobic`,
     `exposed_hydrophobic_fraction` and `exposed_hydrophobic_auth` on `TrimResult`, in

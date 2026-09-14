@@ -441,11 +441,20 @@ only ever decides cuts with `near == 0`, and re-measuring for exactly those:
 | 5VAI R 387->200, accreting into the TM bundle | 2 | 23 res | 1227.5 Å² | **90.5%** |
 | 5VAI R 387->150, ditto | 2 | 20 res | 1249.0 Å² | **92.1%** |
 
-Nothing lands between 5.5% and 32.5%, so the whole 10-30% band fits the data
-equally well and there is exactly ONE clean cut in it. 0.25 is the middle of
-the range proposed above; erring strict is deliberate, since a false refusal
-names the knob and costs minutes while a false pass spends GPU-hours designing
-against an artificial face and says nothing.
+Nothing lands between 5.5% and 32.5% in those four, so 0.25 was set as the
+middle of the range proposed above, erring strict deliberately — a false
+refusal names the knob and costs minutes, a false pass spends GPU-hours
+designing against an artificial face and says nothing.
+
+**Superseded by a real benchmark, 2026-09-14.** `scripts/benchmark_trimming.py`
+supplies cuts the production corpus cannot: **198 rungs over 23 targets
+(112-582 residues), 133 real cuts**, each against a real
+`complex-structure-analysis` epitope rather than a deterministic stand-in.
+Headline: the verdict-preserving window is **21.4%-26.2%**, not 10-30% — so
+0.25 is well placed but the value is consequential. And the fraction is
+confirmed to measure *whether the cut followed a structural unit*: by segment
+count 7.6% / 35.6% / 43.5% (monotonic over 5.7x), by amount removed
+16.1% / 71.4% / 7.2% (anti-predictive). See `docs/trim-benchmark.md`.
 
 Two things this measurement established that the original three points hid:
 

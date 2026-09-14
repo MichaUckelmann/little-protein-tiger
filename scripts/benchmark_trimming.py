@@ -352,6 +352,14 @@ def _structure_path(pdb: str) -> Path | None:
 # phase 3: read it back
 # ──────────────────────────────────────────────────────────────────────────
 
+def _rm_frac(row, f):
+    """Fraction of the chain this cut removed."""
+    before, removed = f(row, "n_before"), f(row, "removed")
+    if not before or removed is None:
+        return None
+    return removed / before
+
+
 def report_phase(out_path: Path) -> None:
     import csv
     import statistics as stats
@@ -431,16 +439,68 @@ def report_phase(out_path: Path) -> None:
               f"segment count, so an N-segment target spends N-1 chain breaks "
               f"before the binder is looked at — nothing refuses this.")
 
-    acc = [f(r, "exposed_fraction") for r in passing]
-    ref = [f(r, "exposed_fraction") for r in cut
-           if r["production_verdict"] == "REFUSED_EXPOSURE"]
-    acc, ref = [x for x in acc if x is not None], [x for x in ref if x is not None]
-    if acc and ref:
-        print(f"\nseparation: accepted cuts reach {max(acc):.1%}, "
-              f"exposure-refused cuts start at {min(ref):.1%}"
-              + ("  <- a real gap, the threshold sits inside it"
-                 if max(acc) < min(ref) else
-                 "  <- OVERLAP: no single fraction separates these"))
+    # ── is the threshold MARGINAL, and does the fraction track anything the
+    #    threshold does not itself define? ──────────────────────────────────
+    #
+    # Deliberately NOT a separation test. `production_verdict` classifies a
+    # cut BY the threshold, so "accepted cuts reach X, exposure-refused start
+    # at Y" with X <= 0.25 < Y is guaranteed arithmetic and not a finding;
+    # reading it as corroboration of the threshold is circular, and an
+    # earlier revision of this function did exactly that. What the split can
+    # honestly report is whether any observed cut lands NEAR the threshold,
+    # since that is what decides how much the exact value matters.
+    thr = st.MAX_EXPOSED_HYDROPHOBIC_FRACTION
+    fr = sorted(x for x in (f(r, "exposed_fraction") for r in cut)
+                if x is not None)
+    if fr:
+        band = [x for x in fr if 0.6 * thr <= x <= 1.6 * thr]
+        below = [x for x in fr if x <= thr]
+        above = [x for x in fr if x > thr]
+        msg = (f"\nthreshold {thr:.0%} is "
+               f"{'MARGINAL' if band else 'not marginal'} for this set: "
+               f"{len(band)} of {len(fr)} cuts land within 0.6-1.6x of it")
+        if band:
+            msg += " (" + ", ".join(f"{x:.1%}" for x in band) + ")"
+        if below and above:
+            msg += (f". Nearest below {max(below):.1%}, nearest above "
+                    f"{min(above):.1%} — the threshold could move anywhere "
+                    f"between them without changing a single verdict here.")
+        print(msg)
+
+    # The non-circular part: independent signals of a bad cut.
+    #
+    # `near_refuses` is measured on a DIFFERENT residue set (inside the
+    # hotspot clearance), gates unconditionally, and owes nothing to the
+    # fraction. `n_segments` is pure geometry. The scope's physical claim is
+    # that exposure is governed by whether a cut followed an autonomous
+    # structural unit rather than by how much it removed — so if the fraction
+    # measures that, it should rise with segment count and NOT simply with
+    # the amount removed. These three groupings are what test it.
+    def _grouped(label, buckets):
+        out = []
+        for name, pred in buckets:
+            vals = [f(r, "exposed_fraction") for r in cut if pred(r)]
+            vals = [x for x in vals if x is not None]
+            if vals:
+                out.append(f"{name} n={len(vals)} "
+                           f"median {stats.median(vals):.1%}")
+        if out:
+            print(f"  by {label}: " + "  |  ".join(out))
+
+    print("\nexposed fraction against signals the threshold does not define:")
+    _grouped("near-epitope exposure (an independent gate)",
+             [("none", lambda r: r.get("near_refuses") == "0"),
+              ("some", lambda r: r.get("near_refuses") == "1")])
+    _grouped("segment count (pure geometry)",
+             [("1", lambda r: r.get("n_segments") == "1"),
+              ("2-5", lambda r: (r.get("n_segments") or "").isdigit()
+               and 2 <= int(r["n_segments"]) <= 5),
+              (">=6", lambda r: (r.get("n_segments") or "").isdigit()
+               and int(r["n_segments"]) >= 6)])
+    _grouped("how much was removed",
+             [("<20%", lambda r: (_rm_frac(r, f) or 0) < 0.20),
+              ("20-40%", lambda r: 0.20 <= (_rm_frac(r, f) or 0) < 0.40),
+              (">=40%", lambda r: (_rm_frac(r, f) or 0) >= 0.40)])
 
 
 def main(argv: list[str] | None = None) -> int:
