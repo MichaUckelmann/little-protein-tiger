@@ -19,7 +19,12 @@ import json, sys, traceback, types, warnings
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
-ROOT = Path("/home/m.uckelmann_cbs-niob.local/code/little-protein-tiger")
+# Derived, not hardcoded: this was one machine's absolute path, which is
+# invisible until something reads a repo file through it. The Phase B
+# analysis reads `config.yaml` for the dock gate, and its tests were the
+# first thing here to do so, so they passed locally and failed CI with
+# `FileNotFoundError: /home/.../little-protein-tiger/config.yaml`.
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import gemmi  # noqa: E402
