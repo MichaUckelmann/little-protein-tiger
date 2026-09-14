@@ -25,7 +25,7 @@ maintained twice is a stylesheet maintained once and forgotten once.
 HEADLINE NUMBERS ARE THE RUN'S OWN, at the `hotspot_engagement >= 1` threshold
 it gated with — 708 survivors, and the top 20 that ranking produced.
 `config.yaml` sets 0.75 today and on THIS campaign that changes nothing at all,
-which is the point slide 10 makes: the four refolds the old gate rejected on
+which is the point slide 11 makes: the four refolds the old gate rejected on
 engagement each fail another gate anyway, so the survivor set is a superset of
 identical size, i.e. the same set. The deck states the null result rather than
 implying the shortlist moved.
@@ -38,6 +38,12 @@ itself: ten hotspots rather than nine, `manual_4zqk` renamed `zqk` when that
 check stopped being hand-made, the chosen entry is row 3 of the candidate table
 rather than row 1, and the run billed three model calls on one model rather
 than five on two.
+
+Slide 9 is a SECOND campaign against the same target — a 12-15mer cyclic
+peptide, BoltzGen, 7CZD — and reads its figures out of the snapshot's own
+`macrocycle` block, which is a different project and is never mixed into the
+foundry numbers. It sits where `build_video_pdl1.py`'s `plate_macro` sits, and
+says in as many words that it is not a head-to-head.
 """
 from __future__ import annotations
 
@@ -77,7 +83,12 @@ GEO = F["geometry"]
 #: 4ZQK is still external to the campaign, which is the whole point of it, but
 #: the measurement is no longer an exception to "every figure is extracted".
 M4Z = F["zqk"]
-N_SLIDES = 11
+#: The second campaign against the same target: cyclic peptide, BoltzGen, 7CZD.
+#: Its own block in the snapshot and never merged into the foundry numbers
+#: above — a different project with BoltzGen-native columns, which is also why
+#: slide 9 says so in as many words rather than letting the two sets blur.
+MAC = F["macrocycle"]
+N_SLIDES = 12
 
 # The sequence-identity margin that settled the chain assignment. Read out of
 # CLAUDE.md, where the repo records it, for the same reason `build_carousel.py`
@@ -446,8 +457,63 @@ external to the campaign, which is what makes it a check.</figcaption>
 """, page=page(8))
 
 
-# ── 9. the bill ──────────────────────────────────────────────────────────────
+# ── 9. the same target, as a macrocycle ──────────────────────────────────────
 def s9() -> str:
+    """The second campaign, and the claim it deliberately does not make.
+
+    Placed where `build_video_pdl1.py`'s `plate_macro` sits: after the lead
+    design and the 4ZQK check, before the bill. A macrocycle is not the first
+    campaign at a smaller size — RFD3 has no cyclic-peptide path at all — so
+    the beat is that the same stage machine drove a different generator.
+
+    The caveat box is `build_campaign.py`'s own, because two campaigns shown
+    back to back read as a comparison unless the slide says they are not one:
+    different engine, different entry, and two of the columns the design cards
+    rank on do not exist on this track at all. No figure here, since the
+    macrocycle turntable is gitignored and this deck has to build on a machine
+    that has never run a render.
+    """
+    d = MAC["designs"][0]
+    return slide(f"""
+<div class="eyebrow">Second campaign &nbsp;/&nbsp; same target, other engine</div>
+<h2>BoltzGen enables cyclic&#8209;peptide design.</h2>
+<p class="wide">RFD3 has no cyclic path, so <code>--modality
+{MAC['modality']}</code> selects <code>{MAC['engine']}</code> and the same
+stage names run
+against a different generator. It kept {MAC['pdb_id']}&rsquo;s target chain
+whole ({MAC['trim_residues']} of {MAC['trim_residues']} residues), declared a
+{MAC['n_hotspots']}-residue patch of its own, and returned
+<strong>{n(MAC['gate']['survivors'])} gated designs</strong> from
+{n(MAC['production']['scored'])} scored &mdash;
+<strong>${MAC['spend_usd']:.2f}</strong> of model spend and
+{MAC['gpu_hours']['total']:.1f} GPU-hours.</p>
+<div class="stats">
+  <div class="stat"><div class="n">{d['iptm']:.3f}</div>
+    <div class="k">interface ipTM</div></div>
+  <div class="stat"><div class="n">{d['ipae']:.2f}</div>
+    <div class="k">interface PAE &Aring;</div></div>
+  <div class="stat"><div class="n">{d['plddt']:.3f}</div>
+    <div class="k">complex pLDDT</div></div>
+</div>
+<div class="prompt">{d['seq']}</div>
+<p class="wide muted" style="font-size:22px">Rank 1 of {MAC['top_k_count']}
+shortlisted &mdash; {d['len']} residues out of a
+{MAC['binder_len_min']}&ndash;{MAC['binder_len_max']} range, ranked by
+BoltzGen&rsquo;s own <code>final_rank</code>: a maximin over six
+per-metric ranks, so a design has to be decent on all six and excellence at
+one buys nothing.</p>
+<div class="box"><div class="h">Not a head-to-head</div>
+<p class="wide" style="font-size:23px">Different engine, different entry
+&mdash; {MAC['pdb_id']} here, {F['pdb_id']} above &mdash; and this track writes
+no PAE matrix for ipSAE and no dock RMSD, so the two shortlists cleared
+different bars and are not stated as a comparison. What the pair shows is that
+the stage machine is the same one.</p></div>
+<div class="grow"></div>
+""", page=page(9))
+
+
+# ── 10. the bill ──────────────────────────────────────────────────────────────
+def s10() -> str:
     g = F["gpu_hours"]
     by = F["llm_calls_by_stage"]
     return slide(f"""
@@ -488,11 +554,11 @@ safety-classifier refusals on structural-biology prompts started costing real
 money for no output &mdash; and no model is built in, since Claude, Gemini and
 GPT each drive the same loop, tools and cost ledger.</p></div>
 <div class="grow"></div>
-""", page=page(9))
+""", page=page(10))
 
 
-# ── 10. what it does not do, and what has moved since ────────────────────────
-def s10() -> str:
+# ── 11. what it does not do, and what has moved since ────────────────────────
+def s11() -> str:
     """The coda, and the one thing a reader cannot check for themselves.
 
     A campaign published days after it ran invites exactly one question —
@@ -549,11 +615,11 @@ figures above are the run&rsquo;s own either way. On a campaign where the
 threshold mattered this slide would carry two different numbers &mdash; it is
 worth stating that it does not.</p>
 <div class="grow"></div>
-""", page=page(10))
+""", page=page(11))
 
 
-# ── 11. terms ────────────────────────────────────────────────────────────────
-def s11() -> str:
+# ── 12. terms ────────────────────────────────────────────────────────────────
+def s12() -> str:
     return slide(f"""
 <div class="eyebrow">Little Protein Tiger</div>
 <h1>Free for any non&#8209;commercial use.</h1>
@@ -575,7 +641,7 @@ Commercial use needs a separate licence.</p>
 every figure extracted from the run that produced it &mdash; including the ones
 that make the tool look worse.</p>
 <div class="grow"></div>
-""", dark=True, page=page(11))
+""", dark=True, page=page(12))
 
 
 def main() -> int:
@@ -596,7 +662,8 @@ def main() -> int:
                 f"the deck says '{word}' {what} and the facts say {count} — "
                 f"reword slide(s) {slides_} before shipping it")
 
-    slides = [s1(), s2(), s3(), s4(), s5(), s6(), s7(), s8(), s9(), s10(), s11()]
+    slides = [s1(), s2(), s3(), s4(), s5(), s6(), s7(), s8(), s9(), s10(),
+              s11(), s12()]
     if len(slides) != N_SLIDES:
         raise SystemExit(f"{len(slides)} slides but the footers say {N_SLIDES}")
     html = (f'<meta charset="utf-8"><title>Little Protein Tiger &mdash; PD-L1</title>'

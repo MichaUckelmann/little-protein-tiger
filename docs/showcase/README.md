@@ -210,7 +210,7 @@ from — the one artefact you cannot quietly correct after publishing.
 | Asset | Shape | For |
 |---|---|---|
 | `assets/lpt_carousel.pdf` | 11 slides, 1080x1350 | LinkedIn renders an uploaded PDF as a swipeable deck |
-| `assets/lpt_carousel_pdl1.pdf` | 11 slides, 1080x1350 | the same, for the target-already-named entry point |
+| `assets/lpt_carousel_pdl1.pdf` | 12 slides, 1080x1350 | the same, for the target-already-named entry point |
 | `assets/lpt_hook.mp4` | 57 s, 1080x1350, silent | feed video, **disease-first** entry point; autoplay is muted, so every claim is on screen |
 | `assets/lpt_hook_poster.png` | 1080x1350 | upload as the video thumbnail — the first frame is a half-typed prompt |
 | `assets/lpt_hook_pdl1.mp4` | 49 s, 1080x1350, silent | the same, **target-first** — the binder track on the PD-L1/8ZNL campaign, closing on the same target as a BoltzGen macrocycle |
@@ -256,39 +256,48 @@ plate: scaling the raw 1080x1080 canvases fits their transparent margins too
 its own box rescales the model every frame, which reads as breathing rather
 than turning.
 
-**Two decks, two entry points.** `build_carousel.py` opens on one sentence about
-a disease and sells the four reasoning stages that decide what to bind;
+**Two decks, two entry points.** `build_carousel.py` opens on one sentence
+about a disease and sells the four reasoning stages that decide what to bind;
 `build_carousel_pdl1.py` (PD-L1, `--workflow binder`) opens on a target the
 reader already has and sells everything downstream of that — nine solved
 structures ranked on their measured interfaces, the chain-identity guard, the
-epitope, the trial, the gates, and a hand-made 4ZQK superposition as the one
-piece of independent evidence. Most people arriving at this repo already know
-their target, so the second deck is the one that answers their question. It
-imports the stylesheet, `slide()` and the number formatting from the first
-rather than copying them: two decks posted a week apart that share a palette but
-drift in type scale read as two projects.
+epitope, the trial, the gates, a computed 4ZQK superposition as the one piece
+of independent evidence, and — since Sep 2026 — the cyclic-peptide campaign
+against the same target on slide 9, where `build_video_pdl1.py` puts it too.
+Most people arriving at this repo already know their target, so the second deck
+is the one that answers their question. It imports the stylesheet, `slide()`
+and the number formatting from the first rather than copying them: two decks
+posted a week apart that share a palette but drift in type scale read as two
+projects.
 
 Its headline figures are the run's own, at the `hotspot_engagement >= 1`
-threshold in force in August 2026, because the twenty designs it shows came out
-of that gate. `config.yaml` sets 0.75 today, so slide 10 states the re-gate
-(715 -> 752 survivors, same twenty designs, one adjacent swap) rather than
-mixing the two.
+threshold that campaign gated with, because the twenty designs it shows came
+out of that gate. `config.yaml` sets 0.75 today, and on this campaign that
+changes nothing: slide 11 states the re-gate as the null result it is (708
+survivors across 390 backbones either way — the four refolds the old gate
+rejected on engagement each fail another gate anyway, and a looser gate can
+only admit refolds, so the equal counts are the same set). Slide 9's second
+campaign is a DIFFERENT project (`projects/pdl1_macrocycle`, 7CZD, BoltzGen)
+and says so: no ipSAE and no dock RMSD exist on that track, so the two
+shortlists are not posted as a head-to-head.
 
-Slide 9 reports the corpus ablation (`scripts/ablate_corpus.py`), which exists
-because a deck claiming "grounded in the literature" invites exactly one
-question — would the answer have differed without it — and nothing could answer
-it before. Same prompt, same tools, corpus blanked, six disease areas: 3 of 6
-target choices changed. The three that did not (menin/MLL, KRAS, the CGRP
-receptor) are each target classes with an approved drug, which is the finding —
-the corpus arbitrates contested choices and agrees where the field has settled.
-Note the comparison is on the unordered gene PAIR: a string comparison counted
-`KMT2A / MEN1` against `MEN1 / KMT2A` as a change and reported 4 of 6.
+Slide 9 of the FIRST deck reports the corpus ablation
+(`scripts/ablate_corpus.py`), which exists because a deck claiming "grounded in
+the literature" invites exactly one question — would the answer have differed
+without it — and nothing could answer it before. Same prompt, same tools,
+corpus blanked, six disease areas: 3 of 6 target choices changed. The three
+that did not (menin/MLL, KRAS, the CGRP receptor) are each target classes with
+an approved drug, which is the finding — the corpus arbitrates contested
+choices and agrees where the field has settled. Note the comparison is on the
+unordered gene PAIR: a string comparison counted `KMT2A / MEN1` against `MEN1 /
+KMT2A` as a change and reported 4 of 6.
 
 Its numbers come from `facts/ablation.json`, published by `ablate_corpus.py
 --report` for the same reason every other figure comes from `facts/`.
 
-Slide 10 is the limitations note, and it is deliberately not phrased as "the
-pipeline is only as strong as its literature database". That claim is true of
+Slide 10 there is the limitations note, and it is deliberately not phrased as
+"the pipeline is only as strong as its literature database". That claim is true
+of
 target discovery and prior art and false of everything else — structure
 selection, the trim, calibration, the gates and the ranking read no papers at
 all — so the sweeping version overstates one dependency while omitting the real
