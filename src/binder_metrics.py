@@ -421,6 +421,50 @@ def hotspots_from_rfd3(path: Path, target_chain: str = "B") -> list[int]:
     return sorted(out)
 
 
+def patch_from_rfd3(path: Path, patch_auth: Sequence[int],
+                    target_chain: str = "B") -> list[int]:
+    """Remap the trim's newly-exposed hydrophobic residues into OUTPUT numbering.
+
+    Same hazard, same map, same rule as `hotspots_from_rfd3`: RFD3 renumbers
+    its target chain to B1..N and the input->output relabelling exists ONLY in
+    a design sidecar's `diffused_index_map`. The difference is the input — the
+    trim records AUTHOR ids with no chain letter (`trim_map.json`'s
+    `exposed_hydrophobic_auth`), because the trim preserves author numbering by
+    construction and only ever cuts one chain.
+
+    So the map is keyed by input chain letter and this has none: match on the
+    numeric part and accept whichever input chain maps into `target_chain`.
+    That is sound precisely because the trim is single-chain — the only
+    residues in the map that carry the target's author numbering ARE the
+    target's. Returns [] for an empty patch (the common case: most trims are
+    no-ops and expose nothing), and for a sidecar with no map, since taking
+    author ids as-is would silently score the wrong residues.
+    """
+    want = {int(a) for a in patch_auth}
+    if not want:
+        return []
+    d = json.loads(Path(path).read_text(encoding="utf-8"))
+    imap = d.get("diffused_index_map") or {}
+    if not imap:
+        logger.warning(
+            f"{Path(path).name} has no diffused_index_map, so the trim's "
+            f"exposed-patch residues cannot be remapped into output numbering "
+            f"— patch metrics are being reported as absent rather than guessed")
+        return []
+    out = set()
+    for key, val in imap.items():
+        try:
+            src_num, dst = int(str(key)[1:]), str(val)
+        except (ValueError, IndexError):
+            continue
+        if src_num in want and dst[:1] == target_chain:
+            try:
+                out.add(int(dst[1:]))
+            except ValueError:
+                continue
+    return sorted(out)
+
+
 def find_design(design_dir: Path, name: str) -> Path:
     """
     Locate the RFD3 design a refold `name` came from.
@@ -458,6 +502,9 @@ FIELDS = [
     "target_rmsd",
     "epitope_jaccard", "epitope_recall", "hotspots_refold", "hotspots_design",
     "n_hotspots", "hotspot_engagement",
+    # The trim's fresh hydrophobic patch, per design. `patch_enrichment` is
+    # the one to rank on — see `score_one`.
+    "n_patch", "patch_contacts", "patch_contact_fraction", "patch_enrichment",
     "clash_violations", "clash_severe",
     "n_epitope_design", "n_epitope_refold", "n_epitope_shared",
     # RF3 confidence
@@ -503,6 +550,7 @@ def score_one(
     conf: dict | None = None,
     sidecar: dict | None = None,
     plddt_scale: float = 1.0,
+    patch: Sequence[int] = (),
 ) -> dict:
     """
     Score one refold. Raises on unreadable structures; the caller records it.
@@ -615,6 +663,44 @@ def score_one(
     row["hotspot_engagement"] = (
         round(row["hotspots_refold"] / len(hotspots), 3) if hotspots else ""
     )
+
+    # How much of THIS design's interface landed on the hydrophobic patch the
+    # trim opened, rather than on the native surface. `patch` is already in
+    # output numbering (`patch_from_rfd3`).
+    #
+    # **`patch_enrichment` is the statistic, not `patch_contact_fraction`.**
+    # The raw fraction scales with how big the patch is, which is a property
+    # of the TRIM and therefore identical for every design in a campaign — so
+    # ranking on it would add a constant to every design and reorder nothing,
+    # while looking like it did something. Enrichment divides by the patch's
+    # share of the accessible target, so 1.0 means "contacts the patch exactly
+    # as often as its size predicts" and only the per-design deviation
+    # survives. Learned in the Phase B ladder, where the patch grows down the
+    # rungs and the uncorrected fraction rises with it whether or not a binder
+    # is being pulled anywhere.
+    #
+    # Zero, not blank, when there is no patch: most trims are no-ops and
+    # expose nothing, and `binder_ranking` warns about a MISSING column while
+    # z-scoring a zero-variance one to all-zeros. So a no-patch campaign
+    # carries the column, contributes nothing to the composite, and says so.
+    # All-atom on the binder side (`ep_hot`), not backbone-only: this asks
+    # whether the design PACKS against the patch, which is a question about
+    # one structure on its own, and the sidechains are what does the packing —
+    # the same reasoning `epitope()`'s docstring gives for hotspot engagement,
+    # and what Phase B measured.
+    accessible = {int(r) for r in prd[prd.chain_id == T].res_id}
+    patch_out = {int(r) for r in patch} & accessible
+    row["n_patch"] = len(patch_out)
+    if patch_out and ep_hot and accessible:
+        share = len(patch_out) / len(accessible)
+        frac = len(ep_hot & patch_out) / len(ep_hot)
+        row["patch_contacts"] = len(ep_hot & patch_out)
+        row["patch_contact_fraction"] = round(frac, 4)
+        row["patch_enrichment"] = round(frac / share, 3) if share else 0.0
+    else:
+        row["patch_contacts"] = 0
+        row["patch_contact_fraction"] = 0.0
+        row["patch_enrichment"] = 0.0
 
     v, sev = clashes(prd, B, T)
     row["clash_violations"] = v
@@ -858,7 +944,7 @@ def iter_refolds(rf3_dir: Path) -> Iterable[Path]:
 
 def _score_task(args: tuple) -> dict:
     """Worker entry point — must be module-level and picklable."""
-    (summary_path, design_dir, hotspots, cfg, want_ipsae) = args
+    (summary_path, design_dir, hotspots, cfg, want_ipsae, patch) = args
     summary_path = Path(summary_path)
     name = summary_path.name[: -len("_summary_confidences.json")]
     pred = summary_path.with_name(f"{name}_model.cif")
@@ -870,7 +956,7 @@ def _score_task(args: tuple) -> dict:
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         row = score_one(name, pred, design, summary, hotspots, cfg,
-                        conf=conf, sidecar=sidecar)
+                        conf=conf, sidecar=sidecar, patch=patch)
         row["error"] = ""
     except Exception as exc:
         row = {
@@ -891,12 +977,19 @@ def score_campaign(
     limit: int = 0,
     with_ipsae: bool = True,
     progress_every: int = 2000,
+    patch: Sequence[int] = (),
 ) -> list[dict]:
     """
     Score every refold under `rf3_dir` against its design in `design_dir`.
 
     Confidence JSONs are loaded lazily one at a time and discarded — a
     production campaign has ~48k of them and each PAE matrix is N^2 floats.
+
+    `patch` is the trim's newly-exposed hydrophobic residues in OUTPUT
+    numbering, and is empty for the common case of a no-op trim. Like
+    `hotspots` it is resolved ONCE by the caller rather than per design: every
+    design in a campaign is built from the same contig, so they share one
+    `diffused_index_map`.
     """
     summaries = sorted(iter_refolds(rf3_dir))
     if limit:
@@ -908,10 +1001,12 @@ def score_campaign(
         f"Scoring {len(summaries):,} refolds | hotspots {list(hotspots) or 'none'} "
         f"| contact cutoff {cfg.contact_cutoff} A | ipSAE "
         f"{'on (PAE < %.0f)' % cfg.ipsae_pae_cutoff if with_ipsae else 'off'}"
+        + (f" | exposed patch {len(patch)} residues" if patch else
+           " | no exposed patch")
     )
 
-    tasks = [(str(s), str(design_dir), tuple(hotspots), cfg, with_ipsae)
-             for s in summaries]
+    tasks = [(str(s), str(design_dir), tuple(hotspots), cfg, with_ipsae,
+              tuple(patch)) for s in summaries]
     rows: list[dict] = []
     if workers > 1:
         with ProcessPoolExecutor(max_workers=workers) as pool:

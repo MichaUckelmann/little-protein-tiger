@@ -884,15 +884,67 @@ them without re-reading this list is how they get silently reverted.
   not a silent default. Three refusals guard what remains, all measured on a 19-complex
   benchmark: `MIN_TARGET_RESIDUES = 80` (a 19-residue "target" passed every other check
   because its 4 hotspots survived), and the newly-exposed-hydrophobic rules below.
-- **A cut may not open hydrophobic core.** `MAX_EXPOSED_HYDROPHOBIC = 2` away from the
-  epitope, and ZERO within `EXPOSED_HOTSPOT_CLEARANCE_A = 10` Å of a hotspot — a fresh
-  hydrophobic face is what RFD3 preferentially binds (the same reason TM helices are
-  stripped), and one on the epitope competes with the site being designed for. Measured
-  per residue as ΔSASA > 15 Å² between the original and trimmed structures, **amino
-  acids only and one chain only in both**: include waters and you measure desolvation
-  instead — with solvent stripping on, a no-op trim of 7CZD "exposed" Met18 by 71 Å².
-  Both thresholds are `trim_target` kwargs, like `min_bsa_retention`; tests that
-  deliberately force an aggressive cut pass `max_exposed_hydrophobic=None`.
+- **A cut may not open hydrophobic core, and the gate is scale-free.** ZERO exposure
+  within `EXPOSED_HOTSPOT_CLEARANCE_A = 10` Å of a hotspot — unconditional, because a
+  fresh hydrophobic face there competes with the site being designed for at any size —
+  and away from the epitope, `MAX_EXPOSED_HYDROPHOBIC_FRACTION = 0.25` of the
+  target-side interface BSA. A residue COUNT was the gate and is not scale-free in
+  either direction: six residues at +16 Å² read as "6, over the limit" while two at
+  +190 Å² read as "2, within tolerance", and the second opens 2.6× more surface.
+  `MAX_EXPOSED_HYDROPHOBIC = 2` survives as the fallback where there is no partner
+  chain and therefore no denominator (a monomer, `inhibit_active_site`). The two are
+  ALTERNATIVES, not an AND — `exposure_verdict` is the one place that decides — since
+  keeping both discards the half of the improvement that consists of accepting several
+  small exposures. Measured per residue as ΔSASA > 15 Å² between the original and
+  trimmed structures, **amino acids only and one chain only in both**: include waters
+  and you measure desolvation instead — with solvent stripping on, a no-op trim of
+  7CZD "exposed" Met18 by 71 Å². All three are `trim_target` kwargs, like
+  `min_bsa_retention`; tests that force an aggressive cut pass
+  `max_exposed_hydrophobic=None`, which still disables BOTH measures.
+  - **0.25 is a proposal, not a calibration, and the production corpus cannot
+    calibrate it.** 22 of the 25 trims in `projects/` are NO-OPS — the target already
+    fitted the budget — and every one measures exactly 0.0%, so the guard has
+    essentially never judged a real cut in a real campaign. Forcing cuts by sweeping
+    the budget gives: 5VAI R→100 (`R29-128`, a real domain boundary) 74.8 Å² = **5.5%**;
+    3KYS A→190, shearing the fold, 525.4 Å² = **32.5%**; 5VAI R→200 and →150, accreting
+    into the TM bundle, **90.5%** and **92.1%**. Nothing lands between 5.5% and 32.5%,
+    so the whole 10–30% band fits equally well. Note the gate only ever decides cuts
+    with NO near-epitope exposure, because any at all raises first — which is why the
+    older `away + near` totals in `GLUE_PIPELINE_SCOPE.md` (81%, 175%) describe cuts
+    that were already refused and cannot set this threshold.
+  - **Every trim now RECORDS its exposure**, because nothing did and a calibration has
+    to be fitted on something: `exposed_hydrophobic_A2`, `n_exposed_hydrophobic`,
+    `exposed_hydrophobic_fraction` and `exposed_hydrophobic_auth` on `TrimResult`, in
+    `trim_map.json`, carried by `_TrimFromDisk`, and stated in `22_trim.md` on every
+    trim including the clean ones. The area used to exist only inside a warning
+    string, so a clean trim recorded no measurement and a refused one recorded none
+    either — the gate's own input was absent from the record of every run it judged.
+- **The patch is also a per-design scored liability, and `patch_enrichment` is the
+  rankable form.** `binder_metrics` writes `n_patch` / `patch_contacts` /
+  `patch_contact_fraction` / `patch_enrichment`; `design.binder_ranking.weights` has
+  `neg_patch_enrichment: 0.5`. The raw FRACTION scales with the patch's size, which is
+  a property of the trim and identical for every design in a campaign — ranking on it
+  shifts every design equally and reorders nothing while appearing to work. Enrichment
+  divides by the patch's share of the accessible target, so 1.0 is chance and only the
+  per-design deviation survives. Measured all-atom on the binder side (`ep_hot`), the
+  same reasoning as `hotspot_engagement`. `patch_from_rfd3` remaps the trim's AUTHOR
+  ids through the sidecar's `diffused_index_map` — never the spec — and
+  `_exposed_patch` reads them from `trim_map.json` rather than a `TrimResult` in
+  memory, because scoring is routinely reached by `--start-from binder_scoring` in a
+  fresh process days later. Zero, not blank, when there is no patch: `binder_ranking`
+  warns about a MISSING column and z-scores a zero-variance one to zeros, so the usual
+  no-op-trim campaign contributes nothing instead of being noisy, and the Protenix
+  path gets the columns for free by falling through the same branch.
+  **This came from Phase B's branch 3 and deliberately implements only half of it.**
+  1,784 refolds over 143 matched pairs found no detectable quality cost to patch-heavy
+  designs (gate ratios 1.125 [0.711–1.781] and 0.882 [0.488–1.597], every U test null)
+  but the patch contacts SURVIVE refolding (1.000 in five of seven arms) — real binding
+  to an artificial surface, of unmeasured magnitude, hence a tie-breaker weight. The
+  trim REFUSALS stay: both Phase B arms held total contacts fixed, so it tested "does
+  having contacts on the patch cost anything" and never "does exposing a patch cost
+  anything", and its highest near-epitope dose returned 0 of 40 designs through the
+  gates against a control's 23 of 60. Removing a refusal needs the experiment that
+  varies exposure itself.
 - **Solvent never reaches the design or the interface maths.** `write_trimmed` drops
   waters and crystallisation additives (`structure_tools.is_solvent_or_additive` — a
   conservative denylist that checks `_is_protein_residue` FIRST, so MSE/SEP/TPO/PTR/PCA
@@ -931,14 +983,32 @@ them without re-reading this list is how they get silently reverted.
   error it is therefore a PROXY: measured over 8ZNL chain B's modelled span,
   a uniform +1 offset is caught at 105 of 113 positions and silent at 8,
   where the neighbour happens to share a residue type — ~93% per hotspot, so
-  a ten-row table slipping through is ~1e-11 but a single row can. The
-  primitive that answers the second question exists and is proven
-  (`membrane_topology.uniprot_to_auth` returns a uniform `{+1}` for 8ZNL
-  chain B and `{0}` for 7CZD), but nothing translates a literature-numbered
-  hotspot through it: its three callers are membrane-side inference, the
-  chimera check, and ortholog conservation — and that last returns early for
-  a human target. Hardening this would be ADVISORY, not a gate: a non-zero
-  offset is ordinary and legal in a deposited structure, as 8ZNL shows.
+  a ten-row table slipping through is ~1e-11 but a single row can. So the
+  second question is now answered directly, and STATED rather than inferred:
+  `_hotspot_numbering_frame` routes the declared hotspots through
+  `membrane_topology.uniprot_to_auth` (RCSB's deposited entity↔UniProt
+  alignment — a uniform `{+1}` for 8ZNL chain B, `{0}` for 7CZD) and logs the
+  frame plus each hotspot's canonical equivalent, so the ids a reader compares
+  against a paper are printed in the paper's own frame.
+  - **ADVISORY, never a gate, and the code contains no `raise` (a test pins
+    that).** A non-zero offset is ordinary and entirely legal in a deposited
+    structure, as 8ZNL is — a run must not end on one. It fails open on
+    everything: no accession, no alignment for that accession in this entry, a
+    network failure, a hotspot outside the alignment. An offset of 0 logs INFO
+    (worth saying: it is the entry where a literature id can be used as-is);
+    anything else logs a warning; a multi-offset alignment reports per-hotspot
+    translations and says there is no single frame.
+  - It runs LAST inside `_verify_hotspot_grounding`, after every hard check,
+    so a table that is wrong about its own residues fails on that rather than
+    being handed a frame translation of nonsense. It needs an accession:
+    binder and site paths pass `intel["target_uniprot"]`, and the PPI path
+    passes `_ppi_target_uniprot`, which `_verify_ppi_chain_assignment` sets to
+    whichever of the pair's two named proteins the assignment was finally
+    accepted against — a PPI complex names both halves and only that loop
+    knows which one the target chain turned out to be. Handing it the
+    PARTNER's accession is harmless rather than wrong, because
+    `uniprot_to_auth` looks the alignment up on the target chain's own entity
+    and returns `{}`.
 - **`target_chain`/`partner_chain` can be silently swapped by the interface stage**,
   and hotspot grounding cannot catch it: a swap produces real, correctly-numbered
   residues on the *wrong protein*, not a fabricated residue. Caught in practice —

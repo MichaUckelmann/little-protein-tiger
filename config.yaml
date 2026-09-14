@@ -579,6 +579,24 @@ design:
       neg_iface_pae: 1.0
       epitope_recall: 1.0
       hotspot_engagement: 0.5
+      # A scored liability, not a gate: how much more of a design's interface
+      # sits on the fresh hydrophobic patch the TRIM opened than the patch's
+      # own size predicts (1.0 = exactly as often as chance). Zero for every
+      # design in the usual case, because most trims are no-ops and expose
+      # nothing at all -- and a zero-variance column z-scores to zeros, so it
+      # then contributes nothing rather than a constant.
+      #
+      # 0.5 is a tie-breaker weight, and that is the whole of what the
+      # measurement supports. Phase B refolded 1,784 designs over 143 matched
+      # pairs and found NO detectable quality cost to patch-heavy designs at
+      # matched total contacts (gate-pass ratios 1.125 [0.711-1.781] and 0.882
+      # [0.488-1.597]) -- but the patch contacts SURVIVE refolding (1.000 in
+      # five of seven arms), so they are real binding to an artificial
+      # surface. Real liability, unmeasured magnitude. See
+      # GLUE_PIPELINE_SCOPE.md "Phase B -- COMPLETE", and note that the trim's
+      # own exposure refusals stay: Phase B held total contacts fixed, so it
+      # never tested whether EXPOSING a patch costs anything.
+      neg_patch_enrichment: 0.5
     # Cap on any single metric's contribution to the composite, in standard
     # deviations (null disables). The composite is an unbounded weighted z-sum,
     # so before this a design 3 SD clear on ipsae_min banked +6.0 at weight 2.0

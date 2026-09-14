@@ -82,6 +82,35 @@ MIN_TARGET_RESIDUES = 80
 # the documented failure mode for transmembrane helices — but a couple of edge
 # residues is normal and harmless as long as they are away from the epitope.
 MAX_EXPOSED_HYDROPHOBIC = 2
+# The same question asked scale-free, and the gate that actually runs whenever
+# the epitope's own area is known. A residue COUNT is not scale-free in either
+# direction: six residues at +16 A^2 read as "6, over the limit" while two at
+# +190 A^2 read as "2, within tolerance", and the second opens 2.6x more
+# surface; and 2 residues means something different on a 460 A^2 epitope than
+# on a 1620 A^2 one.
+#
+# Measured over every cut this checkout can build, and the separation is not
+# subtle. The gate only ever decides cuts that expose nothing NEAR the epitope
+# — any near-epitope exposure is refused outright, by a check this does not
+# replace — and among those:
+#
+#     5VAI R 387->100, `R29-128`, a real domain boundary   2 res   74.8 A^2   5.5%
+#     3KYS A 208->190, shearing the fold                  13 res  525.4 A^2  32.5%
+#     5VAI R 387->200, accreting into the TM bundle       23 res 1227.5 A^2  90.5%
+#     5VAI R 387->150, ditto                              20 res 1249.0 A^2  92.1%
+#
+# Nothing lands between 5.5% and 32.5%, so **this is a proposal, not a
+# calibration**: the whole band 10-30% fits the data equally well and there is
+# exactly ONE clean cut in it. 0.25 is the middle of the range
+# GLUE_PIPELINE_SCOPE.md section 2.2 proposed, 4.5x above that clean cut and
+# 0.77x of the nearest bad one. Erring strict is deliberate — a false refusal
+# names the knob and costs an operator minutes, a false pass spends GPU-hours
+# designing against an artificial face and says nothing.
+#
+# It cannot be measured without a partner chain (there is no interface area to
+# divide by), so `MAX_EXPOSED_HYDROPHOBIC` remains the gate for a monomer or an
+# `inhibit_active_site` target, exactly as before.
+MAX_EXPOSED_HYDROPHOBIC_FRACTION = 0.25
 EXPOSED_SASA_DELTA_A2 = 15.0     # below this a residue has not really been exposed
 EXPOSED_HOTSPOT_CLEARANCE_A = 10.0   # "not right at the hotspot site"
 # Segments shorter than this are noise, not structure: a two-residue island
@@ -145,6 +174,25 @@ class TrimResult:
     # Interface area carried by residues the trim removed, reported so a second
     # interface being discarded on purpose is visible rather than silent.
     bsa_dropped_A2: float = 0.0
+    # What the cut OPENED, away from the epitope, as an area and as a fraction
+    # of the target-side interface area. The fraction is the gate (see
+    # `MAX_EXPOSED_HYDROPHOBIC_FRACTION`) and is None when there is no partner
+    # chain to define a denominator. Persisted because the threshold is a
+    # proposal rather than a calibration: these are the numbers a future
+    # calibration — and the branch-3 change that makes exposure a ranking
+    # input rather than a refusal — has to be fitted on, and no campaign has
+    # ever recorded them. Near-epitope exposure is deliberately NOT a field:
+    # any at all raises, so on a TrimResult that exists it is always zero.
+    exposed_hydrophobic_A2: float = 0.0
+    n_exposed_hydrophobic: int = 0
+    exposed_hydrophobic_fraction: float | None = None
+    #: Author ids of the newly-exposed hydrophobic residues, BOTH sides of the
+    #: clearance — the patch itself, as a set of residues rather than a
+    #: summary of it. Scoring needs the identities, not the area: a per-design
+    #: patch-contact metric asks which of THIS design's contacts landed on the
+    #: patch, and that cannot be recovered from an A^2 total. Ordered, so a
+    #: trim_map.json diff is stable.
+    exposed_hydrophobic_auth: list[int] = field(default_factory=list)
     # Modified residues the trim CONVERTED to their parent amino acid, so the
     # stage report can say which and — more to the point — what the
     # modification was. A conversion is silent otherwise: on 3KYS the
@@ -547,6 +595,39 @@ def geometric_domains(residues: Sequence[dict], budget: int,
         f"geometric partition: {len(domains)} part(s) — "
         + ", ".join(f"{d.start_auth}-{d.end_auth}" for d in domains))
     return domains
+
+
+def exposure_verdict(away_area_A2: float, n_away: int,
+                     bsa_target_side_A2: float,
+                     max_count: int | None = MAX_EXPOSED_HYDROPHOBIC,
+                     max_fraction: float | None = MAX_EXPOSED_HYDROPHOBIC_FRACTION
+                     ) -> tuple[str, float | None]:
+    """Does the hydrophobic surface this cut opened AWAY from the epitope pass?
+
+    Returns ``(verdict, fraction)`` where verdict is ``"ok"``,
+    ``"over_fraction"`` or ``"over_count"``, and fraction is None when there
+    is no interface area to divide by.
+
+    The two measures are ALTERNATIVES, not an AND. The fraction is used
+    whenever the epitope's own area is known, and the count only where it is
+    not — a monomer or an `inhibit_active_site` target has no partner chain
+    and so no denominator. Requiring both would discard half of what the
+    fraction is for: six exposures at +16 A^2 each total 96 A^2, which on a
+    typical epitope is a few percent and fine, and the count refuses them.
+    The converse half is the one the count gets wrong in the dangerous
+    direction — two residues at +190 A^2 open 2.6x more surface and the count
+    calls them "within tolerance".
+
+    `max_count=None` disables the check entirely (both measures), which is
+    what the benchmark and the tests that force an aggressive cut pass.
+    """
+    if max_count is None:
+        return "ok", None
+    fraction = (away_area_A2 / bsa_target_side_A2
+                if bsa_target_side_A2 > 0 else None)
+    if fraction is not None and max_fraction is not None:
+        return ("over_fraction" if fraction > max_fraction else "ok"), fraction
+    return ("over_count" if n_away > max_count else "ok"), fraction
 
 
 def _domains_cover_hotspots(domains: Sequence[Domain],
@@ -1308,6 +1389,8 @@ def trim_target(
     min_bsa_retention: float = 0.90,
     allowed_auth: set[int] | None = None,
     max_exposed_hydrophobic: int | None = MAX_EXPOSED_HYDROPHOBIC,
+    max_exposed_hydrophobic_fraction: float | None = (
+        MAX_EXPOSED_HYDROPHOBIC_FRACTION),
     exposed_hotspot_clearance_A: float = EXPOSED_HOTSPOT_CLEARANCE_A,
 ) -> TrimResult:
     """
@@ -1470,6 +1553,11 @@ def trim_target(
         return (f"{a:.0f} A^2, {a / target_side_before:.0%} of the "
                 f"target-side interface area")
 
+    away_area = _area(away)
+    verdict, exposed_fraction = exposure_verdict(
+        away_area, len(away), target_side_before,
+        max_exposed_hydrophobic, max_exposed_hydrophobic_fraction)
+
     if near:
         raise TrimError(
             f"the trim exposed hydrophobic residues at the epitope itself "
@@ -1479,7 +1567,20 @@ def trim_target(
             f"hotspot competes with the site being designed for. Choose a cut "
             f"that leaves the epitope's surroundings intact, or design against "
             f"the untrimmed target.")
-    if max_exposed_hydrophobic is not None and len(away) > max_exposed_hydrophobic:
+    if verdict == "over_fraction":
+        raise TrimError(
+            f"the trim newly exposed {_scale(away)} of hydrophobic "
+            f"surface, over the "
+            f"{max_exposed_hydrophobic_fraction:.0%} tolerated "
+            f"({len(away)} residues: "
+            f"{', '.join(f'{n}{a}' for n, a, _, _ in away[:6])}). That is "
+            f"buried core turned into an artificial binding surface, which "
+            f"RFD3 will preferentially target — and at this scale the cut "
+            f"has sheared through a fold rather than followed a boundary, "
+            f"which is what the fraction measures. Cut on a different "
+            f"boundary, or raise design.foundry.target_residue_budget so "
+            f"less has to come off.")
+    if verdict == "over_count":
         raise TrimError(
             f"the trim newly exposed {len(away)} hydrophobic residues "
             f"({_scale(away)}) "
@@ -1487,7 +1588,9 @@ def trim_target(
             f"{max_exposed_hydrophobic} tolerated. That is buried core turned "
             f"into an artificial binding surface, which RFD3 will preferentially "
             f"target. Cut on a different boundary, or raise "
-            f"design.foundry.target_residue_budget so less has to come off.")
+            f"design.foundry.target_residue_budget so less has to come off. "
+            f"(Counted rather than measured as a fraction of the epitope, "
+            f"because this target has no partner chain to define one.)")
     if away:
         warnings.append(
             f"the trim exposed {len(away)} hydrophobic residue(s) away from the "
@@ -1516,6 +1619,16 @@ def trim_target(
         interface_bsa_after_A2=round(bsa_after, 1),
         bsa_retention=round(retention, 4),
         bsa_dropped_A2=round(dropped_bsa, 1),
+        exposed_hydrophobic_A2=round(away_area, 1),
+        n_exposed_hydrophobic=len(away),
+        # Both arms. The gate judges `away` only — anything `near` has
+        # already raised — but a design contacting an exposed residue beside
+        # the epitope is contacting the same artificial face, so the patch a
+        # scorer should measure against is the union.
+        exposed_hydrophobic_auth=sorted(
+            {int(a) for _n, a, _d, _h in away} | {int(a) for _n, a, _d, _h in near}),
+        exposed_hydrophobic_fraction=(None if exposed_fraction is None
+                                      else round(exposed_fraction, 4)),
         modified_residues=modified,
         warnings=warnings,
     )
@@ -1774,6 +1887,10 @@ def _write_mapping(result: TrimResult, source: Path, pdb_id: str | None,
         # Over the KEPT residues only — see trim_target.
         "bsa_retention": result.bsa_retention,
         "bsa_dropped_with_removed_residues_A2": result.bsa_dropped_A2,
+        "exposed_hydrophobic_A2": result.exposed_hydrophobic_A2,
+        "n_exposed_hydrophobic": result.n_exposed_hydrophobic,
+        "exposed_hydrophobic_fraction": result.exposed_hydrophobic_fraction,
+        "exposed_hydrophobic_auth": result.exposed_hydrophobic_auth,
         "modified_residues": result.modified_residues,
         "warnings": result.warnings,
     }

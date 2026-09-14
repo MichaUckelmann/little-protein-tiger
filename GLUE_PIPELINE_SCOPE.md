@@ -394,6 +394,15 @@ optimisation is optimising the wrong variable.
 
 ### What I would actually change, in priority order
 
+**STATUS (2026-09-14): 1, 2 and 4 are IMPLEMENTED; 3 remains a deliberate
+non-change.** Item 1 landed as `structure_trim._domains_cover_hotspots`
+(`6220a2a`) — it converts the worst 5VAI outcome into the best, as predicted.
+Item 2 landed as `MAX_EXPOSED_HYDROPHOBIC_FRACTION = 0.25`, gating on the
+fraction wherever a partner chain defines one and falling back to the residue
+count where it does not. Item 4 landed as a line in every `22_trim.md`,
+stated on clean trims too. The threshold is still a PROPOSAL, and measuring
+it more carefully changed what is known about it — see the next subsection.
+
 1. **Fix the domain-source preference** (defect 2 above). Prefer RCSB CATH/SCOP2/ECOD
    only when the returned domains **cover the hotspots**; otherwise fall through to
    Chainsaw/geometric. Cheap, and it converts the worst measured 5VAI outcome
@@ -416,6 +425,46 @@ optimisation is optimising the wrong variable.
 4. **Report the exposure as an area, and per residue, in the stage report.** The
    current warning names residues and deltas but the *sum* — the number that is
    physically meaningful — is never computed or recorded. One line.
+
+### The exposure threshold, measured over every cut this checkout can build
+
+The three points above (5VAI 5.5%, 3KYS@140 81%, 6VJJ@117 175%) were totals
+of `away + near`, and gating on that total turns out to be the wrong
+construction: **any near-epitope exposure already raises unconditionally**, so
+two of those three are refused before a fraction is ever consulted. The gate
+only ever decides cuts with `near == 0`, and re-measuring for exactly those:
+
+| cut | segs | away | area | fraction |
+|---|---|---|---|---|
+| 5VAI R 387->100, `R29-128`, a real domain boundary | 1 | 2 res | 74.8 Å² | **5.5%** |
+| 3KYS A 208->190, shearing the fold | 2 | 13 res | 525.4 Å² | **32.5%** |
+| 5VAI R 387->200, accreting into the TM bundle | 2 | 23 res | 1227.5 Å² | **90.5%** |
+| 5VAI R 387->150, ditto | 2 | 20 res | 1249.0 Å² | **92.1%** |
+
+Nothing lands between 5.5% and 32.5%, so the whole 10-30% band fits the data
+equally well and there is exactly ONE clean cut in it. 0.25 is the middle of
+the range proposed above; erring strict is deliberate, since a false refusal
+names the knob and costs minutes while a false pass spends GPU-hours designing
+against an artificial face and says nothing.
+
+Two things this measurement established that the original three points hid:
+
+- **The production corpus cannot calibrate this and never could.** 22 of the
+  25 trims in `projects/` are NO-OPS — the target already fitted the budget —
+  and every one measures exactly 0.0%. The guard has essentially never judged
+  a real cut in a real campaign. All four rows above had to be forced by
+  sweeping the budget below each chain's length.
+- **The residue count and the fraction agree on every cut that exists here.**
+  The change is therefore not visible in this corpus at all; it is visible in
+  the two shapes the corpus does not contain, and those are pinned by test
+  rather than claimed: six exposures at +16 Å² (96 Å², ~7% — the count refuses,
+  the fraction accepts) and two at +190 Å² against a 462 Å² epitope (380 Å²,
+  82% — the count accepts, the fraction refuses).
+
+`TrimResult` and `trim_map.json` now carry `exposed_hydrophobic_A2`,
+`n_exposed_hydrophobic`, `exposed_hydrophobic_fraction` and
+`exposed_hydrophobic_auth`, because none of it was recorded anywhere before
+and a future calibration has to be fitted on something.
 
 ## 2.3 (c) Trimming TWO chains
 
@@ -1406,11 +1455,33 @@ required patch-heavy designs to be no worse AND patch contacts NOT to survive
 refolding. They are no worse — but **the contacts survive**: patch survival is
 1.000 in five of seven heavy arms and 0.58-0.69 in the other two. So the
 reading is "contacts survive, quality unaffected", which the rule assigns to
-branch 3: `MAX_EXPOSED_HYDROPHOBIC` and `EXPOSED_HOTSPOT_CLEARANCE_A` stay,
-but as a RANKING input rather than a refusal — a patch contact becomes a
-scored liability like `neg_rosetta_vbuns`. **Not implemented here**; it is a
-change to the trim guards and the composite, and it belongs with stage 6's
-two-chain trim work rather than bolted onto a benchmark commit.
+branch 3: a patch contact becomes a scored liability like
+`neg_rosetta_vbuns`.
+
+**IMPLEMENTED 2026-09-14, as an addition and not a substitution.**
+`binder_metrics` now writes `n_patch` / `patch_contacts` /
+`patch_contact_fraction` / `patch_enrichment` per design, and
+`design.binder_ranking.weights` carries `neg_patch_enrichment: 0.5`.
+`patch_enrichment` is the rankable one: the raw fraction scales with the
+patch's SIZE, which is a property of the trim and identical for every design
+in a campaign, so ranking on it would shift every design equally and reorder
+nothing while looking like it worked. Verified on a real mesothelioma
+sidecar — a 12-residue patch placed around the epitope scores 2.95, the same
+patch at the far end of the chain 1.17 (chance), and untouched 0.0 — and on a
+no-patch campaign (the usual case) the column is all zeros, which
+`composite_score` z-scores to no contribution at all.
+
+**The refusals were deliberately NOT removed**, so branch 3's own wording
+("rather than a refusal") is only half-honoured, and that is a correction to
+this document rather than an omission. Caveat 3 below says it plainly: both
+Phase B measurements held total contacts FIXED, so the experiment asks "given
+the same number of target contacts, does having more of them on the fresh
+patch cost anything" and never "does exposing a patch cost anything" — which
+is the only question the trim guards answer. Caveat 2 is the other half: at
+the highest near-epitope dose 0 of 40 designs cleared the gates against a
+control's 23 of 60. Removing the guards needs the experiment that varies
+exposure itself; 0.5 is a tie-breaker weight, which is what a null result
+licenses.
 
 **Three things this does NOT establish, stated so the null is not overread.**
 

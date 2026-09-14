@@ -79,6 +79,37 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "neg_iface_pae": 1.0,
     "epitope_recall": 1.0,
     "hotspot_engagement": 0.5,
+    # A liability, and a deliberately SMALL one. `patch_enrichment` is how
+    # much more of a design's interface sits on the hydrophobic patch the trim
+    # opened than the patch's size predicts — 1.0 means "exactly as often as
+    # chance", above that means the binder is being pulled onto surface that
+    # does not exist in the intact protein.
+    #
+    # The weight is 0.5 because that is what the measurement supports and no
+    # more. Phase B refolded 1,784 designs over 9 rungs and 143 matched pairs
+    # (`GLUE_PIPELINE_SCOPE.md`, "Phase B — COMPLETE") and found **no
+    # detectable quality cost** to patch-heavy designs at matched total
+    # contacts: gate-pass ratios 1.125 (95% CI 0.711-1.781) on 6VJJ and 0.882
+    # (0.488-1.597) on 3KYS, every per-rung U test null. What it DID find is
+    # that the patch contacts SURVIVE refolding — patch survival 1.000 in five
+    # of seven heavy arms — so the contacts are real binding to an artifact
+    # rather than a design-stage illusion. Real liability, unmeasured
+    # magnitude: hence a tie-breaker weight and not a gate.
+    #
+    # Three things it is NOT. It is not a refusal — the trim's own exposure
+    # guards stay, because Phase B held total contacts FIXED and so tested
+    # "does having contacts ON the patch cost anything", never "does exposing
+    # a patch cost anything", which is the question the guards answer. It is
+    # not evidence of no effect — 3KYS's lower bound of 0.488 does not exclude
+    # a halving. And it is not calibrated: 3KYS rung 90, the highest
+    # near-epitope dose, returned 0 of 40 designs through the gates against
+    # the control's 23 of 60, which points the other way and is confounded
+    # with being the smallest target in the ladder.
+    #
+    # In most campaigns this column is all zeros — the trim is a no-op and
+    # there is no patch — and `composite_score` z-scores a zero-variance
+    # column to zeros, so it contributes nothing rather than a constant.
+    "neg_patch_enrichment": 0.5,
 }
 
 # Columns the weights refer to in "higher is better" form. `neg_` prefixes are

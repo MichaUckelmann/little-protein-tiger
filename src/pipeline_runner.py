@@ -212,6 +212,19 @@ class _TrimFromDisk:
         # reads to exist here, and that test is what caught the missing
         # `n_residues_after` that killed ten days of fresh-process resumes.
         self.modified_residues = list(mapping.get("modified_residues") or [])
+        # Written by `structure_trim` since the exposure gate became
+        # scale-free. Carried here for the same reason as everything above:
+        # a fresh-process `--start-from` rebuilds the trim from this file and
+        # must not silently lack a field. Absent from every trim_map.json
+        # written before that change, hence the defaults.
+        self.exposed_hydrophobic_A2 = float(
+            mapping.get("exposed_hydrophobic_A2") or 0.0)
+        self.n_exposed_hydrophobic = int(
+            mapping.get("n_exposed_hydrophobic") or 0)
+        self.exposed_hydrophobic_fraction = mapping.get(
+            "exposed_hydrophobic_fraction")
+        self.exposed_hydrophobic_auth = [
+            int(a) for a in (mapping.get("exposed_hydrophobic_auth") or [])]
 
 
 def _stage_for_skill(skill_name: str) -> str:
@@ -1799,7 +1812,8 @@ class PipelineRunner:
                                    intel.get("partner_name")) if n),
             handoff, result.pdb_id or pdb,
             source="The target-intel stage")
-        self._verify_hotspot_grounding(hotspots, result.pdb_id or pdb)
+        self._verify_hotspot_grounding(hotspots, result.pdb_id or pdb,
+                                       intel.get("target_uniprot"))
         self._check_hotspot_atoms_are_buildable(hotspots, result.pdb_id or pdb)
         self._check_ortholog_conservation(hotspots, result.pdb_id or pdb, result)
         result.hotspot_residues_json = hotspots
@@ -1813,6 +1827,12 @@ class PipelineRunner:
     # alignment of two random sequences rarely clears ~30% over any
     # significant aligned length.
     _CHAIN_SEQ_IDENTITY_THRESHOLD = 0.85
+
+    #: Which of a PPI pair's two named proteins the chain assignment was
+    #: finally accepted against, so the numbering-frame advisory has an
+    #: accession on the PPI track too. Class-level, because several tests
+    #: build a PipelineRunner without running `__init__`.
+    _ppi_target_uniprot: str | None = None
 
     def _binder_structure_path(self, pdb_id: str) -> Path:
         """Biological assembly 1 if already downloaded, else the ASU."""
@@ -2212,7 +2232,8 @@ class PipelineRunner:
             f"proceeding, but verify the design target manually if results "
             f"look wrong")
 
-    def _verify_hotspot_grounding(self, hotspots_json: str, pdb_id: str) -> None:
+    def _verify_hotspot_grounding(self, hotspots_json: str, pdb_id: str,
+                                  uniprot: str | None = None) -> None:
         """
         Confirm every hotspot's stated residue NAME matches the real structure.
 
@@ -2244,9 +2265,11 @@ class PipelineRunner:
         slipping through is vanishingly unlikely but a single row can. The
         primitive that would answer the second question directly exists
         (`membrane_topology.uniprot_to_auth` returns a uniform {+1} here and {0}
-        for 7CZD); nothing routes a hotspot through it, and hardening that would
-        be ADVISORY rather than a gate, since a non-zero offset is ordinary and
-        legal in a deposited structure.
+        for 7CZD), and `_hotspot_numbering_frame` now routes the declared
+        hotspots through it. That is ADVISORY, never a gate — a non-zero offset
+        is ordinary and legal in a deposited structure, as 8ZNL shows — so it
+        runs only after every check below has passed, and only when the caller
+        already resolved a target accession.
         """
         from src.structure_tools import get_sequence_map
 
@@ -2352,6 +2375,96 @@ class PipelineRunner:
                 f"textbook/literature numbering for a well-known protein instead "
                 f"of reading this specific structure's residues — re-run the "
                 f"stage, or pick a different structure.")
+
+        # Every hard check above has passed, which means each declared residue
+        # is real and correctly named. That leaves the one question grounding
+        # structurally cannot answer — whether auth N is the residue the
+        # literature means — so ask it here, advisorily.
+        self._hotspot_numbering_frame(residues, chain, pdb_id, uniprot)
+
+    @staticmethod
+    def _hotspot_numbering_frame(residues: list[dict], chain: str,
+                                 pdb_id: str, uniprot: str | None) -> None:
+        """Say what numbering FRAME the declared hotspots are in. Advisory.
+
+        `_verify_hotspot_grounding` answers "is the residue at auth N what the
+        table claims". It cannot answer "is auth N the residue the literature
+        means", and against a uniform frame offset it is only a PROXY: measured
+        over 8ZNL chain B's modelled span, a +1 offset is caught at 105 of 113
+        positions and SILENT at 8, where the neighbouring residue happens to
+        share a type. ~93% per hotspot — a ten-row table slipping through
+        whole is ~1e-11, a single row is one in fourteen.
+
+        So state the frame instead of inferring it. `uniprot_to_auth` returns
+        the DEPOSITED correspondence (RCSB's entity<->UniProt alignment, two
+        hops, no local guesswork): a uniform `{+1}` for 8ZNL chain B, `{0}` for
+        7CZD. Both are correct deposits — a non-zero offset is ordinary and
+        entirely legal — which is exactly why this must never gate. It is here
+        so the numbers a reader will compare against a paper are printed in the
+        paper's own frame, and so the commonest real mistake (canonical-isoform
+        numbers pasted against a construct-numbered crystal) is visible in the
+        log rather than only in a campaign's results.
+
+        Fails open on everything: no accession, no alignment for it in this
+        entry, a network failure, an unmapped hotspot. Nothing here can end a
+        run.
+        """
+        if not uniprot or not chain or not residues:
+            return
+        declared = sorted({int(h["auth_seq_id"]) for h in residues
+                           if h.get("auth_seq_id") is not None})
+        if not declared:
+            return
+        try:
+            from src.membrane_topology import uniprot_to_auth
+
+            u2a = uniprot_to_auth(pdb_id, chain, uniprot)
+        except Exception as exc:            # pragma: no cover - network
+            logger.debug(f"numbering-frame advisory unavailable: {exc}")
+            return
+        if not u2a:
+            logger.debug(
+                f"numbering frame: {pdb_id} has no {uniprot} alignment for "
+                f"chain {chain} — hotspot frame not stated")
+            return
+
+        auth_to_uni = {a: u for u, a in u2a.items()}
+        offsets = {a - u for u, a in u2a.items()}
+        mapped = [(a, auth_to_uni[a]) for a in declared if a in auth_to_uni]
+        unmapped = [a for a in declared if a not in auth_to_uni]
+
+        if offsets == {0}:
+            # Worth one line: it is the case where a literature number can be
+            # used as-is, and a reader otherwise cannot tell this entry from
+            # the one where it cannot.
+            logger.info(
+                f"  numbering frame: {pdb_id} chain {chain} numbers author == "
+                f"{uniprot} canonical, so the hotspot ids are canonical ids")
+            return
+
+        pairs = ", ".join(f"{a}={u}" for a, u in mapped[:8])
+        if len(offsets) == 1:
+            off = next(iter(offsets))
+            logger.warning(
+                f"  ⚠ numbering frame: {pdb_id} chain {chain} numbers author = "
+                f"{uniprot} canonical {off:+d} throughout, so the declared "
+                f"hotspots are auth=canonical {pairs}"
+                + (f" ({unmapped} outside the alignment)" if unmapped else "")
+                + f". Grounding has confirmed each residue is real at its auth "
+                f"id — which it would also be had the table been written in "
+                f"canonical numbering and landed on same-named neighbours. So "
+                f"if these ids came from a paper rather than from this file, "
+                f"each points {abs(off)} residue"
+                + ("s" if abs(off) != 1 else "")
+                + (" short" if off > 0 else " long") + ".")
+        else:
+            logger.warning(
+                f"  ⚠ numbering frame: {pdb_id} chain {chain} aligns to "
+                f"{uniprot} with {len(offsets)} different offsets, so there is "
+                f"no single frame to state (an insertion, a chimera or several "
+                f"aligned regions). Per hotspot, auth=canonical {pairs}"
+                + (f" ({unmapped} outside the alignment)" if unmapped else "")
+                + ".")
 
     #: A hotspot whose only atoms are backbone, or CB on a residue whose
     #: sidechain IS a CB, tells RFD3 almost nothing about what to pack
@@ -3185,15 +3298,27 @@ class PipelineRunner:
 
         if len(candidates) == 1:
             self._verify_target_chain_assignment(candidates[0], handoff, pdb_id)
+            self._ppi_target_uniprot = candidates[0]["target_uniprot"] or None
             return
 
         errors = []
         for intel in candidates:
             try:
                 self._verify_target_chain_assignment(intel, handoff, pdb_id)
-                return
             except PipelineError as exc:
                 errors.append(str(exc))
+                continue
+            # Remember WHICH of the two named proteins the assignment was
+            # accepted against, so the numbering-frame advisory has an
+            # accession on this track too. The binder track gets it from
+            # target_intel; PPI names both halves of a pair and only this
+            # loop knows which one chain the target chain turned out to be.
+            # An accession that is really the PARTNER's is harmless rather
+            # than wrong: `uniprot_to_auth` looks the alignment up on the
+            # TARGET chain's own entity and returns {} when that entity has
+            # no alignment for it, which fails the advisory open.
+            self._ppi_target_uniprot = intel["target_uniprot"] or None
+            return
         raise PipelineError(
             f"chain assignment in {pdb_id} matches neither protein named in "
             f"{target_complex!r} (target_chain={handoff.get('target_chain')!r}, "
@@ -3681,6 +3806,14 @@ class PipelineRunner:
             f"- Residues: {res.n_residues_before} -> {res.n_residues_after} "
             f"in {res.n_segments} segment(s) {res.kept_segments}",
             f"- Interface area of the kept residues retained: {res.bsa_retention:.1%}",
+            # Stated on every trim, including the many that expose nothing.
+            # The AREA is the physically meaningful number and it used to
+            # appear only inside a warning string, so a clean trim recorded
+            # no exposure measurement at all and a refused one recorded none
+            # either — leaving the gate's own input absent from the record of
+            # every run it judged.
+            "- Newly exposed hydrophobic surface away from the epitope: "
+            + self._exposure_note(res),
             f"- Hotspots kept: {len(res.hotspots_retained)}/"
             f"{len(res.hotspots_retained) + len(res.hotspots_lost)}",
             "",
@@ -3703,6 +3836,36 @@ class PipelineRunner:
         result.stage_files["trim"] = out
         result.stages_completed.append("trim")
         return {"result": res, "report": out}
+
+    @staticmethod
+    def _exposure_note(res) -> str:
+        """One line of the trim report: what the cut opened, as an area.
+
+        A count of residues is what the guard used to report and is not
+        scale-free; the fraction of the epitope's own interface area is what
+        now gates (`structure_trim.MAX_EXPOSED_HYDROPHOBIC_FRACTION`), and the
+        absolute area is what a reader can compare against a structure. State
+        all three, and say plainly when there is no denominator — that is also
+        the case where the residue COUNT is still the gate, so a reader who
+        sees no percentage should know why.
+        """
+        from src.structure_trim import (MAX_EXPOSED_HYDROPHOBIC,
+                                        MAX_EXPOSED_HYDROPHOBIC_FRACTION)
+
+        n = getattr(res, "n_exposed_hydrophobic", 0) or 0
+        area = getattr(res, "exposed_hydrophobic_A2", 0.0) or 0.0
+        frac = getattr(res, "exposed_hydrophobic_fraction", None)
+        if not n:
+            return ("none — the cut opened no hydrophobic surface"
+                    if frac is not None else
+                    "none (no partner chain, so no epitope area to scale by)")
+        head = f"{area:.0f} A^2 across {n} residue(s)"
+        if frac is None:
+            return (f"{head}; no partner chain, so this is gated on the "
+                    f"residue count ({MAX_EXPOSED_HYDROPHOBIC} tolerated) "
+                    f"rather than as a fraction of the epitope")
+        return (f"{head}, {frac:.1%} of the target-side interface area "
+                f"(gate: {MAX_EXPOSED_HYDROPHOBIC_FRACTION:.0%})")
 
     @staticmethod
     def _modified_residue_notes(res) -> list[str]:
@@ -4569,10 +4732,49 @@ class PipelineRunner:
             cfg=ScoreConfig(contact_cutoff=float(mcfg.get("contact_cutoff", 8.0)),
                             ipsae_pae_cutoff=float(
                                 mcfg.get("ipsae_pae_cutoff", 10.0))),
-            workers=max(1, (os.cpu_count() or 4) - 2), limit=limit)
+            workers=max(1, (os.cpu_count() or 4) - 2), limit=limit,
+            patch=self._exposed_patch(dirs, sidecar))
         out_dir.mkdir(parents=True, exist_ok=True)
         write_scores(rows, out_dir / "refold_scores.csv")
         return rows
+
+    @staticmethod
+    def _exposed_patch(dirs: dict[str, Path], sidecar: Path) -> list[int]:
+        """The trim's fresh hydrophobic patch, in RFD3 OUTPUT numbering.
+
+        Read from `trim_map.json` rather than from a `TrimResult` in memory,
+        for the same reason `_TrimFromDisk` exists at all: scoring is routinely
+        reached by `--start-from binder_scoring` in a fresh process days after
+        the trim ran, and a metric that silently became empty on a resume would
+        be worse than not having it.
+
+        Empty is the normal answer — 22 of the 25 trims in `projects/` are
+        no-ops that expose nothing — and empty makes the patch columns read
+        zero for every design, which `binder_ranking` z-scores to no
+        contribution at all. A campaign written before the trim recorded this
+        field also lands here, correctly: nothing is known about its patch, so
+        nothing is claimed.
+        """
+        from src.binder_metrics import patch_from_rfd3
+
+        trim_map = (dirs.get("trim") or Path(".")) / "trim_map.json"
+        if not trim_map.exists():
+            return []
+        try:
+            auth = json.loads(trim_map.read_text(encoding="utf-8")).get(
+                "exposed_hydrophobic_auth") or []
+        except Exception as exc:
+            logger.warning(f"could not read the exposed patch from "
+                           f"{trim_map}: {exc}")
+            return []
+        if not auth:
+            return []
+        out = patch_from_rfd3(sidecar, auth, "B")
+        logger.info(
+            f"  exposed patch: {len(auth)} residue(s) recorded by the trim, "
+            f"{len(out)} remapped into the refolds' numbering — scored as a "
+            f"per-design liability, not a gate")
+        return out
 
     def _cluster_hotspots(self, paths) -> list[int]:
         """
@@ -5397,7 +5599,8 @@ class PipelineRunner:
         # artifact is exactly the case a stale file could poison, and both
         # checks read files already on disk.
         self._verify_target_chain_assignment(site_intel, handoff, pdb_id)
-        self._verify_hotspot_grounding(hotspots_json, pdb_id)
+        self._verify_hotspot_grounding(hotspots_json, pdb_id,
+                                       site_intel.get("target_uniprot"))
 
         dst = site_dirs["binder"] / self._BINDER_STAGE_FILES["interface"]
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -6285,7 +6488,8 @@ class PipelineRunner:
         # Grounding genuinely needs the hotspot table. If it's missing, say so
         # loudly rather than letting "no table" read as "table verified".
         if hotspots_json:
-            self._verify_hotspot_grounding(hotspots_json, verify_pdb)
+            self._verify_hotspot_grounding(hotspots_json, verify_pdb,
+                                           self._ppi_target_uniprot)
             self._check_hotspot_atoms_are_buildable(hotspots_json, verify_pdb)
             self._check_ortholog_conservation(hotspots_json, verify_pdb, result)
         else:
