@@ -651,87 +651,92 @@ the hold was lifted before pushing.
 
 ---
 
-## Still in flight — NOTHING. State as of 2026-09-14 15:30
+## Still in flight — NOTHING. State as of 2026-09-14 16:05
 
-GPU idle (2.0 GB desktop only), queue empty, no worktrees but the main one,
-tree clean at `f03af05`, CI green, suite 1318.
+GPU idle, queue empty, no worktrees but the main one, tree clean at
+`3a96856`, suite **1362 passed** / 2 skipped / 1 xfailed, zero new ruff
+errors (50 before and after — the documented backlog).
 
 ### What landed since the last handover
 
-- **Phase A + Phase B, complete.** Both answered; results and the branch-3
-  verdict are in `GLUE_PIPELINE_SCOPE.md`. Raw data kept at
-  `$SP/ladder_3kys` (1.2 GB) and `$SP/ladder_6vjj` (978 MB) — keep until the
-  branch-3 change lands, since it is what any threshold would be fitted on.
-- **PD-L1 macrocycle showcase**, GO, 1,700 gated of 4,329, `top_k.fasta`
-  written, `report.html` renders. Video + page + carousel all carry it.
-- **The GPU size ceiling is MEASURED and raised to 500 residues**
-  (`1254085`), with `max_complex_tokens: 600` as the real guard. Data in
-  `docs/gpu-size-ceiling.tsv`.
-- **Both GPU cost laws re-fitted, two-term** (`f03af05`). See CLAUDE.md.
+**Items 3, 4 and 5 are all DONE** (`2b9134c`, `3a96856`). Two of the three
+sub-items of 3 turned out to be already implemented, and checking that first
+— as the previous handover said to — is what kept the work honest:
 
-### Next: items 3-5, in this order. Everything needed is on disk.
+- **3a was already done** (`6220a2a`): `_domains_cover_hotspots` exists, is
+  wired into `segment_domains`, and the caller passes the hotspots. The 5XEZ
+  log line the handover flagged was this guard working, not a gap.
+- **3b, the scale-free exposure gate, is new.**
+  `MAX_EXPOSED_HYDROPHOBIC_FRACTION = 0.25` of the target-side interface BSA,
+  with the residue count kept as the fallback where there is no partner chain
+  to define a denominator. `exposure_verdict` is the single place that
+  decides, so the "alternatives, not an AND" rule is testable.
+- **3c was half done**: the area was in the warning string. It is now a line
+  in every `22_trim.md`, stated on clean trims too, and the numbers are
+  persisted (`exposed_hydrophobic_A2`, `n_exposed_hydrophobic`,
+  `exposed_hydrophobic_fraction`, `exposed_hydrophobic_auth`) on
+  `TrimResult`, in `trim_map.json` and through `_TrimFromDisk`.
+- **4, the patch liability, is new**: `n_patch` / `patch_contacts` /
+  `patch_contact_fraction` / `patch_enrichment` per design, and
+  `neg_patch_enrichment: 0.5` in the composite. Only HALF of branch 3 — see
+  the caveat below.
+- **5, the numbering-frame advisory, is new**: `_hotspot_numbering_frame`,
+  advisory, no `raise`, fails open, runs last inside grounding.
 
-**3. The trim priority-order fixes — `GLUE_PIPELINE_SCOPE.md` §2.2, "What I
-would actually change, in priority order".** This is the formalization of
-"no trim if it fits > obvious cut points > exposure-limited only if
-necessary". Three sub-items, each independent:
+### Three things worth knowing before touching any of it
 
-   a. **Domain-source preference** (`structure_trim.segment_domains`,
-      `src/structure_trim.py:544-584`): prefer RCSB CATH/SCOP2/ECOD only when
-      the returned domains COVER the hotspots, else fall through to
-      Chainsaw/geometric. ~20 lines. Measured payoff: on 5VAI it converts the
-      worst outcome (ECOD, 2 segments, refused at 33 newly-exposed
-      hydrophobics) into the best (geometric, 1 segment `R29-128`, 2 exposed,
-      passes). NOTE the fall-through already partly exists — 5XEZ logged
-      "the cath domain annotation ... does not contain hotspot(s) [...] —
-      falling through" during yesterday's ceiling test, so check what
-      `_domains_cover_hotspots` already does before writing anything.
-   b. **Scale-free exposure measure**: replace the residue COUNT
-      (`MAX_EXPOSED_HYDROPHOBIC = 2`) with newly-exposed hydrophobic AREA as
-      a fraction of the target-side interface BSA. Measured: 5VAI 74.8/1356.0
-      = 5.5% (a clean cut), 3KYS@140 81%, 6VJJ@117 175%. A 20-30% threshold
-      separates them and scales with the epitope. **This is a proposal, not a
-      calibration** — and Phase B did NOT calibrate it (it held total contacts
-      fixed, so it answers a different question).
-   c. **Report exposure as an AREA** in the stage report, not just residues
-      and deltas. The sum is the physically meaningful number and is never
-      computed. One line.
+1. **The exposure threshold is a PROPOSAL and the production corpus cannot
+   calibrate it.** 22 of the 25 trims in `projects/` are NO-OPS — the target
+   already fitted the budget — and every one measures exactly 0.0%, so the
+   guard has essentially never judged a real cut in a real campaign. The four
+   real cuts this checkout can build at all had to be forced by sweeping the
+   budget below each chain's length: 5VAI R→100 (`R29-128`, a real domain
+   boundary) **5.5%**, 3KYS A→190 **32.5%**, 5VAI R→200 **90.5%**, R→150
+   **92.1%**. Nothing between 5.5% and 32.5%, so the whole 10–30% band fits
+   equally well.
+2. **The count and the fraction agree on every cut that EXISTS here.** The
+   change is invisible in this corpus and visible only in the two shapes it
+   lacks — several small exposures (count refuses, fraction accepts) and two
+   large ones (count accepts, fraction refuses) — so both are pinned by test
+   rather than claimed. Do not "verify" this change by re-running a trim that
+   already passed; it will pass either way.
+3. **The scope's older `away + near` totals (81%, 175%) cannot set this
+   threshold** and `GLUE_PIPELINE_SCOPE.md` now says so. Any near-epitope
+   exposure raises unconditionally, so the fraction gate only ever decides
+   cuts where `near == 0` — two of the scope's three original points were
+   already refused before a fraction was consulted.
 
-   Do NOT add capping/patching (§2.2 item 3): RFD3 conditions on the fixed
-   target coordinates, so a synthetic cap is atoms that do not exist in the
-   real protein and the binder gets designed against them.
+**On item 4: only half of branch 3 is implemented, on purpose.** Its wording
+was "a ranking input rather than a refusal"; the refusals stay. Both Phase B
+arms held total contacts FIXED, so the experiment tested "does having
+contacts on the patch cost anything" and never "does exposing a patch cost
+anything" — the only question the trim guards answer — and its highest
+near-epitope dose returned 0 of 40 designs through the gates against a
+control's 23 of 60. A null result licenses a tie-breaker weight, not the
+removal of a guard. Removing one needs the experiment that varies exposure
+itself. `tests/test_patch_liability.py` pins both refusals so a future edit
+cannot quietly drop them on the strength of the null.
 
-**4. Phase B's branch-3 consequence.** The exposure guards become a RANKING
-input rather than a refusal — a patch contact scored like
-`neg_rosetta_vbuns`. Touches `structure_trim`'s guards and
-`design.binder_ranking`'s weights. Read the "Phase B — COMPLETE" section's
-three caveats first, especially that 3KYS's interval does not exclude a
-halving, so this is "no detectable effect at 143 pairs", not "no effect".
+### Next, with nothing half-finished behind it
 
-**5. Hotspot numbering-frame advisory.** `membrane_topology.uniprot_to_auth`
-already answers it (returns a uniform `{+1}` for 8ZNL, `{0}` for 7CZD) but
-nothing routes a hotspot through it; `_verify_hotspot_grounding` catches a
-frame error only ~93% of the time per residue (105 of 113 positions on 8ZNL
-chain B; silent at 8 where the neighbour shares a residue type). Add it as a
-**log line inside `_verify_hotspot_grounding`, fail-open, NOT a gate** — a
-non-zero offset is ordinary and legal in a deposited structure, as 8ZNL is.
-Only fires when a target UniProt accession is already resolved.
-
-### Still open beyond 3-5
-
+- **A real campaign has to actually produce these numbers.** Nothing on disk
+  carries `patch_enrichment` or a non-zero exposure fraction, because every
+  trim in `projects/` is a no-op. The cheapest way to get a first real row is
+  the PPI + BoltzGen production run already on the list (~45 GPU-h) if its
+  target needs a cut, or a deliberate under-budget trim on 3KYS.
 - PPI + BoltzGen through production (~45 GPU-h) — the last end-to-end gap.
 - Retirement steps 5 and 6 (`LEGACY_RETIREMENT_SCOPE.md`).
 - A macrocycle slide for the FIRST carousel (`build_carousel.py`); the PD-L1
   deck has one, that one does not.
 - `ppi_report` renders no BoltzGen campaign (still foundry-shaped).
-- ruff backlog: 138 I001 + a long tail. Lint is non-blocking BY POLICY
-  ("the codebase predates any linter"). Ruff is not installed in the venv —
-  use `uvx ruff@latest check .`, which is what CI runs.
+- ruff backlog: 50 F/E9 plus a long tail. Non-blocking BY POLICY ("the
+  codebase predates any linter"). Ruff is not in the venv — use
+  `uvx ruff@latest check .`, which is what CI runs.
 - Carried audit defects: non-human guards, the corpus-accession
   contradiction, alignment-based hotspot remapping, and the
   `structure_needed` pause that names no target.
 
-### Two traps worth re-reading before touching the GPU
+### Traps worth re-reading before touching the GPU
 
 - **Do not extrapolate either cost law past ~700 tokens** — that is where the
   card OOMs, and both laws are now quadratic-ish, so error compounds fast.
@@ -739,6 +744,13 @@ Only fires when a target UniProt accession is already resolved.
   the spec path**: the binder range comes from the trim's own contig. Patch
   `spec.json`'s contig and re-run `validate_spec` if you need a specific
   binder length (that is how the 90mer ceiling test was built).
+- **A deterministic hotspot picker is not the epitope a campaign would
+  use.** `benchmark_trim.derive_hotspots` on 5VAI R/P chose residue 205,
+  inside the TM bundle, which makes the hotspot-bearing "domain" the whole
+  387-residue chain and every budget under it raise `TrimBudgetError`. The
+  scope's 5VAI numbers are for hotspots 66/67/70, the ECD epitope. If a trim
+  sweep returns nothing but budget errors, check which residues it picked
+  before concluding anything about the trim.
 
 ## How to run things here
 
