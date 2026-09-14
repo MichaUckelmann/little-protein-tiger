@@ -610,7 +610,13 @@ def test_placeholder_chain_ids_are_rejected_at_parse_time(config):
     }, limit=5)
     assert [s["site_id"] for s in good] == ["ok"]
 
-    with pytest.raises(PipelineBlockedError, match="usable chains"):
+    # "usable TARGET chain" since single-target mode landed: the refusal is
+    # now per-chain, because a missing PARTNER is legal for an
+    # inhibit_active_site campaign and a missing target never is. Same
+    # refusal, narrower message. Note `TBD (PD-L1)` is still refused as
+    # MALFORMED rather than read as absent — bare `TBD` reads as absent,
+    # which is what `tests/test_single_target_mode.py` pins.
+    with pytest.raises(PipelineBlockedError, match="usable target chain"):
         r._binder_sites({"pdb_id": "7CZD", "target_chain": "TBD (PD-L1)",
                          "partner_chain": "H"}, limit=1)
 

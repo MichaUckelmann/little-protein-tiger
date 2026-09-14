@@ -8,6 +8,15 @@ pdb_id	target_chain	partner_chain	n_hotspots	budget	budget_frac	n_before	n_after
 1D8D	A	B	8	226	0.7	323	161	162	1	geometric	68-86,/0,A55-215	3527.8	1.0336	0	6	266.9	0	0	0.0757	ok	0	0	PASS	
 1D8D	A	B	8	194	0.6	323	161	162	1	geometric	68-86,/0,A55-215	3527.8	1.0336	0	6	266.9	0	0	0.0757	ok	0	0	PASS	
 1D8D	A	B	8	162	0.5	323	161	162	1	geometric	68-86,/0,A55-215	3527.8	1.0336	0	6	266.9	0	0	0.0757	ok	0	0	PASS	
+1LB5	A		10	155	1.0	155	155	0	1	cath	68-86,/0,A347-501	0.0	1.0	0	0	0	0	0		ok	0	0	PASS	
+1LB5	A		10	147	0.95	155	147	8	1	cath	68-86,/0,A350-496	0.0	1.0	0	3	60.5	2	33.7		over_count	1	0	REFUSED_NEAR	
+1LB5	A		10	140	0.9	155	148	7	2	cath	68-86,/0,A347-416,A424-501	0.0	1.0	8	3	178.1	1	41.5		over_count	1	0	REFUSED_NEAR	
+1LB5	A		10	132	0.85	155	140	15	4	cath	68-86,/0,A348-414,A425-439,A441-462,A466-501	0.0	1.0	8	7	351.2	1	63.2		over_count	1	0	REFUSED_NEAR	
+1LB5	A		10	124	0.8	155	136	19	6	cath	68-86,/0,A348-384,A386-414,A425-438,A441-462,A466-482,A485-501	0.0	1.0	12	8	389.4	1	63.2		over_count	1	0	REFUSED_NEAR	
+1LB5	A		10	116	0.75	155	123	32	8	cath	68-86,/0,A349-360,A370-384,A386-398,A400-414,A425-438,A441-461,A466-482,A485-500	0.0	1.0	7	13	608.6	3	126.8		over_count	1	0	REFUSED_NEAR	
+1LB5	A		10	108	0.7	155	118	37	8	cath	68-86,/0,A349-360,A370-383,A386-397,A400-414,A426-438,A441-460,A466-482,A486-500	0.0	1.0	10	14	666.2	4	144.3		over_count	1	0	REFUSED_NEAR	
+1LB5	A		10	93	0.6	155	101	54	8	cath	68-86,/0,A349-360,A370-383,A388-396,A402-413,A426-437,A441-454,A467-479,A486-500	0.0	1.0	8	9	519.5	10	442.1		over_count	1	0	REFUSED_NEAR	
+1LB5	A		10	80	0.5	155	91	64	8	cath	68-86,/0,A349-358,A370-383,A388-396,A402-413,A426-437,A441-453,A469-479,A491-500	0.0	1.0	11	6	351.8	11	492.4		over_count	1	0	REFUSED_NEAR	
 3DI2	A	B	6	115	1.0	115	115	0	2	geometric	68-86,/0,A8-91,A122-152	668.2	1.0	0	0	0	0	0	0.0	ok	0	0	PASS	
 3DI2	A	B	6	109	0.95	115	109	6	2	geometric	68-86,/0,A8-91,A122-146	668.2	1.0	0	2	83.9	0	0	0.1256	ok	0	0	PASS	
 3DI2	A	B	6	104	0.9	115	104	11	2	geometric	68-86,/0,A8-91,A122-141	668.2	1.0	0	3	99.1	1	60.8	0.1483	ok	1	0	REFUSED_NEAR	
@@ -15,6 +24,15 @@ pdb_id	target_chain	partner_chain	n_hotspots	budget	budget_frac	n_before	n_after
 3DI2	A	B	6	92	0.8	115	84	31	1	geometric	68-86,/0,A8-91	668.2	1.0	0	12	679.4	4	240.1	1.0168	over_fraction	1	0	REFUSED_NEAR	
 3DI2	A	B	6	86	0.75	115	86	29	2	geometric	68-86,/0,A8-91,A122-123	668.2	1.0	0	12	679.4	4	240.1	1.0168	over_fraction	1	0	REFUSED_NEAR	
 3DI2	A	B	6	80	0.7	115	80	35	1	geometric	68-86,/0,A8-87	668.2	1.0389	0	13	708.0	5	264.1	1.0596	over_fraction	1	0	REFUSED_NEAR	
+3FLN	C		8	343	1.0	343	343	0	3	cath	68-86,/0,C3-118,C123-171,C175-352	0.0	1.0	0	0	0	0	0		ok	0	0	PASS	
+3FLN	C		8	326	0.95	343	326	17	3	cath	68-86,/0,C13-118,C123-171,C175-345	0.0	1.0	0	6	234.3	6	220.0		over_count	1	0	REFUSED_NEAR	
+3FLN	C		8	309	0.9	343																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 317 residues, over the 309-residue budget. Raise design.foundry.target_r
+3FLN	C		8	292	0.85	343																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 317 residues, over the 292-residue budget. Raise design.foundry.target_r
+3FLN	C		8	274	0.8	343																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 317 residues, over the 274-residue budget. Raise design.foundry.target_r
+3FLN	C		8	257	0.75	343																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 317 residues, over the 257-residue budget. Raise design.foundry.target_r
+3FLN	C		8	240	0.7	343																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 317 residues, over the 240-residue budget. Raise design.foundry.target_r
+3FLN	C		8	206	0.6	343																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 317 residues, over the 206-residue budget. Raise design.foundry.target_r
+3FLN	C		8	172	0.5	343																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 317 residues, over the 172-residue budget. Raise design.foundry.target_r
 3KYS	A	B	10	208	1.0	208	208	0	2	geometric	68-86,/0,A195-229,A239-411	1617.6	1.0	0	0	0	0	0	0.0	ok	0	0	PASS	
 3KYS	A	B	10	198	0.95	208	198	10	2	geometric	68-86,/0,A195-229,A239-401	1617.6	1.0531	0	12	462.9	0	0	0.2862	over_fraction	0	0	REFUSED_EXPOSURE	
 3KYS	A	B	10	187	0.9	208																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 189 residues, over the 187-residue budget. Raise design.foundry.target_r
@@ -24,6 +42,15 @@ pdb_id	target_chain	partner_chain	n_hotspots	budget	budget_frac	n_before	n_after
 3KYS	A	B	10	146	0.7	208	142	66	1	geometric	68-86,/0,A270-411	1617.6	1.055	0	22	1118.0	6	135.8	0.6911	over_fraction	1	0	REFUSED_NEAR	
 3KYS	A	B	10	125	0.6	208																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 173 residues, over the 125-residue budget. Raise design.foundry.target_r
 3KYS	A	B	10	104	0.5	208	100	108	1	geometric	68-86,/0,A297-396	1617.6	1.0549	0	11	641.9	11	428.0	0.3968	over_fraction	1	0	REFUSED_NEAR	
+5DLT	A		8	795	1.0	795	795	0	3	cath	68-86,/0,A56-459,A467-568,A571-859	0.0	1.0	0	0	0	0	0		ok	0	0	PASS	
+5DLT	A		8	755	0.95	795	755	40	3	cath	68-86,/0,A56-459,A467-568,A571-819	0.0	1.0	0	21	970.4	1	21.7		over_count	1	0	REFUSED_NEAR	
+5DLT	A		8	716	0.9	795	716	79	3	cath	68-86,/0,A56-459,A467-568,A571-780	0.0	1.0	0	29	1567.9	1	21.7		over_count	1	0	REFUSED_NEAR	
+5DLT	A		8	676	0.85	795	676	119	3	cath	68-86,/0,A56-459,A467-568,A571-740	0.0	1.0	0	40	2279.4	1	21.7		over_count	1	0	REFUSED_NEAR	
+5DLT	A		8	636	0.8	795	636	159	3	cath	68-86,/0,A56-459,A467-568,A571-700	0.0	1.0	0	33	1876.7	1	21.7		over_count	1	0	REFUSED_NEAR	
+5DLT	A		8	596	0.75	795	596	199	3	cath	68-86,/0,A56-459,A467-568,A571-660	0.0	1.0	0	35	2191.4	1	21.7		over_count	1	0	REFUSED_NEAR	
+5DLT	A		8	556	0.7	795	556	239	3	cath	68-86,/0,A56-459,A467-568,A571-620	0.0	1.0	0	27	1681.6	1	21.7		over_count	1	0	REFUSED_NEAR	
+5DLT	A		8	477	0.6	795	477	318	2	cath	68-86,/0,A83-459,A467-566	0.0	1.0	0	22	1473.7	5	184.2		over_count	1	0	REFUSED_NEAR	
+5DLT	A		8	398	0.5	795																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 399 residues, over the 398-residue budget. Raise design.foundry.target_r
 5HYN	A	B	8	582	1.0	582	582	0	7	ecod	68-86,/0,A10-182,A211-216,A220-249,A257-345,A422-479,A516-740,A1009-1009	4210.5	1.0	0	0	0	0	0	0.0	ok	0	0	PASS	
 5HYN	A	B	8	553	0.95	582	553	29	6	ecod	68-86,/0,A11-182,A211-216,A220-249,A257-345,A422-479,A516-713	4210.5	1.0	0	14	604.2	0	0	0.1435	ok	0	0	PASS	
 5HYN	A	B	8	524	0.9	582	524	58	6	ecod	68-86,/0,A11-182,A211-216,A220-249,A257-345,A422-479,A516-684	4210.5	1.0	0	27	1277.2	0	0	0.3033	over_fraction	0	0	REFUSED_EXPOSURE	
@@ -163,6 +190,14 @@ pdb_id	target_chain	partner_chain	n_hotspots	budget	budget_frac	n_before	n_after
 8B4A	C	D	7	169	0.7	241																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 176 residues, over the 169-residue budget. Raise design.foundry.target_r
 8B4A	C	D	7	145	0.6	241																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 241 residues, over the 145-residue budget. Raise design.foundry.target_r
 8B4A	C	D	7	120	0.5	241																	REFUSED_OTHER	TrimBudgetError: the domains carrying the hotspots are 158 residues, over the 120-residue budget. Raise design.foundry.target_r
+8FYU	B		12	128	1.0	128	128	0	1	ecod	68-86,/0,B23-150	0.0	1.0	0	0	0	0	0		ok	0	0	PASS	
+8FYU	B		12	122	0.95	128	126	2	1	ecod	68-86,/0,B25-150	0.0	1.0	4	0	0	1	50.9		ok	1	0	REFUSED_NEAR	
+8FYU	B		12	115	0.9	128	115	13	1	ecod	68-86,/0,B25-139	0.0	1.0	0	1	44.5	6	310.9		ok	1	0	REFUSED_NEAR	
+8FYU	B		12	109	0.85	128	109	19	1	ecod	68-86,/0,B25-133	0.0	1.0	0	1	54.6	7	410.5		ok	1	0	REFUSED_NEAR	
+8FYU	B		12	102	0.8	128	102	26	1	ecod	68-86,/0,B25-126	0.0	1.0	0	0	0	10	553.7		ok	1	0	REFUSED_NEAR	
+8FYU	B		12	96	0.75	128	96	32	1	ecod	68-86,/0,B25-120	0.0	1.0	0	0	0	7	494.6		ok	1	0	REFUSED_NEAR	
+8FYU	B		12	90	0.7	128	90	38	1	ecod	68-86,/0,B25-114	0.0	1.0	0	0	0	6	461.2		ok	1	0	REFUSED_NEAR	
+8FYU	B		12	80	0.6	128	112	16	3	ecod	68-86,/0,B25-91,B93-129,B143-150	0.0	1.0	32	0	0	7	296.3		ok	1	0	REFUSED_NEAR	
 8ZNL	B	A	12	114	1.0	114	114	0	1	geometric	68-86,/0,B20-133	663.4	1.0	0	0	0	0	0	0.0	ok	0	0	PASS	
 8ZNL	B	A	12	108	0.95	114	100	14	1	geometric	68-86,/0,B34-133	663.4	1.0	0	4	107.0	2	56.7	0.1613	ok	1	0	REFUSED_NEAR	
 8ZNL	B	A	12	103	0.9	114	100	14	1	geometric	68-86,/0,B34-133	663.4	1.0	0	4	107.0	2	56.7	0.1613	ok	1	0	REFUSED_NEAR	

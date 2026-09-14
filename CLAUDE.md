@@ -447,6 +447,88 @@ against RAMP1, `3N7S` chain D), not by reading its docs.
   `modality.mini_protein` carries no overrides — which is a measurement, not
   an inheritance by default.
 
+## A single target has no partner chain, and that is a mode, not a gap
+
+`design_intent: inhibit_active_site` — an AlphaFold monomer, a structure with
+one designable chain, an enzyme active site. `_stage_structure_intel` MEASURES
+the case (`design_intent = "disrupt" if partner_chain else
+"inhibit_active_site"`), and the whole path below it was already
+partner-optional: `trim_target` guards every interface measurement on
+`if partner_chain` and then reports `interface_bsa_target_side_A2 = 0.0` /
+`bsa_retention = 1.0`, `foundry_spec` mentions a partner nowhere at all,
+scoring reads chains off the RFD3 sidecar as A/B regardless, and
+`exposure_verdict`'s no-denominator branch was written for this case by name.
+It was nevertheless unreachable until 2026-09-14.
+
+- **Two near-duplicate chain validators, guarding different dicts, and a fix
+  had to land in both.** `_binder_sites` validates target-intel's handoff but
+  is reached ONLY via `--trial-sites N` or `--stop-after trial|spec`
+  (`_run_binder_track`'s `if self._trial_sites > 1 or ...`); a plain
+  single-site run is stopped by `_stage_trim`'s copy instead, which validates
+  the INTERFACE stage's hotspot table. Relaxing one alone just moves the
+  failure a stage later. `chain_id_or_blank` is now the single predicate, and
+  it returns the normalised id so a caller can tell **ABSENT** (legal in
+  single-target mode) from **MALFORMED** (never legal) — a distinction a bool
+  cannot express and the whole mode turns on.
+- **The partner is required only when the run's own `design_intent` says it
+  should be.** That is what stops this being a silent mode switch: a
+  `disrupt` campaign whose partner went missing — an LLM slip, a truncated
+  handoff — still refuses, rather than quietly designing against one
+  protein's surface when the objective was to disrupt an interface. Claiming
+  `inhibit_active_site` **while** naming a partner is also refused, because
+  that is the one way a run could obtain the guard waiver improperly.
+  Deliberately NOT an opt-in flag: the discriminator already exists in the
+  data and is written deterministically, whereas a flag would need an
+  operator to remember it for a legitimate monomer and would MASK a genuine
+  missing-partner bug when passed on an interface campaign.
+- **`none` used to be a chain id.** `len(text) <= 4 and text.isalnum()`
+  accepts `none`, `None`, `null`, `na`, `nan`, `nil`, `TBD` and `tbd` — so the
+  validator whose docstring says it exists to catch `"TBD (PD-L1)"` was
+  defeated by the bare word, the parenthesised form being caught only by the
+  length limit. Observed, not hypothetical: `projects/gpcr_metabolic_v3` ran
+  with `partner_chain: none` past BOTH validators,
+  `structure_trim._per_residue_bsa` logged "interface analysis unavailable:
+  Chain 'none' not found in structure" and failed open, and the trim measured
+  a zero interface for a target it believed had a partner. A real chain called
+  `NA` is now refused; that trade is deliberate.
+- **Three guards go inactive, and `_note_single_target_guards` says so.**
+  `_verify_target_chain_assignment` returns at its
+  `if not target_chain or not partner_chain` line, so the wrong-molecule guard
+  is off; **second-order and the one worth knowing, `self._ortholog` is
+  assigned only INSIDE that guard, after the point it returns from — so a
+  missing partner also disables ortholog detection and
+  `_check_ortholog_conservation`**; and `min_bsa_retention` cannot gate,
+  because retention is hardcoded 1.0. Failing open is right — there is no
+  partner to verify and no interface to retain — but going quiet is not, which
+  is the posture `--workflow structure` already takes for the `--uniprot`
+  guards. The exposure guard does NOT go inactive: it falls back to
+  `MAX_EXPOSED_HYDROPHOBIC`.
+- **That fallback is reached and still never decides anything, measured.**
+  With monomers runnable the trim benchmark has 35 single-target rungs over 4
+  targets, `exposed_fraction` `n/a` on all of them — so the no-denominator
+  branch really is taken — and **all 23 real cuts are refused by the
+  NEAR-epitope check first**, 7 of them where the count gate would have
+  passed (`n_away <= 2`, four at `n_away = 0`). For a single target the
+  epitope is a pocket on a compact protein, so almost any cut lands within the
+  10 Å clearance. So single-target mode works for a monomer that FITS the
+  budget (8FYU, 128 residues, no-op, validated spec), and a monomer that must
+  be CUT is undesignable: 5DLT at 795 residues against a 500 budget has no
+  passing rung at any budget. That is no longer the chain validators — it is
+  the near-epitope guard, and whether 10 Å is the right clearance for a pocket
+  rather than a protein-protein epitope is untested.
+- **The interface prompt omits the partner half rather than rendering it from
+  empty strings.** With no partner the old line read
+  `"..., 8FYU chain B = chain B,  = chain . Analyse this interface"` — the
+  degenerate description `_stage_binder_interface`'s own docstring blames for
+  the PD-L1/7CZD failure, where a stage handed one decided no usable structure
+  existed and asked for a different one. It now also tells the model to leave
+  `partner_chain` BLANK, because
+  `skills/complex-structure-analysis/SKILL.md` has an `INHIBIT_ACTIVE_SITE`
+  hotspot-table variant but **no single-target handoff variant** (it still
+  asks for "chain ID of the binding partner"), and left to invent a value the
+  model wrote `none`. With the instruction it writes a blank. The SKILL.md
+  template gap is unfixed — the prompt overrides it.
+
 ## The operator can name the epitope
 
 `--hotspots B74,B83,B84` (or bare `74,83,84` for the target chain) makes the

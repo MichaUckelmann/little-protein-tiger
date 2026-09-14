@@ -170,16 +170,57 @@ no longer a guess between two anecdotes.
 
 All three were found by running the benchmark, not looked for.
 
-1. **A monomer cannot be designed against through `--workflow structure`.**
-   `pipeline_runner.py:1296` requires BOTH `target_chain` and `partner_chain`
-   to be valid, so a single chain's empty partner is refused with
-   "target-intel did not name usable chains (target='A', partner='')".
-   `--chains A` does not rescue it. CLAUDE.md states "A single chain selects
-   `design_intent: inhibit_active_site`, which already existed for AlphaFold
-   monomers" — that path is unreachable from this entry point. It fails before
-   any LLM call, so it costs nothing, but it also means the no-partner branch
-   of the exposure gate (where `MAX_EXPOSED_HYDROPHOBIC` is still the gate,
-   for want of a BSA denominator) has **no benchmark coverage at all**.
+1. **A monomer could not be designed against through `--workflow structure`
+   — FIXED.** Two near-duplicate chain validators required a partner:
+   `_binder_sites` (reached only via `--trial-sites N` or `--stop-after
+   trial|spec`, which is why the benchmark hit it) and `_stage_trim`'s own
+   copy, which is what blocks a plain single-site run. Everything downstream
+   was already partner-optional — `trim_target` guards every interface
+   measurement on `if partner_chain`, `foundry_spec` mentions a partner
+   nowhere, scoring reads chains off the RFD3 sidecar as A/B regardless, and
+   `exposure_verdict`'s no-denominator branch was written for this case by
+   name — so the refusal was the whole of the blockage.
+
+   The partner is now required only when the run's own `design_intent` says
+   there should be one. A `disrupt` campaign that lost its partner still
+   refuses, which is the property worth keeping: single-target mode switches
+   OFF the chain-assignment and ortholog guards, so a silent mode switch
+   would strip protection at the same moment it changed the target. Verified
+   end to end: 5DLT (795-residue monomer) now reaches the trim and fails
+   there on a real quality guard, and 8FYU reaches a validated RFD3 spec
+   (`70-86,/0,B23-150`, 12 hotspots).
+
+   **It did not give the count gate the coverage I expected, and that is its
+   own finding.** With monomers runnable the ladder now has 35 single-target
+   rungs over 4 targets, and `exposed_fraction` is `n/a` on every one — so
+   the no-denominator branch is genuinely being taken. But **all 23 real cuts
+   are refused by the NEAR-epitope check**, and in 7 of them the count gate
+   would have passed (`n_away <= 2`, four of those with `n_away = 0`). The
+   count threshold therefore never decides an outcome: the code path has
+   coverage, the threshold still has none.
+
+   The reason is physical rather than a bug. For a single target the
+   "epitope" is a pocket or functional surface on a compact protein, so
+   almost any cut lands within `EXPOSED_HOTSPOT_CLEARANCE_A = 10` Å of it.
+   The practical consequence is worth stating plainly: single-target mode
+   works for a monomer that **fits** the budget (8FYU, 128 residues → no-op →
+   a validated spec), and a monomer that must be CUT remains undesignable —
+   5DLT at 795 residues against a 500 budget has no passing rung at any
+   budget. That is no longer the chain validators; it is the near-epitope
+   exposure guard, and whether 10 Å is the right clearance for a pocket
+   rather than a protein-protein epitope is an open question this benchmark
+   cannot answer.
+
+   A related hole went with it: `len(text) <= 4 and text.isalnum()` accepted
+   **`none`, `None`, `null`, `na`, `nan`, `nil`, `TBD`, `tbd`** as auth chain
+   ids, so the validator whose docstring says it exists to catch `"TBD
+   (PD-L1)"` was defeated by the bare word. Observed in production:
+   `projects/gpcr_metabolic_v3` ran with `partner_chain: none` past BOTH
+   validators, `_per_residue_bsa` logged "Chain 'none' not found in
+   structure" and failed open, and the trim measured a zero interface for a
+   target it believed had a partner. One predicate
+   (`chain_id_or_blank`) now serves both call sites and distinguishes ABSENT
+   (legal in single-target mode) from MALFORMED (never legal).
 2. **The biological-assembly file can delete the partner chain, and it is the
    file the pipeline prefers.** 8FYU has chains B (128) and A (126) with a
    2,256 Å² interface in `8FYU.cif` — but `8FYU_ba1.cif`, which

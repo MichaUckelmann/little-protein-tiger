@@ -227,6 +227,53 @@ class _TrimFromDisk:
             int(a) for a in (mapping.get("exposed_hydrophobic_auth") or [])]
 
 
+#: Words a stage writes when it means "there isn't one". They must be read as
+#: ABSENT, not as chain ids, and the length test alone does not do it: `none`,
+#: `None`, `null`, `na`, `nan`, `nil`, `TBD` and `tbd` are all <= 4 characters
+#: and all `isalnum()`, so every one of them used to validate as an auth chain
+#: id. `_binder_sites`'s own docstring says it exists to catch `"TBD (PD-L1)"`
+#: — the parenthesised form is caught by the length limit and the bare word
+#: was not, which defeats the check's stated purpose.
+#:
+#: Observed, not hypothetical: `projects/gpcr_metabolic_v3` ran with
+#: `partner_chain: none` through BOTH chain validators, and
+#: `structure_trim._per_residue_bsa` then logged "interface analysis
+#: unavailable: Chain 'none' not found in structure" and failed open, so the
+#: trim measured a zero interface for a target it believed had a partner.
+#:
+#: A real chain called `NA` would now be refused. That trade is deliberate:
+#: a refusal is one clear error message, and accepting a placeholder is a
+#: campaign that silently measures nothing.
+_CHAIN_PLACEHOLDERS = frozenset({
+    "none", "null", "na", "n/a", "n.a.", "nan", "nil", "nothing",
+    "tbd", "todo", "unknown", "unspecified", "absent", "-", "--", "?",
+})
+
+
+def chain_id_or_blank(value: Any) -> str:
+    """An auth chain id, or `""` when a stage meant "there isn't one".
+
+    ONE predicate for both places that validate a chain. There were two copies
+    of it — `_binder_sites` and `_stage_trim` — written against different
+    dicts (target-intel's handoff and the interface stage's hotspot table),
+    and a placeholder had to be rejected in both or it simply moved one stage
+    later. Returning the normalised id rather than a bool is what lets a
+    caller tell "absent" from "malformed", which is the distinction
+    single-target mode turns on.
+    """
+    text = str(value or "").strip()
+    if not text or text.lower() in _CHAIN_PLACEHOLDERS:
+        return ""
+    return text if (len(text) <= 4 and text.isalnum()) else "\x00"
+
+
+#: What `chain_id_or_blank` returns for a value that is neither a chain id nor
+#: a recognisable "there isn't one" — `"TBD (PD-L1)"`, a sentence, a number
+#: with punctuation. Distinct from `""` because absent is legal in
+#: single-target mode and malformed never is.
+MALFORMED_CHAIN = "\x00"
+
+
 def _stage_for_skill(skill_name: str) -> str:
     """
     Best-effort inverse of _STAGE_TO_SKILL.
@@ -1260,16 +1307,28 @@ class PipelineRunner:
             "partner_name": intel.get("partner_name", ""),
             "rationale": intel.get("interface_rationale", ""),
         }
-        def valid_chain(value: Any) -> bool:
-            """
-            An auth chain id, not a placeholder.
+        # Single-target mode is legitimate and has no partner chain: an
+        # AlphaFold monomer, a structure with one designable chain, an
+        # enzyme active site. `_stage_structure_intel` MEASURES that case
+        # (`design_intent = "disrupt" if partner_chain else
+        # "inhibit_active_site"`) and every stage downstream of here is
+        # already partner-optional — `trim_target` guards every interface
+        # measurement on `if partner_chain`, `foundry_spec` mentions a
+        # partner nowhere at all, scoring reads chains off the RFD3 sidecar
+        # as A/B regardless, and `exposure_verdict`'s no-denominator branch
+        # was written for this case by name.
+        #
+        # So the partner is required only when the run's OWN stated intent
+        # says there should be one. That is what keeps this from becoming a
+        # silent mode switch: a `disrupt` campaign whose partner went
+        # missing — an LLM slip, a truncated handoff — still refuses here,
+        # rather than quietly designing against one protein's surface when
+        # the whole objective was to disrupt an interface.
+        single_target = (str(intel.get("design_intent") or "").strip().lower()
+                         == "inhibit_active_site")
 
-            The skill has emitted things like "TBD (PD-L1)"; passing that through
-            fails four stages later inside gemmi with an unhelpful "chain not
-            found". Real ids are short alphanumeric tokens.
-            """
-            text = str(value or "").strip()
-            return bool(text) and len(text) <= 4 and text.isalnum()
+        def valid_chain(value: Any) -> bool:
+            return chain_id_or_blank(value) not in ("", MALFORMED_CHAIN)
 
         sites: list[dict] = []
         raw = intel.get("sites_json")
@@ -1294,14 +1353,42 @@ class PipelineRunner:
                 logger.warning(f"sites_json is not valid JSON ({exc}); using the "
                                f"primary handoff fields only")
         if not sites:
-            if not (valid_chain(primary["target_chain"])
-                    and valid_chain(primary["partner_chain"])):
+            partner = chain_id_or_blank(primary["partner_chain"])
+            if not valid_chain(primary["target_chain"]):
                 raise PipelineBlockedError(
-                    f"target-intel did not name usable chains "
-                    f"(target={primary['target_chain']!r}, "
-                    f"partner={primary['partner_chain']!r}). Chain ids must come "
+                    f"target-intel did not name a usable target chain "
+                    f"(target={primary['target_chain']!r}). Chain ids must come "
                     f"from the candidate table; re-run, or pass --pdb and the "
                     f"chains explicitly.")
+            if partner == MALFORMED_CHAIN:
+                raise PipelineBlockedError(
+                    f"target-intel gave partner_chain="
+                    f"{primary['partner_chain']!r}, which is neither an auth "
+                    f"chain id nor a recognisable 'no partner' — so it cannot "
+                    f"be read either way. Re-run, or pass --chains "
+                    f"{primary['target_chain']},<partner> explicitly.")
+            if not partner and not single_target:
+                raise PipelineBlockedError(
+                    f"target-intel named no partner chain "
+                    f"(partner={primary['partner_chain']!r}) but declared "
+                    f"design_intent="
+                    f"{intel.get('design_intent', '')!r}, which is an "
+                    f"interface campaign and needs two chains. If this target "
+                    f"really is a single protein, the intent must say so "
+                    f"(inhibit_active_site); otherwise re-run, or pass "
+                    f"--chains <target>,<partner>.")
+            if partner and single_target and intel.get("partner_name"):
+                # Incoherent rather than merely odd: single-target mode
+                # disables the wrong-molecule and ortholog guards, so a run
+                # that both claims it and names a partner must not pick
+                # whichever reading is more convenient.
+                raise PipelineBlockedError(
+                    f"target-intel declared design_intent=inhibit_active_site "
+                    f"(single target) but also named partner "
+                    f"{intel.get('partner_name')!r} on chain {partner!r}. "
+                    f"Those disagree; single-target mode switches off the "
+                    f"chain-assignment and ortholog checks, so pick one.")
+            primary["partner_chain"] = partner
             sites = [primary]
         # De-duplicate on the actual interface, not the label.
         seen, unique = set(), []
@@ -1723,7 +1810,11 @@ class PipelineRunner:
             out, "Interface analysis (operator-specified hotspots)", body,
             {"pdb_id": intel.get("pdb_id", ""),
              "target_chain": target_chain,
-             "partner_chain": intel.get("partner_chain", ""),
+             # Normalised, so an operator-specified epitope on a single target
+             # writes a blank the trim now accepts rather than a placeholder
+             # it would read as a chain. This path used to emit whatever
+             # target-intel held and then fail in `_stage_trim`.
+             "partner_chain": chain_id_or_blank(intel.get("partner_chain")),
              "design_intent": intel.get("design_intent", "disrupt"),
              "modality": intel.get("modality", "mini_protein"),
              "hotspot_source": "operator"})
@@ -1759,11 +1850,35 @@ class PipelineRunner:
         where = (f"the local file {self._binder_structure_path(pdb)}"
                  if self._local_structure_stem(pdb)
                  else f"PDB {pdb} (already downloaded to data/structures/)")
+        # The partner half is OMITTED for a single target rather than
+        # rendered from empty strings. With no partner the old line read
+        # "..., 8FYU chain B = chain B,  = chain . Analyse this interface
+        # directly", which is the precise shape this method's own docstring
+        # blames for the PD-L1/7CZD failure — a stage handed a degenerate
+        # description decided no usable structure existed and asked for a
+        # different one. It also tells the model what to write back, because
+        # `skills/complex-structure-analysis/SKILL.md`'s handoff template has
+        # no single-target variant (it documents an INHIBIT_ACTIVE_SITE
+        # hotspot table but still asks for `partner_chain: <chain ID of the
+        # binding partner>`), and left to invent a value it wrote `none` —
+        # which used to validate as a chain id.
+        partner_chain = chain_id_or_blank(intel.get("partner_chain"))
+        if partner_chain in ("", MALFORMED_CHAIN):
+            what = (
+                f"{intel.get('target_gene')} = chain "
+                f"{intel.get('target_chain', '?')}. This is a SINGLE-TARGET "
+                f"campaign: there is no partner chain and no interface to "
+                f"analyse. Pick the pocket or functional surface a binder "
+                f"should occupy, and leave `partner_chain` BLANK in the "
+                f"handoff — do not write 'none' or invent a chain id")
+        else:
+            what = (
+                f"{intel.get('target_gene')} = chain "
+                f"{intel.get('target_chain', '?')}, "
+                f"{intel.get('partner_name') or 'the partner'} = chain "
+                f"{partner_chain}. Analyse this interface")
         q = (
-            f"Structure: {where}, "
-            f"{intel.get('target_gene')} = chain {intel.get('target_chain', '?')}, "
-            f"{intel.get('partner_name', 'partner')} = chain "
-            f"{intel.get('partner_chain', '?')}. Analyse this interface directly "
+            f"Structure: {where}, {what} directly "
             f"with the structure tools — do not search for a different "
             f"structure or ask for one. Goal: {goal}")
         out = dirs["binder"] / self._BINDER_STAGE_FILES["interface"]
@@ -3633,6 +3748,46 @@ class PipelineRunner:
             auto_mode=auto_mode, target=None, attach=not self._detach,
             n_batches=self._n_batches)
 
+    def _note_single_target_guards(self, intel: dict[str, str],
+                                   raw: Any = None) -> None:
+        """Say which checks a no-partner run turns off. Once, loudly.
+
+        Failing open for a single target is RIGHT — there is no partner to
+        verify, no interface area to retain, no BSA to divide by — but going
+        quiet about it is not, which is the same posture
+        `--workflow structure` already takes for the three guards that need
+        `--uniprot`. Three protections are inactive here and none of them
+        announces itself:
+
+        - `_verify_target_chain_assignment` returns at its
+          `if not target_chain or not partner_chain` line, so the
+          wrong-molecule check that caught the PD-L1/7CZD campaign is off.
+        - **Second-order, and the one worth knowing:** `self._ortholog` is
+          only ever set INSIDE that guard, after the point it returns from —
+          so a missing partner also disables ortholog detection and with it
+          `_check_ortholog_conservation`. Nothing about that is obvious from
+          either function.
+        - `min_bsa_retention` cannot gate: `trim_target` hardcodes
+          `bsa_retention = 1.0` with no partner, so the epitope-damage floor
+          has nothing to measure.
+
+        The exposure guard does NOT go inactive — it falls back from the
+        scale-free fraction to `MAX_EXPOSED_HYDROPHOBIC`, which is the branch
+        `exposure_verdict` documents for exactly this case. It is, however,
+        the branch with no benchmark coverage (`docs/trim-benchmark.md`).
+        """
+        intent = str(intel.get("design_intent") or "").strip() or "unstated"
+        note = "" if not raw or str(raw).strip() == "" else (
+            f" (the stage wrote partner_chain={raw!r}, read as 'no partner')")
+        logger.warning(
+            f"  ⚠ single-target mode: no partner chain, design_intent="
+            f"{intent}{note}. Three checks are therefore INACTIVE — "
+            f"chain-assignment (the wrong-molecule guard), ortholog "
+            f"conservation (it is only armed inside the chain-assignment "
+            f"guard), and the BSA-retention floor. The hydrophobic-exposure "
+            f"guard stays on but gates on the residue COUNT, since there is "
+            f"no interface area to scale by.")
+
     def _stage_trim(self, intel: dict[str, str], hotspots_json: str,
                     dirs: dict[str, Path],
                     result: PipelineResult) -> dict[str, Any]:
@@ -3642,13 +3797,39 @@ class PipelineRunner:
         # The hotspot table is parsed out of markdown, so a malformed table
         # yields an empty chain id that only fails four stages later, inside
         # gemmi, as "chain '' not found".
-        for key in ("target_chain", "partner_chain"):
-            value = str(hs.get(key) or "").strip()
-            if not value or len(value) > 4 or not value.isalnum():
-                raise PipelineError(
-                    f"the interface stage's MODEL-READY HOTSPOTS table gave "
-                    f"{key}={hs.get(key)!r}, which is not an auth chain id — the "
-                    f"table is malformed and the RFD3 spec cannot be built")
+        #
+        # THIS is the validator that blocks the default path, not
+        # `_binder_sites`'s near-identical one: that is reached only via
+        # `--trial-sites N` or `--stop-after trial|spec`
+        # (`_run_binder_track`'s `if self._trial_sites > 1 or ...`), so a
+        # plain single-site run arrives here instead. The two validate
+        # different dicts — target-intel's handoff there, the interface
+        # stage's hotspot table here — which is why a placeholder had to be
+        # rejected in both or it simply moved one stage later.
+        #
+        # The target chain is mandatory. The PARTNER is not: single-target
+        # mode has none, and `trim_target` is already partner-optional
+        # throughout (every interface measurement in it is guarded on
+        # `if partner_chain`, and the result then carries
+        # `interface_bsa_target_side_A2 = 0.0` / `bsa_retention = 1.0`).
+        target = chain_id_or_blank(hs.get("target_chain"))
+        if target in ("", MALFORMED_CHAIN):
+            raise PipelineError(
+                f"the interface stage's MODEL-READY HOTSPOTS table gave "
+                f"target_chain={hs.get('target_chain')!r}, which is not an "
+                f"auth chain id — the table is malformed and the RFD3 spec "
+                f"cannot be built")
+        partner = chain_id_or_blank(hs.get("partner_chain"))
+        if partner == MALFORMED_CHAIN:
+            raise PipelineError(
+                f"the interface stage's MODEL-READY HOTSPOTS table gave "
+                f"partner_chain={hs.get('partner_chain')!r}, which is neither "
+                f"an auth chain id nor a recognisable 'no partner' — the "
+                f"table is malformed and the RFD3 spec cannot be built")
+        hs["target_chain"], hs["partner_chain"] = target, partner
+        if not partner:
+            self._note_single_target_guards(
+                intel, raw=hs.get("partner_chain"))
         if not hs.get("residues"):
             raise PipelineError(
                 "the MODEL-READY HOTSPOTS table listed no residues")

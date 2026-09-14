@@ -1346,7 +1346,9 @@ def test_site_building_works_with_the_bridge_handoff_and_fails_without():
     sites = PipelineRunner._binder_sites(complete, limit=1)
     assert sites and sites[0]["target_chain"] == "A"
 
-    with pytest.raises(PipelineBlockedError, match="usable chains"):
+    # Per-chain message since single-target mode landed; a handoff with NO
+    # chains at all still refuses, which is what this test is about.
+    with pytest.raises(PipelineBlockedError, match="usable target chain"):
         PipelineRunner._binder_sites({"pdb_id": "6VJJ", "target_gene": "KRAS"},
                                      limit=1)
 
