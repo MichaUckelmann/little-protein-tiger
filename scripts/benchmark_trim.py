@@ -1074,7 +1074,7 @@ def phaseb_analyze(out_root: Path) -> dict:
                 "ci95": [round(rr * math.exp(-1.96 * se), 3),
                          round(rr * math.exp(1.96 * se), 3)]}
 
-    out = {"rungs": [], "pooled": {}}
+    out = {"rungs": [], "pooled": {}, "single_arm_rungs": []}
     pooled = {"heavy": [], "light": [], "control": []}
     pooled_d = {"heavy": [], "light": [], "control": []}
     for budget in sorted(by_rung, reverse=True):
@@ -1082,9 +1082,25 @@ def phaseb_analyze(out_root: Path) -> dict:
         arms = {a: [r for r in rs if r.get("arm") == a]
                 for a in ("heavy", "light", "control")}
         dl = {a: _design_level(v) for a, v in arms.items()}
-        for a in pooled:
-            pooled[a].extend(arms[a])
-            pooled_d[a].extend(dl[a])
+        # ONLY a rung with both arms enters the paired pool. A saturated rung
+        # contributes an unmatched heavy arm (3KYS rung 90: 40 designs, no
+        # patch-light design exists to match), and pooling it in compares
+        # those designs against light designs from OTHER rungs — the
+        # confounded between-rung comparison this whole design exists to
+        # avoid. It is not a small effect either: including 3KYS rung 90's
+        # 0/40 moved the pooled gate ratio from 0.882 (no effect) to 0.526
+        # with an interval excluding 1.0, and the dock U-test from p=0.34 to
+        # p=0.013. A single-arm rung is reported on its own, against the
+        # control, and never inside a paired statistic.
+        if dl["heavy"] and dl["light"]:
+            for a in pooled:
+                pooled[a].extend(arms[a])
+                pooled_d[a].extend(dl[a])
+        else:
+            pooled["control"].extend(arms["control"])
+            pooled_d["control"].extend(dl["control"])
+            if dl["heavy"]:
+                out["single_arm_rungs"].append(budget)
         entry = {"budget": budget,
                  "design_level": {a: _rate(v) for a, v in dl.items() if v},
                  "refold_level": {a: _rate(v) for a, v in arms.items() if v},
@@ -1161,6 +1177,12 @@ def _print_phaseb(stats: dict) -> None:
             print(f"{'':>6} heavy vs light: iptm p={e['iptm']['p']:.4f}, "
                   f"dock p={e['binder_rmsd_dock']['p']:.4f}, "
                   f"gate ratio {e.get('gate_ratio_design', {}).get('point')}")
+    if stats.get("single_arm_rungs"):
+        print(f"\nrung(s) {stats['single_arm_rungs']} are SATURATED — no "
+              f"patch-light design exists to match, so they contribute one "
+              f"unmatched arm and are EXCLUDED from the pooled comparison "
+              f"below. Read them against the control rung only, and remember "
+              f"they differ from it in target size and segment count too.")
     p = stats["pooled"]
     if p.get("iptm"):
         print(f"\npooled (design level): iptm p={p['iptm']['p']}, "

@@ -282,3 +282,71 @@ def test_no_dock_values_reports_nothing_rather_than_zero(bench):
     """A rung whose refolds all failed scoring must not read as 0 % docked."""
     out = bench._dock_fraction([{"error": "boom"}], 5.0)
     assert out["frac"] is None and out["n"] == 0
+
+
+# ── pooling: an unmatched arm must never enter a paired statistic ───────────
+
+def _score_rows(budget, arm, n, n_pass, dock_ok=None):
+    """Minimal phaseb_scores.json rows: one refold per design."""
+    dock_ok = n_pass if dock_ok is None else dock_ok
+    out = []
+    for i in range(n):
+        out.append({
+            "rung": budget, "arm": arm, "name": f"{budget}_{arm}_{i}",
+            "design_family": f"{budget}_{arm}_{i}",
+            "gate_pass": i < n_pass,
+            "iptm": 0.8 if i < n_pass else 0.3,
+            "binder_rmsd_dock": 1.5 if i < dock_ok else 38.0,
+            "binder_plddt": 0.8, "patch_survival": 1.0 if arm == "heavy" else None,
+        })
+    return out
+
+
+def test_a_saturated_single_arm_rung_is_excluded_from_the_pool(bench, tmp_path):
+    """The defect this pins, measured on the real 3KYS ladder: rung 90 is
+    saturated (298 of 300 designs have >= 5 patch contacts), so it has no
+    patch-light arm. Pooling its 40 unmatched designs into `heavy` compared
+    them against light designs from OTHER rungs and moved the gate ratio from
+    0.882 — no effect, interval spanning 1.0 — to 0.526 with an interval
+    EXCLUDING 1.0, and the dock U-test from p=0.34 to p=0.013. That is the
+    confounded between-rung comparison the whole paired design exists to
+    avoid, and it manufactured a significant result.
+    """
+    rows = (_score_rows(173, "heavy", 26, 8) + _score_rows(173, "light", 26, 6)
+            + _score_rows(90, "heavy", 40, 0)          # saturated, unmatched
+            + _score_rows(208, "control", 60, 23))
+    (tmp_path / "phaseb_scores.json").write_text(json.dumps(rows),
+                                                 encoding="utf-8")
+    stats = bench.phaseb_analyze(tmp_path)
+
+    pooled = stats["pooled"]["design_level"]
+    assert pooled["heavy"]["n"] == 26, (
+        f"the unmatched arm leaked into the pool (n={pooled['heavy']['n']}, "
+        f"expected 26)")
+    assert pooled["light"]["n"] == 26
+    assert stats["single_arm_rungs"] == [90]
+    # It is still reported, on its own.
+    r90 = next(e for e in stats["rungs"] if e["budget"] == 90)
+    assert r90["design_level"]["heavy"]["n"] == 40
+    assert "light" not in r90["design_level"]
+
+
+def test_a_paired_rung_still_pools(bench, tmp_path):
+    rows = (_score_rows(173, "heavy", 26, 8) + _score_rows(173, "light", 26, 6)
+            + _score_rows(140, "heavy", 20, 4) + _score_rows(140, "light", 20, 6))
+    (tmp_path / "phaseb_scores.json").write_text(json.dumps(rows),
+                                                 encoding="utf-8")
+    stats = bench.phaseb_analyze(tmp_path)
+    assert stats["pooled"]["design_level"]["heavy"]["n"] == 46
+    assert stats["pooled"]["design_level"]["heavy"]["k"] == 12
+    assert stats["single_arm_rungs"] == []
+
+
+def test_the_control_is_pooled_even_from_an_unpaired_rung(bench, tmp_path):
+    """A control rung has no light arm by construction, but its designs are
+    the quality baseline and must still be summarised."""
+    rows = _score_rows(208, "control", 60, 23)
+    (tmp_path / "phaseb_scores.json").write_text(json.dumps(rows),
+                                                 encoding="utf-8")
+    stats = bench.phaseb_analyze(tmp_path)
+    assert stats["pooled"]["design_level"]["control"]["n"] == 60
