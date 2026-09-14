@@ -7,11 +7,11 @@ stages deciding what to bind; this one starts from a target the operator already
 named (`--workflow binder`) and shows what the pipeline does with it — rank the
 nine solved structures of it by their measured interfaces, prove the chain it
 picked is the right molecule, choose the epitope, size the campaign from its own
-trial, and gate 5,824 refolds down to a shortlist. Most people arriving at this
+trial, and gate its refolds down to a shortlist. Most people arriving at this
 repo already know their target, so this is the deck that answers their question.
 
 Every number comes out of `facts/campaign_pdl1.json`, the snapshot
-`build_campaign.py` extracts from `projects/pdl1_e2e` — same file, same reason as
+`build_campaign.py` extracts from `projects/pdl1_rc1` — same file, same reason as
 `build_carousel.py`: a launch deck is the worst place to discover a figure went
 stale, because it is the one artefact you cannot quietly correct after posting.
 
@@ -23,10 +23,21 @@ maintained twice is a stylesheet maintained once and forgotten once.
     .venv/bin/python docs/showcase/build_carousel_pdl1.py
 
 HEADLINE NUMBERS ARE THE RUN'S OWN, at the `hotspot_engagement >= 1` threshold
-in force in August 2026 — 715 survivors, and the top 20 that ranking produced.
-`config.yaml` sets 0.75 today, which is why slide 10 states the re-gate (752)
-rather than quietly mixing the two: the twenty designs shown here came out of
-the historical gate, so every other figure on the deck has to match it.
+it gated with — 708 survivors, and the top 20 that ranking produced.
+`config.yaml` sets 0.75 today and on THIS campaign that changes nothing at all,
+which is the point slide 10 makes: the four refolds the old gate rejected on
+engagement each fail another gate anyway, so the survivor set is a superset of
+identical size, i.e. the same set. The deck states the null result rather than
+implying the shortlist moved.
+
+The deck was WRITTEN against the August 7CZD run (`projects/pdl1_e2e`) and now
+builds from `projects/pdl1_rc1` (8ZNL), which `build_campaign.py` repointed the
+snapshot to in Sep 2026 without this builder following. Four things moved with
+it and are stated here because the prose, unlike the figures, cannot update
+itself: ten hotspots rather than nine, `manual_4zqk` renamed `zqk` when that
+check stopped being hand-made, the chosen entry is row 3 of the candidate table
+rather than row 1, and the run billed three model calls on one model rather
+than five on two.
 """
 from __future__ import annotations
 
@@ -59,7 +70,13 @@ F = json.loads((HERE / "facts/campaign_pdl1.json").read_text(encoding="utf-8"))
 CAL = F["calibration"]
 GATE = F["gate_historical"]          # what the run itself decided — see module docstring
 GEO = F["geometry"]
-M4Z = F["manual_4zqk"]
+#: Renamed from `manual_4zqk` when the cross-check stopped being hand-made:
+#: `build_campaign.extract()` now superposes 4ZQK and counts both footprints in
+#: code from the run's own rank-1 refold. Slide 8 said "manual analysis, not
+#: part of the run" on the strength of the old arrangement and no longer does —
+#: 4ZQK is still external to the campaign, which is the whole point of it, but
+#: the measurement is no longer an exception to "every figure is extracted".
+M4Z = F["zqk"]
 N_SLIDES = 11
 
 # The sequence-identity margin that settled the chain assignment. Read out of
@@ -111,7 +128,7 @@ def s1() -> str:
 <div class="prompt">&ldquo;{F['query']}&rdquo;</div>
 <p class="wide">No structure named, no epitope chosen. It ranked the nine solved
 structures of PD-L1 by their measured interfaces, proved the chain it picked was
-PD-L1 and not the nanobody bound to it, chose a nine-residue epitope, sized the
+PD-L1 and not the binder crystallised against it, chose a ten-residue epitope, sized the
 campaign from its own trial, and returned
 <strong>{n(GATE['survivors'])} gated candidates</strong> from
 {n(F['n_scored'])} refolds &mdash; <strong>${F['spend_usd']:.2f}</strong> of
@@ -128,16 +145,26 @@ def s2() -> str:
     named, `target_resolve.build_candidate_table` computes every candidate
     complex's interface FIRST, so the skill argues over measurements rather than
     over abstracts. The columns are the measurements it is given.
+
+    The highlight follows the CHOSEN entry, never row 1: this run took row 3 on
+    hydrophobic fraction over two entries that bury more surface, and marking
+    the top row would state the opposite of what the stage decided.
     """
+    chosen = next(c for c in F["candidates"] if c["pdb_id"] == F["pdb_id"])
     rows = "".join(
-        f'<tr class="{"chosen" if c["rank"] == 1 else ""}">'
+        f'<tr class="{"chosen" if c["pdb_id"] == F["pdb_id"] else ""}">'
         f'<td>{c["pdb_id"]}<br><span class="muted" style="font-size:18px">'
         f'{c["partner"]}</span></td>'
         f'<td class="n">{c["res"]:.2f}</td><td class="n">{n(c["bsa"])}</td>'
         f'<td class="n">{c["iface_res"]}</td><td class="n">{c["hbonds"]}</td>'
         f'<td class="n">{c["phob"]:.2f}</td></tr>'
         for c in F["candidates"][:5])
-    alt = F["alternatives"][0]
+    # The two entries the stage passed over to reach its choice, each in its own
+    # words. `alternatives` is the stage's rejection list, so the quotes are the
+    # run's rather than a paraphrase of the table above.
+    above = [a for a in F["alternatives"]
+             if next(c for c in F["candidates"]
+                     if c["pdb_id"] == a["pdb_id"])["rank"] < chosen["rank"]]
     return slide(f"""
 <div class="eyebrow">Stage 1 &nbsp;/&nbsp; which structure of it</div>
 <h2>Nine solved structures. Ranked on the interface, not the citation count.</h2>
@@ -147,14 +174,17 @@ def s2() -> str:
       <th class="n">Phob</th></tr>
   {rows}
 </table>
-<div class="box"><div class="h">Why not the runner-up</div>
-<p class="wide" style="font-size:23px">{alt['pdb_id']} &mdash;
-{angstrom(alt['why_not'])}</p></div>
+<div class="box"><div class="h">Why not the two above it</div>
+{"".join(f'<p class="wide" style="font-size:23px;margin-top:10px">'
+         f'{a["pdb_id"]} &mdash; {angstrom(a["why_not"])}</p>' for a in above)}</div>
 <p class="wide muted" style="font-size:22px;margin-top:22px">Every figure in
 that table is computed from coordinates before any model reads the list, so the
 choice is argued over measurements rather than over abstracts &mdash;
-{F['pdb_id']} on the largest, best-resolved description of the epitope every
-characterised PD-L1 blocker uses.</p>
+{F['pdb_id']}, row {chosen['rank']}: a validated de novo mini-binder on the
+PD-1-competitive face at {chosen['res']:.2f} &Aring;, hydrophobic fraction
+{chosen['phob']:.2f}, taken over two entries that bury more surface. Burying
+the most surface is not the same as offering the most designable surface, and
+the rejections above are the stage&rsquo;s own account of the trade.</p>
 <div class="grow"></div>
 """, page=page(2))
 
@@ -171,17 +201,21 @@ def s3() -> str:
     lo, hi = CHAIN_MARGIN[1], CHAIN_MARGIN[0]
     return slide(f"""
 <div class="eyebrow">Stage 1 &nbsp;/&nbsp; and which molecule, actually</div>
-<h2>Chain A of this structure is not the target. It is the reagent.</h2>
-<p class="wide">{F['pdb_id']} holds PD-L1 on chain {F['target_chain']} and the
-{F['partner_name'].split(' (')[0]} used to crystallise it on chain
-{F['partner_chain']}. Told to design against &ldquo;PD-L1&rdquo;, an earlier
-version of this stage picked chain {F['partner_chain']} and put its hotspots on
-the nanobody&rsquo;s own CDR loop.</p>
+<h2>Chain {F['partner_chain']} of this structure is not the target. It is
+somebody else&rsquo;s binder.</h2>
+<p class="wide">{F['pdb_id']} holds PD-L1 on chain {F['target_chain']} and a
+{F['partner_name'].split(' (')[0]} on chain {F['partner_chain']}. Told to design
+against &ldquo;PD-L1&rdquo;, an earlier version of this stage &mdash; on
+{F['alternatives'][0]['pdb_id']}, the VHH complex one row above this one &mdash;
+picked the partner chain and put its hotspots on the nanobody&rsquo;s own CDR
+loop.</p>
 <div class="stats two">
   <div class="stat"><div class="n">{hi}%</div>
-    <div class="k">chain {F['target_chain']} vs {F['uniprot']}</div></div>
+    <div class="k">{F['alternatives'][0]['pdb_id']} chain
+      {F['target_chain']} vs {F['uniprot']}</div></div>
   <div class="stat"><div class="n">{lo}%</div>
-    <div class="k">chain {F['partner_chain']} vs {F['uniprot']}</div></div>
+    <div class="k">{F['alternatives'][0]['pdb_id']} chain
+      {F['partner_chain']} vs {F['uniprot']}</div></div>
 </div>
 <div class="box"><div class="h">What runs now, before a trim is built</div>
 <p class="wide" style="font-size:23px">Every modelled residue of the chosen chain
@@ -190,9 +224,10 @@ halts the run. Checking the residues cannot catch this &mdash; they are real and
 correctly numbered, just on the wrong protein.</p></div>
 <figure class="tall" style="margin-top:18px;min-height:3in">
 <img src="{img('native_face')}" alt=""></figure>
-<figcaption>The nanobody bound to PD-L1 in {F['pdb_id']}, down the epitope axis.
-Designing against its loops would have been geometrically unremarkable and
-biologically worthless.</figcaption>
+<figcaption>The crystallised partner bound to PD-L1 in {F['pdb_id']}, down the
+epitope axis &mdash; {n(F['bsa_A2'])} &Aring;&sup2; buried. Designing against
+its own surface instead of PD-L1&rsquo;s would have been geometrically
+unremarkable and biologically worthless.</figcaption>
 """, page=page(3))
 
 
@@ -200,18 +235,19 @@ biologically worthless.</figcaption>
 def s4() -> str:
     """The epitope, listed rather than tabulated.
 
-    Only 2 of the 9 hotspots carry a computed ddG, so a ddG-ranked table is two
-    rows of data and seven of dashes — the list plus the two that were ranked
-    says the same thing and leaves the surface render room to be legible.
+    Only 6 of the 10 hotspots carry a computed ddG, so a ddG-ranked table is six
+    rows of data and four of dashes — the list plus the strongest three says the
+    same thing and leaves the surface render room to be legible.
     """
     ranked = sorted((h for h in F["hotspots"] if h.get("ddg") is not None),
                     key=lambda h: h["ddg"])
     listed = ", ".join(f'{h["name"]}{h["auth"]}' for h in F["hotspots"])
-    strongest = ", ".join(f'{h["name"]}{h["auth"]} ({h["ddg"]:.1f})' for h in ranked)
+    strongest = ", ".join(f'{h["name"]}{h["auth"]} ({h["ddg"]:.1f})'
+                          for h in ranked[:3])
     best = F["regions"][0]
     return slide(f"""
 <div class="eyebrow">Stage 2 &nbsp;/&nbsp; which face of it</div>
-<h2>Nine residues, on the face PD-1 itself binds.</h2>
+<h2>Ten residues, on the face PD-1 itself binds.</h2>
 <div class="stats">
   <div class="stat"><div class="n">{len(F['hotspots'])}</div>
     <div class="k">hotspots declared</div></div>
@@ -221,7 +257,9 @@ def s4() -> str:
     <div class="k">{best['hydrophobic_fraction'] * 100:.0f}% hydrophobic</div></div>
 </div>
 <p class="wide" style="margin-top:22px">{listed} &mdash; the
-{best['short']}, chosen over one alternative face. {strongest} carry a computed
+{best['short']}, chosen over {"one" if len(F['regions']) == 2 else len(F['regions']) - 1}
+alternative face{"" if len(F['regions']) == 2 else "s"}.
+{strongest} are the strongest of the {len(ranked)} carrying a computed
 &Delta;&Delta;G. A region declares at most twelve: more is not stricter, because
 RFD3&rsquo;s hit rate falls as the set grows.</p>
 <figure class="tall" style="margin-top:14px"><img src="{img('epitope')}" alt="">
@@ -361,10 +399,10 @@ def s8() -> str:
     """The one slide that is not the pipeline's own arithmetic.
 
     Everything else here is the campaign grading itself against its own
-    thresholds. This is a structure the run never opened, superposed by hand
-    afterwards, and it is the only evidence on the deck that the epitope the
-    pipeline chose is the epitope that matters — so it is labelled as manual,
-    in the copy and not only in a footnote.
+    thresholds. This is a structure the run never opened, and it is the only
+    evidence on the deck that the epitope the pipeline chose is the epitope
+    that matters — so what it is and is not gets said in the copy rather than
+    in a footnote.
     """
     d = F["designs"][0]
     return slide(f"""
@@ -394,10 +432,11 @@ face.</p>
     ({M4Z['design_contacts'] - M4Z['shared']})</span>
   <span><b style="background:#9aa79d"></b>neither</span>
 </p>
-<figcaption><strong>Manual analysis, not part of the run</strong> &mdash; a UCSF
-ChimeraX session done by hand afterwards, at a {M4Z['cutoff_A']} &Aring; cutoff.
-An unversioned session cannot be extracted, so it is not presented as something
-the pipeline produced.</figcaption>
+<figcaption><strong>Computed at build time, not part of the run</strong>
+&mdash; the superposition and both footprints come out of the run&rsquo;s own
+rank-1 refold at a {M4Z['cutoff_A']} &Aring; heavy-atom cutoff, so they move as
+a reviewable diff like every other figure here. {M4Z['pdb_id']} itself stays
+external to the campaign, which is what makes it a check.</figcaption>
 <div class="box"><div class="h">Rank 1</div>
 <p class="wide" style="font-size:23px">{d['len']} residues, ipTM
 {d['iptm']:.3f}, dock-RMSD {d['dock']:.2f} &Aring;, binder pLDDT
@@ -413,7 +452,7 @@ def s9() -> str:
     by = F["llm_calls_by_stage"]
     return slide(f"""
 <div class="eyebrow">The bill</div>
-<h2>Three reasoning stages. Five model calls. The rest is arithmetic.</h2>
+<h2>Three reasoning stages. Three model calls. The rest is arithmetic.</h2>
 <div class="stats">
   <div class="stat"><div class="n">${F['spend_usd']:.2f}</div>
     <div class="k">model spend, cap ${F['budget_cap_usd']:.0f}</div></div>
@@ -437,16 +476,17 @@ def s9() -> str:
   <tr><td>summary &mdash; the write-up</td>
       <td class="n">{by['binder_summary']}</td><td class="n">&mdash;</td></tr>
 </table>
-<div class="box"><div class="h">Two of those five calls were a bug</div>
-<p class="wide" style="font-size:23px">The interface stage ran
-{by['interface']} times because the query it was handed never named the entry
-the orchestrator had <em>already downloaded</em>: given a description and no
-accession, the skill twice concluded no structure existed and asked for one.
-The query now always states the id and chains. This run also drove
-<code>claude-sonnet-5</code> (${F['models']['claude-sonnet-5']:.2f} of the
-${F['spend_usd']:.2f}); the default is now <code>{F['default_model']}</code>,
-about four times cheaper on input &mdash; and no model is built in, since
-Claude, Gemini and GPT each drive the same loop, tools and cost ledger.</p></div>
+<div class="box"><div class="h">One call per stage, and no model built in</div>
+<p class="wide" style="font-size:23px">An agentic stage bills once per turn
+that reaches the model, so three stages is not automatically three calls
+&mdash; an earlier run against this target billed the interface stage several
+times over, because the query it was handed never named the entry the
+orchestrator had <em>already downloaded</em> and the skill kept concluding no
+structure existed. The whole bill here is
+<code>{" and ".join(sorted(F['models']))}</code>, the default since
+safety-classifier refusals on structural-biology prompts started costing real
+money for no output &mdash; and no model is built in, since Claude, Gemini and
+GPT each drive the same loop, tools and cost ledger.</p></div>
 <div class="grow"></div>
 """, page=page(9))
 
@@ -455,11 +495,24 @@ Claude, Gemini and GPT each drive the same loop, tools and cost ledger.</p></div
 def s10() -> str:
     """The coda, and the one thing a reader cannot check for themselves.
 
-    A campaign published three weeks after it ran invites exactly one question —
+    A campaign published days after it ran invites exactly one question —
     would today's code still decide this? — so it is answered on the deck with
     the measured answer rather than left to trust.
     """
     cur = F["gate_current"]
+    # The loosened gate can only ADD survivors, so equal counts mean the same
+    # set — and the refolds it stopped rejecting are exactly those that now
+    # fail somewhere else. Both derived, because "nothing changed" is a claim
+    # that has to keep being true of whatever snapshot is on disk.
+    was, now = dict(GATE["dropped"]), dict(cur["dropped"])
+    moved = sum(v for k, v in was.items() if k.startswith("hotspot_engagement"))
+    absorbed = sum(now.get(k, 0) - v for k, v in was.items()
+                   if not k.startswith("hotspot_engagement"))
+    if (cur["survivors"], absorbed) != (GATE["survivors"], moved):
+        raise SystemExit(
+            f"the re-gate is no longer a null result on this campaign "
+            f"({GATE['survivors']} -> {cur['survivors']} survivors, {moved} "
+            f"engagement rejects, {absorbed} absorbed) — rewrite slide 10")
     return slide(f"""
 <div class="eyebrow">What it does not do</div>
 <h2>Nothing here has been near a bench.</h2>
@@ -476,7 +529,7 @@ not to skip it.</p>
 since: <code>hotspot_engagement</code> went from 1.0 to
 {F['hotspot_engagement_now']}, because requiring every hotspot rejected refolds
 for missing residues their own backbone never targeted. Re-gating the same
-{n(F['n_scored'])} refolds through today&rsquo;s code:</p>
+{n(F['n_scored'])} refolds through today&rsquo;s code changes nothing here:</p>
 <table>
   <tr><th>&nbsp;</th><th class="n">Survivors</th><th class="n">Backbones</th>
       <th class="n">Top 20</th></tr>
@@ -486,14 +539,15 @@ for missing residues their own backbone never targeted. Re-gating the same
       <td class="n">&mdash;</td></tr>
   <tr><td>re-gated today</td><td class="n">{n(cur['survivors'])}</td>
       <td class="n">{cur['backbones']}</td>
-      <td class="n">same 20</td></tr>
+      <td class="n">identical</td></tr>
 </table>
-<p class="wide muted" style="font-size:22px;margin-top:20px">Same twenty
-designs, in the same order but for one adjacent swap, and the trial&rsquo;s
-verdict and self-raised bar are unchanged. The figures above are the run&rsquo;s
-own, at the threshold in force when it ran &mdash; the shortlist shown on this
-deck came out of that gate, so mixing the two would be worse than stating
-both.</p>
+<p class="wide muted" style="font-size:22px;margin-top:20px">The loosened gate
+can only admit refolds, and it admitted none: all {moved} refolds this
+campaign rejected on engagement fail another gate anyway. So the
+survivor set, its ranking and the top twenty are the same objects, and the
+figures above are the run&rsquo;s own either way. On a campaign where the
+threshold mattered this slide would carry two different numbers &mdash; it is
+worth stating that it does not.</p>
 <div class="grow"></div>
 """, page=page(10))
 
@@ -527,17 +581,20 @@ that make the tool look worse.</p>
 def main() -> int:
     if CHROME is None:
         raise SystemExit("no Chrome/Chromium on PATH")
-    # Three headlines spell a count as a word, which the facts file cannot
+    # Four headlines spell a count as a word, which the facts file cannot
     # update. `build_carousel.py` does the same ("Three candidates"), so the
     # convention stands — but a word that has quietly stopped matching its own
     # data is exactly the failure every other figure here is extracted to
-    # avoid, so it fails the build instead.
-    for word, count, what in (("nine", len(F["candidates"]), "candidate structures"),
-                              ("nine", len(F["hotspots"]), "hotspots")):
-        if count != 9:
+    # avoid, so it fails the build instead. Each entry names the slides to
+    # reword, because that is the work the failure is asking for.
+    for word, expected, count, what, slides_ in (
+            ("nine", 9, len(F["candidates"]), "candidate structures", "1 and 2"),
+            ("ten", 10, len(F["hotspots"]), "hotspots", "1 and 4"),
+            ("three", 3, F["llm_calls"], "model calls", "9")):
+        if count != expected:
             raise SystemExit(
                 f"the deck says '{word}' {what} and the facts say {count} — "
-                f"reword slides 1, 2 and 4 before shipping it")
+                f"reword slide(s) {slides_} before shipping it")
 
     slides = [s1(), s2(), s3(), s4(), s5(), s6(), s7(), s8(), s9(), s10(), s11()]
     if len(slides) != N_SLIDES:
