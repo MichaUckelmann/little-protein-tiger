@@ -725,16 +725,47 @@ them without re-reading this list is how they get silently reverted.
   directory mtimes, not log ticks, which include the driver's retry gaps):
   9.7 s/refold at 195 tokens, 11.0 at 245, 15.7 at 264, 18.1 at 285. The old
   flat 8.4 s was 14% low at the small end and **54% low at the large end**,
-  which is how a 3 GPU-h estimate became an 8.8 h run. `rf3_seconds_per_refold`
-  scales it as `(tokens/195)**1.62` — between linear and quadratic, because
-  attention is O(N²) but much of the network is O(N); do not "correct" the
-  exponent to 2.0 without re-measuring. Better still, `sec_per_refold_observed`
+  which is how a 3 GPU-h estimate became an 8.8 h run.
+
+  **Both GPU laws are TWO-TERM and were re-fitted on 2026-09-14**, because the
+  single power law that replaced the flat constant had the same defect one
+  range further out: `9.1 * (tokens/195)**1.62` fitted 195–285 tokens and
+  predicted **72 s at 698 tokens against ~144 s measured**, so with the target
+  ceiling now at 500 residues it under-costed exactly the campaigns that
+  ceiling permits. Now:
+
+      rf3_seconds_per_refold(N)   = 2.91 + 5.60 * (N/195)**2.56
+      rfd3_seconds_per_design(N)  = 1.90 + 4.35 * (N/195)**1.643
+
+  The RF3 compute term is fitted from the size sweep's **load-free
+  differences** — each point folded one refold in a fresh process, so
+  consecutive differences cancel the model load exactly — and the validation
+  is that the implied load then comes out CONSTANT at 15.4, 15.3, 15.4, 12.0,
+  17.0, 15.5 s across the six points, which nothing forced. The fixed term is
+  the residue against the four campaigns' per-refold wall time. RFD3's is
+  fitted over 13 Phase A rungs plus two 4-design probes at 589/665 tokens
+  whose difference is likewise load-free; rms 0.45 s over 15 points, and its
+  fixed term and exponent are stable across any load assumption from 0 to 25 s.
+  Net effect on a 4,600-design production: **0.97x at 195 tokens, 1.14x at
+  293, 1.90x at 590** — small campaigns are untouched and large ones stop
+  being half-priced. The exponent is essentially quadratic-plus now because
+  attention dominates once the O(N) parts stop mattering; do not re-flatten it,
+  and do not extrapolate past ~700 tokens, which is where the card OOMs anyway.
+  Better still, `sec_per_refold_observed`
   reads the rate a PREVIOUS stage of the same campaign actually achieved
   (`_earlier_refold_rate`), which tracked production within 10–17% on all three
   campaigns that ran both. This feeds `est_gpu_hours`, and through
   `choose_compute()` the local-vs-cluster decision.
-  **There is now ONE anchor and ONE law**: `campaign_calibration` imports both
-  from `foundry_runner` instead of holding its own (it kept a stale flat 8.4,
+  **There is now ONE anchor and ONE law, for BOTH stages**: `campaign_calibration`
+  imports them from `foundry_runner` instead of holding its own. It kept a
+  stale flat 8.4 for RF3 (below) and then kept a flat `SEC_PER_RFD3_DESIGN =
+  5.4` for RFD3 right through the RF3 fix — the same bug twice, in the same
+  file, and the RFD3 copy is what `calibrate()` spends the gate's budget on
+  first. `calibrate()` now derives BOTH rates from `n_tokens`, and
+  `CampaignPlan` carries `n_tokens` so `progress()`'s ETA quotes the rates the
+  plan was costed at rather than the bare anchors (it told an operator 9 s per
+  refold for a campaign the plan had costed at 149).
+  (The original RF3 incident: it kept a stale flat 8.4,
   and it is the GATE's budget check, so on MASH/TEAD4 the gate costed 22,197
   refolds at 63 GPU-h — "inside the 120 h budget" — while the planner costed the
   same work at 138 GPU-h). `calibrate()` takes `n_tokens` and applies the size

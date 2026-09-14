@@ -682,9 +682,54 @@ def test_the_rate_actually_changes_the_expected_refold_count():
 # choose_compute() the local-vs-cluster decision.
 
 def test_refold_estimate_grows_with_complex_size():
+    from src.foundry_runner import SEC_PER_RF3_REFOLD
     from src.foundry_runner import rf3_seconds_per_refold as f
     assert f(195) < f(245) < f(285)
-    assert f(None) == f(0) == pytest.approx(9.1)
+    # The fallback is the module's own anchor, asserted BY NAME rather than as
+    # a literal: it moved from 9.1 to 8.51 when the law was re-fitted on
+    # 2026-09-14, and a test that hardcodes it fails for the wrong reason.
+    assert f(None) == f(0) == pytest.approx(SEC_PER_RF3_REFOLD)
+
+
+def test_the_refold_law_extrapolates_to_the_new_ceiling():
+    """The re-fit's whole point. The single power law it replaced (9.1 s at
+    195 tokens, exponent 1.62) was fitted over 195-285 tokens and predicted
+    72 s at 698 tokens against ~144 s measured in the size sweep — so
+    `plan_campaign` under-costed a large-target campaign by half, which with
+    the ceiling now at 500 residues is the range campaigns get sized in.
+    """
+    from src.foundry_runner import rf3_seconds_per_refold as f
+    old_law = 9.1 * (698 / 195) ** 1.62
+    assert old_law < 80, "this is the law being replaced; it said ~72 s"
+    assert 120 < f(698) < 180, f"expected ~150 s at 698 tokens, got {f(698)}"
+    # And it must not have become a flat rate in the fitted range either.
+    assert 1.9 < f(285) / f(195) < 2.3
+
+
+def test_the_design_law_tracks_its_measured_points():
+    """RFD3, fitted on 13 Phase A rungs plus two large-size probes. The flat
+    5.4 s it replaces is 1.9x low at 286 tokens and 6.4x low at 589."""
+    from src.foundry_runner import rfd3_seconds_per_design as d
+    for tokens, measured in ((168, 5.29), (195, 6.17), (286, 10.81),
+                             (589, 27.62), (665, 35.27)):
+        assert abs(d(tokens) - measured) / measured < 0.12, (
+            f"{tokens} tok: {d(tokens):.2f} vs {measured} measured")
+    assert d(None) == d(0) == pytest.approx(
+        __import__("src.foundry_runner", fromlist=["x"]).SEC_PER_RFD3_DESIGN)
+
+
+def test_neither_law_is_duplicated_in_campaign_calibration():
+    """`campaign_calibration` kept its own flat RFD3 constant while
+    `foundry_runner` was the module being re-fitted — the same two-copies bug
+    that put the RF3 anchor out of step and cost the mash_e2e campaign."""
+    import inspect
+
+    from src import campaign_calibration as cc
+
+    src = inspect.getsource(cc)
+    assert "SEC_PER_RFD3_DESIGN = 5.4" not in src
+    assert "rfd3_seconds_per_design" in src, (
+        "the RFD3 rate must come from foundry_runner's law")
 
 
 @pytest.mark.parametrize("tokens,measured", [(195, 9.7), (264, 15.7), (285, 18.1)])

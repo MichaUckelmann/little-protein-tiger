@@ -303,9 +303,9 @@ def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True,
     import yaml
 
     from src.env_config import resolve_env_path
-    from src.foundry_runner import (SEC_PER_RFD3_DESIGN, FoundryPaths,
-                                    FoundryValidationError, _rfd3_command,
-                                    _resolve_foundry_bin)
+    from src.foundry_runner import (FoundryPaths, FoundryValidationError,
+                                    _rfd3_command, _resolve_foundry_bin,
+                                    rfd3_seconds_per_design)
 
     cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
     design = cfg.get("design") or {}
@@ -357,11 +357,12 @@ def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True,
             f"{cmd}\n", encoding="utf-8")
         script.chmod(0o755)
 
-        est = n_batches * 4 * SEC_PER_RFD3_DESIGN / 3600
+        est = n_batches * 4 * rfd3_seconds_per_design(
+            rung.get("n_tokens")) / 3600
         total_h += est
         print(f"  rung {rung['budget']}: {script}  "
               f"({n_batches * 4} designs, ~{est:.2f} GPU-h at "
-              f"{SEC_PER_RFD3_DESIGN:g} s/design)", flush=True)
+              f"{rfd3_seconds_per_design(rung.get('n_tokens')):.1f} s/design)", flush=True)
         if not dry_run:
             # `JobRegistry.launch`, the same entry point the campaign driver
             # uses (start_new_session=True, so it survives this process and a
@@ -379,9 +380,9 @@ def launch_designs(out_root: Path, n_designs: int, dry_run: bool = True,
             print(f"    launched: pid {rec.pid} -> {log}", flush=True)
     print(f"\ntotal across rungs: ~{total_h:.2f} GPU-h"
           + ("  (dry run — nothing launched)" if dry_run else ""))
-    print("NOTE: SEC_PER_RFD3_DESIGN has no size law — it is a flat constant "
-          "for every complex size. Phase A measures one for free; compare the "
-          "rung directories' mtimes against their token counts.")
+    print("NOTE: the RFD3 size law these estimates use was FITTED on this "
+          "benchmark's own 13 rungs (plus two large-size probes) — see "
+          "foundry_runner.SEC_PER_RFD3_COMPUTE.")
 
 
 # --------------------------------------------------------------- Phase B ---

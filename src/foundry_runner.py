@@ -45,8 +45,26 @@ from src.foundry_spec import (
 )
 from src.job_registry import JobRegistry, JobRecord, STATUS_RUNNING
 
-# Measured on the RTX PRO 4500 Blackwell (32 GB) for a ~175-token complex.
-SEC_PER_RFD3_DESIGN = 5.4
+# RFD3 design cost, TWO-TERM: a fixed per-design cost plus compute that grows
+# with complex size. The flat 5.4 s this replaces was measured at one ~175-token
+# complex and is 1.9x low at 286 tokens and 6.4x low at 589 — and since the
+# target ceiling is now 500 residues, that is exactly the range campaigns will
+# be sized in.
+#
+# Fitted over 13 Phase A rungs x 300 designs (two targets, 168-286 tokens,
+# steady-state s/design from sidecar mtimes with the first 10 dropped so model
+# load is excluded) PLUS two 4-design probes at 589 and 665 tokens. Those two
+# contribute a LOAD-FREE constraint — their difference, 4*(d(665) - d(589)) =
+# 30.6 s, cancels the one model load each paid — which is what pins the
+# exponent out at the new ceiling. rms 0.45 s over 15 points; the fixed term
+# and the exponent are stable (1.9 s, 1.55-1.75) across any model-load
+# assumption from 0 to 25 s, so the shape is not an artifact of that estimate.
+SEC_PER_RFD3_FIXED = 1.90         # per design, independent of size
+SEC_PER_RFD3_COMPUTE = 4.35       # per design at REF_TOKENS
+RFD3_SIZE_EXPONENT = 1.643
+#: Total at REF_TOKENS. Kept as a named constant because callers use it as a
+#: flat fallback when no token count is known; prefer `rfd3_seconds_per_design`.
+SEC_PER_RFD3_DESIGN = SEC_PER_RFD3_FIXED + SEC_PER_RFD3_COMPUTE
 SEC_PER_MPNN_SEQ = 0.36
 
 # RF3 refold cost grows with complex size, so a flat constant mis-sizes every
@@ -60,13 +78,34 @@ SEC_PER_MPNN_SEQ = 0.36
 #        264        15.7               -47%
 #        285        18.1               -54%
 #
-# t = 9.1 * (tokens/195)**1.62 fits those to within 7%, except the 245-token
-# point (+20%, and the only one without a production run behind it). The
-# exponent is between linear and quadratic because attention is O(N^2) but much
-# of the network is O(N) — do not "correct" it to 2.0 without re-measuring.
-SEC_PER_RF3_REFOLD = 9.1          # at REF_TOKENS
+# The single power law t = 9.1 * (tokens/195)**1.62 fitted those four points to
+# within 7%, and that is ALL it fitted: extrapolated to 698 tokens it says 72 s
+# against ~144 s measured in the 2026-09-14 size sweep. It is replaced by a
+# two-term form (see `rf3_seconds_per_refold`), which reproduces the same four
+# anchors and the sweep out to the new 500-residue ceiling.
+#
+# Sweep, one refold per fresh process on an idle card (elapsed includes ~15.4 s
+# of model load, which the fit identifies rather than assumes):
+#
+#     tokens   elapsed   compute   old-law error
+#        195      21 s      5.6 s      +62%
+#        368      44 s     28.6 s      -14%
+#        468      65 s     53.0 s      -32%
+#        568     104 s     87.0 s      -43%
+#        698     163 s    147.5 s      -51%
+#
+# The exponent is 2.56, i.e. essentially quadratic-plus: attention is O(N^2)
+# and dominates once the O(N) parts stop mattering, which is why a 1.62 fitted
+# at 195-285 tokens cannot survive extrapolation. Do not re-flatten it without
+# re-measuring; do not extrapolate it past ~700 tokens either, which is where
+# the card OOMs anyway (`max_complex_tokens`).
+SEC_PER_RF3_OVERHEAD = 2.91       # per refold, outside the forward pass
+SEC_PER_RF3_COMPUTE = 5.60        # per refold at REF_TOKENS
 REF_TOKENS = 195                  # the anchor campaign's complex size
-RF3_SIZE_EXPONENT = 1.62
+RF3_SIZE_EXPONENT = 2.56
+#: Total at REF_TOKENS; callers use it as the flat fallback when no token count
+#: is known. Prefer `rf3_seconds_per_refold`.
+SEC_PER_RF3_REFOLD = SEC_PER_RF3_OVERHEAD + SEC_PER_RF3_COMPUTE
 
 # A refold DIRECTORY grows with complex size for the same reason its runtime
 # does, and this was a flat 2.5 MB — 3.2x the real cost at the anchor, which
@@ -96,14 +135,50 @@ REFOLD_DISK_EXPONENT = 1.49
 
 
 def rf3_seconds_per_refold(n_tokens: int | None) -> float:
-    """Estimated RF3 seconds per refold for a complex of ``n_tokens`` residues.
+    """Estimated RF3 seconds per refold for a complex of ``n_tokens`` tokens.
+
+    TWO-TERM: a fixed per-refold cost plus compute. The single power law this
+    replaces (9.1 s at 195 tokens, exponent 1.62) was fitted over 195-285
+    tokens and extrapolates badly — it predicts 72 s at 698 tokens against
+    ~144 s measured, so `plan_campaign` under-costed a large-target campaign
+    by half. With the target ceiling now at 500 residues that is the range
+    campaigns get sized in, and under-costing there is how `mash_e2e` died
+    (its gate costed 22,197 refolds at 63 GPU-h for work the planner costed
+    at 138).
+
+    The compute term is fitted from the 2026-09-14 size sweep's LOAD-FREE
+    DIFFERENCES: each point folded one refold in a fresh process, so each
+    paid one model load, and consecutive differences cancel it exactly. That
+    fit implies a model load of 15.4, 15.3, 15.4, 12.0, 17.0 and 15.5 s at
+    the six points — a constant, which is the validation: nothing forced it
+    to be, and a wrong exponent would make it drift with size. The fixed term
+    is then the residue against four real campaigns' per-refold wall time
+    (2.9 s), i.e. what the driver spends per refold outside the forward pass.
+
+    Reproduces those campaign anchors to within ~2 s across 195-285 tokens,
+    which is what the old law did in its own range, and ~150 s at 698 tokens,
+    which it did not.
 
     A MEASURED rate always beats this — see ``sec_per_refold_observed`` — but
     the first stage of a campaign has nothing to measure yet.
     """
     if not n_tokens or n_tokens <= 0:
         return SEC_PER_RF3_REFOLD
-    return SEC_PER_RF3_REFOLD * (n_tokens / REF_TOKENS) ** RF3_SIZE_EXPONENT
+    return (SEC_PER_RF3_OVERHEAD
+            + SEC_PER_RF3_COMPUTE * (n_tokens / REF_TOKENS) ** RF3_SIZE_EXPONENT)
+
+
+def rfd3_seconds_per_design(n_tokens: int | None) -> float:
+    """Estimated RFD3 seconds per design for a complex of ``n_tokens`` tokens.
+
+    See `SEC_PER_RFD3_COMPUTE` for the fit. Validated against the two probes
+    that pinned its top end: 28.7 s predicted at 589 tokens against 27.6
+    measured, 34.6 against 35.3 at 665.
+    """
+    if not n_tokens or n_tokens <= 0:
+        return SEC_PER_RFD3_DESIGN
+    return (SEC_PER_RFD3_FIXED
+            + SEC_PER_RFD3_COMPUTE * (n_tokens / REF_TOKENS) ** RFD3_SIZE_EXPONENT)
 
 
 def sec_per_refold_observed(paths: FoundryPaths) -> float:
@@ -193,6 +268,11 @@ class CampaignPlan:
     est_gpu_hours: float
     est_disk_gb: float
     free_disk_gb: float
+    #: The complex size this plan was costed at. Carried so `progress()` can
+    #: quote the same per-unit rates the plan used — without it the ETA fell
+    #: back to the bare anchors and told an operator 9 s/refold for a campaign
+    #: the plan had costed at 149.
+    n_tokens: int | None = None
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -313,7 +393,11 @@ def plan_campaign(
     # A rate this campaign actually achieved beats any formula; fall back to
     # the size-scaled estimate when there is nothing measured yet.
     per_refold = sec_per_refold or rf3_seconds_per_refold(n_tokens)
-    seconds = (expected_rfd3 * SEC_PER_RFD3_DESIGN
+    # The design term scales with the complex as well, and was a flat constant
+    # until 2026-09-14: at the 500-residue ceiling that under-called the RFD3
+    # half of a campaign by 6.4x.
+    per_design = rfd3_seconds_per_design(n_tokens)
+    seconds = (expected_rfd3 * per_design
                + expected_mpnn * SEC_PER_MPNN_SEQ
                + expected_rf3 * per_refold)
     disk = expected_rf3 * refold_bytes(n_tokens) / 1e9
@@ -335,7 +419,7 @@ def plan_campaign(
         expected_rfd3 = n_batches * dbs
         expected_mpnn = int(expected_rfd3 * prefilter_rate) * n_seq
         expected_rf3 = expected_mpnn
-        seconds = (expected_rfd3 * SEC_PER_RFD3_DESIGN
+        seconds = (expected_rfd3 * per_design
                    + expected_mpnn * SEC_PER_MPNN_SEQ
                    + expected_rf3 * per_refold)
         disk = expected_rf3 * refold_bytes(n_tokens) / 1e9
@@ -345,7 +429,7 @@ def plan_campaign(
         expected_rfd3=expected_rfd3, prefilter_rate=prefilter_rate,
         expected_mpnn=expected_mpnn, expected_rf3=expected_rf3,
         est_gpu_hours=round(seconds / 3600.0, 1), est_disk_gb=round(disk, 1),
-        free_disk_gb=round(have, 1), warnings=warnings)
+        free_disk_gb=round(have, 1), n_tokens=n_tokens, warnings=warnings)
     basis = ("measured" if sec_per_refold
              else f"{n_tokens}-token estimate" if n_tokens else "default")
     logger.info(
@@ -732,9 +816,14 @@ def progress(paths: FoundryPaths, plan: CampaignPlan,
         stage = "rfd3"
 
     remaining = max(expected_rf3 - n_rf3, 0)
-    eta = remaining * SEC_PER_RF3_REFOLD if stage == "rf3" else None
+    # The ETA reads the same laws as the plan; quoting the bare anchors here
+    # told an operator a 698-token campaign's refolds would take 9 s each
+    # while the plan it was launched from said 149.
+    _tok = getattr(plan, "n_tokens", None)
+    eta = remaining * rf3_seconds_per_refold(_tok) if stage == "rf3" else None
     if stage == "rfd3":
-        eta = max(plan.expected_rfd3 - n_rfd3, 0) * SEC_PER_RFD3_DESIGN
+        eta = (max(plan.expected_rfd3 - n_rfd3, 0)
+               * rfd3_seconds_per_design(_tok))
 
     job = None
     if registry is not None:

@@ -44,13 +44,16 @@ from src.binder_ranking import (
 # SEC_PER_RF3_REFOLD below. No cycle: `foundry_runner` imports only
 # env_config / foundry_spec / job_registry.
 from src.foundry_runner import (
-    BYTES_PER_REFOLD, REF_TOKENS, SEC_PER_RF3_REFOLD, refold_bytes,
-    rf3_seconds_per_refold,
+    BYTES_PER_REFOLD, REF_TOKENS, SEC_PER_RF3_REFOLD, SEC_PER_RFD3_DESIGN,
+    refold_bytes, rf3_seconds_per_refold, rfd3_seconds_per_design,
 )
 
-# Measured on the RTX PRO 4500 Blackwell (32 GB) for a ~175-token complex.
-# Re-measure per target: RF3 attention is O(N^2) in tokens.
-SEC_PER_RFD3_DESIGN = 5.4
+# IMPORTED, not redeclared. This module kept its own flat `SEC_PER_RFD3_DESIGN
+# = 5.4` while `foundry_runner` was the module being re-fitted — the same
+# two-copies-of-one-constant bug that put the RF3 anchor out of step and cost
+# the mash_e2e campaign (the gate costed 22,197 refolds at 63 GPU-h against
+# the planner's 138 for identical work). One anchor and one law, for BOTH
+# stages now.
 SEC_PER_MPNN_SEQ = 0.36
 #: `SEC_PER_RF3_REFOLD` is re-exported from `foundry_runner` and is an ANCHOR
 #: at `REF_TOKENS` (195), not a flat rate: RF3 refold cost scales with complex
@@ -429,8 +432,13 @@ def calibrate(
     # `CostModel`. Building the default here (rather than defaulting the
     # parameter) keeps the rate-precedence logic and its warnings in one place.
     if cost is None:
+        # The RFD3 rate scales with the complex for the same reason the
+        # refold rate does, and this used to be a flat constant here: at the
+        # 500-residue ceiling that is 6.4x low, and the backbones are the
+        # term the GATE spends its budget on first.
         cost = CostModel(n_seq=n_seq, prefilter_rate=prefilter_rate,
                          sec_per_unit=sec_per_rf3_refold,
+                         sec_per_backbone=rfd3_seconds_per_design(n_tokens),
                          bytes_per_unit=bytes_per_refold)
     else:
         # A single-stage model makes n_seq/prefilter_rate meaningless; report
