@@ -11,6 +11,13 @@ Writes, all from `projects/pdl1_rc1` and all on ONE computed camera:
     assets/pd1_face.webp      4ZQK's PD-1 on PD-L1, its footprint tinted
     assets/footprint.webp     PD-L1 surface: shared / PD-1-only / design-only
 
+It also owns the two PD-L1 turntables the launch video composites:
+`--only-turntable` writes `assets/turntable_pdl1/` from this campaign's rank-1
+refold, and `--only-macro-turntable` writes `assets/turntable_pdl1_macro/`
+from `projects/pdl1_macrocycle`'s — a different project, a different structure
+and the opposite chain convention, which is why that branch returns early and
+shares only the facts snapshot with everything below.
+
 The previous set was made by hand for the August 7CZD campaign, and the
 README asked for the remaining renders to be ported to `render_pain.py`'s
 shape when they were next regenerated. This is that port, so what the page
@@ -68,6 +75,11 @@ W, H = 1500, 1200
 TURN_W, TURN_H = 1080, 1080
 TURN_FRAMES = 90
 TURNTABLE = ASSETS / "turntable_pdl1"
+#: The macrocycle campaign's turntable. A THIRD directory, on exactly the
+#: argument that gave the second one: one folder shared between two renders
+#: means whichever ran last silently decides what both videos show — and this
+#: one holds a different project's structure (7CZD/BoltzGen, not 8ZNL/foundry).
+MACRO_TURNTABLE = ASSETS / "turntable_pdl1_macro"
 
 # The palette the page's own legends use, so a figure and its key agree.
 BINDER_COL = "#2f8f74"        # the design
@@ -116,12 +128,17 @@ def hotspot_offset(hotspots: list[dict], structure_path: str) -> int:
 
 
 def camera_matrix(structure_path: str, hotspot_nums: list[int],
-                  tilt_deg: float = 52.0) -> str:
+                  tilt_deg: float = 52.0, target_chain: str = "B") -> str:
     """A 3x4 camera matrix aimed at the epitope, then tilted off that axis.
 
     Lifted from `render_pain.py` unchanged, including the tilt: straight down
     the target-centroid -> epitope vector, the binder occludes the target and
     the very hotspots it is covering.
+
+    `target_chain` defaults to an RF3 refold's B. A BoltzGen refold is the
+    other way round — target A, design B — so the macrocycle turntable passes
+    "A" and the epitope vector is computed off the right molecule; left at the
+    default it would aim at the 15-residue peptide's own centroid.
     """
     import gemmi
 
@@ -140,7 +157,7 @@ def camera_matrix(structure_path: str, hotspot_nums: list[int],
                 continue
             p = [ca.pos.x, ca.pos.y, ca.pos.z]
             all_ca.append(p)
-            if ch.name == "B":
+            if ch.name == target_chain:
                 target_ca.append(p)
                 if res.seqid.num in hotspot_nums:
                     hot_ca.append(p)
@@ -209,6 +226,72 @@ def turntable_script(refold: str, matrix: str, hot: list[int]) -> str:
                      f"height {TURN_H} supersample 2 transparentBackground true")
         lines.append(f"turn y {step:.4f} 1 center #1 coordinateSystem #1")
     return "\n".join(lines) + "\n"
+
+
+def macro_turntable_script(refold: str, matrix: str, hot: list[int],
+                           target_chain: str, binder_chain: str) -> str:
+    """The macrocycle campaign's lead design, spun for the video's new scene.
+
+    Identical in shape to `turntable_script` — same frame count, same canvas,
+    same palette, same screen-y rotation about the whole complex — and
+    deliberately not folded into it, because the two differ in the one thing
+    that cannot be got wrong: BoltzGen writes the TARGET as chain A and the
+    DESIGN as chain B, the opposite way round from RF3. Colouring by position
+    rather than by role would paint the 117-residue target in the binder's
+    green and tint ten of its residues as if they were the epitope.
+
+    Its hotspot numbers are the interface stage's `label_seq_id` column with
+    no offset at all: BoltzGen rewrites the target's numbering so label_seq
+    becomes auth_seq_id in the output (its own spec comment says so), and
+    `macro_hotspots` proves it residue by residue before anything is drawn.
+    """
+    MACRO_TURNTABLE.mkdir(parents=True, exist_ok=True)
+    for old in MACRO_TURNTABLE.glob("macro_*.png"):
+        old.unlink()
+    lines = [
+        f"open {refold}",
+        "hide atoms", "show cartoon", "hide pseudobonds",
+        "set bgColor white", "lighting soft", "lighting shadows false",
+        "graphics silhouettes true width 1.4",
+        f"color /{binder_chain} {BINDER_COL}", f"color /{target_chain} {TARGET_COL}",
+        f"color /{target_chain}:{spec(hot)} {HOTSPOT_COL}",
+        f"view matrix camera {matrix}", "view", "zoom 0.88",
+    ]
+    step = 360.0 / TURN_FRAMES
+    for i in range(TURN_FRAMES):
+        lines.append(f"save {MACRO_TURNTABLE / f'macro_{i:03d}.png'} width {TURN_W} "
+                     f"height {TURN_H} supersample 2 transparentBackground true")
+        lines.append(f"turn y {step:.4f} 1 center #1 coordinateSystem #1")
+    return "\n".join(lines) + "\n"
+
+
+def macro_hotspots(mac: dict, hotspots: list[dict], structure_path: str) -> list[int]:
+    """The macrocycle epitope in its refold's numbering, checked residue by residue.
+
+    There is no arithmetic here to get wrong — the check is the whole function.
+    The foundry render derives an offset and verifies it; here the mapping is
+    the identity, and asserting that is what distinguishes "BoltzGen really
+    does promote label_seq to auth_seq_id" from "the numbers happened to look
+    plausible". Same refusal as `hotspot_offset`: a silently wrong mapping
+    paints ten arbitrary residues and produces a figure that looks fine.
+    """
+    import gemmi
+
+    st = gemmi.read_structure(structure_path)
+    st.setup_entities()
+    target = {res.seqid.num: res.name
+              for res in st[0][mac["refold_target_chain"]]}
+    nums = []
+    for hs in hotspots:
+        want, num = hs["residue"].upper(), int(hs["label_seq_id"])
+        got = target.get(num)
+        if got != want:
+            raise SystemExit(
+                f"macrocycle hotspot mapping failed: label_seq {want}{num} is "
+                f"{got} in chain {mac['refold_target_chain']} of the refold, "
+                f"not {want}. Refusing to render the wrong residues.")
+        nums.append(num)
+    return nums
 
 
 def build_script(refold: str, native: pathlib.Path, matrix: str,
@@ -298,6 +381,27 @@ def build_script(refold: str, native: pathlib.Path, matrix: str,
     return "\n".join(L) + "\n"
 
 
+def run_cxc(body: str) -> bool:
+    """Run one .cxc, and treat a silent `save` failure as a failure.
+
+    Module-level rather than nested in `main()`: the macrocycle turntable
+    returns before main() ever reaches the five-figure setup, and this closes
+    over nothing but module constants.
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".cxc", delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    r = subprocess.run([CHIMERAX, "--offscreen", "--nogui", "--exit",
+                        "--silent", path], capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    # ChimeraX exits 0 after a failed `save`, so the return code alone proves
+    # nothing — it has reported success having written no file.
+    if "ERROR" in out or r.returncode != 0:
+        sys.stderr.write(out[-3000:] + "\n")
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -307,6 +411,10 @@ def main(argv: list[str] | None = None) -> int:
                          f"assets/turntable_pdl1/ for build_video_pdl1.py")
     ap.add_argument("--only-turntable", action="store_true",
                     help="write only the turntable, leaving the five figures alone")
+    ap.add_argument("--only-macro-turntable", action="store_true",
+                    help=f"write only the MACROCYCLE rotation frames to "
+                         f"assets/{MACRO_TURNTABLE.name}/ (7CZD/BoltzGen, a "
+                         f"different project from the five figures)")
     args = ap.parse_args(argv)
 
     if not pathlib.Path(CHIMERAX).exists():
@@ -315,6 +423,41 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"no facts snapshot at {FACTS} — run build_campaign.py first")
 
     facts = json.loads(FACTS.read_text(encoding="utf-8"))
+
+    if args.only_macro_turntable:
+        # Deliberately its own branch and its own early return: this render
+        # shares the facts snapshot with the five figures and nothing else —
+        # different project, different structure, different chain convention —
+        # so it must not fall through to the rank-1 refold of `pdl1_rc1`.
+        mac = facts.get("macrocycle") or {}
+        if not mac:
+            raise SystemExit(
+                "facts/campaign_pdl1.json has no macrocycle block — rebuild "
+                "with build_campaign.py on a machine that has the run")
+        refold = mac["lead_refold_cif"]
+        if not pathlib.Path(refold).is_file():
+            raise SystemExit(f"not on this machine: {refold}")
+        hot = macro_hotspots(mac, mac["hotspots"], refold)
+        matrix = camera_matrix(refold, hot,
+                               target_chain=mac["refold_target_chain"])
+        print(f"  lead design  {mac['designs'][0]['name']} "
+              f"({mac['designs'][0]['len']} aa, {mac['modality']})")
+        print(f"  chains       target {mac['refold_target_chain']}, "
+              f"binder {mac['refold_binder_chain']} (BoltzGen order)")
+        print(f"  hotspots     label_seq {hot}  (identity mapping, verified)")
+        print(f"  turntable    {TURN_FRAMES} frames -> "
+              f"assets/{MACRO_TURNTABLE.name}/")
+        if not run_cxc(macro_turntable_script(
+                refold, matrix, hot, mac["refold_target_chain"],
+                mac["refold_binder_chain"])):
+            return 1
+        n_frames = len(list(MACRO_TURNTABLE.glob("macro_*.png")))
+        print(f"               wrote {n_frames} frames")
+        if n_frames != TURN_FRAMES:
+            print(f"               EXPECTED {TURN_FRAMES} — refusing")
+            return 1
+        return 0
+
     zqk = facts.get("zqk") or {}
     fp = zqk.get("refold")
     if not fp:
@@ -339,20 +482,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"               refold {hot}  (offset {offset}, verified)")
     print(f"  footprints   design {len(fp['design'])}, PD-1 {len(fp['pd1'])}, "
           f"shared {len(fp['shared'])}")
-
-    def run_cxc(body: str) -> bool:
-        with tempfile.NamedTemporaryFile("w", suffix=".cxc", delete=False) as fh:
-            fh.write(body)
-            path = fh.name
-        r = subprocess.run([CHIMERAX, "--offscreen", "--nogui", "--exit",
-                            "--silent", path], capture_output=True, text=True)
-        out = r.stdout + r.stderr
-        # ChimeraX exits 0 after a failed `save`, so the return code alone
-        # proves nothing — it has reported success having written no file.
-        if "ERROR" in out or r.returncode != 0:
-            sys.stderr.write(out[-3000:] + "\n")
-            return False
-        return True
 
     if args.turntable or args.only_turntable:
         print(f"  turntable    {TURN_FRAMES} frames -> assets/{TURNTABLE.name}/")

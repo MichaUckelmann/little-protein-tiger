@@ -30,6 +30,7 @@ import base64
 import csv
 import datetime as dt
 import json
+import os
 import pathlib
 import re
 import sys
@@ -255,6 +256,263 @@ def _parse_ddg(md: str) -> dict[int, float]:
         out.setdefault(int(num), -abs(float(val)))
     return out
 
+
+
+def _canonical_numbering(pdb_id: str, chain: str) -> dict:
+    """How this entry's author numbering lines up with the canonical sequence.
+
+    The reason the page needs it: the PD-L1 hotspot every review calls Tyr56
+    is numbered in the canonical UniProt sequence, and 8ZNL's author numbering
+    runs one HIGHER than that (deposited `_struct_ref_seq`: db 19-132 against
+    auth 20-133 on chain B). So auth 56 in this entry is a valine and the
+    residue the literature means is auth 57 — which the interface stage did
+    select. That is an indexing frame, not a missing hotspot, and the page said
+    the stronger thing for a release before this was measured.
+
+    Read off the deposited block rather than written down, because an offset
+    typed into a builder is exactly the kind of claim this file exists to stop
+    making.
+    """
+    import gemmi
+
+    path = ROOT / f"data/structures/{pdb_id}.cif"
+    if not path.is_file():
+        raise _facts.SourceMissing(str(path))
+    block = gemmi.cif.read(str(path)).sole_block()
+    for row in block.find("_struct_ref_seq.",
+                          ["pdbx_strand_id", "db_align_beg", "db_align_end",
+                           "pdbx_auth_seq_align_beg", "pdbx_auth_seq_align_end"]):
+        if row[0] != chain:
+            continue
+        db_beg, db_end, auth_beg, auth_end = (int(v) for v in list(row)[1:])
+        return {"db_begin": db_beg, "db_end": db_end,
+                "auth_begin": auth_beg, "auth_end": auth_end,
+                "auth_minus_canonical": auth_beg - db_beg}
+    raise SystemExit(f"{pdb_id}: no _struct_ref_seq row for chain {chain}")
+
+
+# ---------------------------------------------------------- second campaign
+# The macrocycle run is a DIFFERENT project (7CZD, BoltzGen, cyclic peptide)
+# against the same target, so it gets its own nested block rather than moving
+# any of the numbers above. Nothing in the foundry campaign's facts depends on
+# it and nothing here depends on them.
+MACRO_PROJECT = ROOT / "projects/pdl1_macrocycle"
+MACRO_BINDER = MACRO_PROJECT / "runs/round-1/binder"
+
+#: Two output mtimes further apart than this did not belong to the same working
+#: leg of a stage. Only has to separate "the GPU is between designs" (seconds)
+#: from "the job was killed and resumed the next night" (hours) — the observed
+#: gap in this campaign's production stage is 11.3 h and its largest
+#: within-leg gap is under a minute.
+IDLE_GAP_S = 600.0
+
+
+def _gpu_hours_from_disk(stage_dir: pathlib.Path) -> tuple[float, list[float], float]:
+    """GPU hours for one BoltzGen stage, from its own output mtimes.
+
+    Returns (total, per-leg spans, idle hours between legs).
+
+    The repo's convention is disk counts and mtimes, never log ticks, and here
+    that is load-bearing rather than stylistic: this campaign's production
+    stage ran in TWO legs — killed at 1,892 of 4,610 refolds, resumed 11.3 h
+    later with `--reuse` — and `jobs.json` records only the last one, because
+    the job registry rewrites it on relaunch. Manifest stage timestamps are no
+    better: `calibration` -> `production` spans 32.9 h, most of which is the
+    GPU sitting idle overnight.
+
+    So: take every file mtime under the stage, split on gaps longer than
+    IDLE_GAP_S, and sum the spans. The first file of a leg is written at
+    launch (`steps.yaml`, `config/`, `plan.json`), so a leg's span starts at
+    its launch and not after model loading. Validated against the job
+    registry on the three legs it does record — pilot 0.1333 h vs 0.133,
+    calibration 2.8335 vs 2.834, production leg 2 6.6384 vs 6.638 — which is
+    what makes reading leg 1 the same way defensible.
+    """
+    if not stage_dir.is_dir():
+        raise _facts.SourceMissing(str(stage_dir))
+    stamps = sorted(
+        entry.stat().st_mtime
+        for root, _dirs, files in os.walk(stage_dir)
+        for entry in (pathlib.Path(root) / f for f in files))
+    if not stamps:
+        raise _facts.SourceMissing(f"{stage_dir} (no output files)")
+    legs = [[stamps[0], stamps[0]]]
+    for prev, cur in zip(stamps, stamps[1:]):
+        if cur - prev > IDLE_GAP_S:
+            legs[-1][1] = prev
+            legs.append([cur, cur])
+        else:
+            legs[-1][1] = cur
+    spans = [(b - a) / 3600 for a, b in legs]
+    idle = sum((legs[i + 1][0] - legs[i][1]) / 3600 for i in range(len(legs) - 1))
+    return round(sum(spans), 2), [round(s, 2) for s in spans], round(idle, 2)
+
+
+def _gpu_name() -> str:
+    """The card every GPU-hour on this page was measured on.
+
+    Asked of the driver rather than written down, for the same reason the rest
+    of this file extracts instead of typing: the two campaigns ran on this
+    workstation, and a hardware string in a builder's source is a claim
+    nothing checks.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("nvidia-smi") is None:
+        raise _facts.SourceMissing("nvidia-smi (no GPU on this machine)")
+    out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                         capture_output=True, text=True, check=True).stdout
+    name = out.strip().splitlines()[0].strip()
+    if not name:
+        raise _facts.SourceMissing("nvidia-smi returned no GPU name")
+    return name
+
+
+def _macrocycle() -> dict:
+    """The cyclic-peptide campaign: same target, other engine, other modality.
+
+    Kept deliberately separate from `extract()`'s own numbers. It is a second
+    project directory (`pdl1_macrocycle`, 7CZD, BoltzGen) and its columns are
+    BoltzGen-native — `design_to_target_iptm`, `min_design_to_target_pae`,
+    `complex_plddt`, and `final_rank`, which is a MAXIMIN over six per-metric
+    ranks rather than a weighted composite. There is no dock RMSD, no ipSAE
+    and no Rosetta pass here, so nothing is joined onto the foundry design
+    cards; the two sets are reported side by side and never merged.
+    """
+    import yaml
+
+    manifest = json.loads(_facts.read(MACRO_PROJECT / "manifest.json"))
+    stages = manifest["rounds"][0]["stages"]
+    intel = stages["target_intel"]["handoff"]
+    iface = stages["interface"]["handoff"]
+    spec = yaml.safe_load(_facts.read(MACRO_BINDER / "spec/cd274_boltzgen.yaml"))
+    trim = parse_handoff(_facts.read(MACRO_BINDER / "22_trim.md"))
+    spec_md = parse_handoff(_facts.read(MACRO_BINDER / "23_binder_spec.md"))
+    calib = json.loads(_facts.read(MACRO_BINDER / "calibration/calibration.json"))
+    prod_md = _facts.read(MACRO_BINDER / "26_production.md")
+    score_md = _facts.read(MACRO_BINDER / "27_scoring.md")
+    gate_text = _facts.read(MACRO_BINDER / "scoring/filter_stats.txt")
+    pilot_plan = json.loads(_facts.read(MACRO_BINDER / "campaign/pilot/plan.json"))
+    trim_map = json.loads(_facts.read(MACRO_BINDER / "trim/trim_map.json"))
+
+    # `26_production.md`/`27_scoring.md` carry no handoff block — these stages
+    # are deterministic Python and report in prose — so the step counts come
+    # off the one line the runner writes for them.
+    step = re.search(r"([\d,]+) designed, ([\d,]+) inverse-folded, "
+                     r"([\d,]+)/([\d,]+) refolded \([\d.]+%\), ([\d,]+) scored",
+                     prod_md)
+    if not step:
+        raise SystemExit("26_production.md: cannot parse the folding step line")
+    num = lambda s: int(s.replace(",", ""))                          # noqa: E731
+    designed, inv_folded, refolded, requested, scored = map(num, step.groups())
+    gate = re.search(r"([\d,]+) of ([\d,]+) designs pass; top (\d+) kept", score_md)
+    if not gate:
+        raise SystemExit("27_scoring.md: cannot parse the gate line")
+    survivors, gate_input, top_k_n = map(num, gate.groups())
+
+    gpu, legs, idle = {}, {}, {}
+    for stage in ("pilot", "calibration", "production"):
+        gpu[stage], legs[stage], idle[stage] = _gpu_hours_from_disk(
+            MACRO_BINDER / f"campaign/{stage}")
+    gpu["total"] = round(sum(gpu.values()), 2)
+
+    ledger = [json.loads(ln) for ln in
+              _facts.read(MACRO_PROJECT / "ledger.jsonl").splitlines() if ln.strip()]
+    calls_by_stage: dict[str, int] = {}
+    for e in ledger:
+        calls_by_stage[e["stage"]] = calls_by_stage.get(e["stage"], 0) + 1
+
+    top_k = list(csv.DictReader(
+        _facts.read(MACRO_BINDER / "scoring/top_k.csv").splitlines()))
+    if not top_k:
+        raise SystemExit("macrocycle top_k.csv is empty")
+    designs = [{
+        "name": d["design_id"], "rank": int(d["final_rank"]),
+        "iptm": float(d["design_to_target_iptm"]),
+        "ipae": float(d["min_design_to_target_pae"]),
+        "plddt": float(d["complex_plddt"]),
+        "seq": d["designed_chain_sequence"],
+        "len": len(d["designed_chain_sequence"]),
+        "pass_filters": d["pass_filters"] == "True",
+    } for d in top_k]
+
+    # The binder-length range comes from the spec the builder emitted, not
+    # from target_intel's handoff: the stage proposed mini_protein at 70-86
+    # and `--modality cyclic_peptide` overrode it, so the handoff's numbers
+    # describe a campaign this run did not run (CLAUDE.md, "Overriding the
+    # modality has to carry the LENGTHS with it").
+    seq_range = next(e["protein"]["sequence"] for e in spec["entities"]
+                     if "protein" in e)
+    lo, hi = (int(v) for v in str(seq_range).split(".."))
+
+    start = dt.datetime.fromisoformat(manifest["created_at"])
+    end = dt.datetime.fromisoformat(manifest["updated_at"])
+    return {
+        "project": MACRO_PROJECT.name,
+        "query": manifest["query"],
+        "engine": calib["backend"],
+        "modality": calib["modality"],
+        "protocol": spec_md["protocol"],
+        "pdb_id": intel["pdb_id"], "target_chain": intel["target_chain"],
+        "partner_chain": intel["partner_chain"],
+        "partner_name": intel["partner_name"],
+        "target_complex": iface["target_complex"],
+        "bsa_A2": int(intel["interface_bsa_A2"]),
+        "binder_len_min": lo, "binder_len_max": hi,
+        # The declared epitope, carried so `render_pdl1.py` can colour the
+        # macrocycle turntable from the facts rather than re-reading the run.
+        "hotspots": [{k: h[k] for k in
+                      ("residue", "auth_seq_id", "label_seq_id", "rfd3_atoms")}
+                     for h in trim_map["hotspots"]],
+        "n_hotspots": len(trim_map["hotspots"]),
+        "trim_residues": int(trim["n_residues"]),
+        "trim_segments": int(trim["n_segments"]),
+        "contig": trim["contig"],
+        # BoltzGen renumbers and RENAMES both chains in its output: target ->
+        # A, design -> B — the opposite way round from an RF3 refold, where
+        # the binder is A. Recorded because the turntable render and anyone
+        # opening the CIF both need it.
+        "refold_target_chain": "A", "refold_binder_chain": "B",
+        "lead_refold_cif": top_k[0]["cif_path"],
+        "started": start.date().isoformat(), "ended": end.date().isoformat(),
+        "wall_hours": round((end - start).total_seconds() / 3600, 2),
+        "gpu_hours": gpu,
+        "gpu_legs": legs, "gpu_idle_hours": idle,
+        "spend_usd": manifest["budget"]["spent_usd"],
+        "budget_cap_usd": manifest["budget"]["cap_usd"],
+        "models": manifest["budget"]["by_model"],
+        "llm_stages": list(calls_by_stage),
+        "llm_calls": sum(calls_by_stage.values()),
+        "llm_calls_by_stage": calls_by_stage,
+        # `24_pilot.md` has no handoff block either; the pilot's size is
+        # whatever the runner asked BoltzGen for, which is in its plan.
+        "pilot": {"n_designs": pilot_plan["num_designs"], "hours": gpu["pilot"]},
+        "calibration": {
+            "refolds": calib["n_refolds_scored"],
+            "backbones": calib["n_backbones_scored"],
+            "n_seq": calib["n_seq"],
+            "backbone_rate": calib["backbone_rate"],
+            "refold_rate": calib["refold_rate"],
+            "softer_rates": [[float(k.split("> ")[1]), v]
+                             for k, v in calib["softer_rates"].items() if "> " in k],
+            "central": calib["central"], "pessimistic": calib["pessimistic"],
+            "verdict": calib["verdict"], "verdict_reason": calib["verdict_reason"],
+            "requested_bar": calib["requested_bar"],
+            "bar_raised_to": calib["bar_raised_to"],
+            "target_designs": calib["target_designs"],
+            "n_production": calib["n_production"],
+            "hours": gpu["calibration"],
+        },
+        "production": {"requested": requested, "designed": designed,
+                       "inverse_folded": inv_folded, "refolded": refolded,
+                       "scored": scored, "hours": gpu["production"]},
+        "gate": {"input": gate_input, "survivors": survivors,
+                 "pct": round(100 * survivors / gate_input, 1)},
+        "gate_stats": gate_text,
+        "top_k_count": top_k_n,
+        "designs": designs,
+    }
 
 # --------------------------------------------------------------- extraction
 def extract() -> dict:
@@ -534,6 +792,13 @@ def extract() -> dict:
         "go_rationale": summary.get("go_rationale", ""),
         "has_report_html": (BINDER / "report.html").is_file(),
         "zqk": zqk,
+
+        # The card both campaigns' GPU-hours were measured on, and the
+        # SECOND campaign — a different project, engine and modality against
+        # the same target. Nested rather than merged: see `_macrocycle`.
+        "numbering": _canonical_numbering(intel["pdb_id"], intel["target_chain"]),
+        "gpu_name": _gpu_name(),
+        "macrocycle": _macrocycle(),
     }
 
 
@@ -541,6 +806,10 @@ F = _facts.load("campaign_pdl1", extract)
 
 # ------------------------------------------------------------------ shortcuts
 CAL, PROD, GEO = F["calibration"], F["production"], F["geometry"]
+MAC = F["macrocycle"]
+MCAL, MPROD = MAC["calibration"], MAC["production"]
+MLEAD = MAC["designs"][0]
+NUM = F["numbering"]
 BB = CAL["backbone_rate"]
 CENT, PESS = CAL["central"], CAL["pessimistic"]
 HIST, CUR = F["gate_historical"], F["gate_current"]
@@ -702,6 +971,20 @@ def design_cards() -> str:
             </dl>
             <p class="seq">{d["seq"]}</p>
           </div></article>''')
+    return "".join(out)
+
+
+
+def macro_rows(k: int = 5) -> str:
+    """The macrocycle top-K as table rows. BoltzGen columns, not foundry ones."""
+    out = []
+    for d in MAC["designs"][:k]:
+        out.append(
+            f'<tr><td class="num">{d["rank"]}</td><td><code>{d["name"]}</code></td>'
+            f'<td class="num">{d["iptm"]:.3f}</td>'
+            f'<td class="num">{d["ipae"]:.2f}</td>'
+            f'<td class="num">{d["plddt"]:.3f}</td>'
+            f'<td><span class="seq">{d["seq"]}</span></td></tr>')
     return "".join(out)
 
 
@@ -873,6 +1156,9 @@ _HEAD = _mkhead(
 _BEST_RES = min(F["candidates"], key=lambda c: c["res"])
 _CHOSEN = next(c for c in F["candidates"] if c["pdb_id"] == F["pdb_id"])
 _ALT_SITE = next(s for s in F["sites"] if s["pdb_id"] != F["pdb_id"])
+# The macrocycle campaign's entry, looked up in the SAME candidate table this
+# page already shows, so the two sections cannot disagree about it.
+_MAC_ENTRY = next(c for c in F["candidates"] if c["pdb_id"] == MAC["pdb_id"])
 
 HTML = f"""{_HEAD}
 <style>{CSS}</style>
@@ -975,16 +1261,22 @@ HTML = f"""{_HEAD}
       this exact face, led by <code>{F["lit_doi"]}</code>. "Cited" and "checked against
       the corpus" are different claims, and the pipeline only makes the second because it
       is the one it can verify.</p>
-      <div class="note-box"><p><strong>The textbook answer would have been wrong on this
+      <div class="note-box"><p><strong>The textbook number would have been wrong on this
       entry.</strong> The PD-L1 hotspot every review names is Tyr56 — and on
       <strong>{F["pdb_id"]}</strong>, chain {F["target_chain"]} residue 56 is a
-      <strong>valine</strong>. Asked to analyse this structure, the interface stage has
-      previously returned the canonical numbering verbatim: residues that are real and
-      correctly numbered in a <em>different</em> PD-L1 crystal form. Two guards run before
-      any trim is built — one reads the actual residue name at every position in the
-      downloaded file, the other confirms by sequence identity to UniProt that the target
-      chain is the target. Both passed here, and the aromatic anchors this run chose are
-      Tyr124 and Tyr57, which are the tyrosines {F["pdb_id"]} actually has.</p></div>
+      <strong>valine</strong>. The residue is not missing; the frame is different. This
+      entry numbers its chain {F["target_chain"]} exactly
+      {NUM["auth_minus_canonical"]} higher than the canonical sequence — its deposited
+      alignment maps {F["uniprot"]} {NUM["db_begin"]}–{NUM["db_end"]} onto author
+      {NUM["auth_begin"]}–{NUM["auth_end"]} — so the tyrosine the literature calls 56 is
+      <strong>auth 57 here, and the interface stage selected it</strong>. Asked to
+      analyse a structure, the stage has previously returned canonical numbering
+      verbatim: residues that are real and correctly numbered in a <em>different</em>
+      PD-L1 crystal form. Two guards run before any trim is built — one reads the actual
+      residue name at every position in the downloaded file, the other confirms by
+      sequence identity to UniProt that the target chain is the target. Both passed here,
+      and the aromatic anchors this run chose are Tyr124 and Tyr57, which are the
+      tyrosines {F["pdb_id"]} actually has.</p></div>
     </div>
     <figure class="fig">
       <img src="{img('epitope')}" alt="PD-L1 surface with the nine hotspot residues highlighted, no binder present.">
@@ -1175,6 +1467,79 @@ HTML = f"""{_HEAD}
 </section>
 
 <section class="stage">
+  <div class="stage-h"><p class="step">Second campaign · {MAC["engine"]} · {MAC["modality"].replace("_", " ")}</p>
+    <h2>The same target, as a {MAC["binder_len_min"]}&ndash;{MAC["binder_len_max"]}-residue macrocycle</h2></div>
+  <p>Everything above is a mini-protein built by RFD3. A macrocycle is not a smaller
+  version of that: RFD3 has no cyclic-peptide path at all, so
+  <code>--modality {MAC["modality"]}</code> selects BoltzGen instead, and the same nine
+  stage names run against a different generator. Nothing about the epitope argument
+  changes — the run took <strong>{MAC["pdb_id"]}</strong>, the
+  {_MAC_ENTRY["res"]:.2f} Å VHH complex the target-intel stage ranks first for this
+  target (row {_MAC_ENTRY["rank"]} of the same candidate table above,
+  {_MAC_ENTRY["bsa"]:,.0f} Å² buried), kept the target whole
+  ({MAC["trim_residues"]} of {MAC["trim_residues"]} residues,
+  {MAC["trim_segments"]} segment), and declared a {MAC["n_hotspots"]}-residue patch of
+  its own on the same front β-sheet face.</p>
+  <p>The calibration gate did its job twice over. {MCAL["backbone_rate"]["k"]} of
+  {MCAL["backbone_rate"]["n"]:,} backbones produced a design clearing every hard gate at
+  ipTM &gt; {MCAL["bar_raised_to"]} — {100*MCAL["backbone_rate"]["p_hat"]:.2f}%, 95% CI
+  {100*MCAL["backbone_rate"]["p_low"]:.2f}&ndash;{100*MCAL["backbone_rate"]["p_high"]:.2f}%
+  — which was enough to <em>raise</em> the requested bar from
+  {MCAL["requested_bar"]} to {MCAL["bar_raised_to"]} and still return
+  <strong>{MCAL["verdict"].replace("_", " ")}</strong>, sizing production at
+  {MCAL["n_production"]:,} designs off the Wilson lower bound rather than the point
+  estimate ({MCAL["central"]["required_backbones"]:,.0f}).</p>
+  <div class="stats">
+    <div class="stat"><b>{MPROD["refolded"]:,}</b><span>designs refolded</span></div>
+    <div class="stat"><b>{MAC["gate"]["survivors"]:,}</b><span>cleared the gate ({MAC["gate"]["pct"]}%)</span></div>
+    <div class="stat"><b>{MAC["gpu_hours"]["total"]:.1f}</b><span>GPU-hours</span></div>
+    <div class="stat"><b>${MAC["spend_usd"]:.2f}</b><span>of LLM spend</span></div>
+    <div class="stat"><b>{MLEAD["iptm"]:.3f}</b><span>best interface ipTM</span></div>
+  </div>
+  <p>Of the {MPROD["scored"]:,} designs that were scored,
+  {MAC["gate"]["survivors"]:,} passed BoltzGen's own nine-check self-consistency suite
+  and the interface-PAE ceiling, and the top {MAC["top_k_count"]} were kept — ranked by
+  <code>final_rank</code>, which is a <em>maximin</em> over six per-metric ranks rather
+  than a weighted composite, so a design has to be decent on all six and excellence at
+  one buys nothing.</p>
+  <div class="tw"><table>
+    <thead><tr><th>rank</th><th>design</th><th class="num">ipTM</th>
+      <th class="num">interface PAE Å</th><th class="num">complex pLDDT</th>
+      <th>sequence ({MAC["binder_len_min"]}&ndash;{MAC["binder_len_max"]} aa, cyclic)</th></tr></thead>
+    <tbody>{macro_rows()}</tbody></table></div>
+  <div class="note-box"><p><strong>These numbers are not comparable with the design
+  cards above, and are not stated as a head-to-head.</strong> BoltzGen writes no PAE
+  matrix for ipSAE and no dock RMSD, so the gate here is its own
+  <code>pass_filters</code> — dominated by a design-vs-refold self-consistency check —
+  plus an interface-PAE ceiling, where the foundry campaign gated on geometry against
+  the intended site. Two different bars, two different modalities, two different
+  structures. What the pair shows is that the stage machine is the same one.</p></div>
+  <div class="tw"><table>
+    <thead><tr><th>stage</th><th class="num">GPU-hours</th><th>what it bought</th></tr></thead>
+    <tbody>
+      <tr><td>pilot</td><td class="num">{MAC["gpu_hours"]["pilot"]:.2f}</td>
+        <td class="note">{MAC["pilot"]["n_designs"]} designs — proves the spec, not the target</td></tr>
+      <tr><td>calibration</td><td class="num">{MAC["gpu_hours"]["calibration"]:.2f}</td>
+        <td class="note">{MCAL["refolds"]:,} refolds — the measurement that raised the bar</td></tr>
+      <tr><td>production</td><td class="num">{MAC["gpu_hours"]["production"]:.2f}</td>
+        <td class="note">{MPROD["refolded"]:,} refolds, in
+        {len(MAC["gpu_legs"]["production"])} legs
+        ({" + ".join(f"{h:.2f}" for h in MAC["gpu_legs"]["production"])} h) — the first
+        was killed part-way and resumed with <code>--reuse</code> after
+        {MAC["gpu_idle_hours"]["production"]:.1f} h idle</td></tr>
+      <tr><td><strong>total</strong></td><td class="num"><strong>{MAC["gpu_hours"]["total"]:.2f}</strong></td>
+        <td class="note">on one {F["gpu_name"]}, {len(MAC["llm_stages"])} LLM stages,
+        {MAC["llm_calls"]} billed calls</td></tr>
+    </tbody></table></div>
+  <p style="font-size:.84rem;color:var(--muted)">Per-stage GPU-hours are summed from each stage directory's own output
+  mtimes, split on idle gaps. Neither of the two obvious sources works here:
+  <code>jobs.json</code> records only a stage's last launch, so it loses the killed leg
+  entirely, and the manifest's stage timestamps span {MAC["wall_hours"]:.0f} wall hours
+  against {MAC["gpu_hours"]["total"]:.1f} on the GPU. The method reproduces the job
+  registry exactly on the three legs it does record.</p>
+</section>
+
+<section class="stage">
   <div class="stage-h"><p class="step">What it cost</p>
     <h2>Three LLM stages, {GPU["total"]:.1f} GPU-hours</h2></div>
   <p>Only three stages of this campaign involved a language model at all:
@@ -1212,7 +1577,9 @@ HTML = f"""{_HEAD}
 
 <footer>
   <p>Every figure on this page is extracted at build time from
-  <code>projects/pdl1_rc1</code> — <code>manifest.json</code>, <code>ledger.jsonl</code>,
+  <code>projects/pdl1_rc1</code> (and, for the macrocycle section,
+  <code>projects/{MAC["project"]}</code>) — <code>manifest.json</code>,
+  <code>ledger.jsonl</code>,
   <code>candidates/candidates.json</code>, <code>calibration/calibration.json</code>,
   <code>campaign/*/plan.json</code>, <code>scoring/refold_scores.csv</code>,
   <code>scoring/top_k.csv</code>, <code>scoring/rosetta_metrics.csv</code> and the stage
@@ -1254,3 +1621,11 @@ print(f"  dock-first {GEO['dock_first_fail']} refolds; "
       f"also below the ipTM gate")
 print(f"  spend      ${F['spend_usd']:.4f} over {F['llm_calls']} calls in "
       f"{len(F['llm_stages'])} stages")
+print(f"  macrocycle {MAC['engine']} {MAC['modality']} on {MAC['pdb_id']}: "
+      f"{MPROD['refolded']:,} refolds -> {MAC['gate']['survivors']:,} gated, "
+      f"top {MAC['top_k_count']}; best ipTM {MLEAD['iptm']:.3f}")
+print(f"             gpu {MAC['gpu_hours']['pilot']}+{MAC['gpu_hours']['calibration']}"
+      f"+{MAC['gpu_hours']['production']} = {MAC['gpu_hours']['total']} h on "
+      f"{F['gpu_name']} (production legs "
+      f"{'+'.join(str(h) for h in MAC['gpu_legs']['production'])}, "
+      f"{MAC['gpu_idle_hours']['production']} h idle), ${MAC['spend_usd']:.4f} LLM")

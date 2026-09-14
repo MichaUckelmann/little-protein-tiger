@@ -581,6 +581,7 @@
     "production": 13.67,
     "total": 21.37
   },
+  "gpu_name": "NVIDIA RTX PRO 4500 Blackwell",
   "has_report_html": true,
   "hotspot_engagement_now": 0.75,
   "hotspots": [
@@ -724,10 +725,440 @@
     "interface",
     "binder_summary"
   ],
+  "macrocycle": {
+    "binder_len_max": 15,
+    "binder_len_min": 12,
+    "bsa_A2": 2449,
+    "budget_cap_usd": 5.0,
+    "calibration": {
+      "backbone_rate": {
+        "k": 17,
+        "n": 980,
+        "p_hat": 0.017346938775510204,
+        "p_high": 0.027604567677401583,
+        "p_low": 0.010858396534386895,
+        "unit": "backbone",
+        "zero_hits": false
+      },
+      "backbones": 980,
+      "bar_raised_to": 0.65,
+      "central": {
+        "basis": "point estimate",
+        "est_disk_gb": 1.3,
+        "est_gpu_hours": 6.2,
+        "is_lower_bound": false,
+        "required_backbones": 2882.0,
+        "required_refolds": 2882.0
+      },
+      "hours": 2.83,
+      "n_production": 4605,
+      "n_seq": 1,
+      "pessimistic": {
+        "basis": "Wilson 95% lower bound",
+        "est_disk_gb": 2.1,
+        "est_gpu_hours": 9.9,
+        "is_lower_bound": false,
+        "required_backbones": 4605.0,
+        "required_refolds": 4605.0
+      },
+      "refold_rate": {
+        "k": 242,
+        "n": 980,
+        "p_hat": 0.24693877551020407,
+        "p_high": 0.2748910389455623,
+        "p_low": 0.22096269281875808,
+        "unit": "refold",
+        "zero_hits": false
+      },
+      "refolds": 980,
+      "requested_bar": 0.5,
+      "softer_rates": [
+        [
+          0.5,
+          242
+        ],
+        [
+          0.6,
+          59
+        ],
+        [
+          0.65,
+          17
+        ],
+        [
+          0.7,
+          1
+        ],
+        [
+          0.75,
+          0
+        ],
+        [
+          0.8,
+          0
+        ],
+        [
+          0.85,
+          0
+        ]
+      ],
+      "target_designs": 50,
+      "verdict": "SCALE_UP",
+      "verdict_reason": "17/980 backbones produced an excellent design (1.73%, 95% CI 1.09%-2.76%). Even at the pessimistic bound the run costs ~10 GPU-h / 2 GB, inside the 120 h / 120 GB budget. This target is unusually good — the trial supports sizing at iptm > 0.65 (requested was 0.5) within budget, so the bar was raised rather than sizing to the loosest workable target."
+    },
+    "contig": "12-15,/0,B18-134",
+    "designs": [
+      {
+        "ipae": 2.25397,
+        "iptm": 0.74113,
+        "len": 15,
+        "name": "cd274_boltzgen_4175",
+        "pass_filters": true,
+        "plddt": 0.7841,
+        "rank": 1,
+        "seq": "SLPEELKAVAPDSKM"
+      },
+      {
+        "ipae": 2.8642,
+        "iptm": 0.67339,
+        "len": 14,
+        "name": "cd274_boltzgen_3709",
+        "pass_filters": true,
+        "plddt": 0.74864,
+        "rank": 2,
+        "seq": "RKVTLSNGEVLDFG"
+      },
+      {
+        "ipae": 2.91765,
+        "iptm": 0.66342,
+        "len": 15,
+        "name": "cd274_boltzgen_3161",
+        "pass_filters": true,
+        "plddt": 0.74525,
+        "rank": 3,
+        "seq": "GVKLSGKGKELGEKL"
+      },
+      {
+        "ipae": 2.7917,
+        "iptm": 0.65894,
+        "len": 15,
+        "name": "cd274_boltzgen_0936",
+        "pass_filters": true,
+        "plddt": 0.78967,
+        "rank": 4,
+        "seq": "RTLTFSNGTVVTFPG"
+      },
+      {
+        "ipae": 3.30279,
+        "iptm": 0.6218,
+        "len": 15,
+        "name": "cd274_boltzgen_3151",
+        "pass_filters": true,
+        "plddt": 0.7621,
+        "rank": 5,
+        "seq": "SGMPPELQELSGKTL"
+      },
+      {
+        "ipae": 2.7076,
+        "iptm": 0.66464,
+        "len": 15,
+        "name": "cd274_boltzgen_2609",
+        "pass_filters": true,
+        "plddt": 0.78762,
+        "rank": 6,
+        "seq": "MFLVRLPDGSFRVVG"
+      },
+      {
+        "ipae": 3.32062,
+        "iptm": 0.63006,
+        "len": 15,
+        "name": "cd274_boltzgen_2054",
+        "pass_filters": true,
+        "plddt": 0.7687,
+        "rank": 7,
+        "seq": "GRTLTLSDGTVITFP"
+      },
+      {
+        "ipae": 3.2196,
+        "iptm": 0.64446,
+        "len": 15,
+        "name": "cd274_boltzgen_3000",
+        "pass_filters": true,
+        "plddt": 0.72457,
+        "rank": 8,
+        "seq": "SLTLTLSDGETVTVG"
+      },
+      {
+        "ipae": 2.87849,
+        "iptm": 0.70279,
+        "len": 15,
+        "name": "cd274_boltzgen_3773",
+        "pass_filters": true,
+        "plddt": 0.76882,
+        "rank": 9,
+        "seq": "MDLPPELKALAPDAA"
+      },
+      {
+        "ipae": 2.5663,
+        "iptm": 0.70226,
+        "len": 15,
+        "name": "cd274_boltzgen_2483",
+        "pass_filters": true,
+        "plddt": 0.76698,
+        "rank": 10,
+        "seq": "MDLPEELKKVAPDAK"
+      },
+      {
+        "ipae": 3.41182,
+        "iptm": 0.64539,
+        "len": 14,
+        "name": "cd274_boltzgen_4297",
+        "pass_filters": true,
+        "plddt": 0.72632,
+        "rank": 11,
+        "seq": "MDPVERAATGSTEK"
+      },
+      {
+        "ipae": 3.41309,
+        "iptm": 0.63759,
+        "len": 15,
+        "name": "cd274_boltzgen_0547",
+        "pass_filters": true,
+        "plddt": 0.75237,
+        "rank": 12,
+        "seq": "VPADAPEEVQKLFPD"
+      },
+      {
+        "ipae": 3.40829,
+        "iptm": 0.61933,
+        "len": 15,
+        "name": "cd274_boltzgen_2287",
+        "pass_filters": true,
+        "plddt": 0.75942,
+        "rank": 13,
+        "seq": "KKITTSDGTVIEFPG"
+      },
+      {
+        "ipae": 3.0945,
+        "iptm": 0.62851,
+        "len": 13,
+        "name": "cd274_boltzgen_0513",
+        "pass_filters": true,
+        "plddt": 0.77877,
+        "rank": 14,
+        "seq": "MKTIKFGDRTLTY"
+      },
+      {
+        "ipae": 3.45883,
+        "iptm": 0.61194,
+        "len": 13,
+        "name": "cd274_boltzgen_1572",
+        "pass_filters": true,
+        "plddt": 0.73428,
+        "rank": 15,
+        "seq": "RVIETSKGPVELM"
+      },
+      {
+        "ipae": 3.48098,
+        "iptm": 0.62645,
+        "len": 12,
+        "name": "cd274_boltzgen_2571",
+        "pass_filters": true,
+        "plddt": 0.70217,
+        "rank": 16,
+        "seq": "MGRVIPATGLII"
+      },
+      {
+        "ipae": 3.05578,
+        "iptm": 0.65229,
+        "len": 13,
+        "name": "cd274_boltzgen_2825",
+        "pass_filters": true,
+        "plddt": 0.77435,
+        "rank": 17,
+        "seq": "APALKKFSPKITG"
+      },
+      {
+        "ipae": 3.49725,
+        "iptm": 0.62138,
+        "len": 15,
+        "name": "cd274_boltzgen_1783",
+        "pass_filters": true,
+        "plddt": 0.76919,
+        "rank": 18,
+        "seq": "RTITTGSGEVITFPG"
+      },
+      {
+        "ipae": 3.32358,
+        "iptm": 0.62537,
+        "len": 13,
+        "name": "cd274_boltzgen_3054",
+        "pass_filters": true,
+        "plddt": 0.776,
+        "rank": 19,
+        "seq": "MKEITFAGRTVKI"
+      },
+      {
+        "ipae": 3.51528,
+        "iptm": 0.61678,
+        "len": 15,
+        "name": "cd274_boltzgen_2481",
+        "pass_filters": true,
+        "plddt": 0.75106,
+        "rank": 20,
+        "seq": "MVKVTLSDGEVVTLG"
+      }
+    ],
+    "ended": "2026-09-14",
+    "engine": "boltzgen",
+    "gate": {
+      "input": 4329,
+      "pct": 39.3,
+      "survivors": 1700
+    },
+    "gate_stats": "input:     4,329\nsurvivors: 1,700\n\ndropped by first failing criterion:\n  boltzgen_pass                 2,603\n  ipae_max                         26\n\npassing each criterion alone:\n  boltzgen_pass                 1,726  ( 39.9%)\n  ipae_max                      4,178  ( 96.5%)\n\nranked by BoltzGen's own final_rank (maximin over six per-metric ranks)\n",
+    "gpu_hours": {
+      "calibration": 2.83,
+      "pilot": 0.13,
+      "production": 12.86,
+      "total": 15.82
+    },
+    "gpu_idle_hours": {
+      "calibration": 0,
+      "pilot": 0,
+      "production": 11.27
+    },
+    "gpu_legs": {
+      "calibration": [
+        2.83
+      ],
+      "pilot": [
+        0.13
+      ],
+      "production": [
+        6.22,
+        6.64
+      ]
+    },
+    "hotspots": [
+      {
+        "auth_seq_id": 18,
+        "label_seq_id": 1,
+        "residue": "MET",
+        "rfd3_atoms": "CG,SD"
+      },
+      {
+        "auth_seq_id": 54,
+        "label_seq_id": 37,
+        "residue": "ILE",
+        "rfd3_atoms": "CD1,CG2"
+      },
+      {
+        "auth_seq_id": 56,
+        "label_seq_id": 39,
+        "residue": "TYR",
+        "rfd3_atoms": "CD2,OH"
+      },
+      {
+        "auth_seq_id": 68,
+        "label_seq_id": 51,
+        "residue": "VAL",
+        "rfd3_atoms": "CG1,CG2"
+      },
+      {
+        "auth_seq_id": 69,
+        "label_seq_id": 52,
+        "residue": "HIS",
+        "rfd3_atoms": "ND1,NE2"
+      },
+      {
+        "auth_seq_id": 76,
+        "label_seq_id": 59,
+        "residue": "VAL",
+        "rfd3_atoms": "CG1,CG2"
+      },
+      {
+        "auth_seq_id": 115,
+        "label_seq_id": 98,
+        "residue": "MET",
+        "rfd3_atoms": "CG,SD"
+      },
+      {
+        "auth_seq_id": 119,
+        "label_seq_id": 102,
+        "residue": "GLY",
+        "rfd3_atoms": "CA,N"
+      },
+      {
+        "auth_seq_id": 121,
+        "label_seq_id": 104,
+        "residue": "ALA",
+        "rfd3_atoms": "CB,CA"
+      },
+      {
+        "auth_seq_id": 123,
+        "label_seq_id": 106,
+        "residue": "TYR",
+        "rfd3_atoms": "CD2,OH"
+      }
+    ],
+    "lead_refold_cif": "/home/m.uckelmann_cbs-niob.local/code/little-protein-tiger/projects/pdl1_macrocycle/runs/round-1/binder/campaign/production/intermediate_designs_inverse_folded/refold_cif/cd274_boltzgen_4175.cif",
+    "llm_calls": 4,
+    "llm_calls_by_stage": {
+      "binder_summary": 2,
+      "interface": 1,
+      "target_intel": 1
+    },
+    "llm_stages": [
+      "target_intel",
+      "interface",
+      "binder_summary"
+    ],
+    "modality": "cyclic_peptide",
+    "models": {
+      "gemini-3.7-flash": 0.203477
+    },
+    "n_hotspots": 10,
+    "partner_chain": "A",
+    "partner_name": "anti-PD-L1 VHH",
+    "pdb_id": "7CZD",
+    "pilot": {
+      "hours": 0.13,
+      "n_designs": 24
+    },
+    "production": {
+      "designed": 4610,
+      "hours": 12.86,
+      "inverse_folded": 4610,
+      "refolded": 4610,
+      "requested": 4605,
+      "scored": 4329
+    },
+    "project": "pdl1_macrocycle",
+    "protocol": "peptide-anything",
+    "query": "Design binders against PD-L1.",
+    "refold_binder_chain": "B",
+    "refold_target_chain": "A",
+    "spend_usd": 0.203477,
+    "started": "2026-09-12",
+    "target_chain": "B",
+    "target_complex": "CD274 / Anti-PD-L1 VHH",
+    "top_k_count": 20,
+    "trim_residues": 117,
+    "trim_segments": 1,
+    "wall_hours": 36.23
+  },
   "models": {
     "gemini-3.7-flash": 0.182747
   },
   "n_scored": 3988,
+  "numbering": {
+    "auth_begin": 20,
+    "auth_end": 133,
+    "auth_minus_canonical": 1,
+    "db_begin": 19,
+    "db_end": 132
+  },
   "partner_chain": "A",
   "partner_name": "PD-L1 de novo binder",
   "pdb_id": "8ZNL",

@@ -12,7 +12,7 @@ previews will point at the old host.
 |---|---|---|
 | `pain_receptors.html` | `projects/pain_receptors_v3` | The most recent end-to-end run, and the fullest arc: one general prompt about pain, three candidate targets ranked by evidence, the CGRP receptor chosen, a designable structure measured out, a reachable epitope on a membrane protein, a trial that sized the campaign, and 365 gated designs |
 | `ppi_discovery.html` | `projects/mesothelioma_showcase` | The PPI track end to end — an unnamed target chosen, argued, sized from a measured hit rate, and designed against on GPU; with the archived BoltzGen run as the before |
-| `campaign_pdl1.html` | `projects/pdl1_rc1` | A complete binder campaign against PD-L1 (8ZNL) — target choice, epitope, calibration gate, production funnel, ranked designs, and a computed 4ZQK cross-check. Replaced the August `pdl1_e2e` build (7CZD) in Sep 2026; that run is still on disk if the old page is ever needed |
+| `campaign_pdl1.html` | `projects/pdl1_rc1`, `projects/pdl1_macrocycle` | A complete binder campaign against PD-L1 (8ZNL) — target choice, epitope, calibration gate, production funnel, ranked designs, and a computed 4ZQK cross-check. Replaced the August `pdl1_e2e` build (7CZD) in Sep 2026; that run is still on disk if the old page is ever needed. Since Sep 2026 it closes with a **second** campaign against the same target — the cyclic-peptide/BoltzGen run on 7CZD, in its own `macrocycle` facts block |
 | `corpus_explorer.html` | `outputs/mesothelioma_showcase.txt`, `data/` | One corpus-explorer session: tool trace, fingerprint schema, interaction + DepMap graphs |
 
 ## Where the numbers come from
@@ -115,6 +115,9 @@ external assets and no network dependency.
 ## Regenerating the structure images
 
 `render_pain.py` and `render_pdl1.py` are the two renders scripted end to end.
+`render_pdl1.py` also owns both PD-L1 turntables (`--only-turntable`,
+`--only-macro-turntable`); the macrocycle branch returns early and shares only
+the facts snapshot with the five figures, since it reads a different project.
 Each re-derives the hotspot numbering, aims the camera and writes its page's
 figures: `render_pain.py` gives `assets/pain_design.webp` +
 `assets/pain_epitope.webp` (the hero pair) and `assets/pain_rank1-4.webp` (the
@@ -199,7 +202,8 @@ from — the one artefact you cannot quietly correct after publishing.
 .venv/bin/python docs/showcase/build_carousel.py            # -> assets/lpt_carousel.pdf
 .venv/bin/python docs/showcase/build_carousel_pdl1.py       # -> assets/lpt_carousel_pdl1.pdf
 .venv/bin/python docs/showcase/build_video.py               # -> assets/lpt_hook.mp4
-.venv/bin/python docs/showcase/render_pdl1.py --only-turntable   # -> assets/turntable_pdl1/
+.venv/bin/python docs/showcase/render_pdl1.py --only-turntable        # -> assets/turntable_pdl1/
+.venv/bin/python docs/showcase/render_pdl1.py --only-macro-turntable # -> assets/turntable_pdl1_macro/
 .venv/bin/python docs/showcase/build_video_pdl1.py          # -> assets/lpt_hook_pdl1.mp4
 ```
 
@@ -209,23 +213,38 @@ from — the one artefact you cannot quietly correct after publishing.
 | `assets/lpt_carousel_pdl1.pdf` | 11 slides, 1080x1350 | the same, for the target-already-named entry point |
 | `assets/lpt_hook.mp4` | 57 s, 1080x1350, silent | feed video, **disease-first** entry point; autoplay is muted, so every claim is on screen |
 | `assets/lpt_hook_poster.png` | 1080x1350 | upload as the video thumbnail — the first frame is a half-typed prompt |
-| `assets/lpt_hook_pdl1.mp4` | 57 s, 1080x1350, silent | the same, **target-first** — the binder track on the PD-L1/8ZNL campaign |
+| `assets/lpt_hook_pdl1.mp4` | 49 s, 1080x1350, silent | the same, **target-first** — the binder track on the PD-L1/8ZNL campaign, closing on the same target as a BoltzGen macrocycle |
 | `assets/lpt_hook_pdl1_poster.png` | 1080x1350 | its thumbnail |
 
 **Two videos, two entry points**, on the same split as the decks.
 `build_video.py` opens on a disease prompt and sells the reasoning that picks
 the target; `build_video_pdl1.py` opens on a target the viewer already has and
 sells everything downstream — nine solved structures ranked on measured
-interfaces, a textbook epitope that is *wrong* on this entry (every PD-L1
-review names Tyr56; in 8ZNL residue 56 is a valine), a trial that raised its
-own success bar, the eight gates, and the 4ZQK cross-check. It imports the
+interfaces, the epitope those measurements picked, a trial that raised its own
+success bar, the lead design turning, the 4ZQK cross-check, and the same
+target designed again as a cyclic peptide on a second engine. It imports the
 palette, type scale, layout primitives, pacing and the Chrome/ffmpeg
 machinery from `build_video.py` — two videos posted together that share a
 palette but drift in type scale read as two projects — so only the scenes
-live in the second file. Its turntable is `assets/turntable_pdl1/`, written by
-`render_pdl1.py --only-turntable`, deliberately NOT the `assets/turntable/`
-that `render_hero.py` writes: one shared folder would mean whichever render
-ran last silently decided what both videos showed.
+live in the second file. It has TWO turntables, `assets/turntable_pdl1/` and
+`assets/turntable_pdl1_macro/`, written by `render_pdl1.py --only-turntable`
+and `--only-macro-turntable`, each deliberately NOT the `assets/turntable/`
+that `render_hero.py` writes and not each other's: one shared folder would
+mean whichever render ran last silently decided what every video showed, and
+these two hold different projects (8ZNL/foundry and 7CZD/BoltzGen). The
+macrocycle render is also the one place the chain convention flips — BoltzGen
+writes the target as chain A and the design as B, the opposite of an RF3
+refold — so its camera and its colours are told which chain is which rather
+than keying on position.
+
+Two beats were cut in Sep 2026. The "textbook hotspot is not in this
+structure" scene (Tyr56 against 8ZNL's valine at 56) was **withdrawn as
+wrong**: 8ZNL numbers its chain B one higher than the canonical sequence, so
+the residue every review calls Tyr56 is auth 57 there and the interface stage
+*did* select it — an indexing frame, not a missing hotspot. The campaign page
+states the corrected version. The production-funnel scene went because the
+video was running long and the funnel is a beat the page does better than
+seven seconds of bars can.
 
 Two traps it hit that the first video does not:
 `.term` ships `word-break:break-word`, which is right for a prose query and
