@@ -756,10 +756,21 @@ Three things to know before extending it:
 - **Select on domain count, not size.** The cut window is empty for a
   single-domain target (7CZD: 117 is a no-op, 105 and below all raise). A free
   `segment_domains` pre-screen found only 16 of 91 entries cuttable.
-- **`--workflow structure` refuses a monomer** (`pipeline_runner.py:1296`
-  wants both chains; `--chains A` does not help), so the no-partner branch of
-  the exposure gate — where the residue COUNT is still the gate — has no
-  coverage at all. Fixing that is the cheapest way to extend this benchmark.
+- **`--workflow structure` refused a monomer — FIXED (`37c2752`).** Two
+  validators wanted a partner (`_binder_sites`, reached only via
+  `--trial-sites`/`--stop-after trial|spec`, and `_stage_trim`'s copy, which
+  blocks the default path). Now gated on the run's own `design_intent`, so a
+  `disrupt` campaign that lost its partner still refuses. Deliberately not a
+  flag — see CLAUDE.md "A single target has no partner chain". It also closed
+  the `partner_chain: none`-as-a-chain-id hole.
+  **It did not buy the count gate real coverage, which is its own finding:**
+  35 single-target rungs now exist with `exposed_fraction` n/a, but all 23
+  real cuts are refused by the NEAR-epitope check first (7 of them where the
+  count gate would have passed), because a monomer's epitope is a pocket and
+  almost any cut lands inside the 10 Å clearance. So the mode works for a
+  monomer that FITS the budget and a large one is still undesignable — now on
+  the exposure guard, not the validators. Whether 10 Å suits a pocket is the
+  open question.
 - **The `_ba1` file can lack the partner** (8FYU: `8FYU.cif` has B/A and a
   2,256 A^2 interface, `8FYU_ba1.cif` has only B and a 10-residue E), and
   `_ensure_structure` prefers `_ba1`. An inventory built on asymmetric units
