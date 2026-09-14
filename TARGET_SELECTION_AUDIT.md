@@ -736,6 +736,43 @@ cannot quietly drop them on the strength of the null.
   contradiction, alignment-based hotspot remapping, and the
   `structure_needed` pause that names no target.
 
+### The trim benchmark (2026-09-14, `b178b68`)
+
+`scripts/benchmark_trimming.py` — two phases: `interface` spends API money to
+get a REAL epitope per target through `--workflow structure` (one LLM stage,
+$0.11-0.26 and ~90 s each, idempotent), `ladder` trims each across a budget
+ladder ungated, free and repeatable. `report` reads it back.
+
+**Done: 198 rungs, 23 targets (112-582 residues), 133 real cuts, $2.98.**
+Results in `docs/trim-benchmark.md`, raw rows in `docs/trim-ladder.tsv`. The
+exposure fraction is confirmed to measure whether a cut followed a structural
+unit (segment count 7.6%/35.6%/43.5%, monotonic; amount removed
+16.1%/71.4%/7.2%, anti-predictive), all 24 no-ops measure 0.0%, and the
+threshold's verdict-preserving window is 21.4%-26.2% — which CORRECTS the
+earlier "10-30% band fits equally well" that came from four hand-forced cuts.
+
+Three things to know before extending it:
+
+- **Select on domain count, not size.** The cut window is empty for a
+  single-domain target (7CZD: 117 is a no-op, 105 and below all raise). A free
+  `segment_domains` pre-screen found only 16 of 91 entries cuttable.
+- **`--workflow structure` refuses a monomer** (`pipeline_runner.py:1296`
+  wants both chains; `--chains A` does not help), so the no-partner branch of
+  the exposure gate — where the residue COUNT is still the gate — has no
+  coverage at all. Fixing that is the cheapest way to extend this benchmark.
+- **The `_ba1` file can lack the partner** (8FYU: `8FYU.cif` has B/A and a
+  2,256 A^2 interface, `8FYU_ba1.cif` has only B and a 10-residue E), and
+  `_ensure_structure` prefers `_ba1`. An inventory built on asymmetric units
+  disagrees with what the pipeline sees.
+
+Also surfaced, unfixed: the budget is not a hard bound (13/198 rungs exceeded
+it, by up to 17 residues — `plan_trim` checks it before `_bridge_gaps` adds
+residues back), and 12/157 rungs produced >=6 segments (worst 13), which
+spends N-1 chain breaks with nothing refusing it.
+
+The benchmark measures GEOMETRY. It cannot say a 30% cut yields worse binders
+than a 20% one; that is a GPU experiment.
+
 ### Traps worth re-reading before touching the GPU
 
 - **Do not extrapolate either cost law past ~700 tokens** — that is where the
