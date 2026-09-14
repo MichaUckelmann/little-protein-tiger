@@ -210,6 +210,17 @@ def s3() -> str:
     chain yields real, correctly-numbered residues on the wrong protein.
     """
     lo, hi = CHAIN_MARGIN[1], CHAIN_MARGIN[0]
+    # WHERE that entry sits in slide 2's table, derived rather than counted by
+    # hand: it was described as "one row above" while the table runs 7CZD,
+    # 8AOK, 8ZNL, so it is two. A hardcoded ordinal goes stale the first time
+    # the candidate ranking moves.
+    incident = F["alternatives"][0]["pdb_id"]
+    inc_rank = next((c["rank"] for c in F["candidates"]
+                     if c["pdb_id"] == incident), None)
+    chosen_rank = next((c["rank"] for c in F["candidates"]
+                        if c["pdb_id"] == F["pdb_id"]), None)
+    where = (f"row {inc_rank} of that table"
+             if inc_rank and chosen_rank else "another entry")
     return slide(f"""
 <div class="eyebrow">Stage 1 &nbsp;/&nbsp; and which molecule, actually</div>
 <h2>Chain {F['partner_chain']} of this structure is not the target. It is
@@ -217,9 +228,8 @@ somebody else&rsquo;s binder.</h2>
 <p class="wide">{F['pdb_id']} holds PD-L1 on chain {F['target_chain']} and a
 {F['partner_name'].split(' (')[0]} on chain {F['partner_chain']}. Told to design
 against &ldquo;PD-L1&rdquo;, an earlier version of this stage &mdash; on
-{F['alternatives'][0]['pdb_id']}, the VHH complex one row above this one &mdash;
-picked the partner chain and put its hotspots on the nanobody&rsquo;s own CDR
-loop.</p>
+{incident}, the VHH complex at {where} &mdash; picked the partner chain and put
+its hotspots on the nanobody&rsquo;s own CDR loop.</p>
 <div class="stats two">
   <div class="stat"><div class="n">{hi}%</div>
     <div class="k">{F['alternatives'][0]['pdb_id']} chain
