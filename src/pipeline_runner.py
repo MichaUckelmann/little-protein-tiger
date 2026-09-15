@@ -4549,6 +4549,7 @@ class PipelineRunner:
         )
         from src.boltzgen_spec import PROTOCOL_BY_MODALITY
         from src.campaign_calibration import CostModel, calibrate, render_report
+        from src.cluster_runner import ClusterConfig
         from src.design_ranking import (
             gate_boltzgen_records, resolve_boltzgen_ranking,
         )
@@ -4577,6 +4578,10 @@ class PipelineRunner:
             max_campaign_days=float((cfg.get("foundry") or {}).get("max_campaign_days", 5.0)),
             adaptive_bar=bool((cfg.get("binder_ranking") or {})
                               .get("adaptive_bar", True)),
+            # Only used to cost the "run it in parallel" option an ITERATE
+            # verdict offers; the local-vs-cluster DECISION is still
+            # `choose_compute`'s, and is made only for a scale-up.
+            n_gpus_cluster=ClusterConfig.from_cfg(self.config).n_gpus,
         )
 
         # Production is sized in DESIGNS and clamped to the configured ceiling.
@@ -5098,6 +5103,7 @@ class PipelineRunner:
             disk_budget_gb=float(fcfg.get("disk_budget_gb", 120)),
             max_campaign_days=float(fcfg.get("max_campaign_days", 5)),
             adaptive_bar=bool(rcfg.get("adaptive_bar", True)),
+            n_gpus_cluster=ClusterConfig.from_cfg(self.config).n_gpus,
         )
         # Local-vs-cluster: purely a TIME decision against this workstation's
         # one GPU. `design.foundry.max_local_hours` (CLI: --max-local-hours)

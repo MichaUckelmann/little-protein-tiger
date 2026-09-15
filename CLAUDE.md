@@ -61,6 +61,28 @@ The repo combines two pipelines that share a corpus and a set of MCP tools:
   redelivered — two campaigns racing one GPU. `--detach` returns immediately and
   `--start-from <stage>` re-attaches.
 
+  **An ITERATE verdict says how much, not just "enlarge the run".**
+  `campaign_calibration._ways_forward` appends numbered, COSTED options to
+  every ITERATE reason, computed from the run's own observed rate and the
+  `CostModel` it was costed with: (1) the calibration size expected to yield
+  `MIN_HITS_FOR_ESTIMATE` hits, with the pessimistic-bound size beside it;
+  (2) what the full campaign costs at the observed rate, with the pessimistic
+  budget; (3) the same campaign's wall-clock across `design.cluster.n_gpus`,
+  stated as parallelism and explicitly NOT a discount, since cluster GPU-hours
+  are identical; (4) a softer bar, only when `suggested_bar` exists. Both ends
+  of the interval are given wherever they change the answer — a too-wide
+  interval is the whole reason the verdict fired, so a single number would be
+  misleadingly confident. With zero hits the rule-of-three bound is an
+  OPTIMISTIC rate, so option 1 is labelled a FLOOR. Measured on the real
+  PPI+BoltzGen run: 1/946 at `iptm > 0.5` yields "re-run at ~4,730 (~36
+  GPU-h), or ~25,000 (~190 GPU-h) at the low end" and "50 designs over the bar
+  costs ~47,300 designs / ~360 GPU-h" — which is what tells an operator the
+  engine is wrong for the target rather than the run being worth a nudge.
+  `_hours_for_backbones` is the inverse of `_cost` and must stay funnel-aware:
+  N foundry backbones is not N units of work (prefilter, then `n_seq`
+  sequences, then a refold each), while a single-stage generator collapses to
+  `N * sec_per_unit`.
+
   **Never scale straight to production.** The `calibration` stage refolds ~300
   backbones × 4 sequences and *measures* the rate of designs clearing the success
   bar, then extrapolates with a Wilson interval (rule-of-three when there are no

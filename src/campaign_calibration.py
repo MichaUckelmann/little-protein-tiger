@@ -310,6 +310,97 @@ def _cost(required_refolds: float, *, cost: CostModel
     return required_designs, seconds / 3600.0, disk
 
 
+def _hours_for_backbones(n: float, cost: CostModel) -> float:
+    """GPU-hours to generate AND score `n` backbones — the inverse of `_cost`.
+
+    `_cost` goes refolds -> designs; a "what would N cost" question goes the
+    other way, and for foundry that means back through the funnel (N designs
+    -> prefilter survivors -> n_seq sequences each -> a refold per sequence).
+    Single-stage generators collapse to N * sec_per_unit, because their
+    `prefilter_rate` is 1.0 and `n_seq` is 1.
+    """
+    refolds = n * max(cost.prefilter_rate, 1e-6) * max(cost.n_seq, 1)
+    return _cost(refolds, cost=cost)[1]
+
+
+def _ways_forward(res: "CalibrationResult", *, cost: CostModel, column: str,
+                  excellence_bar: float, n_gpus_cluster: int) -> str:
+    """Numbered, costed options to append to an ITERATE verdict.
+
+    An ITERATE that only says "enlarge the calibration run or loosen the bar"
+    diagnoses without answering the question the operator actually has, which
+    is *how much*. Every number here comes from the run's own measurement —
+    the observed rate and the `CostModel` the campaign was costed with — so
+    the options are as good as the trial was, and no better. Where the
+    interval is wide enough to change the answer, both ends are given rather
+    than the midpoint, because the whole reason this verdict fired is that the
+    interval is too wide to size from.
+    """
+    opts: list[str] = []
+    rate = res.backbone_rate
+
+    # 1. A bigger calibration, sized to the hit count an estimate needs.
+    if rate.k > 0 and rate.p_hat > 0:
+        n1 = math.ceil(MIN_HITS_FOR_ESTIMATE / rate.p_hat)
+        line = (f"Re-run the calibration at ~{n1:,} designs "
+                f"(~{_hours_for_backbones(n1, cost):,.0f} GPU-h) — the "
+                f"smallest sample expected to yield the "
+                f"{MIN_HITS_FOR_ESTIMATE} hits an estimate needs, at the rate "
+                f"just measured")
+        if rate.p_low > 0:
+            n1b = math.ceil(MIN_HITS_FOR_ESTIMATE / rate.p_low)
+            line += (f". If the true rate is at the low end of the interval, "
+                     f"~{n1b:,} (~{_hours_for_backbones(n1b, cost):,.0f} "
+                     f"GPU-h)")
+        opts.append(line + ".")
+    elif rate.n and rate.p_high > 0:
+        # Zero hits: the rule-of-three bound is the OPTIMISTIC rate, so this
+        # is a floor on the sample needed, never a promise.
+        n1 = math.ceil(MIN_HITS_FOR_ESTIMATE / rate.p_high)
+        opts.append(
+            f"Re-run the calibration at ~{n1:,} designs or more "
+            f"(~{_hours_for_backbones(n1, cost):,.0f} GPU-h) — with no hits "
+            f"yet, that is a FLOOR from the rule-of-three bound, not an "
+            f"estimate: the true requirement can only be larger.")
+
+    # 2. Commit to a production campaign now, at the measured rate.
+    c, pess = res.central, res.pessimistic
+    if c is not None and c.est_gpu_hours and c.required_backbones:
+        line = (f"Skip further calibration and commit to ~"
+                f"{c.required_backbones:,.0f} designs "
+                f"(~{c.est_gpu_hours:,.0f} GPU-h, ~{c.est_disk_gb:,.0f} GB) — "
+                f"what {res.target_designs} designs over "
+                f"{column} > {excellence_bar:g} costs at the observed rate")
+        if (pess is not None and pess.required_backbones
+                and pess.required_backbones > c.required_backbones):
+            line += (f". The interval has not been ruled out, so budget for up "
+                     f"to ~{pess.required_backbones:,.0f} "
+                     f"(~{pess.est_gpu_hours:,.0f} GPU-h)")
+        opts.append(line + ".")
+
+    # 3. The same campaign, parallel. Cluster GPU-hours are not cheaper —
+    #    only faster — so this is a wall-clock option, not a cost one.
+    if (c is not None and c.est_gpu_hours and n_gpus_cluster > 1):
+        opts.append(
+            f"Run option 2 on the cluster: ~"
+            f"{c.est_gpu_hours / n_gpus_cluster:,.0f} h wall-clock across "
+            f"{n_gpus_cluster} GPUs (same GPU-hours, just parallel) — "
+            f"`--compute cluster`, or raise `--max-local-hours` to let "
+            f"`--compute auto` place it.")
+
+    # 4. Only when the sample actually supports a softer bar.
+    if res.suggested_bar is not None and res.suggested_bar != excellence_bar:
+        opts.append(
+            f"Loosen the bar: this sample already supports sizing at "
+            f"{column} > {res.suggested_bar:g} "
+            f"(`--success-metric` / the ranking block's excellence bar).")
+
+    if not opts:
+        return ""
+    return ("\n\nSuggested ways forward:\n"
+            + "\n".join(f"  {i}. {o}" for i, o in enumerate(opts, 1)))
+
+
 def _scale(rate: RateEstimate, p: float, *, basis: str, target: int,
            cost: CostModel, lower_bound: bool) -> ScaleEstimate:
     if p <= 0:
@@ -373,6 +464,7 @@ def calibrate(
     disk_budget_gb: float = 120.0,
     max_campaign_days: float = 5.0,
     adaptive_bar: bool = True,
+    n_gpus_cluster: int = 8,
     cost: "CostModel | None" = None,
     gate: "Callable[[Sequence[dict], dict[str, Any]], tuple[list[dict], Any]] | None" = None,
 ) -> CalibrationResult:
@@ -574,13 +666,16 @@ def calibrate(
     )
     _decide(result, disk_budget_gb=disk_budget_gb,
             max_campaign_days=max_campaign_days, stats=stats,
-            excellence_bar=excellence_bar, column=column)
+            excellence_bar=excellence_bar, column=column,
+            cost=cost, n_gpus_cluster=n_gpus_cluster)
     return result
 
 
 def _decide(res: CalibrationResult, *, disk_budget_gb: float,
             max_campaign_days: float, stats: FilterStats,
-            excellence_bar: float, column: str = "ipsae_min") -> None:
+            excellence_bar: float, column: str = "ipsae_min",
+            cost: CostModel | None = None,
+            n_gpus_cluster: int = 8) -> None:
     """
     Attach a SCALE_UP / SCALE_UP_PARTIAL / ITERATE / STOP verdict.
 
@@ -592,6 +687,12 @@ def _decide(res: CalibrationResult, *, disk_budget_gb: float,
     ladder of softer bars to say which of three situations we are in.
     """
     budget_hours = max_campaign_days * 24.0
+    cost = cost or CostModel()
+
+    def ways() -> str:
+        return _ways_forward(res, cost=cost, column=column,
+                             excellence_bar=excellence_bar,
+                             n_gpus_cluster=n_gpus_cluster)
 
     def fits(s: ScaleEstimate, slack: float = 1.0) -> bool:
         return (s.est_disk_gb is not None
@@ -619,7 +720,7 @@ def _decide(res: CalibrationResult, *, disk_budget_gb: float,
                 f"No design reached even the loosest bar on the ladder (best "
                 f"{column} {best:.2f} of any refold). That is a target/hotspot "
                 f"problem, not a sampling one — re-tune before spending GPU."
-                + sys_note
+                + sys_note + ways()
             )
         elif nothing_anywhere:
             res.verdict = "STOP"
@@ -637,6 +738,7 @@ def _decide(res: CalibrationResult, *, disk_budget_gb: float,
                 f"{column} > {res.suggested_bar:g}; re-run the calibration at "
                 f"that bar to size the campaign, or raise the sample if "
                 f"{excellence_bar:g} is a hard requirement." + sys_note
+                + ways()
             )
         else:
             res.verdict = "ITERATE"
@@ -645,7 +747,7 @@ def _decide(res: CalibrationResult, *, disk_budget_gb: float,
                 f"{best:.2f}) and no bar on the ladder has the "
                 f"{MIN_HITS_FOR_ESTIMATE} hits needed for an estimate. The sample "
                 f"is too small to size a campaign from — enlarge the calibration "
-                f"run before committing." + sys_note
+                f"run before committing." + sys_note + ways()
             )
         return
 
@@ -662,6 +764,7 @@ def _decide(res: CalibrationResult, *, disk_budget_gb: float,
             f"range in campaign size. Enlarge the calibration run or loosen the "
             f"bar" + (f" (this sample supports {column} > {res.suggested_bar:g})"
                       if res.suggested_bar is not None else "") + "." + sys_note
+            + ways()
         )
         return
 
