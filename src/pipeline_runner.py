@@ -4215,7 +4215,16 @@ class PipelineRunner:
                 structure,
                 target_chain=hs["target_chain"],
                 partner_chain=hs.get("partner_chain"),
-                hotspots=hs["residues"],
+                # The trim cuts the TARGET chain and has no business
+                # force-keeping a partner residue number that happens to
+                # collide with one of its own. This is the fourth
+                # generator-side blocker: `trim_target` refuses any hotspot
+                # not present on the target chain, so a two-chain table died
+                # here — "hotspot residues [26] are not present in chain A" —
+                # before `build_contig` was ever reached.
+                hotspots=[h for h in hs["residues"]
+                          if str(h.get("chain") or hs["target_chain"])
+                          == hs["target_chain"]],
                 allowed_auth=self._combine_allowed(
                     restrict,
                     self._target_accession_residues(
@@ -4411,8 +4420,18 @@ class PipelineRunner:
         from src.foundry_spec import build_rfd3_spec
 
         hs = json.loads(hotspots_json)
-        kept = {a for lo, hi in trim.kept_segments for a in range(lo, hi + 1)}
-        hotspots = [h for h in hs["residues"] if int(h["auth_seq_id"]) in kept]
+        # (chain, auth) membership, not a flat author-id set. Two chains
+        # share one author-number space: on 4ZGM a flat set drops B26 and
+        # keeps B29/B36 as though they were chain A, because chain A spans
+        # 29-128. The fallback covers a `_TrimFromDisk` rebuilt from a
+        # `trim_map.json` written before `kept_by_chain` existed.
+        by_chain = getattr(trim, "kept_by_chain", None) or {
+            hs["target_chain"]: trim.kept_segments}
+        kept_pairs = {(c, a) for c, segs in by_chain.items()
+                      for lo, hi in segs for a in range(lo, hi + 1)}
+        hotspots = [h for h in hs["residues"]
+                    if (str(h.get("chain") or hs["target_chain"]),
+                        int(h["auth_seq_id"])) in kept_pairs]
         # Slugified, because the structure-first and local-file tracks compose
         # a synthetic `target_gene` like "3KYS chain A" or "my_own_structure
         # chain A" — which produced `spec/3kys chain a_binder_001.json`, a

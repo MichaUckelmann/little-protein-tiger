@@ -48,6 +48,9 @@ class RFD3Spec:
     target_chain: str
     binder_min: int
     binder_max: int
+    #: Every chain the declared hotspots actually sit on, sorted. One entry
+    #: for a disrupt or single-target run; two for a molecular glue.
+    target_chains: list[str] = field(default_factory=list)
 
     @property
     def entry(self) -> dict[str, Any]:
@@ -117,7 +120,27 @@ def build_rfd3_spec(
             raise SpecError(
                 f"hotspot {h.get('residue', '')}{auth} has no rfd3_atoms; RFD3 "
                 f"hotspot selection is atom-level and cannot use a bare residue")
-        select[_hotspot_key(target_chain, auth)] = atoms
+        # The hotspot's OWN chain, not target_chain unconditionally. A
+        # molecular glue's epitope spans both chains, and stamping the
+        # co-target's rows onto the target produces a spec `validate_spec`
+        # ACCEPTS — on 4ZGM every partner hotspot number also exists on
+        # chain A, so the residues are real and carry real atoms; they are
+        # simply on the wrong molecule.
+        chain = str(h.get("chain") or "").strip() or target_chain
+        if not (len(chain) == 1 and chain.isalpha()):
+            raise SpecError(
+                f"hotspot {h.get('residue', '')}{auth} names chain {chain!r}, "
+                f"which is not a single-letter auth chain id")
+        key = _hotspot_key(chain, auth)
+        if key in select and select[key] != atoms:
+            # Warn, not raise: the written file is unchanged either way (the
+            # overwrite is kept), and a builder has no basis for choosing
+            # between two atom sets. `validate_spec` checks every named atom
+            # exists on the residue, so a wrong one still fails there.
+            logger.warning(
+                f"hotspot {key} declared twice with different atoms "
+                f"({select[key]!r} then {atoms!r}); keeping the later one")
+        select[key] = atoms
 
     payload = {
         name: {
@@ -137,7 +160,8 @@ def build_rfd3_spec(
         f"{len(select)} hotspot(s): {', '.join(sorted(select))}")
     return RFD3Spec(name=name, path=out_path, payload=payload, contig=contig,
                     hotspots=select, target_chain=target_chain,
-                    binder_min=binder_min, binder_max=binder_max)
+                    binder_min=binder_min, binder_max=binder_max,
+                    target_chains=sorted({k[0] for k in select}))
 
 
 def parse_contig(contig: str) -> tuple[tuple[int, int], list[tuple[str, int, int]]]:
