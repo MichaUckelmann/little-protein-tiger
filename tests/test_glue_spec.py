@@ -110,6 +110,12 @@ def test_every_shipped_spec_re_derives_field_for_field(tmp_path):
         select = entry.get("select_hotspots") or {}
         if not select:
             continue
+        if len({k[0] for k in select}) > 1:
+            # A glue spec cannot rebuild from chain-LESS hotspot dicts, which
+            # is the whole point of this harness: it proves the DEFAULT is
+            # unchanged. The two-chain branch is covered by the assertions
+            # above, not here.
+            continue
         checked += 1
         target_chain = next(iter(select))[0]
         binder, _spans = parse_contig(entry["contig"])
@@ -250,7 +256,13 @@ def test_every_archived_trim_satisfies_the_item_18_invariant():
         m = json.loads(p.read_text())
         if m.get("n_residues_after") is None:
             continue
-        total = sum(hi - lo + 1 for lo, hi in (m.get("kept_segments") or []))
+        # The count covers every chain the contig names, so a glue trim is
+        # measured against `kept_by_chain`; `kept_segments` is the primary
+        # chain alone and is 100 against 128 on 4ZGM, correctly.
+        by_chain = m.get("kept_by_chain")
+        spans = ([x for v in by_chain.values() for x in v] if by_chain
+                 else (m.get("kept_segments") or []))
+        total = sum(hi - lo + 1 for lo, hi in spans)
         if m["n_residues_after"] != total:
             bad.append((str(p.relative_to(_ROOT)), m["n_residues_after"], total))
     assert bad == [], f"{len(bad)} trims disagree with their own spans: {bad[:3]}"

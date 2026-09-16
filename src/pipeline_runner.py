@@ -4324,6 +4324,13 @@ class PipelineRunner:
                 hotspots=[h for h in hs["residues"]
                           if str(h.get("chain") or hs["target_chain"])
                           == hs["target_chain"]],
+                # A molecular glue designs against BOTH chains, so the
+                # co-target has to reach the contig. `trim_target` refuses it
+                # unless the trim is a no-op, which is what keeps every
+                # single-chain measurement inside it trivially correct.
+                co_target_chains=([partner] if partner
+                                  and is_glue_intent(intel.get("design_intent"))
+                                  else ()),
                 allowed_auth=self._combine_allowed(
                     restrict,
                     self._target_accession_residues(
@@ -6643,7 +6650,17 @@ class PipelineRunner:
             # ── Site trials: compare epitopes by measured yield ─────────────
             # Reasoning cannot settle which of two defensible sites is more
             # designable; a few hundred backbones each can.
-            if self._trial_sites > 1 or self._stop_after in ("trial", "spec"):
+            # A glue run takes the DISPATCHED single-site route even for
+            # `--stop-after spec`. `_run_site_trials` builds its site dicts
+            # from target-intel alone and carries no co-target, so a glue run
+            # through it produced a silently SINGLE-CHAIN spec — measured on
+            # 4ZGM: contig `70-86,/0,A29-128` with 3 of 8 hotspots, the
+            # chain-B ones dropped, and "PIPELINE COMPLETE" printed over it.
+            # Dropping them is better than stamping them onto chain A, but it
+            # is still a wrong campaign reported as a right one.
+            if (self._trial_sites > 1
+                    or (self._stop_after in ("trial", "spec")
+                        and not is_glue_intent(intel.get("design_intent")))):
                 self._refuse_undispatched_site_trials()
                 sites = self._binder_sites(intel, limit=self._trial_sites)
                 trials = self._run_site_trials(
@@ -6744,6 +6761,15 @@ class PipelineRunner:
                     if bg else
                     self._stage_binder_spec(intel, hotspots_json, trim,
                                             dirs, result))
+                if (self._stop_after == "spec"
+                        and is_glue_intent(intel.get("design_intent"))):
+                    # The dispatched route's own spec stop. Gated on the
+                    # intent because the site-trial route still owns
+                    # `--stop-after spec` for every other run, and it is the
+                    # zero-cost end-to-end command a glue run otherwise has
+                    # no way to express: no LLM, no GPU, a validated spec.
+                    logger.info("stopping after the design spec, as requested")
+                    return result
             else:
                 pattern = "*.yaml" if bg else "*.json"
                 specs = sorted(dirs["spec"].glob(pattern))
