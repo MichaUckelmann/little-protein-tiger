@@ -28,7 +28,7 @@ folds candidate binders on a GPU, and gates them on measured geometry rather
 than model confidence alone.
 
 It is two pipelines sharing one corpus: a literature ETL (search → download →
-LLM extraction → vector index + interaction graph) and a 16-stage resumable
+LLM extraction → vector index + interaction graph) and a 12-stage resumable
 design orchestrator. Skills run from the CLI against the Gemini, Claude or
 OpenAI API, or conversationally inside Claude Desktop / Claude Code over MCP.
 
@@ -234,7 +234,7 @@ python scripts/doctor.py                  # what this machine can run
 matrix, and DepMap serves it through a portal that 403s a scripted GET. So
 `fetch_reference_data.py` prints instructions instead of fetching it:
 
-> Download **`CRISPRGeneEffect.csv`** (~420 MB, DepMap Public current
+> Download **`CRISPRGeneEffect.csv`** (~440 MB, DepMap Public current
 > release) from <https://depmap.org/portal/data_page/?tab=allData> and save
 > it as `data/depmap/CRISPRGeneEffect.csv`. Then
 > `python scripts/fetch_reference_data.py --check` to confirm.
@@ -346,7 +346,7 @@ ingest_vectors.py        Embed fingerprints into LanceDB vector store
                                    (Claude or Gemini, no IDE required)
 ```
 
-**Binder design (right side)** — an autonomous 7-stage pipeline that
+**Binder design (right side)** — an autonomous 10-stage pipeline that
 takes a free-text design objective and produces a ranked top-K of
 designed cyclic-peptide or mini-protein binders, with audit traces at
 every stage:
@@ -391,7 +391,10 @@ which triages on graph novelty and DepMap co-essentiality instead and
 deliberately favours targets the literature has not converged on. Use
 wildcard when you want a candidate nobody is already working on.
 
-Stages 0-3 and 6 are LLM-driven skills; 4 and 5 are deterministic Python.
+The three PPI stages (0-2) are LLM-driven skills. Of the binder-track
+stages they bridge into, only `binder_summary` calls an LLM — `trim`,
+`binder_spec`, `pilot`, `calibration`, `production` and `binder_scoring`
+are deterministic Python.
 The orchestrator owns everything that must not be left to a model:
 `auth_seq_id` / `label_seq_id` numbering, chain identity resolved from the
 mmCIF rather than emitted by a skill, PDB-identity sanity checks, modality
@@ -402,20 +405,22 @@ internals and every guard, with the incident each one was added after.
 
 End-to-end driver: `scripts/run_pipeline.py --workflow ppi --query "..."
 --project runname`. (`scripts/test_e2e.py` wraps the same runner with
-per-stage trace capture and dialled-down BoltzGen batch sizes.)
+per-stage trace capture; it has no campaign-size flags — bound GPU spend
+with `run_pipeline.py --stop-after calibration` / `--n-batches` instead.)
 Configuration lives under `design:` in `config.yaml` (workstation
 executable, pilot/production batch sizes, hard filters, ranking weights,
 pyrosetta env path).
 
-**Reports.** Every run that reaches stage 5 gets an illustrated,
+**Reports.** `src/ppi_report.py` renders an illustrated,
 self-contained `report.html` — pathway/target rationale, prior art and
 tractability, hotspot evidence, the design-generation stats, the hard-gate
 funnel, top-K design cards, and an interactive [Mol*](https://molstar.org)
 viewer over the top-ranked designs' actual BoltzGen refolds, plus the
 design-analyst's final verdict rendered in full. Generated automatically as
-a side effect (never a gate) after `analysis` and again after `summary`;
-regenerate by hand with `scripts/generate_ppi_report.py outputs/<slug>` (or
-`--project <slug> --round round-1`). No LLM and no GPU: it reads the same
+a side effect of the retired `analysis` and `summary` stages; regenerate one
+by hand with `scripts/generate_ppi_report.py outputs/<slug>` (or
+`--project <slug> --round round-1`). A live run gets the binder track's own
+`report.html` instead. No LLM and no GPU: it reads the same
 markdown/CSV files the pipeline already writes. Shares its whole visual
 design system — palette, layout, the Mol* explorer — with the binder
 track's `report.html` (`src/binder_report.py`) via
@@ -450,7 +455,7 @@ Re-running is safe — already-downloaded papers are skipped.
 
 ### 2. Curate papers
 
-Extract structured fingerprints from downloaded papers using Claude (or Gemini).
+Extract structured fingerprints from downloaded papers using Gemini (the default), Claude, or a local model.
 
 ```bash
 # Curate all downloaded-but-not-yet-curated papers
@@ -468,8 +473,8 @@ python scripts/curate_papers.py --reprocess --limit 20
 # Curate a single paper by its DB key
 python scripts/curate_papers.py --paper-key "doi:10.1101/2024.01.01.123456"
 
-# Use a different provider
-python scripts/curate_papers.py --provider gemini
+# Use a different provider (default is gemini)
+python scripts/curate_papers.py --provider claude
 ```
 
 Fingerprints are saved to `data/fingerprints/<paper_key>.json`.
@@ -479,7 +484,7 @@ Fingerprints are saved to `data/fingerprints/<paper_key>.json`.
 Embed fingerprints into LanceDB for semantic search. Run after any new curation batch.
 
 ```bash
-# Incremental — only embeds fingerprints not yet in the vector store
+# Incremental — embeds new fingerprints and re-embeds any whose text changed
 python scripts/ingest_vectors.py
 
 # Full rebuild — drop and re-embed everything (e.g. after a schema change)
@@ -508,8 +513,8 @@ biology. A thin answer outside that is the corpus's coverage, not the field's �
 `scripts/run_skill.py` runs any expert skill as a self-contained agentic loop — no Claude Desktop or IDE required. The skill's `SKILL.md` becomes the system prompt; tool calls are routed directly to Python (no MCP subprocess).
 
 ```
-usage: run_skill.py --skill SKILL --query QUERY
-                    [--model {claude,gemini}] [--model-id MODEL_ID]
+usage: run_skill.py --skill SKILL [--query QUERY]
+                    [--model {claude,gemini,openai}] [--model-id MODEL_ID]
                     [--context PATH] [--output PATH]
                     [--max-iter N] [--max-tokens N]
 ```
@@ -522,11 +527,11 @@ usage: run_skill.py --skill SKILL --query QUERY
 | `pathway-expert` | Searches the literature corpus to characterise a signalling pathway in a disease context and recommend the best PPI target node — tier-ranked on validated drug-target evidence (clinical precedent, prior peptide binders, mutagenesis-validated hotspots) |
 | `wildcard-expert` | Speculative counterpart to pathway-expert: graph-driven novelty triage (corpus interaction graph, DepMap co-essentiality, novelty_signal) to surface mechanistically connected but literature-under-explored PPI candidates. Disease-anchored AND basic-biology contexts. Emits hypothesis fields (`predicted_consequence`, `falsifying_readout`) so the designed binder doubles as a research probe |
 | `complex-structure-analysis` | Analyses a PDB/CIF structure, computes BSA + hotspot patches, and outputs BoltzGen/RFD3-ready residue specs |
-| `binder-optimizer` | Takes a predicted binder-target complex, proposes 4 single-point mutations, validates clashes, and emits AF3 submission JSONs |
+| `binder-optimizer` | Takes a predicted binder-target complex, proposes 4 single-point mutations, validates clashes, and emits the 4 mutated binder sequences as a machine-readable JSON block |
 | `molecular-biology-expert` | Queries the corpus for biochemical detail on a specific protein pair (binding affinities, hotspot residues, inhibitor data) |
 | `complex-expert` | Corpus search focused on a named protein complex — mechanism, structure, existing inhibitors |
 | `chimerax-visualization` | Generates a ChimeraX `.cxc` script to visualise the interface: target in focus, binder washed out, hotspot patches highlighted |
-| `orchestrator` | End-to-end multi-stage run: pathway → interface → design → optimization |
+| `orchestrator` | Multi-stage target assessment: target selection (pathway-expert or complex-expert) → structural analysis → literature analysis → go/no-go recommendation. Design inputs are built by the CLI pipeline, not by this skill |
 | `binder-target-intel` | Stage 0 of the binder-track pipeline: given a named target and design intent plus a pre-computed candidate-interface table, picks which structure/chain-pair/interface to design a binder against. Invoke only when the target is already named and no literature discovery is wanted |
 | `design-analyst` | Terminal stage of the design pipeline: reviews a ranked top-K of computationally designed binders against the design intent and hotspots, flags methodological red flags, and issues a GO / CONDITIONAL_GO / NO_GO recommendation. Summarisation over a metrics table — no MCP tools, no generative work |
 
@@ -573,7 +578,7 @@ python scripts/run_skill.py \
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | `gemini` | Provider: `claude` or `gemini` |
+| `--model` | `gemini` | Provider: `claude`, `gemini` or `openai` |
 | `--model-id` | provider default | Override model (e.g. `claude-opus-5`) |
 | `--context` | — | Path to a prior report `.md` to include as context |
 | `--output` | stdout | Write final report to this file |
@@ -598,7 +603,7 @@ Beyond `search_corpus` and `get_fingerprint`, it has access to a set of corpus-a
 - **`get_interactions_for(protein, depth)`** — walks `key_findings[].protein_pair` across every fingerprint and returns ranked partners with mention counts, supporting DOIs, and Kd/Ki anchors. Aliases are normalised (`YAP` matches `YAP1`/`hYAP`); paralogs stay distinct (`TEAD1` ≠ `TEAD2`, but `TEAD` matches all four).
 - **`find_quantitative_evidence(protein_pair, metric)`** — pulls every `key_findings` entry with a measured `Kd` or `Ki` for a specific pair, sorted tightest-binder first.
 
-**Graph queries** (NetworkX-backed undirected weighted graph, built once per MCP server lifetime from the same `protein_pair` data; ~0.5 s for 5k fingerprints):
+**Graph queries** (NetworkX-backed undirected weighted graph, built lazily from the same `protein_pair` data and cached on the newest fingerprint's mtime, so a long-running MCP server picks up newly-curated papers without a restart; ~0.5 s for 5k fingerprints):
 
 - **`shortest_interaction_path(a, b, max_hops, k)`** — top-k shortest paths between two proteins. Each edge carries mention count, supporting DOIs, and tightest measured Kd/Ki. Returns `min_mentions_along_path` and `weak_links_count` so the model can flag low-confidence edges. Use for "is X connected to Y?" / "draw the cascade from X to Y".
 - **`interaction_hubs(top_n, min_mentions)`** — highest-degree nodes after filtering single-paper edges. Caveat surfaced in every response: hub rank reflects literature attention, not biological importance.
@@ -749,13 +754,13 @@ they don't live in the tracked `config.yaml`:
   path to a conda env where PyRosetta imports cleanly (typically Python 3.11;
   see `docs/pyrosetta_setup.md`).
 
-Run outputs land under `outputs/<slug>/`:
+Run outputs land under `projects/<slug>/runs/<round-N>/` (`--project` is required on every track; `--output-dir` overrides the location):
 
 - `0X_<stage>.md` — markdown report from each LLM-driven stage.
 - `traces/<stage>/{trace_raw.json, trace_rendered.md}` — full conversation
   history per LLM stage (only when `capture_traces=True`).
 - `binder/` — everything the design campaign produced, from the trim onward
-  (`20_target_intel.md` .. `26_binder_summary.md`, `scoring/{ranked.csv,
+  (`20_target_intel.md` .. `28_summary.md`, `scoring/{ranked.csv,
   top_k.csv, filter_stats.txt}`, `report.html`). A PPI run bridges into the
   binder track after its structure stage, so this is where its designs land.
 - The `03_*` .. `06_*` artifacts (`03_design_inputs/`, `04_execution_outputs/`,
@@ -787,7 +792,7 @@ plan for a ground-truth PDB→protein lookup table.
 
 #### Project directories
 
-The binder workflow can write into a persistent project at `projects/<slug>/`
+Every workflow writes into a persistent project at `projects/<slug>/`
 (`--project <slug>`), the source of truth for an iterative campaign:
 
 ```
@@ -831,7 +836,7 @@ python scripts/run_pipeline.py --workflow binder --target KRAS --project kras --
 
 # A cheap smoke test: 8 designs, ~4 minutes of GPU.
 python scripts/run_pipeline.py --workflow binder --target KRAS --project kras_smoke \
-    --n-batches 2 --budget 2.00
+    --n-batches 2 --stop-after pilot --budget 2.00
 ```
 
 ### 7c. Run from a structure you already have
@@ -840,7 +845,7 @@ When you have the structure, both discovery questions are already answered —
 there is no target to find and no entry to choose. `--workflow structure` skips
 straight to hotspot analysis: it enumerates the chains, **measures** the largest
 interface, writes a deterministic target-intel artifact (no LLM call), and enters
-the same foundry stage machine at `interface`. One reasoning stage instead of
+the same foundry stage machine at `interface`. Two reasoning stages instead of
 four; everything from `trim` onward is identical to a `--workflow binder`
 campaign.
 
@@ -877,6 +882,39 @@ a number that is not in the chain is refused before anything is staged. At most
 12 residues, and they should be one compact patch: a set spread across two
 faces will fail the trim, correctly. Supported on the `binder` and `structure`
 tracks.
+
+**Name the objective yourself with `--design-intent`.** The structure-first
+track MEASURES an intent from the geometry — two designable chains give
+`disrupt`, one gives `inhibit_active_site` — and `--design-intent` decides,
+the same posture `--modality` and `--hotspots` take. The interesting value is
+`stabilize`, a **molecular glue**: the epitope spans BOTH chains and the binder
+is designed to hold them together rather than to come between them.
+
+```bash
+python scripts/run_pipeline.py --workflow structure --structure 4ZGM \
+    --chains A,B --design-intent stabilize \
+    --hotspots A113,A120,A124,B30,B33 --project glue_4zgm \
+    --stop-after spec
+```
+
+`stabilize` needs two chains and is refused on one. With `--hotspots`, the
+partner chain becomes a legal hotspot chain — for a glue and for nothing else —
+and the run reaches a validated two-chain RFD3 contig (`70-86,/0,A29-128,B10-37`
+on 4ZGM) with no LLM call at all. `--design-intent` applies to `--workflow
+structure` only; the binder and ppi tracks take their intent from a stage
+handoff that also names the chains it was derived from.
+
+A glue run currently refuses four combinations, each naming the scope item that
+would build it: `--design-engine boltzgen` (its `binding:` addresses one chain,
+so the co-target would be silently dropped), `--modality cyclic_peptide` (which
+selects BoltzGen), `--trial-sites > 1`, and a target whose two chains together
+exceed `design.foundry.target_residue_budget` — a glue trim must be a **no-op**,
+because `_exposed_hydrophobic` compares each chain against itself in isolation
+and a cut that strips the other chain's buried face reads as clean. Measured on
+5VAI: an `R29-128 + P7-37` trim opens 492 Å² across 8 hydrophobic residues on
+chain P and measures 0 in isolation. Scoring a glue campaign is not yet
+calibrated — `hotspot_engagement` pools both chains into one denominator at a
+0.75 gate — so this reaches a validated spec, not a finished campaign.
 
 **Pass `--uniprot` if you know the accession.** Three checks are keyed to
 identity rather than geometry, and all three fail open without one:
@@ -925,9 +963,10 @@ That verdict is always a pause point.
 python scripts/run_pipeline.py --workflow binder --target CD79B \
   --project cd79b --trial-sites 3 --stop-after trial
 
-# A cheap smoke test: 8 designs, ~4 minutes of GPU.
+# A cheap smoke test of the trial path: 8 backbones is 16 designs, and
+# --escalate-to 0 stops a trial too small to measure re-running at 1,000.
 python scripts/run_pipeline.py --workflow binder --target KRAS \
-  --project kras_smoke --trial-backbones 8 --stop-after trial
+  --project kras_smoke --trial-backbones 8 --escalate-to 0 --stop-after trial
 ```
 
 **Budget.** `--budget 5.00` is a hard cap on API spend, cumulative across
@@ -970,7 +1009,11 @@ One flag, on every track: `--design-engine` (or `design.backend` in
 `foundry` and `boltzgen` run the identical stage machine — `trim → spec →
 pilot → calibration → production → scoring → summary` — so `--stop-after`,
 `--start-from` and the resumable project manifest behave the same on both;
-only the generator the GPU stages dispatch to changes.
+only the generator the GPU stages dispatch to changes. One exception:
+`--stop-after spec`, `--stop-after trial` and `--trial-sites > 1` are refused
+on `boltzgen`, because the multi-site trial path still builds foundry specs —
+use `--stop-after calibration`, which is dispatched, and is where a campaign
+is sized anyway.
 
 **Macrocycles are BoltzGen's, and the modality picks the engine.**
 `--modality cyclic_peptide` (12–15 residues, against `mini_protein`'s 70–86)
@@ -1064,14 +1107,20 @@ python scripts/run_pipeline.py --workflow binder \
 # scores with LPT's own full metrics (ipSAE, epitope recall, hotspot
 # engagement — not the cluster pipeline's own narrower scorer), writes the
 # same calibration verdict a local run would. --compute cluster here forces
-# the SAME path the campaign was staged on; a resumed --compute auto run
-# instead re-reads the compute decision calibration.json already made.
+# the SAME path the campaign was staged on, and is REQUIRED here: for pilot
+# and calibration --compute auto means LOCAL, so an auto resume would
+# re-launch the campaign on this workstation's GPU instead of reading the
+# staged cluster results back. Only production's placement is recovered from
+# calibration.json.
 python scripts/run_pipeline.py --workflow binder \
     --target KRAS --project kras --start-from calibration --compute cluster
 
-# A multi-site trial's per-site data has no CLI resume path yet (see
-# CLAUDE.md) — use this script directly instead, with the exact n_batches
-# the campaign was staged with:
+# A multi-site trial's per-site data lives under binder/sites/<site_id>/,
+# which a top-level --start-from does not target. Resume it with
+# run_pipeline.py --start-from calibration --site <id> --n-batches <n>, or
+# with this script — both are thin callers of the same
+# PipelineRunner.resume_site_stage — passing the exact n_batches the
+# campaign was staged with:
 python scripts/resume_cluster_calibration.py --project kras \
     --site raf1_rbd --n-batches 591 --n-gpus 6
 ```
@@ -1086,7 +1135,7 @@ python scripts/resume_cluster_calibration.py --project kras \
 
 ### 8. Visualise top-K designs in PyMOL
 
-`scripts/pymol_show_topk.py` loads the top-K binders from any run's
+`scripts/pymol_show_topk.py` loads the top-K binders from an archived `boltzgen_legacy` run's
 `05_ranking/top_k.csv`, superimposes them on a single target frame, highlights
 the per-design hotspots, and overlays the native complex so you can eyeball
 whether the designs hit the right interface. Styling follows the lab's
@@ -1094,8 +1143,9 @@ whether the designs hit the right interface. Styling follows the lab's
 
 It is **run-agnostic** — nothing is hardcoded. The target CIF + chain and the
 hotspot residue list are read from each design's BoltzGen YAML in
-`03_design_inputs/`, so it works on any future campaign whose YAMLs follow the
-standard schema.
+`03_design_inputs/`, so it works on any archived `boltzgen_legacy` run whose
+YAMLs follow that schema — no current campaign writes `03_design_inputs/` or
+`05_ranking/`, so this is a viewer for the runs in `outputs/`.
 
 ```bash
 pymol
@@ -1179,7 +1229,7 @@ little_protein_tiger/
 │   ├── mcp_server.py            # FastMCP: search_corpus + get_fingerprint (MCP)
 │   ├── structure_tools.py       # Pure-Python interface analysis (BSA, contacts, SASA)
 │   ├── structure_tools_server.py# FastMCP wrapper for structure_tools (MCP)
-│   └── skill_runner.py          # Agentic loop: loads SKILL.md, calls Claude/Gemini API
+│   └── skill_runner.py          # Agentic loop: loads SKILL.md, calls Claude/Gemini/OpenAI API
 │
 ├── scripts/                     # (not exhaustive — run any with --help)
 │   ├── run_pipeline.py          # CLI: THE entry point — ppi and binder tracks
@@ -1195,7 +1245,7 @@ little_protein_tiger/
 │   ├── ask_corpus.py            # CLI: interactive conversational search
 │   ├── launch_mcp.py            # Launcher for literature-db MCP server
 │   ├── launch_structure_tools.py# Launcher for structure-tools MCP server
-│   ├── run_skill.py             # CLI: run any expert skill via Claude/Gemini API
+│   ├── run_skill.py             # CLI: run any expert skill via Claude/Gemini/OpenAI API
 │   ├── test_e2e.py              # PPI-track driver with per-stage trace capture
 │   ├── compare_providers.py     # Sandboxed claude/gemini/local provider bake-off
 │   ├── score_provider_compare.py# Scorecard + REPORT.md across providers
@@ -1311,18 +1361,18 @@ redistribute keep their own licences, reproduced in
 |---|---|---|
 | [RFdiffusion3 / solubleMPNN / RF3 (foundry)](https://github.com/RosettaCommons/foundry) | `--workflow binder`, and `--workflow ppi` by default | **BSD 3-Clause** (repository, verified 2026-08-27). Model weights are a separate download through foundry's own checkpoint registry (`~/pip_rcfoundry_ckpt` by default; point LPT elsewhere with `LPT_FOUNDRY_CKPT_DIR`) — confirm their terms yourself |
 | [BoltzGen](https://github.com/HannesStark/boltzgen) | `--design-engine boltzgen` on any track; also `--modality cyclic_peptide` | **MIT** (repository, verified 2026-08-27). Model weights download separately — confirm their terms yourself |
-| PyRosetta (**optional**) | hotspot SASA, Rosetta composite terms — see below | **free for academic / non-commercial only**; commercial licence via `license@uw.edu` — see [docs/pyrosetta_setup.md](docs/pyrosetta_setup.md) |
+| PyRosetta (**optional**) | Rosetta composite terms in binder scoring — see below | **free for academic / non-commercial only**; commercial licence via `license@uw.edu` — see [docs/pyrosetta_setup.md](docs/pyrosetta_setup.md) |
 | Protenix | cluster refold backend (optional) | see upstream repository |
 | ChimeraX / PyMOL | optional visualisation | separate licences |
 
-**PyRosetta is optional.** It is used in exactly two places, both *after*
-designs already exist — per-design hotspot SASA in the PPI track's analysis
-stage, and relax + InterfaceAnalyzer on gate survivors in the binder track's
-scoring stage. Nothing generative depends on it. With the default
+**PyRosetta is optional.** It is used in exactly one place, *after* designs
+already exist — relax + InterfaceAnalyzer on gate survivors in the binder
+track's scoring stage, which a `--workflow ppi` run also reaches once it
+bridges. Nothing generative depends on it. With the default
 `design.pyrosetta.enabled: auto`, a machine without it runs both tracks
-end-to-end, skips those metrics, does **not** apply the hotspot-SASA filter,
-and says so in the stage report. Set `enabled: true` to require it (fail
-loudly instead) or `false` to never use it.
+end-to-end, skips those metrics, and says so in the stage report. Set
+`enabled: true` to require it (fail loudly instead) or `false` to never use
+it.
 
 **foundry is not optional** for the binder track — see
 [docs/environment_setup.md](docs/environment_setup.md#what-each-tool-actually-is-and-how-to-get-one) for

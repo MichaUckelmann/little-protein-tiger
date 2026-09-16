@@ -263,3 +263,39 @@ def test_no_shipped_run_would_newly_refuse_at_the_trim():
                 and not waives_partner_chain(h)):
             offenders.append(str(f.relative_to(_ROOT)))
     assert offenders == [], f"these shipped runs would newly refuse: {offenders}"
+
+
+# ------------------------------------------- the guards that go partly inactive
+
+def test_the_glue_guard_note_names_all_four_facts():
+    """`_note_glue_guards` returns its prose so the log and the report agree.
+
+    Going quiet about a guard that does not cover this track is the failure
+    `_note_single_target_guards` exists to avoid; this is the same posture for
+    the glue track.
+    """
+    note = PipelineRunner._note_glue_guards({"design_intent": "stabilize"})
+    assert "min_bsa_retention" in note and "scope item 9" in note
+    assert "ISOLATION" in note and "492 A^2" in note
+    assert "hotspot_engagement" in note and "0.75" in note
+    # The chain guards are MORE load-bearing here, not less.
+    assert "ACTIVE" in note
+
+
+def test_the_note_says_the_no_op_is_what_makes_retention_safe():
+    note = PipelineRunner._note_glue_guards({})
+    assert "no-op" in note and "1.0" in note
+
+
+# ------------------------------------------------------------------ the docs
+
+def test_the_readme_documents_the_flag_and_the_working_command():
+    readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "--design-intent" in readme
+    assert "--design-intent stabilize" in readme
+    # The contig a reader can check the claim against.
+    assert "70-86,/0,A29-128,B10-37" in readme
+    # Every refusal a glue run makes should be findable from the docs.
+    for refusal in ("boltzgen", "cyclic_peptide", "--trial-sites",
+                    "target_residue_budget"):
+        assert refusal in readme, refusal

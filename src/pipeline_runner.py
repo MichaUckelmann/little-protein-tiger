@@ -2304,6 +2304,24 @@ class PipelineRunner:
         human_acc = getattr(verdict, "human_uniprot", "") or self._ortholog_human_acc
         if not chain or not hotspots or not human_acc:
             return
+        # `hotspot_conservation` takes ONE chain and ONE accession, and a
+        # glue's co-target is a different protein with a different human
+        # ortholog. Score the target chain's rows and say the rest are
+        # unchecked — never leave it silently scoring the partner's residues
+        # against the target's alignment, which is the exact failure CLAUDE.md
+        # records: `fraction_conserved: 0.625` over six residues that did not
+        # exist on the chain, one residue short of rejecting the run.
+        other = sorted({str(h.get("chain") or chain) for h in hotspots} - {chain})
+        if other:
+            logger.warning(
+                f"  ⚠ ortholog conservation was checked for chain {chain} "
+                f"only; chain(s) {', '.join(other)} are a different protein "
+                f"with a different human ortholog, and their epitope "
+                f"conservation is UNCHECKED (scope item 14).")
+            hotspots = [h for h in hotspots
+                        if str(h.get("chain") or chain) == chain]
+            if not hotspots:
+                return
         try:
             cons = hotspot_conservation(
                 pdb_id, chain, hotspots, human_uniprot=human_acc,
@@ -4041,6 +4059,39 @@ class PipelineRunner:
             auto_mode=auto_mode, target=None, attach=not self._detach,
             n_batches=self._n_batches)
 
+    @staticmethod
+    def _note_glue_guards(intel: dict[str, str]) -> str:
+        """What a molecular-glue run's guards do and do not cover. Returns the
+        prose it logs, so the report and the log cannot drift.
+
+        Every point here is a measurement or a named scope item, not a
+        precaution. The four that matter:
+        """
+        note = (
+            "Molecular-glue run (design_intent=stabilize). Four things about "
+            "the guards on this track:\n"
+            "  * `min_bsa_retention` (0.90) measures the retention of the very "
+            "interface a glue is designed to STABILISE, and is calibrated for "
+            "disrupt campaigns that cut into one (scope item 9, Stage 6). It "
+            "is safe here only because a glue trim must be a no-op, which "
+            "reports retention exactly 1.0.\n"
+            "  * `_exposed_hydrophobic` compares each chain against itself in "
+            "ISOLATION, so a cut that strips the other chain's buried face "
+            "reads as clean. Measured on 5VAI: an R29-128 + P7-37 trim opens "
+            "492 A^2 across 8 hydrophobic residues on chain P and measures 0 "
+            "in isolation. This is why a glue trim must be a no-op.\n"
+            "  * `hotspot_engagement` is a fraction of ALL declared hotspots "
+            "at a 0.75 gate, and a glue pools both chains into one "
+            "denominator — so a binder engaging one side well and the other "
+            "poorly is scored as though the epitope were one surface. "
+            "Uncalibrated for this track; it bites at scoring, not here.\n"
+            "  * The chain guards stay fully ACTIVE and matter MORE here, not "
+            "less: both chains are design targets, so a swapped or "
+            "mis-grounded assignment is wrong about a molecule the binder is "
+            "being designed against rather than about a bystander.")
+        logger.warning(f"  ⚠ {note}")
+        return note
+
     def _note_single_target_guards(self, intel: dict[str, str],
                                    raw: Any = None) -> None:
         """Say which checks a no-partner run turns off. Once, loudly.
@@ -4155,6 +4206,33 @@ class PipelineRunner:
         self._ensure_structure(result.pdb_id)
         structure = self._binder_structure_path(result.pdb_id)
 
+        if is_glue_intent(intel.get("design_intent")):
+            self._note_glue_guards(intel)
+            # A glue trim must be a NO-OP (see `trim_target`'s own refusal), so
+            # both chains together have to fit the budget. Refusing here rather
+            # than there gives the operator the number and the lever.
+            from src.structure_tools import is_chain_residue
+            import gemmi as _gemmi
+            _st = _gemmi.read_structure(str(structure))
+            _st.setup_entities()
+            sizes = {c.name: sum(1 for r in c if is_chain_residue(r))
+                     for c in _st[0]}
+            total = sizes.get(hs["target_chain"], 0) + sizes.get(partner, 0)
+            if total > budget:
+                raise PipelineBlockedError(
+                    f"a molecular glue designs against BOTH chains, and "
+                    f"{hs['target_chain']} ({sizes.get(hs['target_chain'], 0)}) "
+                    f"+ {partner} ({sizes.get(partner, 0)}) = {total} residues "
+                    f"exceeds the {budget}-residue budget. Two-chain trimming "
+                    f"is scope item 7 (Stage 6), and it is UNMEASURED rather "
+                    f"than merely unimplemented: `_exposed_hydrophobic` "
+                    f"compares each chain against itself in isolation, so a "
+                    f"cut that strips the other chain's buried face reads as "
+                    f"clean — on 5VAI an R29-128 + P7-37 trim opens 492 A^2 "
+                    f"across 8 hydrophobic residues on chain P and measures 0. "
+                    f"Raise design.foundry.target_residue_budget only if the "
+                    f"whole complex genuinely fits your card.")
+
         # Membrane topology. Two separate jobs, and only one of them is a rule.
         #
         # Always drop TRANSMEMBRANE residues: an exposed TM helix is a
@@ -4177,13 +4255,34 @@ class PipelineRunner:
         restrict = None
         side = (intel.get("membrane_side") or "auto").strip().lower()
         uniprot = intel.get("target_uniprot")
+        # Both `_infer_membrane_side` and `restriction_for` are keyed to ONE
+        # chain's accession, and nothing resolves an accession for a
+        # co-target, so a co-target's rows would be judged against the
+        # target's alignment. Restrict on the target chain's rows only, and
+        # say out loud that no topology restriction was applied to the other
+        # — a co-target whose TM residues are not stripped is a real hazard
+        # (scope item 14, Stage 6), and going quiet about an inactive guard is
+        # the posture `_note_single_target_guards` exists to avoid.
+        topo_rows = [h for h in hs["residues"]
+                     if str(h.get("chain") or hs["target_chain"])
+                     == hs["target_chain"]]
+        other_chains = sorted({str(h.get("chain") or hs["target_chain"])
+                               for h in hs["residues"]} - {hs["target_chain"]})
+        if other_chains and uniprot and side not in ("not_applicable", "any"):
+            logger.warning(
+                f"  ⚠ membrane topology was resolved for chain "
+                f"{hs['target_chain']} only; NO transmembrane restriction was "
+                f"applied to chain(s) {', '.join(other_chains)}, whose "
+                f"accession this stage does not resolve. If the co-target is a "
+                f"membrane protein its TM residues are not stripped "
+                f"(scope item 14).")
         if uniprot and side not in ("not_applicable", "any"):
             from src.membrane_topology import fetch_topology, restriction_for
 
             topo = fetch_topology(uniprot)
             if side == "auto":
                 side = self._infer_membrane_side(
-                    result.pdb_id, hs["target_chain"], uniprot, hs["residues"],
+                    result.pdb_id, hs["target_chain"], uniprot, topo_rows,
                     topo)
             if side is None:
                 restrict = None
@@ -4192,7 +4291,7 @@ class PipelineRunner:
                                            uniprot, side=side, topology=topo)
                 logger.info(f"topology: {restrict.note}")
                 if restrict.applies:
-                    bad = [h for h in hs["residues"]
+                    bad = [h for h in topo_rows
                            if int(h["auth_seq_id"]) not in restrict.allowed_auth]
                     if bad:
                         # Reaching here means the side was pinned explicitly and
