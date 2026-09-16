@@ -35,7 +35,7 @@ import re
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 from loguru import logger
@@ -385,6 +385,100 @@ def ipsae_from_pae_matrix(
     )
 
 
+#: Synthetic chain labels for the two halves of a merged glue target. They are
+#: deliberately NOT the input chain letters: an input chain is routinely called
+#: "A", which is also the binder's output chain, and a collision would make
+#: ipSAE score the binder against half the target and call it a target-internal
+#: number.
+_GLUE_SIDE_LABELS = ("Y", "Z")
+
+
+def glue_target_sides(sidecar_path: Path,
+                      target_chain: str = "B") -> dict[str, list[int]]:
+    """Which OUTPUT target residues came from which INPUT chain.
+
+    RFD3 merges every contig span after the single `/0` into one output chain,
+    so a glue's two proteins arrive as one chain numbered 1..N and nothing in
+    the refold says where one ends and the other begins. The
+    `diffused_index_map` key does — this is the same read as
+    :func:`hotspots_from_rfd3_by_side`, over the whole map rather than over
+    the hotspots.
+    """
+    d = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
+    imap = d.get("diffused_index_map") or {}
+    out: dict[str, list[int]] = {}
+    for key, mapped in imap.items():
+        if not mapped or mapped[0] != target_chain:
+            continue
+        out.setdefault(key[0], []).append(int(mapped[1:]))
+    return {c: sorted(v) for c, v in sorted(out.items())}
+
+
+def glue_ipsae_ab(conf: dict, sides: "Mapping[str, Sequence[int]]",
+                  binder_chain: str = "A", target_chain: str = "B",
+                  pae_cutoff: float = IPSAE_PAE_CUTOFF) -> "IpsaeResult | None":
+    """Target-INTERNAL ipSAE between the two halves of a merged glue target.
+
+    Asks the one question a binder-vs-target number cannot: how confident is
+    the folding model in the interface between the two proteins the glue is
+    supposed to be holding together.
+
+    `ipsae_from_pae_matrix` is the wrong entry point — it hard-codes a TWO-block
+    split at `n_binder`. This synthesises three-way `token_chain_ids` and calls
+    `ipsae_from_confidences` directly, which is what that function does
+    internally, so the two stay identical by construction rather than by copied
+    logic.
+
+    **What this does and does not show.** A high value means a folding model is
+    confident about the R-P interface. It does not mean the physical complex is
+    stabilised, and a well-folded native interface scores high with or without
+    a binder — which is why the interpretable form is `glue_ipsae_delta`
+    against a per-campaign apo fold, and why this absolute number must never be
+    reported as evidence of stabilisation on its own.
+
+    Returns None when the target is not two-sided, when the split does not
+    cover the target's tokens, or when the confidences carry no usable PAE.
+    """
+    present = {c: list(v) for c, v in (sides or {}).items() if v}
+    if len(present) != 2:
+        return None
+    raw = conf.get("token_chain_ids") or []
+    pae = conf.get("pae")
+    if pae is None or not raw:
+        return None
+    # `token_chain_ids` carry an entity suffix ("A_1", not "A").
+    chains = [str(c).split("_")[0] for c in raw]
+
+    (ca, ids_a), (cb, ids_b) = list(present.items())
+    set_a, set_b = set(ids_a), set(ids_b)
+    la, lb = _GLUE_SIDE_LABELS
+
+    # The k-th TARGET token is output target residue k+1: RF3 writes one token
+    # per residue for a polymer, and `token_res_ids` are global token indices
+    # rather than per-chain residue numbers (see CLAUDE.md), so ordinal
+    # position among the target's own tokens is the mapping — the same
+    # assumption `ipsae_from_pae_matrix` makes for its two-block split.
+    labels: list[str] = []
+    seen = 0
+    for c in chains:
+        if c != target_chain:
+            labels.append(c)
+            continue
+        seen += 1
+        if seen in set_a:
+            labels.append(la)
+        elif seen in set_b:
+            labels.append(lb)
+        else:
+            # A target token belonging to neither side means the map does not
+            # describe this refold. Refuse rather than score a partial target.
+            return None
+    if la not in labels or lb not in labels:
+        return None
+    return ipsae_from_confidences(
+        {"pae": pae, "token_chain_ids": labels}, la, lb, pae_cutoff)
+
+
 # ----------------------------------------------------------------------
 # Hotspot remapping
 # ----------------------------------------------------------------------
@@ -419,6 +513,43 @@ def hotspots_from_rfd3(path: Path, target_chain: str = "B") -> list[int]:
             continue
         out.append(int(mapped[1:]))
     return sorted(out)
+
+
+def hotspots_from_rfd3_by_side(path: Path,
+                               target_chain: str = "B") -> dict[str, list[int]]:
+    """Same remap as :func:`hotspots_from_rfd3`, but keyed by INPUT chain.
+
+    A molecular glue's epitope spans both target chains, and RFD3 merges them
+    into ONE output chain — so by the time a hotspot is in output numbering
+    there is nothing left to say which protein it belongs to. The input chain
+    letter survives only in the `diffused_index_map` KEY (`A113 -> B85`,
+    `B30 -> B103`), which is why this reads the key and
+    :func:`hotspots_from_rfd3` reads the value.
+
+    That distinction is the whole of `hotspot_engagement_min_side`: the pooled
+    `hotspot_engagement` cannot tell a glue that bridges both proteins from a
+    competitive binder that grabbed one of them and ignored the other, because
+    both score the same fraction of the same union.
+
+    Returns `{input_chain: sorted output ids}`, empty for a sidecar with no
+    map — the same refusal `hotspots_from_rfd3` makes, for the same reason:
+    taking the numbers as-is would silently score the wrong residues.
+    """
+    d = json.loads(Path(path).read_text(encoding="utf-8"))
+    if "specification" in d:
+        spec, imap = d["specification"], d.get("diffused_index_map", {})
+    else:
+        spec, imap = next(iter(d.values())), {}
+    hs = spec.get("select_hotspots") or {}
+    if not imap:
+        return {}
+    out: dict[str, list[int]] = {}
+    for key in hs:
+        mapped = imap.get(key)
+        if not mapped or mapped[0] != target_chain:
+            continue
+        out.setdefault(key[0], []).append(int(mapped[1:]))
+    return {c: sorted(v) for c, v in sorted(out.items())}
 
 
 def patch_from_rfd3(path: Path, patch_auth: Sequence[int],
@@ -502,6 +633,19 @@ FIELDS = [
     "target_rmsd",
     "epitope_jaccard", "epitope_recall", "hotspots_refold", "hotspots_design",
     "n_hotspots", "hotspot_engagement",
+    # Per-SIDE engagement, for a molecular glue. Blank on every single-chain
+    # run — there is no second side, and a fabricated 1.0 would read as a pass.
+    # `hotspot_engagement_min_side` is the one that distinguishes a glue from a
+    # competitive binder that grabbed one partner; the pooled fraction above
+    # provably cannot, because both score the same union.
+    "hotspot_side_chains", "hotspot_engagement_a", "hotspot_engagement_b",
+    "hotspot_engagement_min_side",
+    # Target-internal ipSAE between the two halves of a merged glue target, and
+    # its difference from the campaign's single apo fold. The DELTA is the
+    # interpretable one: a well-folded native interface scores high with or
+    # without a binder, so the absolute number alone is not evidence of
+    # anything. Both blank off the glue path.
+    "glue_ipsae_ab", "glue_ipsae_delta",
     # The trim's fresh hydrophobic patch, per design. `patch_enrichment` is
     # the one to rank on — see `score_one`.
     "n_patch", "patch_contacts", "patch_contact_fraction", "patch_enrichment",
@@ -551,6 +695,9 @@ def score_one(
     sidecar: dict | None = None,
     plddt_scale: float = 1.0,
     patch: Sequence[int] = (),
+    hotspots_by_side: "Mapping[str, Sequence[int]] | None" = None,
+    target_sides: "Mapping[str, Sequence[int]] | None" = None,
+    apo_ipsae_ab: float | None = None,
 ) -> dict:
     """
     Score one refold. Raises on unreadable structures; the caller records it.
@@ -663,6 +810,41 @@ def score_one(
     row["hotspot_engagement"] = (
         round(row["hotspots_refold"] / len(hotspots), 3) if hotspots else ""
     )
+
+    # Per-side engagement. ORDER is the caller's: the primary target chain
+    # first, the co-target second, which is the same order the contig names
+    # them in. Only ever populated when the epitope really does span two
+    # chains — one side is a disrupt or single-target run and gets blanks,
+    # because there is no second side to report and a fabricated 1.0 would
+    # read as a pass rather than as "not applicable".
+    sides = {c: list(v) for c, v in (hotspots_by_side or {}).items() if v}
+    row["hotspot_side_chains"] = ""
+    row["hotspot_engagement_a"] = ""
+    row["hotspot_engagement_b"] = ""
+    row["hotspot_engagement_min_side"] = ""
+    if len(sides) > 1:
+        per = [(c, round(sum(1 for h in ids if h in ep_hot) / len(ids), 3))
+               for c, ids in sides.items()]
+        row["hotspot_side_chains"] = ",".join(c for c, _ in per)
+        row["hotspot_engagement_a"] = per[0][1]
+        row["hotspot_engagement_b"] = per[1][1]
+        row["hotspot_engagement_min_side"] = min(v for _, v in per)
+
+    # Target-internal ipSAE, over the PAE matrix this row has already read —
+    # no extra fold, no extra GPU per design.
+    row["glue_ipsae_ab"] = ""
+    row["glue_ipsae_delta"] = ""
+    if conf and target_sides and len(
+            {c: v for c, v in target_sides.items() if v}) == 2:
+        ab = glue_ipsae_ab(conf, target_sides)
+        if ab is not None:
+            row["glue_ipsae_ab"] = round(ab.ipsae_min, 4)
+            if apo_ipsae_ab is not None:
+                # Positive means the binder raised the model's confidence in
+                # the interface it is meant to hold together. One apo fold per
+                # CAMPAIGN supplies the reference, not one per design.
+                row["glue_ipsae_delta"] = round(
+                    ab.ipsae_min - float(apo_ipsae_ab), 4)
 
     # How much of THIS design's interface landed on the hydrophobic patch the
     # trim opened, rather than on the native surface. `patch` is already in
@@ -944,7 +1126,8 @@ def iter_refolds(rf3_dir: Path) -> Iterable[Path]:
 
 def _score_task(args: tuple) -> dict:
     """Worker entry point — must be module-level and picklable."""
-    (summary_path, design_dir, hotspots, cfg, want_ipsae, patch) = args
+    (summary_path, design_dir, hotspots, cfg, want_ipsae, patch,
+     hotspots_by_side, target_sides, apo_ipsae_ab) = args
     summary_path = Path(summary_path)
     name = summary_path.name[: -len("_summary_confidences.json")]
     pred = summary_path.with_name(f"{name}_model.cif")
@@ -956,7 +1139,9 @@ def _score_task(args: tuple) -> dict:
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         row = score_one(name, pred, design, summary, hotspots, cfg,
-                        conf=conf, sidecar=sidecar, patch=patch)
+                        conf=conf, sidecar=sidecar, patch=patch,
+                        hotspots_by_side=hotspots_by_side,
+                        target_sides=target_sides, apo_ipsae_ab=apo_ipsae_ab)
         row["error"] = ""
     except Exception as exc:
         row = {
@@ -978,6 +1163,9 @@ def score_campaign(
     with_ipsae: bool = True,
     progress_every: int = 2000,
     patch: Sequence[int] = (),
+    hotspots_by_side: "Mapping[str, Sequence[int]] | None" = None,
+    target_sides: "Mapping[str, Sequence[int]] | None" = None,
+    apo_ipsae_ab: float | None = None,
 ) -> list[dict]:
     """
     Score every refold under `rf3_dir` against its design in `design_dir`.
@@ -990,6 +1178,12 @@ def score_campaign(
     `hotspots` it is resolved ONCE by the caller rather than per design: every
     design in a campaign is built from the same contig, so they share one
     `diffused_index_map`.
+
+    `hotspots_by_side` / `target_sides` / `apo_ipsae_ab` are the molecular-glue
+    trio and are resolved once for the same reason. All three are None off the
+    glue path, and their columns come out blank — they are not defaulted to a
+    passing value, because "not applicable" and "passed" must not look alike in
+    a CSV an operator reads.
     """
     summaries = sorted(iter_refolds(rf3_dir))
     if limit:
@@ -1005,8 +1199,20 @@ def score_campaign(
            " | no exposed patch")
     )
 
+    # Frozen into plain tuples: these ride through a ProcessPoolExecutor and
+    # must be picklable and immutable per task.
+    _sides = tuple((c, tuple(v)) for c, v in (hotspots_by_side or {}).items())
+    _tsides = tuple((c, tuple(v)) for c, v in (target_sides or {}).items())
+    if _sides:
+        logger.info(
+            f"  glue: per-side hotspots "
+            + ", ".join(f"{c}={len(v)}" for c, v in _sides)
+            + (f" | apo ipsae_ab {apo_ipsae_ab:.4f}"
+               if apo_ipsae_ab is not None else
+               " | no apo fold — glue_ipsae_delta will be blank"))
     tasks = [(str(s), str(design_dir), tuple(hotspots), cfg, with_ipsae,
-              tuple(patch)) for s in summaries]
+              tuple(patch), dict(_sides), dict(_tsides), apo_ipsae_ab)
+             for s in summaries]
     rows: list[dict] = []
     if workers > 1:
         with ProcessPoolExecutor(max_workers=workers) as pool:

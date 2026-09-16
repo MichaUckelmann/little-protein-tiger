@@ -71,6 +71,32 @@ solubleMPNN -> RF3)`. No `Track:` line means the PPI / BoltzGen track.
 | `complex_plddt` | overall complex pLDDT (0-1) | higher = better |
 | `binder_length` | residue count of the designed binder | — |
 | `mmr_max_similarity` | sequence identity to the most similar already-picked design | lower = better |
+| `hotspot_engagement_min_side` | MOLECULAR GLUE ONLY — the weaker of the two sides' engagement | higher = better |
+| `glue_ipsae_ab` | GLUE ONLY — ipSAE between the two target proteins, with this binder present | see caveat |
+| `glue_ipsae_delta` | GLUE ONLY — `glue_ipsae_ab` minus the campaign's apo fold | higher = better |
+
+**On a molecular-glue campaign (`design_intent: stabilize`), three rules.**
+These columns are BLANK on every other campaign; if they are blank, this is
+not a glue run and none of this applies.
+
+1. **`hotspot_engagement_min_side`, not `hotspot_engagement`, is the number
+   that matters.** A glue must touch BOTH proteins. The pooled fraction cannot
+   tell a binder bridging the two from one that grabbed a single partner and
+   ignored the other — both score the same fraction of the same union. Report
+   the per-side split, and treat a design with a high pooled value and a low
+   `min_side` as a FAILURE of the design objective, not a near-miss.
+2. **`glue_ipsae_delta` is the readout; `glue_ipsae_ab` alone is not.** A
+   well-folded native interface scores high with or without a binder, so the
+   absolute value is uninterpretable on its own. If `glue_ipsae_delta` is
+   blank, the campaign has no apo reference and you must say the absolute
+   number cannot be read as evidence.
+3. **Never describe a glue result as demonstrated stabilisation.** Every one of
+   these metrics says a folding model became more confident about an interface.
+   That is not the same claim as the physical complex being stabilised, and no
+   computational result in this report can establish the second. Write the
+   verdict in those terms — "the model's confidence in the A-B interface rose
+   by X with the binder present" — and name the experiment that would settle
+   it in your next steps.
 | `liability_score` | BoltzGen composite developability score (cleavage motifs, oxidation, etc.) — **PPI track only, see note below** | **lower = better** |
 | `liability_high_severity_violations` | count of severe synthesis / stability risks (DPP4 cleavage, Asp-Pro, ProtTryp, etc.) — **PPI track only** | **0 strongly preferred** |
 | `liability_num_violations` | total liability hits (all severities) — **PPI track only** | lower = better |

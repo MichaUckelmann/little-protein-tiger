@@ -4060,6 +4060,41 @@ class PipelineRunner:
             n_batches=self._n_batches)
 
     @staticmethod
+    def _glue_apo_ipsae(self, dirs: dict[str, Path],
+                        target_sides: dict) -> float | None:
+        """The campaign's single apo `glue_ipsae_ab`, if one has been folded.
+
+        `glue_ipsae_delta` is the interpretable readout — a well-folded native
+        interface scores high with or without a binder, so the absolute number
+        alone says nothing — and the reference is ONE fold of the target pair
+        with no binder, per campaign, not one per design.
+
+        That fold is a GPU job and Stage 4 runs no GPU, so this reads a value
+        already on disk and returns None otherwise, leaving the column blank.
+        Blank is the honest answer: a delta against a missing reference is not
+        zero, and writing 0.0 would read as "the binder changed nothing".
+
+        The file is `binder/apo/glue_apo.json` with a single `ipsae_ab` key,
+        written by whatever folds the apo pair. Stage 5 wires that; the column
+        and the reader exist now so the scoring path does not change again
+        when it does.
+        """
+        apo = Path(dirs.get("binder", Path("."))) / "apo" / "glue_apo.json"
+        if not apo.exists():
+            logger.info(
+                "  glue: no apo fold at binder/apo/glue_apo.json — "
+                "glue_ipsae_ab will be reported and glue_ipsae_delta left "
+                "blank. The absolute value is not evidence of stabilisation "
+                "on its own.")
+            return None
+        try:
+            val = json.loads(apo.read_text(encoding="utf-8")).get("ipsae_ab")
+            return float(val) if val is not None else None
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            logger.warning(f"  glue: unreadable apo reference {apo}: {exc}")
+            return None
+
+    @staticmethod
     def _note_glue_guards(intel: dict[str, str]) -> str:
         """What a molecular-glue run's guards do and do not cover. Returns the
         prose it logs, so the report and the log cannot drift.
@@ -5351,6 +5386,17 @@ class PipelineRunner:
         # diffused_index_map, and the spec's numbers silently address the wrong
         # residues.
         hotspots = hotspots_from_rfd3(sidecar, "B")
+        # The molecular-glue trio, resolved ONCE per campaign from the same
+        # sidecar: every design shares one `diffused_index_map`. All three are
+        # empty off the glue path — `hotspots_from_rfd3_by_side` returns a
+        # single-key mapping for a one-chain target and `score_one` requires
+        # two sides before it writes a column — so an ordinary campaign's CSV
+        # is unchanged apart from four blank fields.
+        from src.binder_metrics import (glue_target_sides,
+                                        hotspots_from_rfd3_by_side)
+        by_side = hotspots_from_rfd3_by_side(sidecar, "B")
+        tsides = glue_target_sides(sidecar, "B") if len(by_side) > 1 else {}
+        apo = self._glue_apo_ipsae(dirs, tsides) if tsides else None
         mcfg = (self._binder_cfg().get("binder_metrics") or {})
         rows = score_campaign(
             paths.rf3_dir, paths.rfd3_dir, hotspots=hotspots,
@@ -5358,7 +5404,8 @@ class PipelineRunner:
                             ipsae_pae_cutoff=float(
                                 mcfg.get("ipsae_pae_cutoff", 10.0))),
             workers=max(1, (os.cpu_count() or 4) - 2), limit=limit,
-            patch=self._exposed_patch(dirs, sidecar))
+            patch=self._exposed_patch(dirs, sidecar),
+            hotspots_by_side=by_side, target_sides=tsides, apo_ipsae_ab=apo)
         out_dir.mkdir(parents=True, exist_ok=True)
         write_scores(rows, out_dir / "refold_scores.csv")
         return rows

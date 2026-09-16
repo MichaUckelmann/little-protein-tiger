@@ -69,7 +69,36 @@ DEFAULT_THRESHOLDS: dict[str, Any] = {
     "iptm_min": 0.5,
     "iface_pae_max": 15.0,
     "require_no_clash": True,
+    # ---- molecular glue (`design_intent: stabilize`) -------------------
+    # All three ship None, and that is load-bearing rather than cautious.
+    # A record missing the column a criterion needs FAILS it, and these
+    # columns are blank on every non-glue run — so a non-null value here
+    # zeroes an ordinary campaign's survivors outright. Measured on 1,352
+    # real 3KYS records: 317 survivors -> 0 with a glue gate at 0.5. It looks
+    # like a bad target, not a bad config, which is why `_criteria` warns by
+    # name when one of these is active and nothing carries the column.
+    #
+    # `hotspot_engagement_min_side_min` is the gate that distinguishes a glue
+    # from a competitive binder that grabbed one partner; the pooled
+    # `hotspot_engagement_min` above provably cannot.
+    "hotspot_engagement_min_side_min": None,
+    # Against the campaign's apo fold. The ABSOLUTE `glue_ipsae_ab` is
+    # deliberately not gateable: a well-folded native interface scores high
+    # with or without a binder.
+    "glue_ipsae_delta_min": None,
+    # Already computed and reported on every record since the merge, and over
+    # the WHOLE assembly — so a refold in which the partner slips out of the
+    # groove shows up in it directly. Still ships None globally: no disrupt
+    # campaign was ever gated on it and all 13 calibrated campaigns' survivor
+    # counts would move.
+    "target_rmsd_max": None,
 }
+
+#: Criteria that only a molecular-glue run populates. Named so `_criteria` can
+#: tell "this campaign failed the gate" from "this campaign has no such column".
+_GLUE_ONLY_COLUMNS = frozenset({
+    "hotspot_engagement_min_side", "glue_ipsae_delta",
+})
 
 DEFAULT_WEIGHTS: dict[str, float] = {
     "ipsae_min": 2.0,
@@ -220,6 +249,9 @@ def _criteria(thresholds: dict[str, Any]) -> list[tuple[str, Callable[[DesignRec
         ("ipsae_min", "ipsae_min_min", ge, None),
         ("iptm", "iptm_min", ge, None),
         ("iface_pae", "iface_pae_max", le, None),
+        ("hotspot_engagement_min_side", "hotspot_engagement_min_side_min", ge, None),
+        ("glue_ipsae_delta", "glue_ipsae_delta_min", ge, None),
+        ("target_rmsd", "target_rmsd_max", le, None),
     ]
     out: list[tuple[str, Callable[[DesignRecord], bool]]] = []
     for col, key, cmp, _ in spec:
@@ -244,6 +276,27 @@ def filter_records(
     """Apply the hard gate, attributing each drop to its FIRST failing criterion."""
     thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
     crit = _criteria(thresholds)
+
+    # Ranked risk #1, made diagnosable. A record missing a criterion's column
+    # FAILS it, and the glue columns are blank on every non-glue run — so a
+    # glue gate left non-null on an ordinary campaign drops every design and
+    # the run reads as a bad target rather than a bad config. Measured on
+    # 1,352 real 3KYS records: 317 survivors -> 0. Say so BEFORE the filter
+    # runs, naming the key, rather than leaving an operator to infer it from a
+    # funnel where one criterion ate everything.
+    for col in sorted(_GLUE_ONLY_COLUMNS):
+        key = f"{col}_min"
+        if thresholds.get(key) is None:
+            continue
+        if not any(_as_float(r.get(col)) is not None for r in records):
+            logger.warning(
+                f"threshold {key}={thresholds[key]} is set, but not one of "
+                f"{len(records):,} records carries a {col!r} value — this is a "
+                f"molecular-glue-only column, blank on every other campaign, "
+                f"and a record missing it FAILS the criterion. Every design "
+                f"will be dropped. Set {key}: null unless this is a "
+                f"design_intent=stabilize run.")
+
     stats = FilterStats(n_input=len(records))
     stats.passing_alone = {label: 0 for label, _ in crit}
 

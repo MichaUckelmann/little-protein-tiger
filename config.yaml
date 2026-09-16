@@ -571,6 +571,26 @@ design:
       iptm_min: 0.5
       iface_pae_max: 15.0
       require_no_clash: true
+      # ---- molecular glue (design_intent: stabilize) -------------------
+      # All three MUST stay null unless this is a glue run. These columns are
+      # blank on every other campaign, and a record missing a criterion's
+      # column FAILS it — so a non-null value here drops every design and the
+      # run reads as a bad target rather than a bad config. Measured on 1,352
+      # real 3KYS records: 317 survivors -> 0 with a glue gate at 0.5.
+      # `filter_records` warns by name if one is set and nothing carries the
+      # column, but the default is what keeps it from happening.
+      #
+      # min_side is the gate that tells a glue from a competitive binder that
+      # grabbed one partner — the pooled hotspot_engagement_min above cannot.
+      hotspot_engagement_min_side_min: null
+      # Against the campaign's own apo fold. The absolute glue_ipsae_ab is
+      # deliberately NOT gateable: a well-folded native interface scores high
+      # with or without a binder.
+      glue_ipsae_delta_min: null
+      # Computed over the whole assembly since the merge, so a refold whose
+      # partner slips out of the groove shows up in it. Null globally because
+      # no disrupt campaign was ever gated on it.
+      target_rmsd_max: null
     weights:
       ipsae_min: 2.0
       neg_binder_rmsd_dock: 1.5
