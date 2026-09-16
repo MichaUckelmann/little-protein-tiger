@@ -2385,6 +2385,22 @@ class PipelineRunner:
         is ordinary and legal in a deposited structure, as 8ZNL shows — so it
         runs only after every check below has passed, and only when the caller
         already resolved a target accession.
+
+        **Every row is looked up on the chain it was attributed to.** A
+        molecular-glue pocket spans both proteins, so its table legitimately
+        carries rows on two chains; grounding all of them against
+        `target_chain` reports real residues of the co-target as absent or
+        misnamed. A row with no `chain` key is a legacy table that never said
+        which chain it meant, and still groups under `target_chain` — so the
+        cross-chain refusal is preserved for exactly the shape that has not
+        answered the question, and relaxed only for a table that has.
+
+        `_hotspot_numbering_frame` is likewise called once per chain, and the
+        accession only ever reaches the chain the caller resolved it for.
+        Passing it for both would translate the co-target's rows through the
+        target's UniProt alignment and print canonical ids belonging to a
+        different protein: on 5VAI all seven rows would be reported in chain
+        R's frame, four of them wrongly.
         """
         from src.structure_tools import get_sequence_map
 
@@ -2397,8 +2413,91 @@ class PipelineRunner:
             (self.config.get("paths") or {}).get("structures_dir", "data/structures"))
         ba1 = structures_dir / f"{pdb_id.upper()}_ba1.cif"
         path = ba1 if ba1.exists() else structures_dir / f"{pdb_id.upper()}.cif"
+        # Group each row under the chain it was attributed to. A row with no
+        # `chain` key groups under the declared target_chain, so a
+        # single-chain table collapses to exactly one pass and every message
+        # below is produced verbatim.
+        by_chain: dict[str, list[dict]] = {}
+        for h in residues:
+            by_chain.setdefault(str(h.get("chain") or chain), []).append(h)
+        if len(by_chain) > 1:
+            logger.info(
+                "hotspot grounding: verifying "
+                + ", ".join(f"{len(v)} residue(s) on chain {k}"
+                            for k, v in by_chain.items()))
+
+        mismatches: list[tuple[str, str]] = []
+        absent: list[tuple[str, str, int]] = []
+        for c, rows in by_chain.items():
+            self._ground_one_chain(path, pdb_id, c, chain, rows,
+                                   mismatches, absent)
+
+        if absent:
+            # Say WHICH chain the residues are on when one chain holds them
+            # all under their claimed names — that is the real diagnosis, and
+            # the commonest cause is a table whose rows belong to the partner
+            # without saying so (`div_wildcard_tnbc` put chain U's 447-453
+            # under target_chain A). A table that DID attribute its rows is
+            # grounded per chain above and never reaches here for that reason.
+            ordered: list[str] = []
+            for c, _n, _a in absent:
+                if c not in ordered:
+                    ordered.append(c)
+            parts = []
+            for c in ordered:
+                rows_c = [(n, a) for cc, n, a in absent if cc == c]
+                hint = self._chain_holding_residues(path, rows_c, exclude=c)
+                names = ", ".join(f"{n}{a}" for n, a in rows_c)
+                parts.append(
+                    f"hotspot table names residue(s) that do not exist in "
+                    f"{pdb_id} chain {c}: {names}."
+                    + (f" All of them are present under those names in chain "
+                       f"{hint} — the table is attributing another chain's "
+                       f"residues to the target. Re-run the stage against one "
+                       f"chain, or pick a structure whose target chain carries "
+                       f"the epitope." if hint else
+                       " Re-run the stage, or pick a different structure — an "
+                       "unmodelled residue cannot be designed against."))
+            raise PipelineError(" ".join(parts))
+        if mismatches:
+            # The chain is named per entry only when more than one is
+            # involved, so a single-chain run's message is unchanged.
+            multi = len({c for c, _ in mismatches}) > 1
+            rendered = ", ".join(f"{t} on chain {c}" if multi else t
+                                 for c, t in mismatches)
+            raise PipelineError(
+                f"hotspot table is not grounded in {pdb_id}'s actual numbering: "
+                f"{rendered}. The interface stage likely reported "
+                f"textbook/literature numbering for a well-known protein instead "
+                f"of reading this specific structure's residues — re-run the "
+                f"stage, or pick a different structure.")
+
+        # Every hard check above has passed, which means each declared residue
+        # is real and correctly named. That leaves the one question grounding
+        # structurally cannot answer — whether auth N is the residue the
+        # literature means — so ask it here, advisorily. The accession belongs
+        # to the target chain alone; `_hotspot_numbering_frame` returns
+        # immediately without one, so a co-target is silent rather than wrong.
+        for c, rows in by_chain.items():
+            self._hotspot_numbering_frame(
+                rows, c, pdb_id, uniprot if c == chain else None)
+
+    def _ground_one_chain(self, path, pdb_id: str, c: str, chain: str,
+                          rows: list[dict],
+                          mismatches: list[tuple[str, str]],
+                          absent: list[tuple[str, str, int]]) -> None:
+        """Ground the rows attributed to ONE chain. Appends, never raises
+        except for a chain that is not in the file at all.
+
+        Split out of `_verify_hotspot_grounding` unchanged so the per-chain
+        loop runs the identical checks it always did; the caller owns the
+        refusals so a two-chain table reports both chains at once instead of
+        stopping at the first.
+        """
+        from src.structure_tools import get_sequence_map
+
         try:
-            seq_map = get_sequence_map(str(path), chain)
+            seq_map = get_sequence_map(str(path), c)
             # get_sequence_map RETURNS {"error": ...} for a missing/empty
             # chain rather than raising, so this subscript has to be inside
             # the guard too — outside it, an absent chain aborted the run
@@ -2425,7 +2524,7 @@ class PipelineRunner:
             # file we read fine does not.
             logger.warning(
                 f"hotspot grounding: {seq_map.get('error') or 'no residues'} "
-                f"for chain {chain} in {path.name}")
+                f"for chain {c} in {path.name}")
             struct_residues = []
         by_auth = {r["auth_seq_id"]: r["three_letter"] for r in struct_residues}
         if not by_auth:
@@ -2437,15 +2536,19 @@ class PipelineRunner:
             # on disk with a local structure: one hit, `div_standard_tuberculosis`
             # on 3FLN, which has exactly ONE chain (C) and got 11 hotspots on a
             # chain A that has never existed.
+            if c == chain:
+                raise PipelineError(
+                    f"the interface stage declared target_chain {chain!r}, which "
+                    f"does not exist in {path.name} — no hotspot can be grounded "
+                    f"against it. Re-run the stage, or name a chain the entry "
+                    f"actually has.")
             raise PipelineError(
-                f"the interface stage declared target_chain {chain!r}, which "
+                f"the hotspot table attributes residues to chain {c!r}, which "
                 f"does not exist in {path.name} — no hotspot can be grounded "
                 f"against it. Re-run the stage, or name a chain the entry "
                 f"actually has.")
 
-        mismatches = []
-        absent = []
-        for h in residues:
+        for h in rows:
             auth = h.get("auth_seq_id")
             claimed = str(h.get("residue", "")).upper()
             if auth is None or not claimed:
@@ -2460,42 +2563,11 @@ class PipelineRunner:
                 # rejecting a run for a conservation failure that was really a
                 # chain-attribution bug, and the trim finally died several
                 # stages later with a bare residue list. Fail here instead.
-                absent.append((claimed, auth))
+                absent.append((c, claimed, auth))
                 continue
             if actual != claimed:
-                mismatches.append(f"{claimed}{auth} (structure has {actual}{auth})")
-        if absent:
-            # Say WHICH chain the residues are on when one chain holds them
-            # all under their claimed names — that is the real diagnosis, and
-            # the commonest cause is a table whose rows belong to the partner
-            # (a glue/STABILIZE table listing both sides; `div_wildcard_tnbc`
-            # put chain U's 447-453 under target_chain A). Diagnosis only: no
-            # stage supports a cross-chain hotspot set, so this still fails.
-            hint = self._chain_holding_residues(path, absent, exclude=chain)
-            names = ", ".join(f"{n}{a}" for n, a in absent)
-            raise PipelineError(
-                f"hotspot table names residue(s) that do not exist in "
-                f"{pdb_id} chain {chain}: {names}."
-                + (f" All of them are present under those names in chain "
-                   f"{hint} — the table is attributing another chain's "
-                   f"residues to the target. Re-run the stage against one "
-                   f"chain, or pick a structure whose target chain carries "
-                   f"the epitope." if hint else
-                   " Re-run the stage, or pick a different structure — an "
-                   "unmodelled residue cannot be designed against."))
-        if mismatches:
-            raise PipelineError(
-                f"hotspot table is not grounded in {pdb_id}'s actual numbering: "
-                f"{', '.join(mismatches)}. The interface stage likely reported "
-                f"textbook/literature numbering for a well-known protein instead "
-                f"of reading this specific structure's residues — re-run the "
-                f"stage, or pick a different structure.")
-
-        # Every hard check above has passed, which means each declared residue
-        # is real and correctly named. That leaves the one question grounding
-        # structurally cannot answer — whether auth N is the residue the
-        # literature means — so ask it here, advisorily.
-        self._hotspot_numbering_frame(residues, chain, pdb_id, uniprot)
+                mismatches.append(
+                    (c, f"{claimed}{auth} (structure has {actual}{auth})"))
 
     @staticmethod
     def _hotspot_numbering_frame(residues: list[dict], chain: str,

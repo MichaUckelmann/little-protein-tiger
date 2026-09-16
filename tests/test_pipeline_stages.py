@@ -1271,8 +1271,12 @@ def test_the_guard_names_the_chain_the_residues_are_actually_on(config):
     """Diagnosis, not just refusal — the commonest cause is the partner chain.
 
     6JJW chain U really does carry ASP447/PRO448 under those names, so the
-    error says so. It still refuses: no stage supports a hotspot set spanning
-    two chains.
+    error says so. It still refuses, and the reason is narrower than it used
+    to be: the rows here carry no `chain` key, so the table has not said which
+    chain it means and grounding reads them all against `target_chain`. A
+    table that DOES attribute its rows is grounded per chain and is how a
+    molecular-glue pocket reaches the trim — see `tests/test_glue_grounding.py`,
+    which pins this exact file's refusal alongside the attributed form's pass.
     """
     if _local("6JJW") is None:
         pytest.skip("6JJW not downloaded")
