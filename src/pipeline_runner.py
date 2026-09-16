@@ -1909,7 +1909,8 @@ class PipelineRunner:
         # an unverifiable numbering is not a warning.
         text = self._correct_label_seq_ids(
             text, out, self._binder_structure_path(result.pdb_id or pdb),
-            handoff.get("target_chain") or intel.get("target_chain") or "A")
+            handoff.get("target_chain") or intel.get("target_chain") or "A",
+            handoff=handoff)
         hotspots = self._parse_hotspot_residues(text, handoff)
         if not hotspots:
             raise PipelineError(
@@ -6724,7 +6725,8 @@ class PipelineRunner:
                         or handoff.get("chain_a", "")
                         or "A")
         structure_text = self._correct_label_seq_ids(
-            structure_text, output_file, analysis_path, target_chain)
+            structure_text, output_file, analysis_path, target_chain,
+            handoff=handoff)
         try:
             hotspots_json = self._parse_hotspot_residues(structure_text, handoff)
             if hotspots_json:
@@ -7690,7 +7692,8 @@ class PipelineRunner:
             return {}
 
     def _correct_label_seq_ids(self, text: str, report_path: Path,
-                               cif_path: Path, target_chain: str) -> str:
+                               cif_path: Path, target_chain: str, *,
+                               handoff: dict | None = None) -> str:
         """
         Overwrite the report's label_seq_id column with the structure's own
         values, persist the corrected report, and surface what changed.
@@ -7701,7 +7704,7 @@ class PipelineRunner:
         exactly the shape CLAUDE.md documents for the PD-L1 verify guards.
         """
         fixed, warns = self._resolve_unverified_label_seq_ids(
-            text, cif_path, target_chain)
+            text, cif_path, target_chain, handoff=handoff)
         if fixed != text:
             report_path.write_text(fixed, encoding="utf-8")
             logger.info("  label_seq_ids replaced with the structure's own "
@@ -7715,6 +7718,8 @@ class PipelineRunner:
         structure_text: str,
         cif_path: Path,
         target_chain: str,
+        *,
+        handoff: dict | None = None,
     ) -> tuple[str, list[str]]:
         """Validate and normalise the MODEL-READY HOTSPOTS table.
 
@@ -7742,7 +7747,76 @@ class PipelineRunner:
         warnings: list[str] = []
         has_table = bool(re.search(r"###\s*MODEL.READY HOTSPOTS", structure_text,
                                    re.IGNORECASE))
+
+        # Which chain does the row at character offset N belong to?
+        #
+        # Built ONLY over `### MODEL-READY HOTSPOTS` sections, and that
+        # restriction is load-bearing rather than tidy: the COMPLEX OVERVIEW
+        # section carries lines like `Chain A: Hydrophobic: ...` that match
+        # `_CHAIN_HEADING` perfectly well, so an index over the whole document
+        # would start attributing rows from a prose heading that is not a
+        # table heading at all. Every offset outside a hotspot section maps to
+        # `target_chain`, which is today's behaviour exactly.
+        #
+        # `chain_blocks` is imported rather than re-implemented — it is the
+        # same split `parse_hotspot_residues` uses, and CLAUDE.md's
+        # "Common file pairs" names this pair for exactly this reason.
+        from src.handoff import chain_blocks as _chain_blocks
+        from src.handoff import _resolve_heading_chain as _resolve_chain
+
+        spans: list[tuple[int, int, str]] = []
+        for sec in re.finditer(
+                r"###\s+MODEL.READY HOTSPOTS.*?(?=\n###|\Z)",
+                structure_text, re.DOTALL | re.IGNORECASE):
+            base = sec.start()
+            cursor = 0
+            for c, block in _chain_blocks(sec.group(0), handoff or {},
+                                          target_chain):
+                start = sec.group(0).index(block, cursor)
+                spans.append((base + start, base + start + len(block), c))
+                cursor = start + len(block)
+
+        def _chain_at(offset: int) -> str:
+            for lo, hi, c in spans:
+                if lo <= offset < hi:
+                    return c
+            return target_chain
+
+        _map_cache: dict[str, dict[int, tuple[int | None, str]]] = {}
+
+        def _map_for(c: str) -> dict[int, tuple[int | None, str]]:
+            if c not in _map_cache:
+                _map_cache[c] = self._build_label_seq_id_map(cif_path, c)
+                if not _map_cache[c] and c != target_chain:
+                    if handoff:
+                        # Same refusal as the target chain's, for the same
+                        # reason: a label_seq that cannot be read must never
+                        # be replaced by one the model counted, and BoltzGen
+                        # consumes `binding:` as label_seq.
+                        raise PipelineError(
+                            f"cannot build the auth->label map for chain {c} "
+                            f"in {cif_path.name}, so the MODEL-READY HOTSPOTS "
+                            f"table's label_seq_id column cannot be verified "
+                            f"against the structure. Those values are derived "
+                            f"by the model, not read from the file, and "
+                            f"BoltzGen consumes them as label_seq. Check the "
+                            f"chain id and that the structure is on disk.")
+                    # No handoff: the chain came from a heading token with
+                    # nothing to resolve it against, so it is a GUESS, and
+                    # refusing on a guess turns a missing argument into a
+                    # failed run. Leave those rows exactly as the old
+                    # single-chain code left them and say so. The real
+                    # diagnosis is `_verify_hotspot_grounding`'s, which knows
+                    # which chain each row claims.
+                    warnings.append(
+                        f"chain {c} was inferred from a table heading with no "
+                        f"handoff to resolve it against, and is not in "
+                        f"{cif_path.name}; its rows were left uncorrected. "
+                        f"Pass `handoff=` to resolve the chain properly.")
+            return _map_cache[c]
+
         auth_to_label_and_name = self._build_label_seq_id_map(cif_path, target_chain)
+        _map_cache[target_chain] = auth_to_label_and_name
         if not auth_to_label_and_name:
             if has_table:
                 # label_seq_id is not a judgement call, it is a lookup in a file
@@ -7773,7 +7847,7 @@ class PipelineRunner:
             r"(\|\s*([A-Z]{3})\d*\s*\|\s*(\d+)\s*\|)\s*([^|]*?)\s*\|",
             re.MULTILINE,
         )
-        seen: set[tuple[str, int]] = set()
+        seen: set[tuple[str, str, int]] = set()
         substitutions = 0
         filled = 0
         rows_seen = 0
@@ -7781,12 +7855,19 @@ class PipelineRunner:
         unavailable: list[int] = []
         # What BoltzGen would call these residues in THIS file. Only consulted
         # when the file itself has no label_seq to read.
-        try:
-            from src.structure_tools import boltzgen_residue_indices
-            bg_index = boltzgen_residue_indices(str(cif_path), target_chain)
-        except Exception as exc:
-            logger.debug(f"could not compute BoltzGen indices: {exc}")
-            bg_index = {}
+        _bg_cache: dict[str, dict] = {}
+
+        def _bg_for(c: str) -> dict:
+            if c not in _bg_cache:
+                try:
+                    from src.structure_tools import boltzgen_residue_indices
+                    _bg_cache[c] = boltzgen_residue_indices(str(cif_path), c)
+                except Exception as exc:
+                    logger.debug(f"could not compute BoltzGen indices: {exc}")
+                    _bg_cache[c] = {}
+            return _bg_cache[c]
+
+        bg_index = _bg_for(target_chain)
 
         def _row_sub(match: re.Match) -> str:
             nonlocal substitutions, filled, rows_seen
@@ -7796,25 +7877,35 @@ class PipelineRunner:
             auth_s = int(match.group(3))
             llm_label_raw = match.group(4).strip()
 
+            # The chain this row was written under, not the declared target.
+            # A glue table's co-target rows are real residues on their OWN
+            # chain; resolving them against the target's map writes a label
+            # that is precisely wrong rather than merely unverified.
+            c = _chain_at(match.start())
+            chain_map = _map_for(c)
+            if not chain_map and c != target_chain:
+                return match.group(0)  # unresolvable guessed chain, see _map_for
+            bg_index = _bg_for(c)
+
             # Residue-name sanity (catches mouse↔human numbering offsets etc.)
-            actual = auth_to_label_and_name.get(auth_s)
+            actual = chain_map.get(auth_s)
             if actual is None:
-                key = (expected_name, auth_s)
+                key = (c, expected_name, auth_s)
                 if key not in seen:
                     seen.add(key)
                     warnings.append(
-                        f"residue at chain {target_chain} auth_seq_id {auth_s} "
+                        f"residue at chain {c} auth_seq_id {auth_s} "
                         f"({expected_name}) not present in structure"
                     )
                 return match.group(0)  # leave row unchanged (can't fix)
 
             true_label, actual_name = actual
             if actual_name.upper() != expected_name.upper():
-                key = (expected_name, auth_s)
+                key = (c, expected_name, auth_s)
                 if key not in seen:
                     seen.add(key)
                     warnings.append(
-                        f"residue NAME mismatch at chain {target_chain} "
+                        f"residue NAME mismatch at chain {c} "
                         f"auth_seq_id {auth_s}: report says {expected_name} but "
                         f"structure has {actual_name} — likely a numbering "
                         f"offset, or a row belonging to another chain; "
@@ -7938,8 +8029,84 @@ class PipelineRunner:
             re.DOTALL | re.IGNORECASE,
         )
 
+        def _label_ids_in(block: str) -> list[int]:
+            """The numeric label_seq ids this block's table rows carry, in order."""
+            out: list[int] = []
+            for m in re.finditer(
+                    r"\|\s*([A-Z]{3})\d*\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|", block):
+                try:
+                    out.append(int(m.group(3)))
+                except ValueError:
+                    pass
+            return out
+
         def _section_sub(sec_match: re.Match) -> str:
             section = sec_match.group(1)
+
+            # A glue section carries one `Chain <id> binding:` line per chain,
+            # and each must be rewritten from ITS OWN rows.
+            #
+            # Note what is NOT done here: splitting the section by chain and
+            # running the single-chain body per block. The `binding:` lines
+            # live in a `#### BoltzGen binding` subsection that carries no
+            # table rows, so every binding-carrying block would have zero
+            # local residues and take the "structure carries no label_seq"
+            # branch — REPLACING `Chain B binding: 24,29,30,31` with a
+            # statement, i.e. deleting the value. Measured on the real 5VAI
+            # report: all four binding-carrying blocks come out with
+            # local_residues == []. Today's code is inert on these lines only
+            # because its pattern is `^\s*binding:` and they start with
+            # `Chain`, which is also why a glue report currently ships the
+            # model's own counted numbers to BoltzGen.
+            blocks = [(c, b) for c, b in
+                      _chain_blocks(section, handoff or {}, target_chain)]
+            # ACCUMULATE, never assign: a chain contributes several blocks
+            # here (its table, then its `Chain <id> binding:` lines, which
+            # carry no rows), so a dict comprehension is last-wins and the
+            # row-less block silently empties the chain's real list.
+            per_chain: dict[str, list[int]] = {}
+            for c, b in blocks:
+                ids = _label_ids_in(b)
+                if ids:
+                    per_chain.setdefault(c, []).extend(ids)
+            if len(per_chain) > 1:
+                def _binding_sub(m: re.Match) -> str:
+                    # The line's own chain token, resolved the SAME way the
+                    # table headings are. `div_standard_diabetes` writes
+                    # `Chain A binding:` where the chain is really R, so a
+                    # literal lookup silently matches nothing and leaves the
+                    # model's counted numbers standing — which is the whole
+                    # failure this rewrite exists to prevent. Measured there:
+                    # the model wrote 38,39,42 for residues whose real label
+                    # ids are 105,106,109.
+                    ids = per_chain.get(
+                        _resolve_chain(m.group(1), handoff or {}, target_chain))
+                    if not ids:
+                        return m.group(0)
+                    dedup: list[int] = []
+                    for x in ids:
+                        if x not in dedup:
+                            dedup.append(x)
+                    only = "only: " if m.group(2) else ""
+                    return (f"Chain {m.group(1)} {only}binding: "
+                            + ",".join(str(x) for x in dedup))
+
+                out = re.sub(
+                    r"^[ \t]*Chain\s+(\S+)\s+(only:\s*)?binding:[^\n]*$",
+                    _binding_sub, section, flags=re.MULTILINE)
+                if re.search(r"^[ \t]*binding:", out, re.MULTILINE):
+                    # A chain-less `binding:` line inside a multi-chain
+                    # section means the pooled list, which is what it means
+                    # when nothing says otherwise. Left alone, and said so.
+                    warnings.append(
+                        "a multi-chain MODEL-READY HOTSPOTS section carries a "
+                        "chain-less `binding:` line; it has been left as the "
+                        "pooled list. BoltzGen reads `binding:` as label_seq "
+                        "for ONE chain, so name the chain "
+                        "(`Chain <id> binding: ...`) if that is not what was "
+                        "meant.")
+                return out
+
             local_residues: list[int] = []
             for m in re.finditer(
                 r"\|\s*([A-Z]{3})\d*\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|",
