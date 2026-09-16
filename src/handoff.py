@@ -102,6 +102,21 @@ def _declared_chains(handoff: dict) -> tuple[str, str]:
     return target.strip(), partner.strip()
 
 
+def _handoff_target_chains(handoff: dict) -> list[str]:
+    """The `target_chains` handoff bullet, as a list, or [].
+
+    Written by the STABILIZE template as the authoritative statement of which
+    chains carry hotspots. It is the disambiguator for every new run; the
+    positional A/B reading below is the legacy-compat path for the reports
+    already on disk, which name their sub-tables A and B whatever the
+    structure's chains are called.
+    """
+    raw = handoff.get("target_chains", "")
+    if not isinstance(raw, str):
+        return []
+    return [c.strip() for c in raw.replace(";", ",").split(",") if c.strip()]
+
+
 def _resolve_heading_chain(token: str, handoff: dict, default: str) -> str:
     """Map a chain-heading token onto a real chain id from the handoff.
 
@@ -118,10 +133,9 @@ def _resolve_heading_chain(token: str, handoff: dict, default: str) -> str:
     """
     tok = token.strip().upper()
     target, partner = _declared_chains(handoff)
-    if target and tok == target.upper():
-        return target
-    if partner and tok == partner.upper():
-        return partner
+    for declared in (target, partner, *_handoff_target_chains(handoff)):
+        if declared and tok == declared.upper():
+            return declared
     if tok == "A" and target:
         return target
     if tok == "B" and partner:

@@ -858,31 +858,39 @@ available from any tool in this surface; do not add a SASA column.
 
 **[STABILIZE mode only]** — dual-chain format for molecular glue:
 
-Both chains contribute to the binding surface. List chain A and chain B residues
+Both chains contribute to the binding surface. List each chain's residues
 separately. Use `auth_to_label` maps for both chains (both retrieved in Phase 3).
+
+**Head each sub-table with the chain's LITERAL id from the structure**, in the
+form `Chain <id> (<Protein>) periinterface patch`. The orchestrator attributes
+every row that follows such a line to that chain and grounds it against that
+chain's own residues — so if the chains are called R and P, write `Chain R` and
+`Chain P`, never `Chain A` and `Chain B`. A positional letter is not the answer
+and is only read as a last resort for older reports. Keep the row shape exactly
+as shown: four columns, no chain column. The chain comes from the heading.
 
 ```
 ### MODEL-READY HOTSPOTS [STABILIZE — Glue Pocket <rank>]
 
-Chain A (<ProteinA>) periinterface patch — selected <M> residues:
+Chain <chain_a_id> (<ProteinA>) periinterface patch — selected <M> residues:
 
 | Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |
 |---|---|---|---|
 | <name> | <auth> | <label> | <atom1>,<atom2> |
 
-Chain B (<ProteinB>) periinterface patch — selected <M> residues:
+Chain <chain_b_id> (<ProteinB>) periinterface patch — selected <M> residues:
 
 | Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |
 |---|---|---|---|
 | <name> | <auth> | <label> | <atom1>,<atom2> |
 
 #### BoltzGen binding (ternary complex — verify tool support)
-Chain A binding: <label_seq_id_a1>,<label_seq_id_a2>,...
-Chain B binding: <label_seq_id_b1>,<label_seq_id_b2>,...
+Chain <chain_a_id> binding: <label_seq_id_a1>,<label_seq_id_a2>,...
+Chain <chain_b_id> binding: <label_seq_id_b1>,<label_seq_id_b2>,...
 
 #### BoltzGen binding (fallback — single-chain submissions)
-Chain A only: binding: <label_seq_id_a1>,<label_seq_id_a2>,...
-Chain B only: binding: <label_seq_id_b1>,<label_seq_id_b2>,...
+Chain <chain_a_id> only: binding: <label_seq_id_a1>,<label_seq_id_a2>,...
+Chain <chain_b_id> only: binding: <label_seq_id_b1>,<label_seq_id_b2>,...
 
 #### RFD3 select_hotspots (combined — verify tool support)
 select_hotspots:
@@ -896,6 +904,7 @@ select_hotspots:
 - chain_b: <chain ID>
 - target_chain: <chain ID of the design target — the groove/pocket chain confirmed in Phase 1>
 - partner_chain: <chain ID of the binding partner — the helix/loop chain>
+- target_chains: <comma-separated chain IDs that carry MODEL-READY HOTSPOTS — one id in DISRUPT / INHIBIT_ACTIVE_SITE mode (the same as target_chain), BOTH ids in STABILIZE mode, e.g. "R, P">
 - target_complex: <ProteinA / ProteinB>
 - structure_organism: <scientific name of the organism this structure was solved from, e.g. Homo sapiens — or "not determined">
 - design_intent: <disrupt | stabilize>

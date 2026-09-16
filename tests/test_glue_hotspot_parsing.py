@@ -229,3 +229,81 @@ def test_target_chains_is_first_appearance_order():
                "\nChain A (target) patch:\n\n" + _HEADER + _rows([("PRO", 9)]))
     parsed = _parse(section, {"target_chain": "A", "partner_chain": "B"})
     assert parsed["target_chains"] == ["B", "A"], "order follows the table, not the handoff"
+
+
+# ------------------------------------------------- the SKILL.md <-> parser contract
+
+_SKILL = _ROOT / "skills/complex-structure-analysis/SKILL.md"
+
+
+def _stabilize_template() -> str:
+    """The STABILIZE MODEL-READY HOTSPOTS fence, lifted out of SKILL.md."""
+    text = _SKILL.read_text(encoding="utf-8")
+    marker = "### MODEL-READY HOTSPOTS [STABILIZE"
+    start = text.index(marker)
+    return text[start:text.index("\n```", start)]
+
+
+def test_the_skill_template_parses_as_two_chains():
+    """The template the model is shown must be the shape the parser reads.
+
+    Written the other way round — parser first, template later — the parser
+    ships for a week against a template it does not match, and the failure is
+    a silently single-chain glue table rather than an error.
+
+    The placeholders are substituted with real values because the parser
+    matches on residue names and integers; what is under test is the template's
+    SHAPE, which is what the model copies.
+    """
+    filled = (_stabilize_template()
+              .replace("<chain_a_id>", "R").replace("<chain_b_id>", "P")
+              .replace("<ProteinA>", "GLP-1R").replace("<ProteinB>", "GLP-1")
+              .replace("<rank>", "1").replace("<M>", "1"))
+    # One real row per sub-table, in place of the placeholder row.
+    rows = iter(["| PHE | 66 | 105 | CD2,CZ |", "| ALA | 30 | 69 | CB,CA |"])
+    filled = "\n".join(
+        next(rows) if line.startswith("| <name> |") else line
+        for line in filled.splitlines())
+
+    parsed = _parse(filled, {"target_chain": "R", "partner_chain": "P",
+                             "target_chains": "R, P"})
+    assert [(r["chain"], r["residue"], r["auth_seq_id"]) for r in parsed["residues"]] \
+        == [("R", "PHE", 66), ("P", "ALA", 30)]
+    assert parsed["target_chains"] == ["R", "P"]
+    assert parsed["region"] == "Glue Pocket 1"
+
+
+def test_the_skill_template_keeps_the_four_column_row_shape():
+    """A leading `| Chain |` column would break every shipped report.
+
+    `handoff._ROW` and `_resolve_unverified_label_seq_ids`'s row regex both
+    read the four-column form, and `_correct_label_seq_ids` re-parses reports
+    off disk on every `--start-from trim`. This is a live resume property.
+    """
+    template = _stabilize_template()
+    assert "| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |" in template
+    assert "| Chain |" not in template
+
+
+def test_the_skill_template_asks_for_literal_chain_ids():
+    """Positional headings are what made the shipped glue reports ambiguous."""
+    text = _SKILL.read_text(encoding="utf-8")
+    assert "Chain <chain_a_id> (<ProteinA>) periinterface patch" in text
+    assert "Chain A (<ProteinA>) periinterface patch" not in text
+
+
+def test_the_handoff_template_declares_target_chains():
+    text = _SKILL.read_text(encoding="utf-8")
+    assert "- target_chains:" in text
+    handoff = parse_handoff(text[text.index("### PIPELINE HANDOFF"):])
+    assert "target_chains" in handoff, "parse_handoff must accept the new bullet"
+
+
+def test_a_declared_target_chains_beats_the_positional_reading():
+    """The authoritative disambiguator, for every run written from now on."""
+    section = ("### MODEL-READY HOTSPOTS [STABILIZE — Glue Pocket 1]\n\n"
+               "Chain R (ProteinA) patch:\n\n" + _HEADER + _rows([("PHE", 66)]) +
+               "\nChain P (ProteinB) patch:\n\n" + _HEADER + _rows([("ALA", 30)]))
+    parsed = _parse(section, {"target_chain": "R", "partner_chain": "P",
+                              "target_chains": "R, P"})
+    assert [r["chain"] for r in parsed["residues"]] == ["R", "P"]
