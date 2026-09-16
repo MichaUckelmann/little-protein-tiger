@@ -41,6 +41,8 @@ mapping explicitly so downstream code never has to assume it.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import json
 import os
 import shutil
@@ -1327,6 +1329,44 @@ def write_trimmed(
     return out_path
 
 
+def build_contig_multi(kept_by_chain: "Mapping[str, Sequence[tuple[int, int]]]",
+                       binder_min: int, binder_max: int) -> str:
+    """
+    RFD3 contig for a trimmed target over one or more chains:
+    ``70-86,/0,A29-128,B10-37``.
+
+    A designed binder length range, a chain break, then every retained target
+    span. Two facts here are load-bearing and neither is visible in the
+    output.
+
+    **There is exactly ONE ``/0``, whatever the chain count.** ``/0`` is
+    RFD3's chain-INCREMENT token, so every span after it merges into ONE
+    output chain regardless of the input chains they came from — measured on
+    4ZGM with ``70-86,/0,A29-128,B10-37``: the output is exactly two chains,
+    binder A and target B numbered 1..128, and the sidecar's
+    ``diffused_index_map`` carries 128 entries (100 keyed ``A*``, 28 keyed
+    ``B*``) every one of them mapping into ``B``. That is what makes a
+    two-chain molecular-glue target expressible without touching scoring:
+    ``binder_metrics``, ``binder_ranking``, the ``chain_pair_*`` ``[0][1]``
+    read and ipSAE all still see one binder against one target.
+
+    **Mapping order is load-bearing.** It fixes the output 1..N numbering that
+    ``diffused_index_map`` and ``binder_metrics`` read, and
+    ``pipeline_runner._run_cluster_stage`` takes ``spans[0][0]`` as the target
+    chain — so the PRIMARY target chain must be inserted first. ``dict``
+    preserves insertion order in CPython, but nothing in the code says so, so
+    a test asserts it.
+
+    No empty-spans raise here: ``parse_contig`` already raises "contig names
+    no target span", and ``trim_target`` raises "trim planning kept no
+    residues" before either.
+    """
+    spans = ",".join(f"{chain}{lo}-{hi}"
+                     for chain, segments in kept_by_chain.items()
+                     for lo, hi in segments)
+    return f"{binder_min}-{binder_max},/0,{spans}"
+
+
 def build_contig(segments: Sequence[tuple[int, int]], chain: str,
                  binder_min: int, binder_max: int) -> str:
     """
@@ -1335,9 +1375,12 @@ def build_contig(segments: Sequence[tuple[int, int]], chain: str,
     A designed binder length range, a chain break, then each retained target
     span. More than one span means more than one chain break, which is why
     :func:`plan_trim` prefers a contiguous answer.
+
+    The single-chain spelling of :func:`build_contig_multi`, kept because it
+    is what every existing caller and every shipped `trim_map.json` uses: all
+    53 of those parse back to exactly ``{target_chain: kept_segments}``.
     """
-    spans = ",".join(f"{chain}{lo}-{hi}" for lo, hi in segments)
-    return f"{binder_min}-{binder_max},/0,{spans}"
+    return build_contig_multi({chain: segments}, binder_min, binder_max)
 
 
 def _per_residue_bsa(structure_path: Path, target_chain: str,
