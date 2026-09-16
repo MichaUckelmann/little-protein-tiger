@@ -267,6 +267,37 @@ def chain_id_or_blank(value: Any) -> str:
     return text if (len(text) <= 4 and text.isalnum()) else "\x00"
 
 
+#: The design intents a run can carry. `disrupt` breaks an interface,
+#: `inhibit_active_site` occupies a pocket on a single target, and `stabilize`
+#: GLUES two proteins together — the only one whose epitope spans two chains,
+#: which is why it needs its own predicates rather than a boolean somewhere.
+_DESIGN_INTENTS = ("disrupt", "stabilize", "inhibit_active_site")
+
+#: Intents that design against ONE protein and therefore need no partner.
+_SINGLE_TARGET_INTENTS = frozenset({"inhibit_active_site"})
+
+
+def is_glue_intent(intent: Any) -> bool:
+    """True for a molecular-glue run — the two-chain-epitope mode."""
+    return str(intent or "").strip().lower() == "stabilize"
+
+
+def waives_partner_chain(intel: Any) -> bool:
+    """Does this run's own `design_intent` say a partner is optional?
+
+    The discriminator is in the data and is written deterministically, so a
+    missing partner is waived only where the objective never needed one. A
+    `disrupt` or `stabilize` run whose partner went missing — an LLM slip, a
+    truncated handoff — still refuses, rather than quietly designing against
+    one protein's surface when the objective was an interface.
+
+    Takes the handoff dict or the intent string, because the two call sites
+    hold different shapes of the same fact.
+    """
+    intent = intel.get("design_intent") if isinstance(intel, dict) else intel
+    return str(intent or "").strip().lower() in _SINGLE_TARGET_INTENTS
+
+
 #: What `chain_id_or_blank` returns for a value that is neither a chain id nor
 #: a recognisable "there isn't one" — `"TBD (PD-L1)"`, a sentence, a number
 #: with punctuation. Distinct from `""` because absent is legal in
@@ -446,6 +477,7 @@ class PipelineRunner:
         stop_after: str | None = None,
         design_engine: str | None = None,
         modality: str = "mini_protein",
+        design_intent: str | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
@@ -625,6 +657,29 @@ class PipelineRunner:
                 "engine — RFD3 has no cyclic-peptide path. Use "
                 "design_engine='boltzgen' for a cyclic-peptide campaign.")
         self._modality = modality
+
+        if design_intent is not None and design_intent not in _DESIGN_INTENTS:
+            raise PipelineError(
+                f"Invalid design_intent={design_intent!r}; expected one of "
+                f"{', '.join(_DESIGN_INTENTS)}.")
+        if design_intent is not None and workflow != "structure":
+            # Same posture as --hotspots on the PPI track: refuse the flag
+            # rather than accept it and run a campaign the operator did not
+            # ask for. Only the structure-first track measures an intent that
+            # an operator could sensibly override — the other two take it from
+            # a stage handoff that also carries the chains it was derived
+            # from, so overriding it there would contradict the report.
+            raise PipelineError(
+                f"--design-intent applies to --workflow structure only (got "
+                f"{workflow!r}). The binder and ppi tracks take their intent "
+                f"from the stage handoff that also names the chains it was "
+                f"derived from. Re-run with --workflow structure --structure "
+                f"<file|PDB ID>.")
+        self._design_intent = design_intent
+        # Flag-level: catch a combination that cannot work before any stage
+        # runs. Re-checked at the two places the intent is actually known, so
+        # a stage-MEASURED stabilize is refused too.
+        self._refuse_unbuilt_glue_paths(design_intent, source="--design-intent")
 
     @property
     def model_id(self) -> str:
@@ -837,6 +892,20 @@ class PipelineRunner:
                             "or re-run in auto mode."
                         )
                     raise PipelinePausedError("pathway_choice", {"choices": choices})
+
+            # Its own block, and BEFORE the pdb_id one below: a stabilize
+            # handoff that named no structure must not slip past unrefused.
+            # The intent is read from the LITERATURE handoff first, because
+            # `_bridge_ppi_to_binder_track` and `_stage_structure` both prefer
+            # that value — refusing on a pathway intent the run was never
+            # going to use would be wrong. (Inert on both archived stabilize
+            # runs, which agree across stages; the precedence mismatch is
+            # real regardless.)
+            if start_idx <= 1:
+                self._refuse_unbuilt_glue_paths(
+                    ((result.literature_handoff or {}).get("design_intent")
+                     or handoff.get("design_intent")),
+                    source="the pathway stage's target")
 
             # Two deterministic checks on what the pathway stage just chose,
             # BEFORE paying for another LLM stage. Neither needs the structure
@@ -1238,6 +1307,76 @@ class PipelineRunner:
                     f"{wanted!r} (--modality decides)")
         return wanted
 
+    def _resolve_design_intent(self, measured: str, *, source: str,
+                               has_partner: bool) -> str:
+        """The intent a run will ACTUALLY pursue, given what was measured.
+
+        Same posture as `_resolve_modality`: the structure-first track
+        MEASURES an intent from the geometry it found (`disrupt` when there
+        are two chains, `inhibit_active_site` when there is one), and the
+        operator's `--design-intent` decides. Without the flag this returns
+        `measured` unchanged and logs nothing, so every existing run is
+        untouched.
+
+        The one thing it refuses outright is `stabilize` on a single chain.
+        A molecular glue holds two proteins together; with one chain there is
+        no second protein to hold, and the request is not a preference that
+        can be honoured differently — it is a request for something the
+        structure cannot express.
+        """
+        wanted = (self._design_intent or "").strip()
+        if not wanted or wanted == measured:
+            return measured
+        if is_glue_intent(wanted) and not has_partner:
+            raise PipelineBlockedError(
+                "--design-intent stabilize needs two chains: a molecular glue "
+                "holds two proteins together, and this structure offers one "
+                "designable chain. Pass --chains <target>,<partner> if the "
+                "partner is in the file, or pick a structure of the complex.")
+        logger.info(f"  {source} measured design_intent={measured!r}; using "
+                    f"{wanted!r} (--design-intent decides)")
+        return wanted
+
+    def _refuse_unbuilt_glue_paths(self, intent: Any, *, source: str) -> None:
+        """Refuse the glue combinations Stage 3 has not built.
+
+        Self-contained rather than trusting its caller's `if`, for the same
+        reason `_refuse_undispatched_site_trials` is: each of these would
+        otherwise run a long way before failing in a way that does not name
+        the cause. `div_standard_diabetes` spent three LLM stages and then
+        died at hotspot grounding blaming "textbook/literature numbering",
+        which is not what was wrong with it.
+
+        Each refusal names the scope item that would build it, so the message
+        is a pointer rather than a dead end.
+        """
+        if not is_glue_intent(intent):
+            return
+        if self._boltzgen_backend:
+            raise PipelineBlockedError(
+                f"{source} is a molecular-glue run (design_intent=stabilize) "
+                f"and --design-engine boltzgen has no two-chain target path: "
+                f"`binding:` addresses ONE chain, so the co-target would be "
+                f"silently dropped. Use --design-engine foundry (scope item "
+                f"22 covers the second engine).")
+        if self._modality == "cyclic_peptide":
+            raise PipelineBlockedError(
+                f"{source} is a molecular-glue run and --modality "
+                f"cyclic_peptide selects BoltzGen, which has no two-chain "
+                f"target path. Use the default mini_protein modality.")
+        if self._trial_sites > 1:
+            raise PipelineBlockedError(
+                f"{source} is a molecular-glue run and --trial-sites > 1 "
+                f"routes through `_run_site_trials`, which has no two-chain "
+                f"site shape yet. Run one site at a time.")
+        if self._workflow in ("ppi", "binder"):
+            raise PipelineBlockedError(
+                f"{source} is a molecular-glue run on --workflow "
+                f"{self._workflow}, which cannot ask for one: only "
+                f"--workflow structure takes --design-intent. Re-run with "
+                f"--workflow structure --structure <file|PDB ID> "
+                f"--design-intent stabilize.")
+
     def _binder_length_range(self, intel: dict) -> tuple[int, int]:
         """`(min, max)` binder length for this run, defaulting BY MODALITY.
 
@@ -1324,8 +1463,7 @@ class PipelineRunner:
         # missing — an LLM slip, a truncated handoff — still refuses here,
         # rather than quietly designing against one protein's surface when
         # the whole objective was to disrupt an interface.
-        single_target = (str(intel.get("design_intent") or "").strip().lower()
-                         == "inhibit_active_site")
+        single_target = waives_partner_chain(intel)
 
         def valid_chain(value: Any) -> bool:
             return chain_id_or_blank(value) not in ("", MALFORMED_CHAIN)
@@ -1562,7 +1700,12 @@ class PipelineRunner:
                         f"pass --chains {partner_chain},{target_chain} to swap "
                         f"them.")
 
-        design_intent = "disrupt" if partner_chain else "inhibit_active_site"
+        design_intent = self._resolve_design_intent(
+            "disrupt" if partner_chain else "inhibit_active_site",
+            source="the structure-first track",
+            has_partner=bool(partner_chain))
+        self._refuse_unbuilt_glue_paths(
+            design_intent, source="the structure-first track")
         modality = self._resolve_modality(None, source="the structure-first track")
         # Through `_binder_length_range` rather than reading `binder_sizes`
         # here: a cyclic-peptide campaign is 12-15 residues and a mini-protein
@@ -1686,7 +1829,8 @@ class PipelineRunner:
         return out
 
     def _resolve_hotspot_override(self, spec: str, pdb_id: str,
-                                  target_chain: str) -> list[dict]:
+                                  target_chain: str, *,
+                                  partner_chain: str = "") -> list[dict]:
         """Turn an operator's residue numbers into fully-formed hotspot dicts.
 
         The operator supplies `auth_seq_id` and nothing else. Everything a
@@ -1716,8 +1860,19 @@ class PipelineRunner:
         # A bare number means the target chain.
         if "" in wanted:
             wanted.setdefault(target_chain, []).extend(wanted.pop(""))
-        foreign = [c for c in wanted if c != target_chain]
+        # A molecular glue's epitope spans BOTH chains, so the partner is a
+        # legal hotspot chain for it and for nothing else. `partner_chain` is
+        # passed only by the glue caller, so every existing call gets the
+        # identical refusal string.
+        allowed = {target_chain} | ({partner_chain} if partner_chain else set())
+        foreign = [c for c in wanted if c not in allowed]
         if foreign:
+            if partner_chain:
+                raise PipelineBlockedError(
+                    f"--hotspots names chain(s) {foreign} but this glue run "
+                    f"designs against {target_chain!r} and {partner_chain!r}. "
+                    f"A glue's epitope spans exactly the two chains it holds "
+                    f"together; to use different ones pass --chains.")
             raise PipelineBlockedError(
                 f"--hotspots names chain(s) {foreign} but the target chain is "
                 f"{target_chain!r}. Hotspots are the epitope ON the target; "
@@ -1726,20 +1881,28 @@ class PipelineRunner:
         path = self._binder_structure_path(pdb_id)
         st = gemmi.read_structure(str(path))
         st.setup_entities()
-        chain = next((c for c in st[0] if c.name == target_chain), None)
-        if chain is None:
-            raise PipelineBlockedError(
-                f"chain {target_chain!r} is not in {path.name} "
-                f"(chains: {sorted(c.name for c in st[0])})")
-        by_auth = {r.seqid.num: r for r in chain if is_chain_residue(r)}
+        by_chain_auth: dict[str, dict[int, Any]] = {}
+        for cid in [c for c in (target_chain, partner_chain) if c]:
+            chain = next((c for c in st[0] if c.name == cid), None)
+            if chain is None:
+                raise PipelineBlockedError(
+                    f"chain {cid!r} is not in {path.name} "
+                    f"(chains: {sorted(c.name for c in st[0])})")
+            by_chain_auth[cid] = {r.seqid.num: r for r in chain
+                                  if is_chain_residue(r)}
 
         residues: list[dict] = []
-        for auth in wanted[target_chain]:
-            res = by_auth.get(auth)
+        # Target chain first, then the partner, so the table reads in the same
+        # order the contig will: the glue's own chain order, not the order the
+        # operator happened to type.
+        ordered = [(c, a) for c in (target_chain, partner_chain) if c
+                   for a in wanted.get(c, [])]
+        for cid, auth in ordered:
+            res = by_chain_auth[cid].get(auth)
             if res is None:
                 raise PipelineBlockedError(
-                    f"--hotspots names {target_chain}{auth}, which is not a "
-                    f"residue of chain {target_chain} in {path.name}. Author "
+                    f"--hotspots names {cid}{auth}, which is not a "
+                    f"residue of chain {cid} in {path.name}. Author "
                     f"numbering in a crystal structure often differs from the "
                     f"canonical isoform's — check the file, not UniProt.")
             present = {a.name for a in res}
@@ -1757,7 +1920,8 @@ class PipelineRunner:
                     f"{sorted(present)}). Pick another residue.")
             residues.append({"residue": res.name, "auth_seq_id": auth,
                              "label_seq_id": "**UNVERIFIED**",
-                             "rfd3_atoms": ",".join(picked)})
+                             "rfd3_atoms": ",".join(picked),
+                             "chain": cid})
 
         if len(residues) > MAX_HOTSPOTS:
             # A warning is right when a SKILL overshoots the cap (the builder
@@ -1787,12 +1951,48 @@ class PipelineRunner:
         and keeps every guard on the override's path.
         """
         target_chain = intel.get("target_chain", "")
-        table = "\n".join(
-            f"| {r['residue']} | {r['auth_seq_id']} | {r['label_seq_id']} | "
-            f"{r['rfd3_atoms']} |" for r in residues)
+
+        def _table(rows: list[dict]) -> str:
+            return "\n".join(
+                f"| {r['residue']} | {r['auth_seq_id']} | {r['label_seq_id']} | "
+                f"{r['rfd3_atoms']} |" for r in rows)
+
+        # Each residue under ITS OWN chain, not under target_chain. A glue's
+        # partner-chain hotspots would otherwise be written as though they sat
+        # on the target — which on 4ZGM is invisible, because every partner
+        # hotspot number also exists on chain A.
         picks = "\n".join(
-            f"    {target_chain}{r['auth_seq_id']}: {r['rfd3_atoms']}"
-            for r in residues)
+            f"    {r.get('chain') or target_chain}{r['auth_seq_id']}: "
+            f"{r['rfd3_atoms']}" for r in residues)
+
+        chains_present: list[str] = []
+        for r in residues:
+            c = r.get("chain") or target_chain
+            if c not in chains_present:
+                chains_present.append(c)
+
+        if len(chains_present) > 1:
+            # One chain-headed sub-table per chain, in the four-column form
+            # both regexes read, with the heading spelt `Chain <id> — ...`
+            # and NO colon after `Chain`: that is the anchor
+            # `handoff._CHAIN_HEADING` matches, and it is the form every
+            # report already on disk uses, which matters because
+            # `_correct_label_seq_ids` re-parses those on every resume.
+            blocks = []
+            for c in chains_present:
+                rows = [r for r in residues if (r.get("chain") or target_chain) == c]
+                blocks.append(
+                    f"Chain {c} — Region 1: operator-specified — selected "
+                    f"{len(rows)} of {len(rows)} residues:\n\n"
+                    f"| Residue | auth_seq_id | label_seq_id | RFD3 sidechain "
+                    f"atoms |\n|---|---|---|---|\n{_table(rows)}\n")
+            hotspot_block = "\n".join(blocks)
+        else:
+            hotspot_block = (
+                f"Target chain {target_chain} — Region 1: operator-specified — "
+                f"selected {len(residues)} of {len(residues)} residues:\n\n"
+                f"| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |\n"
+                f"|---|---|---|---|\n{_table(residues)}\n")
         body = (
             f"**The epitope was specified by the operator, not chosen by a "
             f"model.** `--hotspots` was given, so the "
@@ -1801,10 +2001,7 @@ class PipelineRunner:
             f"read from the structure; the numbers are the operator's.\n\n"
             f"Objective as stated: {query}\n\n"
             f"### MODEL-READY HOTSPOTS [{intel.get('design_intent', 'disrupt').upper()}]\n\n"
-            f"Target chain {target_chain} — Region 1: operator-specified — "
-            f"selected {len(residues)} of {len(residues)} residues:\n\n"
-            f"| Residue | auth_seq_id | label_seq_id | RFD3 sidechain atoms |\n"
-            f"|---|---|---|---|\n{table}\n\n"
+            f"{hotspot_block}\n"
             f"#### RFD3 select_hotspots\n\nselect_hotspots:\n{picks}\n")
         self._write_binder_report(
             out, "Interface analysis (operator-specified hotspots)", body,
@@ -1815,6 +2012,10 @@ class PipelineRunner:
              # it would read as a chain. This path used to emit whatever
              # target-intel held and then fail in `_stage_trim`.
              "partner_chain": chain_id_or_blank(intel.get("partner_chain")),
+             # The authoritative statement of which chains carry hotspots,
+             # same field the STABILIZE skill template writes. Without it the
+             # parser falls back to the positional A/B reading on re-parse.
+             "target_chains": ", ".join(chains_present),
              "design_intent": intel.get("design_intent", "disrupt"),
              "modality": intel.get("modality", "mini_protein"),
              "hotspot_source": "operator"})
@@ -1889,8 +2090,14 @@ class PipelineRunner:
             # more here, not less, because the commonest way this goes wrong
             # is canonical-isoform numbering pasted against a construct-
             # numbered crystal, and grounding is exactly what catches it.
+            # The partner is a legal hotspot chain for a molecular glue and
+            # for nothing else, so it is passed only when the run's own intent
+            # says so — a disrupt run keeps the identical refusal.
             residues = self._resolve_hotspot_override(
-                self._hotspots, pdb, intel.get("target_chain", "") or "A")
+                self._hotspots, pdb, intel.get("target_chain", "") or "A",
+                partner_chain=(chain_id_or_blank(intel.get("partner_chain"))
+                               if is_glue_intent(intel.get("design_intent"))
+                               else ""))
             self._write_override_interface_report(out, intel, residues, goal)
             logger.info(
                 f"interface: {len(residues)} operator-specified hotspots "
@@ -3901,6 +4108,24 @@ class PipelineRunner:
                 f"table is malformed and the RFD3 spec cannot be built")
         hs["target_chain"], hs["partner_chain"] = target, partner
         if not partner:
+            # `_binder_sites` makes exactly this check against target-intel's
+            # handoff, but it is reached only via `--trial-sites N` or
+            # `--stop-after trial|spec`; a plain single-site run is stopped
+            # here instead, against the INTERFACE stage's table. The two
+            # validate different dicts, so an intent check in one alone just
+            # moves the failure a stage later — which is how a `disrupt` or
+            # `stabilize` run whose partner went missing degraded silently
+            # into single-target mode.
+            if not waives_partner_chain(intel):
+                raise PipelineError(
+                    f"the MODEL-READY HOTSPOTS table names no partner_chain "
+                    f"(design_intent={intel.get('design_intent')!r}). A "
+                    f"partner is optional only for a single-target intent "
+                    f"({', '.join(sorted(_SINGLE_TARGET_INTENTS))}); an "
+                    f"interface this run intends to "
+                    f"{intel.get('design_intent') or 'act on'} needs both "
+                    f"sides named. Re-run the interface stage, or state the "
+                    f"intent the run actually has.")
             self._note_single_target_guards(
                 intel, raw=hs.get("partner_chain"))
         if not hs.get("residues"):
@@ -6253,6 +6478,8 @@ class PipelineRunner:
                         "alternatives": H["target_intel"].get("alternatives_json"),
                     })
             intel = H["target_intel"]
+            self._refuse_unbuilt_glue_paths(
+                intel.get("design_intent"), source="the target-intel stage")
             result.pdb_id = result.pdb_id or intel.get("pdb_id")
             # A `--start-from production` resume never runs the discovery
             # stages, so nothing else repopulates this and the completion

@@ -232,6 +232,23 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--design-intent",
+        choices=["disrupt", "stabilize", "inhibit_active_site"],
+        default=None,
+        dest="design_intent",
+        help=(
+            "What the binder should DO, overriding what the structure-first "
+            "track measures from the geometry (two designable chains -> "
+            "'disrupt', one -> 'inhibit_active_site'). 'stabilize' is a "
+            "MOLECULAR GLUE: the epitope spans both chains and the binder is "
+            "designed to hold them together, so it needs two chains and is "
+            "refused on one. --workflow structure only; the binder and ppi "
+            "tracks take their intent from a stage handoff that also names "
+            "the chains it was derived from. Whatever a stage proposes, this "
+            "decides."
+        ),
+    )
+    p.add_argument(
         "--pathway-mode",
         choices=["standard", "wildcard"],
         default="standard",
@@ -732,6 +749,7 @@ def main() -> int:
         stop_after=args.stop_after,
         design_engine=design_engine,
         modality=args.modality,
+        design_intent=args.design_intent,
         pathway_mode=args.pathway_mode,
     )
 
