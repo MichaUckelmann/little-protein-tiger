@@ -128,3 +128,129 @@ def test_every_shipped_spec_re_derives_field_for_field(tmp_path):
 
     assert checked >= 40, f"expected the shipped corpus, got {checked} specs"
     assert bad == [], f"{len(bad)} of {checked} specs changed: {bad[:3]}"
+
+
+# ---------------------------------------------- the cross-check and item 18
+
+def _trimmed_4zgm(tmp_path):
+    """A real no-op two-chain trim, and the PDB RFD3 would be given."""
+    from src.structure_trim import trim_target
+    t = trim_target(_4ZGM, target_chain="A", partner_chain="B",
+                    hotspots=[_hot(113, "NZ,CE", "A", "LYS")], budget=500,
+                    out_dir=tmp_path, pdb_id="4ZGM", binder_min=70,
+                    binder_max=86, co_target_chains=["B"])
+    return t, pathlib.Path(t.trimmed_path).with_suffix(".pdb")
+
+
+def _spec(tmp_path, structure, contig):
+    from src.foundry_spec import build_rfd3_spec as brs
+    return brs(name="t", structure_path=structure, contig=contig,
+               target_chain="A", hotspots=[_hot(113, "NZ,CE", "A", "LYS")],
+               out_path=tmp_path / "s.json", binder_min=70, binder_max=86).path
+
+
+@pytest.mark.skipif(not _4ZGM.exists(), reason="4ZGM not in this checkout")
+def test_n_target_residues_is_a_set_not_a_running_sum(tmp_path):
+    """Overlapping spans were double-counted.
+
+    `A29-128,A29-37` reported 109 target residues for a 100-residue chain, and
+    195 tokens for a 186-token complex. Identical on all 49 archived specs,
+    whose spans are disjoint.
+    """
+    from src.foundry_spec import validate_spec
+    _t, pdb = _trimmed_4zgm(tmp_path)
+    path = _spec(tmp_path, pdb, "70-86,/0,A29-128,A29-37")
+    assert validate_spec(path)["designs"]["t"]["n_target_residues"] == 100
+
+
+@pytest.mark.skipif(not _4ZGM.exists(), reason="4ZGM not in this checkout")
+def test_the_cross_check_compares_chains_too(tmp_path):
+    from src.foundry_spec import SpecError as SE, validate_spec
+    _t, pdb = _trimmed_4zgm(tmp_path)
+    path = _spec(tmp_path, pdb, "70-86,/0,A29-128,B10-37")
+
+    validate_spec(path, kept_by_chain={"A": [(29, 128)], "B": [(10, 37)]})
+    with pytest.raises(SE, match="do not match the trim's kept spans"):
+        validate_spec(path, kept_by_chain={"B": [(29, 128)], "A": [(10, 37)]})
+
+
+@pytest.mark.skipif(not _4ZGM.exists(), reason="4ZGM not in this checkout")
+def test_a_dropped_chain_is_refused_by_the_recorded_residue_count(tmp_path):
+    """Scope item 18, as a check rather than a construction.
+
+    The contig is what RFD3 is templated on; the trim's count is what the
+    campaign is costed on. A chain reaching one and not the other under-costs
+    the GPU quadratically and is otherwise silent.
+    """
+    from src.foundry_spec import SpecError as SE, validate_spec
+    _t, pdb = _trimmed_4zgm(tmp_path)
+    path = _spec(tmp_path, pdb, "70-86,/0,A29-128")
+    with pytest.raises(SE, match="but the trim recorded 128"):
+        validate_spec(path, expected_target_residues=128)
+    validate_spec(path, expected_target_residues=100)
+
+
+def test_passing_both_cross_check_forms_is_refused():
+    from src.foundry_spec import SpecError as SE, validate_spec
+    with pytest.raises(SE, match="not both"):
+        validate_spec(__file__, kept_segments=[(1, 2)], kept_by_chain={"A": [(1, 2)]})
+
+
+def test_trim_cross_check_is_chain_aware_only_when_the_trim_is():
+    from src.foundry_spec import trim_cross_check
+
+    class _Bare:
+        kept_segments = [(29, 128)]
+
+    class _WithChains(_Bare):
+        kept_by_chain = {"A": [(29, 128)], "B": [(10, 37)]}
+
+    assert trim_cross_check(_Bare()) == {"kept_segments": [(29, 128)]}
+    assert trim_cross_check(_WithChains()) == {
+        "kept_by_chain": {"A": [(29, 128)], "B": [(10, 37)]}}
+
+
+def test_every_archived_trim_passes_the_chain_aware_cross_check():
+    """53 trim maps, each against its own contig. 0 mismatches.
+
+    `_TrimFromDisk` reconstructs `{target_chain: kept_segments}` for maps
+    written before the key existed, so archived trims take the STRONGER
+    branch — which is only safe because every one of them passes it.
+    """
+    from src.foundry_spec import parse_contig as pc, trim_cross_check
+    from src.pipeline_runner import _TrimFromDisk
+
+    maps = sorted(set(list(_ROOT.glob("projects/**/trim_map.json"))
+                      + list(_ROOT.glob("outputs/**/trim_map.json"))))
+    checked, bad = 0, []
+    for p in maps:
+        mapping = json.loads(p.read_text())
+        if not mapping.get("contig"):
+            continue
+        checked += 1
+        kw = trim_cross_check(_TrimFromDisk(mapping))
+        want = {c: sorted(tuple(x) for x in v)
+                for c, v in kw.get("kept_by_chain", {}).items()}
+        got: dict[str, list] = {}
+        for c, lo, hi in pc(mapping["contig"])[1]:
+            got.setdefault(c, []).append((lo, hi))
+        if want and {c: sorted(v) for c, v in got.items()} != want:
+            bad.append(str(p.relative_to(_ROOT)))
+    if not checked:
+        pytest.skip("no shipped trim maps in this checkout")
+    assert bad == [], f"{len(bad)} of {checked} archived trims would refuse: {bad[:3]}"
+
+
+def test_every_archived_trim_satisfies_the_item_18_invariant():
+    """`n_residues_after == sum(kept_segments)` on 53 of 53 — why it is hard."""
+    maps = sorted(set(list(_ROOT.glob("projects/**/trim_map.json"))
+                      + list(_ROOT.glob("outputs/**/trim_map.json"))))
+    bad = []
+    for p in maps:
+        m = json.loads(p.read_text())
+        if m.get("n_residues_after") is None:
+            continue
+        total = sum(hi - lo + 1 for lo, hi in (m.get("kept_segments") or []))
+        if m["n_residues_after"] != total:
+            bad.append((str(p.relative_to(_ROOT)), m["n_residues_after"], total))
+    assert bad == [], f"{len(bad)} trims disagree with their own spans: {bad[:3]}"

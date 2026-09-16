@@ -4417,7 +4417,7 @@ class PipelineRunner:
     def _stage_binder_spec(self, intel: dict[str, str], hotspots_json: str,
                            trim, dirs: dict[str, Path],
                            result: PipelineResult) -> Path:
-        from src.foundry_spec import build_rfd3_spec
+        from src.foundry_spec import build_rfd3_spec, trim_cross_check
 
         hs = json.loads(hotspots_json)
         # (chain, auth) membership, not a flat author-id set. Two chains
@@ -5102,6 +5102,7 @@ class PipelineRunner:
             progress, render_progress, resume, run_design,
             sec_per_refold_observed, wait_for_campaign,
         )
+        from src.foundry_spec import trim_cross_check
 
         cfg = self._binder_cfg()
         paths = self._binder_paths(dirs, mode)
@@ -5135,7 +5136,9 @@ class PipelineRunner:
         else:
             job = run_design(spec_path, paths, cfg=cfg, plan=plan,
                              n_target_segments=trim.n_segments,
-                             kept_segments=trim.kept_segments)
+                             cross_check=trim_cross_check(trim),
+                             expected_target_residues=getattr(
+                                 trim, "n_residues_after", None))
         self._binder_checkpoint(
             f"{mode}_running", mode, "job",
             {"job_id": job.job_id, "pid": job.pid,
@@ -6280,7 +6283,8 @@ class PipelineRunner:
         Both must be present and consistent: a spec without its trim map cannot
         be cross-checked against the segments it claims to target.
         """
-        from src.foundry_spec import SpecError, validate_spec
+        from src.foundry_spec import (SpecError, trim_cross_check,
+                                      validate_spec)
         from src.structure_trim import load_mapping
 
         mapping_path = site_dirs["trim"] / "trim_map.json"
@@ -6289,7 +6293,10 @@ class PipelineRunner:
             return None
         try:
             trim = _TrimFromDisk(load_mapping(mapping_path))
-            validate_spec(specs[0], kept_segments=trim.kept_segments)
+            # Chain-aware, or a prepared GLUE site reads as "unusable;
+            # rebuilding it" and the multi-day campaign re-pays for the LLM
+            # stages it already ran.
+            validate_spec(specs[0], **trim_cross_check(trim))
         except (SpecError, OSError, ValueError, KeyError) as exc:
             logger.warning(
                 f"prepared site at {site_dirs['spec']} is unusable ({exc}); "

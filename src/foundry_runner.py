@@ -866,6 +866,8 @@ def run_design(
     plan: CampaignPlan,
     n_target_segments: int = 1,
     kept_segments: Sequence[tuple[int, int]] | None = None,
+    cross_check: dict | None = None,
+    expected_target_residues: int | None = None,
 ) -> JobRecord:
     """
     Validate, write the driver, and launch the campaign detached.
@@ -888,7 +890,12 @@ def run_design(
         max_target = round(int(max_target) * (
             1.0 + float(_foundry.get("target_budget_overshoot", 0.15))))
     try:
-        validate_spec(spec_path, kept_segments=kept_segments,
+        # `cross_check` is the chain-aware form from `trim_cross_check`; the
+        # bare `kept_segments` kwarg stays for the callers that hold a
+        # genuinely single-chain trim and pass one directly.
+        validate_spec(spec_path,
+                      **(cross_check or {"kept_segments": kept_segments}),
+                      expected_target_residues=expected_target_residues,
                       max_target_residues=max_target,
                       max_complex_tokens=_foundry.get("max_complex_tokens"))
     except Exception as exc:

@@ -195,10 +195,27 @@ def parse_contig(contig: str) -> tuple[tuple[int, int], list[tuple[str, int, int
     return binder, spans
 
 
+def trim_cross_check(trim: Any) -> dict[str, Any]:
+    """The `validate_spec` cross-check kwargs for a trim, chain-aware if it is.
+
+    One helper so the three call sites cannot drift. Returns
+    `{"kept_by_chain": ...}` only when the trim carries a NON-EMPTY one —
+    which no `TrimResult` or `_TrimFromDisk` did before `kept_by_chain`
+    existed, and no archived `trim_map.json` records — so every trim in
+    existence today gets the identical `{"kept_segments": ...}` it always had.
+    """
+    by_chain = getattr(trim, "kept_by_chain", None)
+    if by_chain:
+        return {"kept_by_chain": by_chain}
+    return {"kept_segments": list(getattr(trim, "kept_segments", []) or [])}
+
+
 def validate_spec(
     spec_path: Path,
     *,
     kept_segments: Sequence[tuple[int, int]] | None = None,
+    kept_by_chain: "Mapping[str, Sequence[tuple[int, int]]] | None" = None,
+    expected_target_residues: int | None = None,
     max_target_residues: int | None = None,
     max_complex_tokens: int | None = None,
 ) -> dict[str, Any]:
@@ -214,6 +231,11 @@ def validate_spec(
     runs to completion and is quietly worthless.
     """
     import gemmi
+
+    if kept_segments is not None and kept_by_chain is not None:
+        raise SpecError(
+            "pass kept_segments OR kept_by_chain, not both — they are two "
+            "spellings of the same cross-check and could disagree.")
 
     spec_path = Path(spec_path)
     try:
@@ -328,7 +350,12 @@ def validate_spec(
                       "so this contig would address the wrong chain. Pass "
                       "the PDB the trim writes (trimmed.pdb) instead.")
 
-        n_target = 0
+        # A SET of (chain, auth), not a running sum. Two spans that overlap
+        # would otherwise be double-counted: measured today, the overlap
+        # contig `A29-128,A29-37` reports 109 target residues for a
+        # 100-residue chain, and 195 tokens for a 186-token complex.
+        # Identical on all 49 archived specs, whose spans are disjoint.
+        target_res: set[tuple[str, int]] = set()
         for chain, lo, hi in spans:
             missing = [i for i in range(lo, hi + 1) if (chain, i) not in residues]
             # Gaps inside a span are normal (unmodelled loops); the ENDPOINTS
@@ -361,12 +388,14 @@ def validate_spec(
                       "the GPU. Add the modification to "
                       "structure_tools._CURATED_PARENTS if its chemistry is "
                       "unambiguous, or split the contig around it.")
-            n_target += (hi - lo + 1) - len(missing)
+            target_res |= {(chain, i) for i in range(lo, hi + 1)
+                           if (chain, i) in residues}
             if len(missing) > 0.25 * (hi - lo + 1):
                 logger.warning(
                     f"design {name!r} span {chain}{lo}-{hi} is {len(missing)} "
                     f"residues short of contiguous — check for unmodelled loops")
 
+        n_target = len(target_res)
         if max_target_residues and n_target > max_target_residues:
             raise SpecError(
                 f"design {name!r} targets {n_target} residues, over the "
@@ -430,7 +459,23 @@ def validate_spec(
                     f"design {name!r} hotspot {key} lies outside every contig "
                     f"span — it was trimmed away or the contig is wrong")
 
-        if kept_segments is not None:
+        if kept_by_chain is not None:
+            # Strictly stronger than the chain-less branch: it checks the
+            # chain letter too. The old comparison threw the chain away, so it
+            # also accepted a contig whose spans were on the WRONG chains —
+            # measured, `A29-128,A29-37` against `[(29,128),(10,37)]` passes
+            # the chain-less check.
+            got_by_chain: dict[str, list[tuple[int, int]]] = {}
+            for c, lo, hi in spans:
+                got_by_chain.setdefault(c, []).append((lo, hi))
+            got_c = {c: sorted(v) for c, v in got_by_chain.items()}
+            want_c = {c: sorted(tuple(x) for x in v)
+                      for c, v in kept_by_chain.items()}
+            if got_c != want_c:
+                raise SpecError(
+                    f"design {name!r} contig spans {got_c} do not match the "
+                    f"trim's kept spans {want_c}")
+        elif kept_segments is not None:
             got = sorted((lo, hi) for _, lo, hi in spans)
             want = sorted(tuple(s) for s in kept_segments)
             if got != want:
@@ -438,9 +483,27 @@ def validate_spec(
                     f"design {name!r} contig spans {got} do not match the trim's "
                     f"kept segments {want}")
 
+        if expected_target_residues is not None and \
+                n_target != expected_target_residues:
+            # Scope item 18, turned from "closed by construction" into a
+            # check. The two numbers answer different questions and both are
+            # authoritative for their own: the CONTIG is what RFD3 templates,
+            # the trim's count is what the campaign is COSTED on. A
+            # disagreement almost always means a chain was dropped on one side
+            # — which under-costs the GPU quadratically and is otherwise
+            # silent. Hard, because the invariant is exact: 44 of 44 archived
+            # trim/spec pairs agree.
+            raise SpecError(
+                f"design {name!r} contig covers {n_target} target residues but "
+                f"the trim recorded {expected_target_residues}. The contig is "
+                f"what RFD3 is templated on and the trim's count is what the "
+                f"campaign is costed on, so they must agree — a mismatch this "
+                f"size usually means a chain reached one and not the other.")
+
         summary["designs"][name] = {
             "binder_range": list(binder),
             "target_spans": [[c, lo, hi] for c, lo, hi in spans],
+            "target_chains": sorted({c for c, _, _ in spans}),
             "n_target_residues": n_target,
             "n_tokens": binder[1] + n_target,
             "n_hotspots": len(hotspots),
