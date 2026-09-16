@@ -185,6 +185,7 @@ class _TrimFromDisk:
 
     def __init__(self, mapping: dict):
         self.kept_segments = [tuple(s) for s in mapping.get("kept_segments", [])]
+        # `.get(k, default)`, not `or`: a stored 0 must stay 0.
         self.n_segments = int(mapping.get("n_segments", len(self.kept_segments)))
         self.contig = mapping.get("contig", "")
         self.trimmed_path = Path(mapping.get("trimmed_path")
@@ -204,6 +205,18 @@ class _TrimFromDisk:
             mapping.get("n_residues_before") or self.n_residues_after)
         self.target_chain = mapping.get("target_chain", "")
         self.partner_chain = mapping.get("partner_chain", "")
+        # Reconstructed for the trim maps written before this key existed —
+        # every one of the 53 on disk — but ONLY when a target_chain is known.
+        # A mapping without one would otherwise reconstruct under the key `""`,
+        # which is truthy, and step 9's chain-aware cross-check would compare
+        # `{"": [...]}` against `{"A": [...]}` and refuse in front of a GPU
+        # launch. `tests/test_audit_fixes.py` builds exactly that shape.
+        stored = mapping.get("kept_by_chain") or {}
+        self.kept_by_chain = (
+            {c: [tuple(x) for x in segs] for c, segs in stored.items()}
+            if stored else
+            ({self.target_chain: list(self.kept_segments)}
+             if self.target_chain else {}))
         self.pdb_id = mapping.get("pdb_id", "")
         self.warnings = list(mapping.get("warnings") or [])
         # Read back so a `--start-from` resume still reports a modified

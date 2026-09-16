@@ -161,6 +161,17 @@ class TrimResult:
     method: str
     hotspots_retained: list[dict]
     hotspots_lost: list[dict]
+    #: Every author-numbered span the contig names, keyed by chain, PRIMARY
+    #: TARGET CHAIN FIRST — the order fixes RFD3's output 1..N numbering.
+    #:
+    #: `kept_segments` is NOT deprecated and is NOT a flattening of this: it
+    #: keeps its exact current meaning, the primary target chain's spans, and
+    #: every existing consumer is right to go on reading it. A consumer that
+    #: means "everything RFD3 is conditioned on" must read THIS field instead,
+    #: because `(lo, hi)` pairs from two chains share one author-number space
+    #: and cannot be told apart once flattened — on 4ZGM chain B's hotspots at
+    #: auth 29 and 36 fall inside chain A's kept range 29-128.
+    kept_by_chain: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
     # NOTE the two bases. `interface_bsa_before_A2` is the whole interface
     # (BOTH chains) — the conventional "how big is this interface" number.
     # `interface_bsa_target_side_A2` counts only the chain being trimmed, and is
@@ -1329,6 +1340,16 @@ def write_trimmed(
     return out_path
 
 
+def _row_chain(hotspot: dict, default: str) -> str:
+    """The chain a hotspot row was attributed to, or `default`.
+
+    A row with no `chain` key is a legacy table that never said which chain it
+    meant; `handoff.parse_hotspot_residues` stamps one on every row it parses
+    now, but reports on disk predate that and are re-parsed on every resume.
+    """
+    return str(hotspot.get("chain") or default)
+
+
 def build_contig_multi(kept_by_chain: "Mapping[str, Sequence[tuple[int, int]]]",
                        binder_min: int, binder_max: int) -> str:
     """
@@ -1431,6 +1452,7 @@ def trim_target(
     chainsaw_cmd: Sequence[str] | None = None,
     min_bsa_retention: float = 0.90,
     allowed_auth: set[int] | None = None,
+    co_target_chains: Sequence[str] = (),
     max_exposed_hydrophobic: int | None = MAX_EXPOSED_HYDROPHOBIC,
     max_exposed_hydrophobic_fraction: float | None = (
         MAX_EXPOSED_HYDROPHOBIC_FRACTION),
@@ -1469,8 +1491,31 @@ def trim_target(
             raise TrimError(
                 "the topology restriction excludes every residue of "
                 f"chain {target_chain}; nothing is left to design against")
+    # A molecular glue's epitope spans two chains, so a hotspot on the
+    # co-target is legitimate and must be routed to its own chain rather than
+    # looked for on the target. With no co-target this list IS `hotspots` —
+    # the same object, not a copy, which is what keeps `_exposed_hydrophobic`'s
+    # 10 A clearance list bit-identical for every existing run.
+    co = [c for c in (co_target_chains or ()) if c and c != target_chain]
+    if co:
+        if len(co) > 1 or co[0] != (partner_chain or ""):
+            raise TrimError(
+                f"co_target_chains={list(co)!r} but the only other chain "
+                f"`write_trimmed` puts in the output is partner_chain="
+                f"{partner_chain!r}. Trimming a target across arbitrary chains "
+                f"is scope item 7 (Stage 6).")
+        if allowed_auth is not None:
+            raise TrimError(
+                "co_target_chains cannot be combined with allowed_auth: it is "
+                "a bare set of TARGET-chain author ids and is meaningless on a "
+                "second chain, whose numbering is a different space "
+                "(scope item 14, Stage 6).")
+
+    hotspots_target = ([h for h in hotspots
+                        if _row_chain(h, target_chain) == target_chain]
+                       if co else hotspots)
     by_auth = {r["auth"]: r for r in residues}
-    hot = _hotspot_auths(hotspots)
+    hot = _hotspot_auths(hotspots_target)
     missing = [h for h in hot if h not in by_auth]
     if missing:
         raise TrimError(
@@ -1513,11 +1558,26 @@ def trim_target(
                 desolvated, target_chain, partner_chain)
 
     sse = sse_by_residue(structure_path, target_chain)
-    keep, warnings = plan_trim(residues, domains, hotspots, budget,
+    keep, warnings = plan_trim(residues, domains, hotspots_target, budget,
                                per_residue_bsa=per_bsa, sse=sse,
                                allowed_auth=allowed_auth)
     if not keep:
         raise TrimError("trim planning kept no residues")
+
+    if co and len(keep) != len(residues):
+        # THE guard that makes Stage 3 safe. Every remaining measurement in
+        # this function — `_exposed_hydrophobic`, `_per_residue_bsa`,
+        # `bsa_retention`, `min_bsa_retention` — is written against ONE chain,
+        # and broadening any of them to assembly context would change a
+        # measurement the 13 calibrated campaigns were checked against. With
+        # the trim a no-op they are all trivially correct, because nothing was
+        # cut. A co-target that must actually be CUT is scope item 7 (Stage 6).
+        raise TrimError(
+            f"a co-target ({', '.join(co)}) is only supported when the trim is "
+            f"a NO-OP, and this one would cut chain {target_chain} from "
+            f"{len(residues)} residues to {len(keep)}. Two-chain trimming is "
+            f"scope item 7 (Stage 6); raise design.foundry."
+            f"target_residue_budget if the whole complex fits.")
 
     segments = _segments(keep)
     keep_map: dict[str, Sequence[int] | None] = {target_chain: keep}
@@ -1528,9 +1588,37 @@ def trim_target(
                              record=modified)
     write_trimmed(structure_path, out_dir / "trimmed.pdb", keep_map)
 
+    # The co-target's spans are read back out of the file the trim just wrote,
+    # not re-derived: `write_trimmed`'s `keep_map` already retains that chain
+    # in full (`None` means "keep everything"), so the file is the only
+    # statement of what RFD3 will actually be conditioned on.
+    co_kept: dict[str, list[tuple[int, int]]] = {}
+    for c in co:
+        auths = [r["auth"] for r in chain_residues(cif_path, c)]
+        if not auths:
+            raise TrimError(
+                f"co-target chain {c} has no polymer residues in "
+                f"{cif_path.name} — the contig would name a span that is not "
+                f"in the file RFD3 is given.")
+        co_kept[c] = _segments(set(auths))
+
     kept_set = set(keep)
-    retained = [h for h in hotspots if int(h.get("auth_seq_id", -1)) in kept_set]
-    lost = [h for h in hotspots if int(h.get("auth_seq_id", -1)) not in kept_set]
+    # Keyed on (chain, auth), not a bare author id: two chains share one
+    # author-number space. On 4ZGM chain B's hotspots at auth 29 and 36 fall
+    # inside chain A's kept range 29-128 and would be recorded retained
+    # against the wrong molecule, while B26 would raise "trim lost hotspot(s)
+    # [26]" for a residue that is present on the chain it belongs to.
+    kept_pairs = {(target_chain, a) for a in kept_set}
+    for _c, _segs in (co_kept or {}).items():
+        for _lo, _hi in _segs:
+            kept_pairs |= {(_c, a) for a in range(_lo, _hi + 1)}
+
+    def _kept(h: dict) -> bool:
+        return (_row_chain(h, target_chain),
+                int(h.get("auth_seq_id", -1))) in kept_pairs
+
+    retained = [h for h in hotspots if _kept(h)]
+    lost = [h for h in hotspots if not _kept(h)]
 
     # Retention is measured over the residues we KEPT, not over the whole native
     # interface. Dropping a second interface on purpose (7XQ8's CD79A/CD79B pair
@@ -1645,14 +1733,38 @@ def trim_target(
     # behave like the deposited structure. Surfaced, never auto-mutated.
     warnings += _disulfide_warnings(structure_path, target_chain, kept_set)
 
+    # Primary target chain FIRST: the order fixes RFD3's output 1..N
+    # numbering, which `diffused_index_map` and `binder_metrics` read, and
+    # `_run_cluster_stage` takes `spans[0][0]` as the target chain.
+    kept_by_chain: dict[str, list[tuple[int, int]]] = {target_chain: segments}
+    kept_by_chain.update(co_kept)
+    all_segments = [seg for segs in kept_by_chain.values() for seg in segs]
+
     result = TrimResult(
         trimmed_path=cif_path,
         mapping_path=out_dir / "trim_map.json",
         kept_segments=segments,
-        n_segments=len(segments),
-        contig=build_contig(segments, target_chain, binder_min, binder_max),
-        n_residues_before=len(residues),
-        n_residues_after=len(keep),
+        kept_by_chain=kept_by_chain,
+        # All three counts are over EVERY chain the contig names, because all
+        # three describe what RFD3 is conditioned on and what RF3 must fold.
+        #
+        # `n_residues_after` is the open half of scope item 18, and it is the
+        # one that costs GPU: `pipeline_runner` computes `trim.n_residues_after
+        # + _binder_midpoint(trim.contig)` in two places to size a campaign, so
+        # a target-chain-only count gives 4ZGM 100+78 = 178 tokens against the
+        # true 128+78 = 206 — a 22% under-count fed into a law with exponent
+        # 2.56, and through `choose_compute()` into the local-vs-cluster
+        # decision.
+        #
+        # `n_segments` feeds `write_campaign_driver`'s `max_cb`. A glue
+        # contig's spans are physically separate molecules, so the chain
+        # breaks between them are unavoidable and a hardcoded 1 rejects every
+        # design.
+        n_segments=len(all_segments),
+        contig=build_contig_multi(kept_by_chain, binder_min, binder_max),
+        n_residues_before=len(residues) + sum(
+            hi - lo + 1 for segs in co_kept.values() for lo, hi in segs),
+        n_residues_after=sum(hi - lo + 1 for lo, hi in all_segments),
         domains=list(domains),
         method=method_used,
         hotspots_retained=list(retained),
@@ -1896,9 +2008,15 @@ def _disulfide_warnings(structure_path: Path, chain: str,
 def _write_mapping(result: TrimResult, source: Path, pdb_id: str | None,
                    target_chain: str, partner_chain: str | None,
                    budget: int, hotspots: Sequence[dict]) -> None:
-    kept = set()
-    for lo, hi in result.kept_segments:
-        kept |= set(range(lo, hi + 1))
+    # (chain, auth) pairs over EVERY chain the contig names, so a glue's
+    # co-target hotspots are judged against their own chain. The fallback is
+    # `{target_chain: kept_segments}` rather than `{}` because three separate
+    # places assert `all(h["retained"])` (tests/test_structure_trim.py,
+    # tests/test_binder_report.py, scripts/test_e2e_binder.py) and an empty
+    # mapping turns all of them False at once.
+    by_chain = result.kept_by_chain or {target_chain: result.kept_segments}
+    kept_pairs = {(c, a) for c, segs in by_chain.items()
+                  for lo, hi in segs for a in range(lo, hi + 1)}
     payload = {
         "pdb_id": pdb_id,
         "source": str(source),
@@ -1911,6 +2029,12 @@ def _write_mapping(result: TrimResult, source: Path, pdb_id: str | None,
         "partner_chain": partner_chain,
         "budget": budget,
         "kept_segments": [list(s) for s in result.kept_segments],
+        # Every span the contig names, keyed by chain. No separate
+        # `co_target_chains` key: `[c for c in kept_by_chain if c !=
+        # target_chain]` is the same information with no second source to
+        # disagree with this one.
+        "kept_by_chain": {c: [list(x) for x in segs]
+                          for c, segs in by_chain.items()},
         "n_segments": result.n_segments,
         "contig": result.contig,
         "n_residues_before": result.n_residues_before,
@@ -1920,7 +2044,8 @@ def _write_mapping(result: TrimResult, source: Path, pdb_id: str | None,
         "identity_numbering": True,
         "auth_in_to_auth_out": {},
         "hotspots": [
-            {**h, "retained": int(h.get("auth_seq_id", -1)) in kept}
+            {**h, "retained": (_row_chain(h, target_chain),
+                               int(h.get("auth_seq_id", -1))) in kept_pairs}
             for h in hotspots
         ],
         "domains": [asdict(d) for d in result.domains],
