@@ -539,6 +539,78 @@ design:
     n_seq: 4
     poll_hint_s: 1800   # how often campaign_status.py suggests re-checking
 
+  # Modal compute path (src/modal_runner.py + src/modal_app.py): LPT spawns
+  # RFD3 -> solubleMPNN -> RF3 on Modal's GPUs, polls a progress file, and
+  # syncs the finished tree back into the ordinary local campaign directory —
+  # so everything downstream (scoring, ranking, reports, --start-from
+  # binder_scoring) reads it exactly as it reads a local run.
+  #
+  # THE ONLY BILLED COMPUTE TARGET IN LPT. Reaching it always takes an
+  # explicit `--compute modal`: `choose_compute` cannot return it, so `auto`
+  # never drifts here, and a resume that finds a persisted modal placement
+  # without `--compute modal` on the command line is REFUSED rather than
+  # either continuing to spend or silently falling back to a multi-day local
+  # run. Nothing below turns it on; these are only the terms it runs under
+  # once an operator asks for it.
+  #
+  # One-time setup:  modal setup && python scripts/modal_setup.py
+  # (the second uploads solubleMPNN, which foundry's own `install base-models`
+  #  does not ship, and deploys one function per GPU).
+  modal:
+    # Which GPU. Each is a SEPARATELY DEPLOYED Modal function, because a
+    # Function's resources are fixed at deploy time in this client — so
+    # changing this needs `modal deploy src/modal_app.py` again.
+    #
+    # A10 is the default and is not the weak choice it looks like. Measured on
+    # a 286-token complex (projects/smoke_foundry's TEAD1 spec): RF3 refolds at
+    # ~17 s against this workstation's fitted 17.8 s — at par — while RFD3 runs
+    # 17.3 s/design against 10.0 s, i.e. 1.7x slower. RF3 is the bulk of a
+    # campaign, so A10 is both the cheapest and the best value here. Options:
+    # A10 | L40S | A100-40GB | H100.
+    gpu: "A10"
+    # Hard ceiling in USD on ONE stage launch, checked before any GPU-second is
+    # spent; over it, the launch is refused, not warned about. A warning in a
+    # detached campaign is a log line nobody reads until the invoice arrives.
+    # 10.0 comfortably covers a pilot (~$2) and a calibration (~$10 at 286
+    # tokens) and refuses a production campaign, which at these rates is
+    # several hundred dollars and should be a deliberate, separate decision.
+    max_usd: 10.0
+    # Modal-GPU seconds per local-GPU second for the same work. Blended across
+    # the two stages that matter (see `gpu` above): the true figures on A10 are
+    # ~0.96x for RF3 and ~1.72x for RFD3, so a campaign lands near 1.1x. The
+    # default rounds UP because over-costing only refuses a run while
+    # under-costing spends money.
+    speed_factor: 1.25
+    # How many containers to split one stage across. 1 = no fan-out.
+    #
+    # Parallelism here is FREE IN MONEY and only in money: Modal bills
+    # GPU-seconds, so 20 containers for 1 h costs exactly what 1 container for
+    # 20 h costs. What it buys is wall-clock — a campaign that is GPU-days on
+    # one card finishes in hours — and what it costs is duplicated model
+    # loading, ~90 s per container (RFD3's 2.7 GB plus RF3's 3.0 GB, measured
+    # on A10). That is why `min_shard_minutes` exists rather than a bare
+    # container count: LPT clamps the shard count down rather than cutting
+    # shards so small that reloading the checkpoints dominates their bill.
+    #
+    # Each shard gets its own subdirectory on the volume AND its own spec
+    # filename, because RFD3 restarts its batch counter at 0 per shard and
+    # would otherwise write colliding names for genuinely different designs
+    # (RFD3 inference is unseeded — two containers given the same spec
+    # produced 73- and 78-residue binders).
+    n_containers: 1
+    # Refuse to cut a shard below this much work; the shard count is reduced
+    # to fit. 20 min keeps the ~90 s reload under ~8% of a shard's cost.
+    min_shard_minutes: 20
+    # Seconds between progress polls. Each poll reads one small progress.json
+    # off the volume — an API call, not a container start, so this is cheap;
+    # the run itself writes that file every 30 s from inside.
+    poll_interval_s: 60
+    # Skip downloading *_confidences.json (the PAE matrices) on sync-back.
+    # They are roughly half the bytes AND the only source for ipSAE, which
+    # cannot be recomputed once they are gone — same trade as
+    # design.foundry.prune_confidences, and off for the same reason.
+    skip_confidences: false
+
   # Scoring + ranking for the foundry backend (src/binder_metrics.py,
   # src/binder_ranking.py). Independent of the BoltzGen-oriented `thresholds`
   # and `ranking` blocks below.

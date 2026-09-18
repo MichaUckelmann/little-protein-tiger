@@ -1071,6 +1071,10 @@ for `production` only. `--compute local` / `--compute cluster` still force every
 GPU stage onto one path unconditionally, exactly as before `auto` existed — use
 these to override the automatic call.
 
+There is a fourth value, `--compute modal`, covered in 7f. `auto` never picks it:
+it is the only compute target that costs money per GPU-second, so it is reached
+only by asking for it explicitly.
+
 The cluster path itself: this machine cannot reach a SLURM scheduler directly, so
 `src/cluster_runner.py` *stages* the campaign — spec, trimmed structure, a real
 fetched target MSA — onto a `g-groups/.../binder_pipeline`-shaped checkout
@@ -1131,6 +1135,61 @@ python scripts/resume_cluster_calibration.py --project kras \
 > 6x), the per-design output layout, and the GPU hardware faults that occur at
 > this scale and look like bugs: [CLAUDE.md](CLAUDE.md), "Non-obvious facts the
 > cluster compute path depends on".
+
+
+### 7f. Rent GPUs on Modal (`--compute modal`)
+
+The cluster path needs a SLURM allocation and a human to submit. Modal needs
+neither: LPT launches the campaign itself, polls it, and downloads the finished
+tree into the ordinary local campaign directory — so scoring, ranking, reports
+and `--start-from binder_scoring` behave exactly as they do after a local run.
+
+It is also **the only compute target that costs money**, and is opt-in in three
+enforced ways: `--compute auto` can never select it; a resume is refused unless
+`--compute modal` is named again on that command line; and every stage is
+costed and **refused** above `design.modal.max_usd` (default $10) before any
+GPU time is spent.
+
+One-time setup:
+
+```bash
+uv pip install modal && modal setup
+python scripts/modal_setup.py          # weights onto the volume
+modal deploy src/modal_app.py          # one function per GPU
+python scripts/modal_setup.py --check  # verify
+```
+
+Then:
+
+```bash
+python scripts/run_pipeline.py \
+    --workflow binder --target TEAD1 --project tead1_modal \
+    --compute modal --stop-after calibration
+
+# what a given amount of work would cost, without running anything
+python scripts/modal_setup.py --estimate 8.5
+```
+
+To cut wall-clock, fan a stage out across containers with
+`design.modal.n_containers`. This costs **no extra money** — Modal bills
+GPU-seconds, so 20 containers for an hour is priced exactly like one container
+for twenty. What it does cost is ~90 s of duplicated model loading per
+container, so `design.modal.min_shard_minutes` (20) reduces the shard count
+rather than cutting shards too small to pay for themselves.
+
+Measured on an A10 against a 286-token complex: RF3 refolds at ~17 s against
+this workstation's fitted 17.8 s — at par — while RFD3 is ~1.7x slower. Since
+RF3 is the bulk of a campaign, A10 is both the cheapest option and the best
+value. Indicative cost at the defaults: a pilot ~$2, a calibration ~$10, a full
+production campaign several hundred dollars. Modal buys wall-clock and frees
+the workstation; it does not buy cheaper compute than a GPU you already own.
+
+> **Before you run one** — why `foundry install base-models` silently omits
+> solubleMPNN, why the published image needs a C compiler added, why fanning
+> out 20 containers costs no more than one long one (but tiny shards do),
+> and what the three opt-in guarantees actually enforce:
+> [CLAUDE.md](CLAUDE.md), "`--compute modal` is the only BILLED compute
+> target".
 
 
 ### 8. Visualise top-K designs in PyMOL

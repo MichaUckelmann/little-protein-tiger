@@ -300,7 +300,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--compute",
-        choices=["auto", "local", "cluster"],
+        choices=["auto", "local", "cluster", "modal"],
         default="auto",
         help=(
             "Binder workflow GPU stages: 'auto' (default) runs pilot/"
@@ -312,7 +312,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "every GPU stage to stage inputs + a launch script onto shared "
             "storage (src/cluster_runner.py, design.cluster in "
             "config.yaml) and pause for a human to submit — this machine "
-            "cannot reach a SLURM scheduler directly."
+            "cannot reach a SLURM scheduler directly. 'modal' runs every GPU "
+            "stage on Modal's GPUs (src/modal_runner.py, design.modal) and "
+            "syncs results back here; it is BILLED PER GPU-SECOND, so it is "
+            "never selected by 'auto', never entered by a resume that does "
+            "not name it again, and every stage is costed and refused above "
+            "design.modal.max_usd before any GPU time is spent."
         ),
     )
     p.add_argument(
@@ -573,6 +578,18 @@ def main() -> int:
             "campaigns the legacy path already produced still work — "
             "scripts/generate_ppi_report.py and scripts/pymol_show_topk.py "
             "read them off disk.")
+
+    if design_engine == "boltzgen" and args.compute == "modal":
+        # Same shape as the cluster refusal below, and for the same reason:
+        # `_run_boltzgen_stage` has no remote branch, so the campaign would run
+        # on the local GPU while the operator believed they were paying Modal
+        # for it. Refusing is the only honest answer — accepting would be wrong
+        # in the one direction nobody checks, since the run still succeeds.
+        parser.error(
+            "--compute modal is foundry-only: src/modal_runner.py drives "
+            "RFD3->solubleMPNN->RF3, not BoltzGen, and _run_boltzgen_stage "
+            "has no remote path. Run BoltzGen with --compute local, or use "
+            "--design-engine foundry.")
 
     if design_engine == "boltzgen" and (args.compute == "cluster" or args.n_gpus):
         # `_run_boltzgen_stage` has no cluster path — only the foundry stages

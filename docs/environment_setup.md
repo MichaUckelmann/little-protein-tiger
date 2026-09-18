@@ -169,6 +169,56 @@ cluster` isn't a fit yet — `--compute local` (the default fallback, capped by
 `design.foundry.max_local_hours`) still works standalone on any single GPU
 workstation with no cluster involved at all.
 
+## The Modal path: rented GPUs, and the only one that costs money
+
+`--compute modal` runs RFD3 → solubleMPNN → RF3 on Modal's GPUs and syncs the
+finished campaign tree back into the ordinary local campaign directory, so
+scoring, ranking, reports and `--start-from binder_scoring` behave exactly as
+they do after a local run. Unlike the cluster path it needs no shared
+filesystem and no human in the loop — LPT launches, polls and collects.
+
+Unlike *every other* compute path it is **billed per GPU-second**, so it is
+opt-in in three enforced ways: `--compute auto` can never select it; a resume
+whose `calibration.json` records Modal is refused unless `--compute modal` is
+named again on that command line; and every stage is costed and **refused**
+above `design.modal.max_usd` before any GPU time is spent. See CLAUDE.md's
+"`--compute modal` is the only BILLED compute target" for the reasoning and the
+measured rates.
+
+One-time setup:
+
+```bash
+uv pip install modal
+modal setup                                   # browser auth
+python scripts/modal_setup.py                 # weights onto the volume
+modal deploy src/modal_app.py                 # one function per GPU
+python scripts/modal_setup.py --check         # verify
+```
+
+Two things that are easy to get wrong:
+
+- **`foundry install base-models` does not ship solubleMPNN.** It fetches
+  rfd3/rfd3na/rf3/proteinmpnn/ligandmpnn. `scripts/modal_setup.py` uploads
+  solubleMPNN from your local `LPT_FOUNDRY_CKPT_DIR`, and `--check` fails
+  loudly if it is missing — because MPNN would otherwise run with proteinMPNN
+  weights and produce a different sequence distribution in a campaign that
+  looks completely normal.
+- **A Modal Function's GPU is fixed at deploy time.** Each GPU is its own
+  deployed function, so changing `design.modal.gpu` means running
+  `modal deploy src/modal_app.py` again.
+
+Rough costs at the shipped defaults (A10, 286-token complex): a pilot is ~$2,
+a calibration ~$10, and a full production campaign several hundred dollars —
+which is why `max_usd` defaults to 10 and a production run has to be a
+deliberate decision. Fanning out across containers (`design.modal.n_containers`)
+costs no *more* than one long container — Modal bills GPU-seconds — but each
+container re-pays ~90 s of model loading, so `design.modal.min_shard_minutes`
+clamps the shard count down rather than cutting shards too small to pay for
+themselves.
+
+If you have a local GPU, `--compute local` remains the default and the cheapest
+option; Modal buys wall-clock and frees the workstation, not money.
+
 ## Containers?
 
 Deliberately not part of this story. Every external tool above is already

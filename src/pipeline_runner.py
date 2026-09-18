@@ -569,9 +569,20 @@ class PipelineRunner:
         # it survives a resume in a fresh process. Every other GPU stage
         # (pilot, calibration itself) always runs locally regardless of this
         # setting — they're deliberately small.
-        if compute not in {"auto", "local", "cluster"}:
+        # "modal" (src/modal_runner.py: LPT spawns the campaign on Modal's
+        # GPUs, polls it, and syncs the finished tree back into the ordinary
+        # local campaign_dir) is a fourth value, and the ONLY one that costs
+        # money per GPU-second. It is therefore reachable exclusively by an
+        # operator typing `--compute modal`: `choose_compute` never returns it,
+        # so "auto" cannot drift onto a paid backend, and a resume that finds a
+        # persisted modal placement without `--compute modal` on the command
+        # line is refused rather than silently continuing (or silently falling
+        # back to a workstation run that would take GPU-days). See
+        # `modal_runner.assert_opt_in`.
+        if compute not in {"auto", "local", "cluster", "modal"}:
             raise ValueError(
-                f"Invalid compute={compute!r}; expected 'auto', 'local', or 'cluster'.")
+                f"Invalid compute={compute!r}; expected 'auto', 'local', "
+                f"'cluster', or 'modal'.")
         self._compute = compute
         # Hours threshold for choose_compute()'s local-vs-cluster call at the
         # calibration stage. None => fall back to
@@ -5213,6 +5224,93 @@ class PipelineRunner:
         return {"top_k": dirs["scoring"] / "top_k.csv", "ranking": None,
                 "filter_stats": stats}
 
+    def _run_modal_stage(self, mode: str, spec_path: Path, trim,
+                         dirs: dict[str, Path], result: PipelineResult, *,
+                         paths, plan, attach: bool) -> dict:
+        """
+        Run one campaign stage on Modal, then sync the tree back here.
+
+        Shaped like the LOCAL path, not the cluster one: LPT can drive Modal
+        itself, so this launches, polls and collects rather than staging a
+        package and pausing for a human. The only structural difference from a
+        local run is that the campaign directory is filled by a download at the
+        end instead of by a driver writing into it live — and because the
+        download reproduces the exact `FoundryPaths.under` layout, everything
+        downstream (`progress`, `collect`, `_score_campaign`,
+        `--start-from binder_scoring`) is unchanged and unaware.
+
+        `modal_runner.launch` costs the stage and refuses over
+        `design.modal.max_usd` before spending a GPU-second.
+        """
+        from src.foundry_runner import FoundryError, collect, progress, render_progress
+        from src.modal_runner import (
+            ModalConfig, resume as modal_resume, wait_for_campaign as modal_wait,
+        )
+
+        mcfg = ModalConfig.from_cfg(self.config)
+        record = modal_resume(
+            paths, self._binder_cfg(), plan, mcfg, mode=mode,
+            spec_path=spec_path,
+            n_target_segments=getattr(trim, "n_segments", 1))
+
+        self._binder_checkpoint(
+            f"{mode}_running", mode, "job",
+            {"call_id": record["call_id"],
+             "campaign_id": record["campaign_id"],
+             "campaign_dir": str(paths.campaign_dir),
+             "compute": "modal", "gpu": record["gpu"],
+             "estimated_usd": record["estimated_usd"],
+             "expected_rfd3": plan.expected_rfd3,
+             "expected_rf3": plan.expected_rf3,
+             "resume_stage": mode})
+
+        out = dirs["binder"] / self._BINDER_STAGE_FILES[mode]
+        if not attach:
+            self._write_binder_report(
+                out, f"{mode.title()} campaign launched on Modal",
+                f"- call `{record['call_id']}` on {record['gpu']}\n"
+                f"- campaign `{record['campaign_id']}`\n"
+                f"- estimated ~${record['estimated_usd']:,.2f}\n",
+                {"campaign_dir": str(paths.campaign_dir),
+                 "call_id": record["call_id"], "resume_stage": mode})
+            self._record_stage(mode, "awaiting_user", out, stage=mode)
+            raise PipelinePausedError(f"{mode}_running", {
+                "campaign_dir": str(paths.campaign_dir),
+                "call_id": record["call_id"],
+                "gpu": record["gpu"],
+                "estimated_usd": record["estimated_usd"],
+                "expected_rf3": plan.expected_rf3,
+                "status_command": f"modal app logs {record['app_name']}",
+                # The resume MUST carry --compute modal: assert_opt_in refuses
+                # without it, deliberately.
+                "resume": f"--workflow binder --start-from {mode} --compute modal",
+            })
+
+        modal_wait(paths, plan, mcfg, record=record)
+        final = progress(paths, plan)
+        if final.n_rf3 == 0:
+            raise FoundryError(
+                f"the {mode} campaign on Modal produced no refolds "
+                f"(RFD3: {final.n_rfd3:,}, MPNN: {final.n_mpnn:,}, RF3: 0 of "
+                f"{plan.expected_rf3:,}). There is nothing to score, so this is "
+                f"not a weak result — the campaign did not run.\n"
+                f"Remote logs:\n    modal app logs {record['app_name']}\n"
+                f"Checkpoints on the volume:\n"
+                f"    python scripts/modal_setup.py --check")
+        if not final.complete:
+            logger.warning(
+                f"[{mode}] Modal campaign stopped short: {final.n_rf3:,} of "
+                f"{plan.expected_rf3:,} planned refolds. Scoring what exists.")
+        summary = collect(paths)
+        self._write_binder_report(
+            out, f"{mode.title()} campaign (Modal, {record['gpu']})",
+            render_progress(final), summary)
+        self._record_stage(mode, "complete", out, stage=mode)
+        result.stage_files[mode] = out
+        result.stages_completed.append(mode)
+        return {"paths": paths, "plan": plan, "summary": summary,
+                "modal_record": record}
+
     def _run_gpu_stage(self, mode: str, spec_path: Path, trim, dirs: dict[str, Path],
                        result: PipelineResult, *, attach: bool,
                        n_batches: int | None = None,
@@ -5237,6 +5335,12 @@ class PipelineRunner:
         if effective_compute == "cluster":
             return self._run_cluster_stage(mode, spec_path, trim, dirs, result,
                                            n_batches=n_batches)
+        if effective_compute == "modal":
+            # BEFORE anything else: a resume whose calibration.json says
+            # "modal" but whose command line does not is refused here, while
+            # refusing is still free.
+            from src.modal_runner import assert_opt_in
+            assert_opt_in(self._compute, effective_compute)
 
         from src.foundry_runner import (
             FoundryError, collect, plan_campaign, prefilter_rate_observed,
@@ -5271,6 +5375,14 @@ class PipelineRunner:
         plan = plan_campaign(cfg, paths, mode=mode, n_batches=n_batches,
                              prefilter_rate=observed, n_tokens=n_tokens,
                              sec_per_refold=rate or None)
+
+        if effective_compute == "modal":
+            # Deliberately AFTER plan_campaign: a Modal campaign is sized by
+            # exactly the same arithmetic, rates and disk clamp as a local one.
+            # The clamp still applies because the tree is synced back here, so
+            # this workstation's free space really does bound the campaign.
+            return self._run_modal_stage(mode, spec_path, trim, dirs, result,
+                                         paths=paths, plan=plan, attach=attach)
 
         if paths.driver_path.exists():
             job = resume(paths, cfg, plan)
@@ -5488,11 +5600,20 @@ class PipelineRunner:
         passed for pilot/calibration, so the cluster branch triggers only on
         the literal string "cluster" — `self._compute == "auto"` always means
         local for those two.
+
+        "modal" is deliberately NOT a scoring path: `_run_modal_stage` syncs the
+        finished tree back into the ordinary local `campaign_dir`, so a Modal
+        campaign is scored by the local `FoundryPaths` branch like any other.
+        This function still reports "modal" for production (it answers "where
+        did it run", which the stage report and manifest want), and
+        `_stage_binder_scoring` only ever tests for the literal "cluster" —
+        the one compute target whose output never lands here.
         """
         if mode == "production":
             _, compute = self._resolve_production_plan(calib, dirs, None)
             return compute
-        return "cluster" if self._compute == "cluster" else "local"
+        return "cluster" if self._compute == "cluster" else (
+            "modal" if self._compute == "modal" else "local")
 
     def _cluster_paths_for_mode(self, mode: str, dirs: dict[str, Path],
                                 cluster_cfg) -> "ClusterPaths":
@@ -5618,6 +5739,16 @@ class PipelineRunner:
             **res.as_dict(),
             "n_batches_local": n_batches_local,
             "n_batches_cluster": n_batches_cluster,
+            # One Modal container is one GPU, so the sizing is the local one —
+            # but the KEY has to exist. `_resolve_production_plan` looks up
+            # `n_batches_{compute}` by f-string, and a missing key sends a
+            # `--start-from production --compute modal` resume back to
+            # config.yaml's raw default (3,000 batches / ~87 GPU-h), which on a
+            # billed backend is the difference between the measured
+            # recommendation and several hundred dollars. The `max_usd` cap
+            # would refuse that, but being refused is not the same as being
+            # sized correctly.
+            "n_batches_modal": n_batches_local,
             "compute_choice": compute_choice.as_dict() if compute_choice else None,
         }
         (dirs["calibration"] / "calibration.json").write_text(

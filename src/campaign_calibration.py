@@ -228,6 +228,16 @@ def choose_compute(res: CalibrationResult, *, max_local_hours: float = 48.0,
 
     Returns None when the verdict isn't a scale-up at all (ITERATE/STOP) —
     there is nothing to place on either compute path.
+
+    It returns "local" or "cluster" and NOTHING ELSE. `--compute modal`
+    (src/modal_runner.py) is a third target, and it is deliberately outside
+    this function's vocabulary: Modal is billed per GPU-second, so a campaign
+    must never arrive there because an automatic placement decided it should.
+    Both compute paths this function chooses between are free at the point of
+    use — the workstation's GPU is already bought and the cluster is an
+    allocation — which is precisely what makes choosing between them
+    automatically safe. Adding a billed option here would break that property
+    silently. `tests/test_modal_runner.py` pins it.
     """
     if res.verdict not in ("SCALE_UP", "SCALE_UP_PARTIAL"):
         return None

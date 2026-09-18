@@ -1250,6 +1250,168 @@ being caught.
   way to resume a cluster campaign staged against one specific site until
   the CLI gap is closed.
 
+## `--compute modal` is the only BILLED compute target
+
+`src/modal_runner.py` (local half) + `src/modal_app.py` (remote half) run
+RFD3 -> solubleMPNN -> RF3 on Modal's GPUs and **sync the finished tree back
+into the ordinary local `campaign_dir`**. That sync is the whole design: after
+it, `progress`, `collect`, `_score_campaign`, the reports and
+`--start-from binder_scoring` all read the same `FoundryPaths.under` layout
+they always did, which is why this backend adds **no scoring adapter and no
+second refold vocabulary** — unlike the cluster path, which needed both for
+Protenix. `_run_modal_stage` is dispatched from inside `_run_gpu_stage` AFTER
+`plan_campaign`, so a Modal campaign is sized by identical arithmetic, rates
+and disk clamp; the clamp still binds because the tree lands here.
+
+It is shaped like the LOCAL path, not the cluster one — LPT can drive Modal
+itself, so it launches, polls and collects rather than staging a package and
+pausing for a human. Unlike the cluster path it can also tell a FAILED job from
+an in-progress one (`FunctionCall.get(timeout=0)`), which on a shared mount is
+impossible.
+
+- **Every other compute target is free at the point of use; this one is not.**
+  The workstation's GPU is already bought and the cluster is an allocation,
+  which is exactly what makes `choose_compute` choosing between them
+  automatically safe. Three rules keep that property, and all three are
+  enforced rather than documented: `choose_compute` **never returns "modal"**
+  (so `auto` cannot drift onto a paid backend — pinned by a source-inspection
+  test, not just a value test); `modal_runner.assert_opt_in` **refuses a resume
+  whose `calibration.json` says modal but whose command line does not**, rather
+  than either continuing to spend or silently dropping to a multi-day local
+  run; and `preflight` **refuses** above `design.modal.max_usd` before a single
+  GPU-second, because a warning in a detached campaign is a log line nobody
+  reads until the invoice arrives.
+- **`n_batches_modal` must be persisted even though it equals
+  `n_batches_local`.** `_resolve_production_plan` looks up `n_batches_{compute}`
+  by f-string; a missing key sends `--start-from production --compute modal` to
+  config.yaml's raw 3,000-batch default (~87 GPU-h), which here is the
+  difference between the measured recommendation and several hundred dollars.
+- **A10 is the default and is not the weak choice it looks like.** Measured at
+  286 tokens (`projects/smoke_foundry`'s TEAD1 spec) against this workstation's
+  fitted laws: RF3 **~17 s/refold vs 17.8 s local — at par**, RFD3 **17.3
+  s/design vs 10.0 s — 1.7x slower**. RF3 is the bulk of a campaign, so the
+  blended factor is ~1.1 and A10 is both cheapest and best value.
+  `speed_factor` defaults to **1.25**, rounded up because over-costing only
+  refuses a run while under-costing spends money.
+- **Parallelism is free; container starts are not.** Modal bills GPU-seconds,
+  so 20 containers for 1 h costs exactly what 1 container for 20 h costs — the
+  fan-out (`design.modal.n_containers`) buys wall-clock at no premium. But each
+  container re-pays model loading (~90 s for the 2.7/3.0 GB RFD3/RF3
+  checkpoints; visible as 91.7 s total vs 69 s inference on a 4-design shard),
+  which is the same fixed-cost effect that makes a 24-design probe over-cost by
+  1.5-2x. `min_shard_minutes` (20) **clamps the shard count down** rather than
+  honouring a container count that would cut shards too small — 20 containers
+  over a 1 GPU-h stage is 3-minute shards, half of which is reloading the same
+  two checkpoints.
+- **Fan-out is sound because RFD3 inference is UNSEEDED, and that was
+  measured, not assumed.** `rfd3/engine.py` carries `seed: Optional[int] =
+  None` and only ever writes it into `prediction_metadata` — it never calls
+  `seed_everything` or `manual_seed` — so each container draws from its own
+  process RNG. Confirmed end-to-end: two containers handed the byte-identical
+  spec returned binders of **73 and 78 residues** (the length is sampled per
+  design from the 70-86 range). Had it been seeded, N containers would have
+  produced N identical copies of one design set — N-fold spend for a
+  single-shard sample, and a campaign that looks perfectly healthy while its
+  Wilson interval is computed over duplicates.
+- **…which is exactly what makes the OUTPUT NAMES dangerous.** RFD3 names
+  designs `<spec-file-stem>_<spec-key>_<batch>_model_<k>` and **the batch index
+  restarts at 0 in every shard**, so those two genuinely-different 73- and
+  78-residue designs were both called
+  `spec_tead1_binder_001_0_model_0`. Merging shards into one directory would
+  silently keep one and discard the rest. Two independent defences: each shard
+  gets its own subdirectory on the volume (Modal commits per container, so
+  disjoint paths are also what stops two commits racing), and its own **spec
+  filename** (`s00.json`, `s01.json`, …), which is what actually makes the
+  names unique. Renaming after the fact would have been the wrong fix —
+  `design_family` strips only `_b<b>_d<d>`, so the sidecar↔refold linkage rides
+  on those stems.
+- **Merging shards: the DESIGNS are uniquely named, the BOOKKEEPING is not.**
+  Every shard writes `filter_report.csv`, `progress.json` and `logs/*` at the
+  same relative path, so a flat merge lets the last shard win. Measured on the
+  3-shard trial: the merged tree kept 4 filter rows of 12 and one shard's logs.
+  `filter_report.csv` is the one that does damage — `_rebuild_filtered` reads
+  it to recreate `designs_filtered/`, so a re-synced campaign reports
+  `prefilter_rate` = (last shard's survivors)/(all designs) = **0.33 where the
+  truth was 0.92**, and that rate feeds `plan_campaign`'s sizing and disk clamp
+  for the NEXT campaign. Per-shard files now land under `shards/<label>/` and
+  the reports are concatenated into the campaign-level one;
+  `designs_filtered/` is rebuilt ONCE from the merged report. (It looked
+  correct before only because symlinks accumulated across incremental
+  rebuilds — luck, not a property.)
+- **`sync_back` shells out to `modal volume get`, and that is not a
+  micro-optimisation.** Measured on the same 148-file shard: **2.3 s through
+  the CLI's parallel downloader against ~90 s file-by-file via
+  `Volume.read_file`**, ~39x. A real campaign is ~12,000 files (1,352 refolds
+  x 7, per `projects/mesothelioma_showcase`), so the serial path would spend
+  **~2.1 hours** downloading a calibration that took ~6 GPU-h to compute — and
+  every resume would pay it again. Thread-pooling `read_file` is not the
+  alternative: the sync wrapper around Modal's async client is not safe to
+  share across threads. Files are staged into a temp dir inside the campaign
+  directory and `os.replace`d into place, so the move is a rename rather than a
+  second copy.
+- **A dead shard is a smaller sample, not a void one.** `call_status`
+  aggregates — `done` only when all shards are, `failed` as soon as any is —
+  but a failure still syncs every surviving shard's output and says so, because
+  5 of 6 shards is a legitimate (wider-interval) calibration. Same posture the
+  local path takes toward a campaign that stopped short, and the same shape as
+  the cluster path's GPU ECC faults. `aggregate_progress` reports the
+  **slowest** shard's stage, so a six-shard run does not claim "rf3" while a
+  straggler is still diffusing backbones.
+- **A Function's GPU is fixed at DEPLOY time in this client** — there is no
+  per-call `.options(gpu=...)` — so each GPU is a separately deployed function
+  (`run_campaign_a10`, `..._l40s`, `..._a100`, `..._h100`) and changing
+  `design.modal.gpu` requires `modal deploy src/modal_app.py` again. It also
+  means the price is visible at the call site rather than buried in a config
+  read.
+- **Three things about the published image, each of which costs a campaign to
+  learn.** (1) `rosettacommons/foundry:0.2.0-slim` **has no C compiler**, and
+  triton JIT-compiles a CUDA shim on RF3's first forward pass — so a campaign
+  dies with `Failed to find C compiler` *after* RFD3 and MPNN have spent their
+  GPU minutes. Hence `apt_install("build-essential")`. (2) The image sets
+  `ENV PATH=/app/foundry/.venv/bin:$PATH`, so Modal's `.pip_install()` resolves
+  `python -m pip` to foundry's uv venv, which ships **no pip**, and the build
+  fails with "No module named pip"; the LPT deps are installed against
+  `/usr/local/bin/python` (the `add_python` interpreter Modal actually runs
+  functions with) by explicit path. (3) **`foundry install base-models` does not
+  include solubleMPNN** — it fetches rfd3/rfd3na/rf3/proteinmpnn/ligandmpnn —
+  and nothing downstream would announce the substitution: MPNN runs happily
+  with proteinMPNN weights and produces a different, non-soluble sequence
+  distribution in a campaign that looks entirely normal. `scripts/modal_setup.py`
+  uploads it and `--check` fails loudly without it.
+- **`uv run` and `.venv-blackwell` do not travel.** Locally the driver does
+  `cd $FOUNDRY && uv run .venv-blackwell/bin/rfd3` because that venv is
+  hand-built for this workstation's sm_120 card; in the container the stock
+  venv's binaries carry their own shebang and are invoked directly. The whole
+  "foundry's venv name is one machine's accident" problem simply does not exist
+  on Modal.
+- **The decision logic is imported, not re-expressed.** `prefilter_designs` and
+  `build_mpnn_configs` are imported from LPT inside the container, so a remote
+  campaign applies byte-identical prefilter thresholds and MPNN configs to a
+  local one. Only the three GPU invocations are rewritten. `max_chainbreaks` is
+  still derived from the segment count on the local side and passed in — a
+  hardcoded 1 against a multi-segment target rejects every design.
+- **`designs_filtered/` is not downloaded; it is rebuilt.** The prefilter
+  writes symlinks, which do not survive a volume round-trip, so `sync_back`
+  skips the directory and relinks it from `filter_report.csv`. Without that,
+  `prefilter_rate_observed` reads 0 and a synced campaign looks like it
+  prefiltered everything away.
+- **Progress is written from INSIDE the container** (`progress.json`, every
+  30 s) and read locally off the volume as one small file. Counting from
+  outside would start a container per poll — paying GPU-adjacent rates to learn
+  nothing.
+- `design.modal.skip_confidences` is the same trade as
+  `design.foundry.prune_confidences` and off for the same reason: the PAE
+  matrices are ~half the bytes AND the only source for ipSAE.
+- Prices in `modal_runner._GPU_USD_PER_HOUR` are transcribed from
+  modal.com/pricing (`PRICES_REVIEWED`) and **will go stale**. They are used
+  only to REFUSE, never to bill, so a stale LOW price is the dangerous
+  direction — which is why `max_usd` is deliberately conservative.
+- **BoltzGen refuses `--compute modal`**, exactly as it refuses `--compute
+  cluster`: `_run_boltzgen_stage` has no remote branch, so accepting it would
+  run the campaign on the local GPU while the operator believed they were
+  paying for it — wrong in the one direction nobody checks, since the run still
+  succeeds.
+
 ## API cost accounting
 
 `src/token_budget.py` prices every LLM stage and enforces `--budget` as a hard cap.

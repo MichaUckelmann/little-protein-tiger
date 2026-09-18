@@ -47,7 +47,7 @@ _COLOR = {OK: "\033[32m", WARN: "\033[33m", FAIL: "\033[31m", NA: "\033[90m"}
 _RESET = "\033[0m"
 _USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
-TRACKS = ("structure", "literature", "ppi", "binder", "cluster")
+TRACKS = ("structure", "literature", "ppi", "binder", "cluster", "modal")
 
 
 @dataclass
@@ -564,6 +564,33 @@ def check_cluster(rep: Report) -> None:
             tracks=("cluster",))
 
 
+def check_modal(rep: Report) -> None:
+    """Is `--compute modal` usable? Deliberately offline-only.
+
+    Checks that the client is installed and authenticated, and stops there.
+    Resolving the deployed app or listing the checkpoint volume would be a
+    network round trip on every `doctor` run for a backend most runs never
+    touch; `scripts/modal_setup.py --check` does the full, online version.
+    """
+    try:
+        import modal  # noqa: F401
+    except ImportError:
+        rep.add("Modal client", NA, "modal not installed — --compute modal "
+                "unavailable",
+                "Only needed for --compute modal: uv pip install modal",
+                tracks=("modal",))
+        return
+    token = Path.home() / ".modal.toml"
+    if not token.is_file():
+        rep.add("Modal client", NA, "installed, not authenticated",
+                "modal setup", tracks=("modal",))
+        return
+    rep.add("Modal client", OK, f"installed, token at {token}",
+            "Verify the deployed app and weights with: "
+            "python scripts/modal_setup.py --check",
+            tracks=("modal",))
+
+
 def check_mcp(rep: Report) -> None:
     mcp = _ROOT / ".mcp.json"
     if not mcp.is_file():
@@ -647,7 +674,7 @@ def main() -> int:
                   check_api_keys, check_reference_data, check_corpus,
                   check_embedding_cache, check_structures, check_gpu,
                   check_disk, check_foundry, check_pyrosetta,
-                  check_boltzgen, check_cluster, check_mcp):
+                  check_boltzgen, check_cluster, check_modal, check_mcp):
         try:
             probe(rep)
         except Exception as exc:                   # a broken probe must not
