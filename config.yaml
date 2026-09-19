@@ -643,6 +643,26 @@ design:
       iptm_min: 0.5
       iface_pae_max: 15.0
       require_no_clash: true
+      # The clash gate is a DISTANCE, not a count. `clash_severe` counts
+      # inter-chain heavy-atom pairs under 2.2 A and zero-tolerates them,
+      # which conflates genuine overlaps (carbonyl oxygens at 0.95 A,
+      # guanidinium nitrogens at 1.17 A) with salt bridges modelled 0.6-0.9 A
+      # too short (Arg NH against Asp OD at 2.05-2.15 A; a real one is
+      # 2.7-3.0 A). Unable to tell them apart, it trips on ~40% of ANY single
+      # prediction — RF3's own unselected base rate is 39.8% — so it measured
+      # the draw rather than the design.
+      #
+      # Measured on pain_receptors_v3: 161 of 400 rejected designs (40.2%,
+      # the largest single cause) failed on this check alone, having passed
+      # every other gate. Across 4 predictors only 35 of 600 survived the
+      # count under all four, against 281 under this distance floor.
+      #
+      # 1.8 A is where the two populations separate in the measured distance
+      # histogram. It is NOT calibrated against binding, so it distinguishes
+      # two kinds of modelling error rather than good binders from bad.
+      # Set to null to restore the old zero-tolerance count; a campaign
+      # scored before this column existed falls back to it automatically.
+      min_contact_min: 1.8
       # ---- molecular glue (design_intent: stabilize) -------------------
       # All three MUST stay null unless this is a glue run. These columns are
       # blank on every other campaign, and a record missing a criterion's

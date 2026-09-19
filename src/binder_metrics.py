@@ -180,29 +180,46 @@ def epitope(atoms, binder: str, target: str, cutoff: float,
     return set(tg.res_id[(d < cutoff).any(axis=1)].tolist())
 
 
-def clashes(atoms, binder: str, target: str) -> tuple[int, int]:
+def clashes(atoms, binder: str, target: str) -> tuple[int, int, float | None]:
     """
-    Inter-chain steric violations on the raw prediction: (violations, severe).
+    Inter-chain steric violations: (violations, severe, min_contact).
 
-    `severe` counts heavy-atom pairs closer than 2.2 A — too close for any
-    chemistry, salt bridges included.  `violations` uses a polar-aware cutoff:
-    an N/O/S pair may legitimately reach 2.5 A as an H-bond, anything else needs
-    3.2 A.
+    All three are ALL-ATOM and heavy-atom — every atom of the binder chain
+    against every atom of the target chain, no backbone filter, and these
+    structures carry no hydrogens. Measured over 2,400 refolds, 47.7% of the
+    sub-2.2 A contacts are sidechain-sidechain, 42.7% mixed and only 9.6%
+    backbone-backbone, so a backbone-only measure would miss nine in ten.
 
-    RF3's own `has_clash` does not catch these — it was False for all 400 designs
-    in the reference set, 159 of which had a sub-2.2 A contact — so this is the
-    only clash signal available on the prediction itself.  A couple of violations
-    is prediction noise, not a bad design.
+    `min_contact` is the distance of the WORST contact, and it is what
+    `binder_ranking` gates on. The two counts are kept because they are cheap
+    and reported, but a count at a fixed cutoff cannot say how bad the worst
+    contact is, and that turns out to be the whole distinction:
+
+      - below ~1.8 A the contacts are physically impossible — two carbonyl
+        oxygens at 0.95 A, two guanidinium nitrogens at 1.17 A (also
+        electrostatically absurd), interpenetrating aromatics at 1.55 A;
+      - between 1.8 and 2.2 A they are overwhelmingly salt bridges and
+        H-bonds modelled 0.6-0.9 A too short — Arg NH1/NH2 against Asp
+        OD1/OD2 at 2.05-2.15 A, where a real one is 2.7-3.0 A.
+
+    `severe` counts pairs under 2.2 A and therefore conflates the two.
+    `violations` uses a polar-aware cutoff: an N/O/S pair may legitimately
+    reach 2.5 A as an H-bond, anything else needs 3.2 A. It is reported and
+    never gated.
+
+    RF3's own `has_clash` does not catch any of this — it was False for all 400
+    designs in the reference set, 159 of which had a sub-2.2 A contact — so the
+    prediction's own flag is not a substitute.
     """
     bd = atoms[atoms.chain_id == binder]
     tg = atoms[atoms.chain_id == target]
     if bd.array_length() == 0 or tg.array_length() == 0:
-        return 0, 0
+        return 0, 0, None
     d = np.linalg.norm(bd.coord[:, None, :] - tg.coord[None, :, :], axis=-1)
     polar_pair = (np.isin(bd.element, POLAR)[:, None]
                   & np.isin(tg.element, POLAR)[None, :])
     limit = np.where(polar_pair, 2.5, 3.2)
-    return int((d < limit).sum()), int((d < 2.2).sum())
+    return int((d < limit).sum()), int((d < 2.2).sum()), round(float(d.min()), 3)
 
 
 # ----------------------------------------------------------------------
@@ -649,7 +666,7 @@ FIELDS = [
     # The trim's fresh hydrophobic patch, per design. `patch_enrichment` is
     # the one to rank on — see `score_one`.
     "n_patch", "patch_contacts", "patch_contact_fraction", "patch_enrichment",
-    "clash_violations", "clash_severe",
+    "clash_violations", "clash_severe", "min_contact",
     "n_epitope_design", "n_epitope_refold", "n_epitope_shared",
     # RF3 confidence
     "iptm", "ptm", "plddt", "binder_plddt", "binder_ptm", "target_ptm",
@@ -884,9 +901,10 @@ def score_one(
         row["patch_contact_fraction"] = 0.0
         row["patch_enrichment"] = 0.0
 
-    v, sev = clashes(prd, B, T)
+    v, sev, min_contact = clashes(prd, B, T)
     row["clash_violations"] = v
     row["clash_severe"] = sev
+    row["min_contact"] = "" if min_contact is None else min_contact
 
     row["binder_len"] = dA.array_length()
     row["binder_seq"] = binder_sequence(prd, B)

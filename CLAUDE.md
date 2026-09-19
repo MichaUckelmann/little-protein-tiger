@@ -768,6 +768,42 @@ them without re-reading this list is how they get silently reverted.
   structure over-trusts sidechain placement. `sbuns` is the sidechain-only
   subset of `vbuns`, so weighting both double-counts. Both stay reported
   columns.
+- **The clash gate is a DISTANCE, not a count, and 1.8 A is where two
+  populations separate.** `binder_metrics.clashes` reports
+  `clash_violations` (polar-aware, 2.5/3.2 A), `clash_severe` (pairs under
+  2.2 A) and `min_contact` (the worst contact), and
+  `design.binder_ranking.thresholds.min_contact_min` (1.8) is what gates.
+  All three are ALL-ATOM heavy-atom, binder chain against target chain, no
+  backbone filter and no hydrogens in these files: of the sub-2.2 A contacts,
+  47.7% are sidechain-sidechain, 42.7% mixed and 9.6% backbone-backbone.
+  The old `clash_severe == 0` conflated genuine overlaps (two carbonyl
+  oxygens at 0.95 A, two guanidinium nitrogens at 1.17 A, interpenetrating
+  aromatics at 1.55 A) with salt bridges modelled 0.6-0.9 A short (Arg
+  NH1/NH2 against Asp OD1/OD2 at 2.05-2.15 A, where a real one is 2.7-3.0 A),
+  and because it could not tell them apart it tripped on ~40% of ANY single
+  prediction — RF3's own unselected base rate is 39.8% (159 of 400),
+  folding/Protenix's 43.5%. It measured the draw, not the design. Measured on
+  `pain_receptors_v3`: of 400 rejected designs **161 (40.2%, the largest
+  single cause) failed on this check alone**, having passed every other gate;
+  switching to the distance floor admitted **116 more of 600 and rejected
+  none**, which is not luck — `clash_severe == 0` implies
+  `min_contact >= 2.2`, so the new gate is strictly weaker by construction.
+  Across four independent predictors only 35 of 600 survived the count under
+  all four against 281 under the floor, i.e. roughly what four independent
+  ~45% draws predict.
+  - **1.8 A is NOT calibrated against binding.** It separates two kinds of
+    MODELLING error in a measured distance histogram; nothing in that
+    experiment folded or assayed anything. Set `min_contact_min: null` to
+    restore the count.
+  - **A campaign scored before the column existed falls back to
+    `clash_severe == 0` automatically**, because a missing gated column
+    otherwise FAILS and every archived campaign would drop to zero survivors
+    on a re-score or a report regeneration.
+  - **The criterion's label stays `"no clash"`** whichever branch runs. The
+    list is built once per call, before any record is seen, so a
+    `"min contact >= 1.8 A"` label would describe a check that did not run on
+    an archived campaign — and keeping it stable keeps every archived report's
+    funnel comparable. `tests/test_binder_ranking.py` pins this.
 - **`hotspot_engagement` is a FRACTION of the declared hotspots, and the gate is
   0.75, not 1.0.** Requiring every hotspot sounds strict and is mostly self-harm:
   on the 12-hotspot YAP1/TEAD1 calibration only **49% of RFD3 backbones contacted

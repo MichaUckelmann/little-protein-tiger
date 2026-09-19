@@ -69,6 +69,29 @@ DEFAULT_THRESHOLDS: dict[str, Any] = {
     "iptm_min": 0.5,
     "iface_pae_max": 15.0,
     "require_no_clash": True,
+    # The clash gate is a DISTANCE, not a count. `clash_severe` counts
+    # inter-chain heavy-atom pairs under 2.2 A and zero-tolerates them, which
+    # conflates two populations: genuine overlaps (carbonyl oxygens at 0.95 A,
+    # guanidinium nitrogens at 1.17 A) and salt bridges modelled 0.6-0.9 A too
+    # short (Arg NH against Asp OD at 2.05-2.15 A, where a real one is
+    # 2.7-3.0 A). Because it cannot tell them apart, ANY single prediction
+    # trips it ~40% of the time — RF3's own unselected base rate is 39.8%,
+    # folding/Protenix's 43.5% — so it measures the draw rather than the
+    # design.
+    #
+    # Measured on pain_receptors_v3: of 400 rejected designs, 161 (40.2%, the
+    # largest single cause) failed on the clash check alone, having passed
+    # every other gate; and over 600 designs x 4 predictors only 35 survived
+    # the count under all four, against 281 under this distance floor. Of the
+    # sub-2.2 A contacts, 47.7% are sidechain-sidechain and 9.6%
+    # backbone-backbone.
+    #
+    # 1.8 A separates the two populations in the measured distance histogram.
+    # It is NOT calibrated against binding — nothing in that experiment folded
+    # or measured anything — so it distinguishes two kinds of modelling error,
+    # not good binders from bad. Set to None to restore the old
+    # zero-tolerance count.
+    "min_contact_min": 1.8,
     # ---- molecular glue (`design_intent: stabilize`) -------------------
     # All three ship None, and that is load-bearing rather than cautious.
     # A record missing the column a criterion needs FAILS it, and these
@@ -261,10 +284,28 @@ def _criteria(thresholds: dict[str, Any]) -> list[tuple[str, Callable[[DesignRec
         label = f"{col} {'<=' if cmp is le else '>='} {lim:g}"
         out.append((label, num(col, float(lim), cmp)))
     if t.get("require_no_clash", True):
+        floor = t.get("min_contact_min")
+
         def no_clash(r: DesignRecord) -> bool:
+            if _as_bool(r.get("has_clash")) is True:
+                return False
+            contact = _as_float(r.get("min_contact"))
+            if floor is not None and contact is not None:
+                return contact >= floor
+            # Fall back to the old zero-tolerance count. Reached for a
+            # campaign scored before `min_contact` existed, whose CSV has no
+            # such column — and a missing gated column otherwise FAILS, which
+            # would silently take every archived campaign to zero survivors on
+            # a re-score or a report regeneration.
             severe = _as_float(r.get("clash_severe"))
-            return (_as_bool(r.get("has_clash")) is not True
-                    and (severe is None or severe == 0))
+            return severe is None or severe == 0
+
+        # The label stays "no clash" whichever rule applies. It is built once
+        # per call, before any record is seen, so it cannot know which branch
+        # a given record will take — and a campaign scored before
+        # `min_contact` existed takes the fallback, where a
+        # "min contact >= 1.8 A" label would describe a check that did not
+        # run. It also keeps every archived report's funnel comparable.
         out.append(("no clash", no_clash))
     return out
 

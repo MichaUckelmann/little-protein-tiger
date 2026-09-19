@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from src.binder_ranking import (
-    DEFAULT_THRESHOLDS, cap_per_backbone, composite_score, filter_records,
-    rank_designs,
+    DEFAULT_THRESHOLDS, _criteria, cap_per_backbone, composite_score,
+    filter_records, rank_designs,
 )
 
 
@@ -266,3 +266,109 @@ def test_buried_unsatisfied_polars_outweigh_no_favourable_hbond_term():
     assert w["neg_rosetta_vbuns"] == 1.0
     assert "rosetta_hbonds_int" not in w and "hbonds_int" not in w
     assert "neg_rosetta_sbuns" not in w
+
+
+class TestClashGateIsADistance:
+    """The clash gate moved from a zero-tolerance COUNT under 2.2 A to a
+    minimum contact DISTANCE, because the count conflates genuine atomic
+    overlaps with salt bridges modelled 0.6-0.9 A too short and therefore
+    trips on ~40% of any single prediction (RF3's own unselected base rate is
+    39.8%)."""
+
+    def _record(self, **over):
+        row = {"name": "d", "binder_rmsd_dock": 1.0, "epitope_recall": 0.9,
+               "hotspot_engagement": 1.0, "binder_rmsd_fold": 0.5,
+               "binder_plddt": 0.9, "iptm": 0.9, "iface_pae": 3.0}
+        row.update(over)
+        return row
+
+    def _kept(self, row, thresholds=None):
+        kept, _ = filter_records([row], thresholds or DEFAULT_THRESHOLDS)
+        return bool(kept)
+
+    def test_the_default_is_a_distance_floor(self):
+        assert DEFAULT_THRESHOLDS["min_contact_min"] == 1.8
+
+    def test_a_compressed_salt_bridge_now_passes(self):
+        """Arg NH against Asp OD at 2.05 A is the right interaction modelled
+        short, and it used to fail because clash_severe counted it."""
+        assert self._kept(self._record(min_contact=2.05, clash_severe=1))
+
+    def test_a_physically_impossible_overlap_still_fails(self):
+        """Two guanidinium nitrogens at 1.17 A."""
+        assert not self._kept(self._record(min_contact=1.17, clash_severe=1))
+
+    def test_the_boundary_is_inclusive(self):
+        assert self._kept(self._record(min_contact=1.8))
+        assert not self._kept(self._record(min_contact=1.79))
+
+    def test_an_archived_campaign_without_the_column_falls_back(self):
+        """A missing gated column otherwise FAILS, which would take every
+        campaign scored before `min_contact` existed to zero survivors on a
+        re-score or a report regeneration."""
+        assert self._kept(self._record(clash_severe=0))
+        assert not self._kept(self._record(clash_severe=1))
+
+    def test_the_engines_own_clash_flag_still_vetoes(self):
+        assert not self._kept(self._record(min_contact=3.0, has_clash=True))
+
+    def test_setting_the_floor_to_none_restores_the_count(self):
+        thresholds = dict(DEFAULT_THRESHOLDS, min_contact_min=None)
+        assert not self._kept(self._record(min_contact=2.05, clash_severe=1),
+                              thresholds)
+        assert self._kept(self._record(min_contact=2.05, clash_severe=0),
+                          thresholds)
+
+    def test_the_new_gate_is_strictly_weaker_than_the_old_one(self):
+        """clash_severe == 0 means no pair under 2.2 A, i.e. min_contact >=
+        2.2 >= 1.8 — so anything the count admitted the distance admits too.
+        Measured on pain_receptors_v3: 116 designs newly admitted, 0 newly
+        rejected."""
+        old = dict(DEFAULT_THRESHOLDS, min_contact_min=None)
+        for contact, severe in ((2.2, 0), (3.0, 0), (5.0, 0)):
+            row = self._record(min_contact=contact, clash_severe=severe)
+            assert self._kept(dict(row), old) <= self._kept(dict(row))
+
+    def test_the_label_is_stable_so_archived_funnels_stay_comparable(self):
+        """It is built before any record is seen, so it cannot know which
+        branch a record takes; naming the distance would mislabel a fallback."""
+        labels = [label for label, _ in _criteria(DEFAULT_THRESHOLDS)]
+        assert "no clash" in labels
+        assert not any("min contact" in label for label in labels)
+
+
+class TestMinContactIsMeasured:
+    def test_clashes_reports_the_worst_contact(self):
+        import numpy as np
+
+        from src.binder_metrics import clashes
+
+        class Atoms:
+            def __init__(self, chain, coord, element):
+                self.chain_id = np.array(chain)
+                self.coord = np.array(coord, dtype=float)
+                self.element = np.array(element)
+
+            def array_length(self):
+                return len(self.chain_id)
+
+            def __eq__(self, other):
+                return self.chain_id == other
+
+            def __getitem__(self, mask):
+                idx = np.where(mask)[0]
+                return Atoms(self.chain_id[idx], self.coord[idx],
+                             self.element[idx])
+
+        atoms = Atoms(["A", "A", "B", "B"],
+                      [[0, 0, 0], [10, 0, 0], [2.05, 0, 0], [20, 0, 0]],
+                      ["N", "C", "O", "C"])
+        violations, severe, min_contact = clashes(atoms, "A", "B")
+        assert min_contact == pytest.approx(2.05)
+        assert severe == 1          # the count cannot tell 2.05 from 1.17
+        assert violations == 1      # polar pair under 2.5 A
+
+    def test_min_contact_is_a_reported_column(self):
+        from src.binder_metrics import FIELDS
+
+        assert "min_contact" in FIELDS
