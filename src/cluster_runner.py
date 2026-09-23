@@ -212,13 +212,27 @@ def fetch_target_msa(seq: str, name: str, cluster_cfg: ClusterConfig) -> Path:
         raise MsaFetchError(
             f"msa_source={cluster_cfg.msa_source!r} has no automatic fetch — "
             f"use bin/make_msa.sh manually (see the pause instructions).")
-    if cluster_cfg.protenix_repo is None:
+    return build_target_msa(seq, name, protenix_repo=cluster_cfg.protenix_repo,
+                            protenix_venv=cluster_cfg.protenix_venv)
+
+
+def build_target_msa(seq: str, name: str, *, protenix_repo: "Path | None",
+                     protenix_venv: str = ".venv") -> Path:
+    """The hosted-MMseqs2 search itself, independent of the cluster path.
+
+    Split out of `fetch_target_msa` so the local folding refold engine can use
+    the same cached search rather than growing a second one — an alternative
+    engine needs a target MSA for exactly the reason the cluster's Protenix
+    backend does (it predicts the target from sequence instead of being handed
+    a template), and two implementations would drift.
+    """
+    if protenix_repo is None:
         raise MsaFetchError(
             "no Protenix checkout configured — set the LPT_CLUSTER_PROTENIX_REPO "
             "env var (see .env.example) or design.cluster.protenix_repo in "
             "config.yaml to a working checkout, or switch msa_source to "
             "cluster_colabfold.")
-    venv_py = cluster_cfg.protenix_repo / cluster_cfg.protenix_venv / "bin" / "python3"
+    venv_py = protenix_repo / protenix_venv / "bin" / "python3"
     if not venv_py.exists():
         raise MsaFetchError(
             f"no Protenix venv at {venv_py} — set the LPT_CLUSTER_PROTENIX_REPO "
@@ -233,7 +247,7 @@ def fetch_target_msa(seq: str, name: str, cluster_cfg: ClusterConfig) -> Path:
         "print(str(p))\n"
     )
     proc = subprocess.run(
-        [str(venv_py), "-c", script], cwd=str(cluster_cfg.protenix_repo),
+        [str(venv_py), "-c", script], cwd=str(protenix_repo),
         capture_output=True, text=True, timeout=600,
     )
     if proc.returncode != 0:
