@@ -1,8 +1,45 @@
 # Molecular-glue design (`design_intent: stabilize`) — scope
 
-**Status: measurement complete, nothing implemented, no GPU work launched.**
-Date 2026-09-13. Read-only pass over `src/`, `scripts/`, `skills/`, `tests/`,
-`projects/`, plus foundry's own installed source.
+**Status when written: measurement complete, nothing implemented, no GPU work
+launched.** Date 2026-09-13. Read-only pass over `src/`, `scripts/`, `skills/`,
+`tests/`, `projects/`, plus foundry's own installed source.
+
+> ## STATUS AS OF 2026-09-23 — read this before anything below
+>
+> **Stages 0-4 are implemented and on `main` (@ `e2d46dc`). Stage 5, the first
+> GPU campaign, is the next thing and has not started.** A glue run reaches a
+> `validate_spec`-accepted two-chain spec with no LLM and no GPU, and scoring
+> writes per-side engagement and target-internal ipSAE columns.
+>
+> This document stays authoritative for the **reasoning** — why a glue is
+> shaped this way, what was measured, what the risks are. It is NOT
+> authoritative for **current state**, and several of its specific claims were
+> contradicted by running the code during implementation.
+>
+> Read in this order:
+> 1. `GLUE_IMPLEMENTATION_NOTES.md` — what works today, what is next, ~250 lines
+> 2. `GLUE_STAGE3_PLAN.md` **§2** — the consolidated corrections to THIS file
+>    and to the notes, each one measured. Four claims here are wrong; two of
+>    them would make you build the wrong thing
+> 3. this document, for the why
+>
+> **Every line number in this file is stale.** The §6 item table's references
+> are off by up to ~166 lines. The plan's §2.2 has the corrected set for the
+> symbols Stage 3 touched; for anything else, locate by NAME.
+>
+> The four corrections that matter most, all measured:
+> - **`validate_spec` already accepts a two-chain contig** (§1.3(a) item 3 says
+>   it cannot). It was never the blocker; it was a *silent-acceptance hole* —
+>   it threw the chain away and so also accepted spans on the WRONG chains.
+> - **Item 18 was NOT closed by construction.** It is closed inside
+>   `foundry_spec`, and was open in the COST MODEL, which reads
+>   `trim.n_residues_after` — the number that sizes the campaign.
+> - **There were four generator-side blockers, not three.** `structure_trim`
+>   refuses any hotspot not present on the target chain, and a two-chain table
+>   died there before `build_contig` was ever reached.
+> - **`regions_declared: 1` on the 5VAI report is CORRECT** and must not be
+>   "fixed": it counts epitope REGIONS, and a glue pocket's two chain
+>   sub-tables are two halves of one region.
 
 ## How to read this
 
@@ -1651,6 +1688,27 @@ Line numbers are current-tree; several come from the survey agent and are
 marked. "Risk" is what could silently break the existing 119-disrupt-run world
 (detail in §7).
 
+> **Implementation status, 2026-09-23.** Line numbers below are STALE — locate
+> by name. Sixteen of the 26 items are done:
+>
+> | items | status | where |
+> |---|---|---|
+> | 1, 2, 3, 4 | **DONE** | parse + ground + label_seq per chain, Stage 3 |
+> | 5, 6 | **DONE** | `build_contig_multi`, `kept_by_chain`, Stage 3 |
+> | 11, 12 | **DONE** | hotspot's own chain reaches the spec; chain-aware cross-check |
+> | 15, 16 | **DONE** | per-side engagement, `glue_ipsae_ab`, three null gates, Stage 4 |
+> | 17 | **HALF** | the delta column and its reader exist; nothing WRITES the apo fold — that is GPU work, Stage 5 |
+> | 18 | **DONE** | and it needed the cost model, not `foundry_spec` — see the plan's §2.1(b) |
+> | 21 | **DONE** | `--design-intent`, the refusals, two-chain `--hotspots` |
+> | 23, 24, 25 | **DONE** | pre-dated Stage 3 (`6220a2a`, benchmark scripts) |
+> | **7, 8, 9, 10, 13, 14** | **NOT STARTED** | two-chain trimming, Stage 6 — the reason a glue trim must currently be a NO-OP |
+> | **19, 20, 22, 26** | **NOT STARTED** | site selection, reports, second engine, Stage 7 |
+>
+> Two items grew a scope nobody wrote down, and both are now implemented:
+> `_stage_binder_spec`'s hotspot filter and `_stage_trim`'s hotspot argument
+> both keyed on a chain-less author-id set, which on 4ZGM silently remaps
+> chain B onto chain A. Neither had an item number.
+
 | # | Feature | Where | Est. | Risk |
 |---|---|---|---|---|
 | 1 | Two-chain hotspot table: chain column in the row regex, `(chain, residue, auth)` dedup key, `target_chains: list` in the returned JSON | `src/handoff.py:85-133` **[read]** | 1 d | **High** — every existing report parses through here |
@@ -1999,6 +2057,7 @@ guards stop being uncalibrated** — which is the point, and it is worth doing
 even if glue is abandoned.
 
 ### Stage 3 — Glue plumbing up to a validated spec, no GPU · ~6 d
+### ✅ DONE 2026-09-16 — 12 commits, estimate held (46 h planned)
 
 Items 1, 2, 3, 4, 5, 6, 11, 12, 21, plus 18 (`n_tokens`). Target: `4ZGM`, where
 **no trim is needed** (128 residues, item 7 not yet required).
@@ -2010,7 +2069,26 @@ of which 4 are chain P — **[measured]**, §1.3 and appendix); grounding passes
 `validate_spec` accepts the 4ZGM glue spec including the trim cross-check;
 `n_tokens` reads 206, not 178. **Stop here if the wall is not green.**
 
+**MEASURED, all pass.** Wall 299 + 542 exactly at baseline. Attribution comes
+back `RRRPPPP` on 5VAI and 11xA + 6xU on 6JJW. Grounding passes on both — and
+the SAME rows with the chain key stripped still refuse, through both branches,
+which is what proves the cross-chain guard was preserved rather than removed.
+The 4ZGM spec validates at `70-86,/0,A29-128,B10-37`, 128 target residues, 2
+segments, 8 hotspots across A and B.
+
+**On "`n_tokens` reads 206":** there are TWO n_tokens and this names the
+cost-model one. `validate_spec` reports **214** (binder MAX 86 + 128); the cost
+model reports **206** (binder MIDPOINT 78 + 128). Asserting 206 against
+`validate_spec` fails a correct spec. See the plan's §2.1(b).
+
+**A fifth criterion the scope does not have, and should:** the end-to-end
+command must run with no LLM and no GPU. It is the one that caught the real
+bug — every unit was correct in isolation while two wires between them were
+missing, and `--stop-after spec` produced a silently SINGLE-chain spec with 3
+of 8 hotspots while printing PIPELINE COMPLETE.
+
 ### Stage 4 — Glue scoring, still no glue GPU campaign · ~3 d
+### ✅ DONE 2026-09-18
 
 Items 15, 16, 17, plus the per-side split of `hotspots_from_rfd3`.
 
@@ -2018,6 +2096,21 @@ Items 15, 16, 17, plus the per-side split of `hotspots_from_rfd3`.
 assert **byte-identical survivor counts** (317 on mesothelioma_showcase, etc.);
 `glue_ipsae_ab` reproduces the §4.2 synthetic-split numbers on a real
 `confidences.json`; all new thresholds `null` in `config.yaml`.
+
+**MEASURED, all three pass:** 16 files / 84,136 rows / **7,080 survivors, 0
+changed** — survivor counts, top-K picks and rank-1 composites, with
+mesothelioma_showcase/scoring at exactly the 317 published above, which makes
+it a check against an independent number rather than against itself. It runs
+as a test now (`test_the_survivor_counts_of_every_shipped_campaign_are_unchanged`).
+`glue_ipsae_ab` measures **0.9142-0.9189** over real refolds against the 0.918
+reported in §4.2. All three thresholds `null` in both `DEFAULT_THRESHOLDS` and
+`config.yaml`, asserted by test.
+
+**One addition beyond the scope.** §4.1's hazard is that a glue gate left
+non-null reads as "bad target", not "bad config". `filter_records` now also
+**warns by name** when a glue gate is active and not one record carries the
+column, so the failure names the key to reset instead of presenting an
+unexplained empty funnel.
 
 ### Stage 5 — The first glue campaign · ~1 d setup + ~10–20 GPU-h
 

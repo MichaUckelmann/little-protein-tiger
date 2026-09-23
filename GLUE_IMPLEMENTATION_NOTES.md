@@ -1,241 +1,283 @@
 # Molecular glue (`design_intent: stabilize`) — implementation notes
 
-**Status: NOT functional. Cannot reach a spec.** Written 2026-09-14 to pick up
-cold in a new context.
+**Status: reaches a validated two-chain spec, and is scored per side. No glue
+campaign has ever run on a GPU.** Updated 2026-09-23 against `main` @
+`e2d46dc`. Written to pick up cold in a new context.
 
 `GLUE_PIPELINE_SCOPE.md` is the 2,000-line design document and stays
-authoritative for the *reasoning* (measurements, selection criteria,
-evaluation plan, risk register). This file is the shorter thing you need
-first: what is already done, what is left, where it lives in the CURRENT
-tree, and what will bite. Line numbers here were re-verified on
-2026-09-14 after that day's commits moved `pipeline_runner.py` by ~250
-lines — the scope's numbers are stale, mine are not.
+authoritative for the *reasoning* — measurements, selection criteria,
+evaluation plan, risk register. `GLUE_STAGE3_PLAN.md` is the executable plan
+Stage 3 was built from, and its §2 is the consolidated list of corrections to
+both older documents; read that before trusting a line number or a claim in
+either. This file is the shorter thing you need first: what works today, what
+the next step is, and what will bite.
 
 ---
 
 ## 1. Where we are
 
-The scope's build order (§8) has 8 stages. **Stages 0, 1 and 2 are done;
-Stage 3 is not started.**
+The scope's build order (§8) has 8 stages. **Stages 0–4 are done. Stage 5 —
+the first GPU campaign — is not started, and is the next thing.**
 
-| stage | what it was | status |
+| stage | what it is | status |
 |---|---|---|
 | 0 | domain-source preference, atom-existence check, exposure as an area | **DONE** `6220a2a` |
 | 1 | settle the RFD3 two-chain merge empirically | **DONE, PASS** 2026-09-13 |
 | 2 | Phase A + Phase B — the GPU trimming benchmark | **DONE** 2026-09-14 |
-| **3** | **glue plumbing up to a validated spec, no GPU** | **NOT STARTED** (~6 d) |
-| 4 | glue scoring, still no glue GPU campaign | not started (~3 d) |
-| 5 | the first glue campaign, 4ZGM | not started (~1 d + 10–20 GPU-h) |
+| 3 | glue plumbing up to a validated spec, no GPU | **DONE** 2026-09-16, 12 commits |
+| 4 | glue scoring, still no glue GPU campaign | **DONE** 2026-09-18 |
+| **5** | **the first glue campaign, 4ZGM** | **NOT STARTED** (~1 d + 10–20 GPU-h) |
 | 6 | two-chain trimming | not started (~6 d) |
 | 7 | site selection, reports, second engine | not started (~6 d) |
 
-Stages 0–2 were all *measurement* — they answered whether the merge works and
-what trimming costs. **None of them touched the glue path itself.** That is
-why a `stabilize` run today still cannot produce a spec.
+### What works today
 
-### The evidence, on disk
+One command, no LLM call, no GPU, no network beyond a structure already on
+disk:
 
-`projects/div_standard_diabetes` — prompt *"Design protein therapeutics for
-type 2 diabetes."*, `--workflow ppi`, 2026-09-13. It selected
-`GLP-1 / GLP-1R` on **5VAI** with `design_intent: stabilize` and its structure
-stage wrote a correct `### MODEL-READY HOTSPOTS [STABILIZE — Glue Pocket 1]`
-table: 7 residues across BOTH chains (chain A/R = GLP-1R PHE66/ASP67/ALA70,
-chain B/P = GLP-1 ALA30/GLY35/ARG36/GLY37 — each verified real on its own
-chain). The project has `00_pathway.md`, `01_literature.md`,
-`02_structure.md` and **no `binder/` directory at all**. It stopped dead
-before the binder track. That is the reproduction case; it needs no GPU and
-no API spend to re-trigger.
+    .venv/bin/python scripts/run_pipeline.py --workflow structure --pdb 4ZGM \
+        --project glue_4zgm --chains A,B --design-intent stabilize \
+        --hotspots A113,A119,A120,B30,B31,B34,B35,B37 --stop-after spec
 
-### The three blockers, re-verified 2026-09-14
+produces a `validate_spec`-accepted RFD3 spec with contig
+`70-86,/0,A29-128,B10-37` and `select_hotspots` keys exactly
+`{A113,A119,A120,B30,B31,B34,B35,B37}` — each hotspot under the chain it is
+actually on. Both archived `stabilize` reports
+(`projects/div_standard_diabetes` 5VAI, `projects/div_wildcard_tnbc` 6JJW)
+parse with correct per-chain attribution and ground clean.
 
-All unchanged from the audit. Each was read in the current tree today:
+Scoring writes six new columns — `hotspot_side_chains`,
+`hotspot_engagement_a`/`_b`/`_min_side`, `glue_ipsae_ab`, `glue_ipsae_delta` —
+all blank on a non-glue run. Three new thresholds exist and all ship `null`.
 
-1. **`handoff.parse_hotspot_residues` (`src/handoff.py:108`)** takes
-   `target_chain`/`partner_chain` from the HANDOFF and appends every row of
-   every section with **no per-row chain attribution**. Its dedup key is
-   `(residue, auth_seq_id)`, which additionally collapses the same name+number
-   appearing on two chains. Today it returns all 7 of the 5VAI rows stamped
-   with one chain, 4 of which belong to the other.
-2. **`structure_trim.build_contig` (`src/structure_trim.py:1330`)** takes ONE
-   `chain` and emits `f"{chain}{lo}-{hi}"` for every span. **This is the real
-   generator-side blocker** — a two-chain glue target cannot be expressed at
-   all. Fixing #3 alone changes nothing, because `validate_spec` gates a
-   chain-B hotspot on a chain-B contig span.
-3. **`foundry_spec.py:120`** — `select[_hotspot_key(target_chain, auth)] =
-   atoms` forces every hotspot onto `target_chain` unconditionally.
+### What a glue run refuses, and what lifts each
 
-And a fourth that is worse than a blocker because it *corrupts*:
-**`_resolve_unverified_label_seq_ids` / `_correct_label_seq_ids`
-(`src/pipeline_runner.py:7635` / `:7614`)** resolve label_seq ids against a
-single chain's map. On a two-chain table that silently rewrites the second
-chain's ids to the first chain's frame.
-
----
-
-## 2. Already done — do NOT rebuild these
-
-Several items in the scope's §6 table (items 1–26) have since landed, some as
-side effects of unrelated work. Check here before starting any of them.
-
-| item | what | status |
+| refused | why | lifted by |
 |---|---|---|
-| 24 | domain-source preference (prefer RCSB only when its domains cover the hotspots) | **DONE** — `structure_trim._domains_cover_hotspots`, `6220a2a` |
-| 23 | early atom-existence / steer-quality check on the hotspot set | **DONE** — `_check_hotspot_atoms_are_buildable` (`pipeline_runner.py:2593`) |
-| — | exposure reported as an AREA (§2.2 item 4) | **DONE** — plus a scale-free fraction gate, `MAX_EXPOSED_HYDROPHOBIC_FRACTION`, and four persisted fields |
-| 18 | `n_tokens` = both chains + binder | **DONE, and verify it stays done.** `foundry_spec.py:370` is `binder[1] + n_target`, and `n_target` (`:307-340`) iterates `for chain, lo, hi in spans` — already chain-agnostic, so a two-chain contig sums both. This was risk #2 on the scope's ranked list ("silent, under-costs GPU 3.1×"); it is closed by construction, not by intent, so a change to the span loop could reopen it. |
-| 25 | benchmark script for the §5 ladder | **DONE differently** — `scripts/benchmark_trimming.py` (real-epitope trim benchmark) plus `scripts/benchmark_trim.py` (the Phase A/B GPU ladders) |
+| `--design-engine boltzgen` | `binding:` addresses ONE chain; the co-target would be dropped | item 26, Stage 7 |
+| `--modality cyclic_peptide` | selects BoltzGen; also glue+cyclic is unsized (§9) | items 26 + sizing |
+| `--trial-sites > 1` | `_run_site_trials` has no two-chain site shape | items 19/20, Stage 7 |
+| `--workflow ppi` / `binder` | only `--workflow structure` takes `--design-intent` | item 19, Stage 7 |
+| a target whose two chains exceed `target_residue_budget` | the trim must be a NO-OP | item 7, Stage 6 |
+| a co-target that is not `partner_chain` | `write_trimmed` puts no other chain in the file | item 7, Stage 6 |
+| `allowed_auth` with a co-target | a bare `set[int]` of one chain's author ids | item 14, Stage 6 |
 
-**Item 16 is partly pre-paid but read the caveat.** The scope's rule is "new
-gates ship `null`". Today's `design.binder_ranking.weights` gained
-`neg_patch_enrichment: 0.5` — a **weight**, not a threshold, so it cannot
-empty a campaign (`filter_records` never sees weights, and a zero-variance
-column z-scores to zeros). Survivor counts on every shipped campaign are
-unchanged. The rule still stands for anything you add to `thresholds`.
+Each refusal names its scope item in the message.
 
 ---
 
-## 3. Stage 3 — the critical path, with current locations
+## 2. Stage 5 — the next thing
 
-Target: **4ZGM**, and this matters. 1.8 Å, two chains, 128 residues, 100%
-sidechain completeness, 206 tokens, and **no trim needed at all** — so Stage 3
-needs none of the two-chain trimming work (item 7, Stage 6). Do not start on
-5VAI: there is **no clean 5VAI trim**, and the scope's §1.3 correction shows
-why — `R29-128 + P7-37` opens **492 Å² across 8 hydrophobic residues on chain
-P** (PHE12 +122, LEU20 +88, TYR19 +70, TRP31 +64), because GLP-1's N-terminal
-half inserts into the TM bundle the cut removes. The earlier "2 exposed, 0
-near, passes" reading was an artefact of `_exposed_hydrophobic` comparing each
-chain against itself in isolation.
+**4ZGM, single site, `--stop-after calibration`, `--project`.** 300-backbone
+trial; `--escalate-to` if the interval is unusable. ~1 d of setup and 10–20
+GPU-h.
 
-Items 1, 2, 3, 4, 5, 6, 11, 12, 21. Current locations:
+**Go/no-go:** the calibration verdict read against
+`hotspot_engagement_min_side` (set non-null **for this run only**) and
+`glue_ipsae_delta`. A SCALE_UP here is the first evidence that glue design
+works at all. **Stop and re-scope if the trial produces no design engaging
+both sides.**
 
-| item | change | file:line (verified 2026-09-14) | est |
-|---|---|---|---|
-| 1 | chain column in the row regex; `(chain, residue, auth)` dedup key; `target_chains: list` in the returned JSON | `src/handoff.py:108` | 1 d |
-| 2 | handoff carries a second target chain (`target_chains`) | `src/handoff.py` + `skills/complex-structure-analysis/SKILL.md` | 0.5 d |
-| 3 | `_verify_hotspot_grounding` looks each row up on ITS OWN chain | `src/pipeline_runner.py:2350` | 0.5 d |
-| 4 | per-chain label_seq maps | `src/pipeline_runner.py:7614`, `:7635` | 0.5 d |
-| 5 | `build_contig` over multiple chains | `src/structure_trim.py:1330` | 0.5 d |
-| 6 | `kept_by_chain` ALONGSIDE `kept_segments`, written to `trim_map.json` | `src/structure_trim.py:153`, `_write_mapping` | 1 d |
-| 11 | `_hotspot_key` fed the hotspot's own chain | `src/foundry_spec.py:120` | 0.25 d |
-| 12 | chain-aware trim cross-check | `src/foundry_spec.py` `validate_spec` (`:174`) | 0.25 d |
-| 21 | `stabilize` becomes a real branch, reachable from `--workflow structure` | `src/pipeline_runner.py` | 0.5 d |
+Three things to do first, none of them large:
 
-**Suggested order**, because each step is checkable before the next:
-1 → 3 → 4 (the table can then be parsed and grounded correctly, and
-`div_standard_diabetes` is the free test) → 5 → 11 → 12 (a spec can then be
-built and validated) → 6 → 2 → 21.
-
-### Go/no-go for Stage 3
-
-From the scope, and all four are cheap:
-
-- the eight regression-wall tests green (§5 below);
-- `parse_hotspot_residues` on
-  `projects/div_standard_diabetes/runs/round-1/02_structure.md` returns
-  **7 residues with correct per-chain attribution** (today: 7 rows, all one
-  chain, 4 of them wrong);
-- grounding passes on that same file;
-- `validate_spec` accepts the 4ZGM glue spec including the trim cross-check,
-  and `n_tokens` reads **206**, not 178.
-
-**Stop if the wall is not green.**
+1. **Wire the apo fold.** `glue_ipsae_delta` is the interpretable readout and
+   it needs one RF3 fold of the target pair with NO binder, once per campaign.
+   `PipelineRunner._glue_apo_ipsae` already reads
+   `binder/apo/glue_apo.json` (a single `ipsae_ab` key) and returns None when
+   it is absent, leaving the column blank. What does not exist is whatever
+   *writes* that file. This is the GPU half of scope item 17 and it is the one
+   piece of Stage 4 deliberately left for Stage 5, because Stage 4 runs no GPU.
+2. **Set `hotspot_engagement_min_side_min` for the run only** — never in
+   committed `config.yaml`. See §4, risk 1.
+3. **Decide the pooled-gate question**, below.
 
 ---
 
-## 4. Why two-chain trimming is deferred to Stage 6, and what that costs
+## 3. The one thing Stage 3 built that Stage 5 will trip over
 
-4ZGM needs no trim, so Stage 3 can be built and a first campaign run (Stage 5)
-without touching `trim_target`. But **88% of real complexes need a trim**
-(§2.3), so glue is not generally usable until Stage 6.
+`hotspot_engagement` is a fraction of ALL declared hotspots at a **0.75 gate**,
+and a glue pools both chains into one denominator. So a binder engaging one
+side well and the other poorly is scored as though the epitope were a single
+surface — and on an 8-hotspot 4ZGM set split 3/5, a design touching all of
+chain A and none of chain B scores 0.375 and is dropped, while one touching
+all of A and 3 of 5 on B scores 0.75 and passes with no statement about
+whether it bridges anything.
 
-Stage 6 is also the riskiest single change in the whole plan: `trim_target` is
-the one function every one of the 13 calibrated campaigns' targets went
-through. Two specific hazards:
+`hotspot_engagement_min_side` exists precisely to answer that, and ships
+`null`. Stage 5 is where it has to be given a value, and **there is no
+calibration for it** — the 0.75 on the pooled gate came from measuring RFD3's
+own backbone behaviour over a 12-hotspot campaign, and no equivalent
+measurement exists per side. Expect the first campaign to produce it rather
+than to consume it.
 
-- **`_exposed_hydrophobic` must stay byte-identical for a one-chain target**
-  (item 8, risk R2). Broadening it to assembly context changes a measurement
-  those 13 campaigns were checked against, and a previously-passing no-op trim
-  that starts refusing is the failure mode.
-- **`allowed_auth` is a bare `set[int]`** (item 14), so two chains' author
-  numbering spaces collide. It must become chain-keyed.
+`_note_glue_guards` prints this, and the three other guard caveats, on every
+glue run and returns the prose so the report and the log cannot drift.
 
-One thing measured today that makes Stage 6 easier to reason about: the
-newly-exposed-hydrophobic fraction tracks **segment count** (1 segment median
-7.6%, 2–5 35.6%, ≥6 43.5%) and is **anti-**correlated with how much was
-removed (<20% → 16.1%, 20–40% → 71.4%, ≥40% → 7.2%). So exposure is governed
-by whether a cut followed a structural unit, not by its size — see
-`docs/trim-benchmark.md`. That is the physical basis a two-chain trim's
-objective should be built on.
+---
+
+## 4. The three ranked risks
+
+1. **A glue gate shipped with a non-null threshold silently zeroes every
+   disrupt campaign.** Measured: 1,352 real 3KYS records, 317 survivors → **0**
+   with `hotspot_engagement_min_side >= 0.5`. It looks like "bad target", not
+   "bad config". **Mitigated three ways now**: all three thresholds ship
+   `null` (in `DEFAULT_THRESHOLDS` and in `config.yaml`, both asserted by
+   `tests/test_glue_scoring.py`); `filter_records` **warns by name** when a
+   glue gate is active and not one record carries the column; and the survivor
+   counts of every shipped campaign run as a test. Still the top risk, because
+   the mitigation is a default and a warning, not an impossibility.
+2. **`n_tokens` under-counting a two-chain target ~2×** → GPU 3.1×, disk 2.8×,
+   and it feeds the calibration verdict and the local-vs-cluster decision.
+   **Closed, and no longer "by construction"**: the trim's three counts are
+   over `kept_by_chain`, and `validate_spec` takes
+   `expected_target_residues` and hard-refuses when the contig and the trim
+   disagree. Measured 4ZGM: 128 target residues, 214 tokens from
+   `validate_spec` (binder max) and 206 from the cost model (midpoint).
+3. **Broadening `trim_target`** — Stage 6, and the reason a glue trim must
+   currently be a no-op. `_exposed_hydrophobic` compares each chain against
+   itself **in isolation**, so a cut that strips the other chain's buried face
+   reads as clean: on 5VAI an `R29-128 + P7-37` trim opens **492 Å² across 8
+   hydrophobic residues on chain P** and measures 0. That is why the
+   no-op refusal exists rather than a warning.
 
 ---
 
 ## 5. The regression wall — run these on every glue commit
 
-These pin single-chain assumptions and are the ones a glue change breaks. Line
-numbers from the scope (§7.2) and not re-verified today, so locate by NAME:
+Locate by NAME, not line number.
 
 - `tests/test_structure_trim.py` `test_build_contig_shape` — pins
   `"68-86,/0,B42-145"`: one binder range, one `/0`, one chain letter per span
 - `tests/test_structure_trim.py` `test_contig_matches_the_kept_segments`
-- `tests/test_structure_trim.py` `test_the_floor_is_eighty` —
-  `MIN_TARGET_RESIDUES == 80` as one scalar for one chain
+- `tests/test_structure_trim.py` `test_the_floor_is_eighty`
 - `tests/test_structure_trim.py`
   `test_a_trim_that_removes_nothing_retains_everything` — **the R2 wall**,
   parametrised over 7CZD / 6VJJ / 3KYS
 - `tests/test_foundry.py`
-  `test_regenerates_the_reference_cd79b_spec_field_for_field` — the golden spec
-- `tests/test_foundry.py` `test_validate_cross_checks_against_the_trim` —
-  chain-less `(lo, hi)` kept_segments
-- `tests/test_foundry.py` `test_mpnn_config_shape` — `designed_chains == ["A"]`
+  `test_regenerates_the_reference_cd79b_spec_field_for_field`
+- `tests/test_foundry.py` `test_validate_cross_checks_against_the_trim`
+- `tests/test_foundry.py` `test_mpnn_config_shape`
 - `tests/test_audit_fixes.py`
   `test_trim_from_disk_has_every_attribute_the_gpu_stages_use` — **the R4
-  wall**, by reflection, so a new `TrimResult` field must reach `_TrimFromDisk`
+  wall**, by reflection
+- `tests/test_binder_metrics.py` — the zero-diff golden over 200 refolds (R5)
+- `tests/test_complex_token_ceiling.py` — pins
+  `n_tokens == binder_max + n_target`
+- `tests/test_release_fixes.py` `test_packaged_skill_zips_match_their_source` —
+  editing a `SKILL.md` means re-running `scripts/package_skills.py`
 
-Second tier, also load-bearing:
-`tests/test_binder_metrics.py` `test_sidecar_remaps_hotspots_into_output_numbering`
-(a single chain argument, a flat int list) and its zero-diff golden over 200
-refolds (R5); `tests/test_audit_fixes.py`
-`test_a_fusion_partner_is_excluded_from_the_design_target` — **a second chain
-in the file is excluded from the design target, which is the exact assumption
-a glue inverts**; `test_target_and_partner_follow_the_chain_assignment`
-(exactly one chain is "the target");
-`tests/test_release_fixes.py` `test_packaged_skill_zips_match_their_source` —
-editing `SKILL.md` (item 2) means repackaging the `.zip`.
+**And the five glue files, which are also the corpus invariants:**
+`tests/test_glue_hotspot_parsing.py`, `test_glue_grounding.py`,
+`test_glue_label_seq.py`, `test_glue_contig.py`, `test_glue_trim.py`,
+`test_glue_spec.py`, `test_glue_branch.py`, `test_glue_scoring.py`. Several of
+these re-derive every artifact in `projects/` — 49 specs field-for-field, 53
+trim maps, 16 `refold_scores.csv` — so they fail if a change moves anything
+that already shipped.
 
-## 6. The three ranked risks, unchanged
+---
 
-1. **A glue gate shipped with a non-null threshold silently zeroes every
-   disrupt campaign.** Measured: 1,352 real 3KYS records, 317 survivors → **0**
-   with `hotspot_engagement_target >= 0.5` added. It looks like "bad target",
-   not "bad config". Ship `null`, and add a test that re-filters a shipped CSV.
-2. **`n_tokens` under-counting a two-chain target ~2×** → GPU 3.1×, disk 2.8×,
-   and it feeds the calibration verdict and the local-vs-cluster decision.
-   Currently closed by construction (§2) — keep it that way.
-3. **Broadening `trim_target`** — see §4.
+## 6. The differential harness, and why the tests are not enough
 
-## 7. First commands to run, cold
+Green tests do not prove "nothing moved". Every Stage 3/4 step was checked
+against snapshots captured BEFORE any code changed, and the final state is:
 
-    # 1. reproduce the failure, free, no API, no GPU
-    python -c "
-    import json; from pathlib import Path
-    from src.handoff import parse_handoff, parse_hotspot_residues
-    t = Path('projects/div_standard_diabetes/runs/round-1/02_structure.md').read_text()
-    h = parse_handoff(t); print(json.dumps(json.loads(parse_hotspot_residues(t, h)), indent=1))"
-    # VERIFIED output, 2026-09-14 — this is what "broken" looks like:
-    #   target_chain: R | partner_chain: P | regions_declared: 1 | 7 residues
-    #     PHE 66  CD2,CZ     <- chain R (GLP-1R), correct
-    #     ASP 67  CG,OD1     <- chain R, correct
-    #     ALA 70  CB,CA      <- chain R, correct
-    #     ALA 30  CB,CA      <- chain P (GLP-1). On chain R, auth 30 is VAL.
-    #     GLY 35  CA,C       <- chain P. On chain R, auth 35 is THR.
-    #     ARG 36  CZ,NH1     <- chain P. On chain R, auth 36 is VAL.
-    #     GLY 37  CA,C       <- chain P. On chain R, auth 37 is GLN.
-    # Every residue is right on its OWN chain; the parser attributes all seven
-    # to R, so grounding hard-fails on the last four. `regions_declared: 1`
-    # is also wrong — the table has two chain sub-sections.
+| differential | scope | result |
+|---|---|---|
+| derived artifacts | 486 stage reports, 49 specs, 53 trims, 54 contigs | **4 changed** — all glue reports, all a region label that read `""` |
+| trim goldens | 10 real trims, 5 structures × 2 budgets | **0 changed** |
+| label_seq resolution | 105 reports with a local structure | **101 byte-identical**, 4 glue |
+| survivor counts | 16 `refold_scores.csv`, 84,136 rows, 7,080 survivors | **0 changed** |
 
-    # 2. the wall, before touching anything
-    .venv/bin/python -m pytest tests/test_structure_trim.py tests/test_foundry.py \
-        tests/test_audit_fixes.py tests/test_binder_metrics.py -q
+Rebuild it before any Stage 5/6 work. The scripts are small and the pattern
+matters more than the code: snapshot → change → diff, with the additive keys
+stripped so equality means "unchanged".
 
-    # 3. after item 1+3+4, the same snippet must show correct per-chain attribution
+**Four changes are NOT intent-gated**, and each was measured across the whole
+corpus rather than argued about:
+
+| change | applies to | measured |
+|---|---|---|
+| `expected_target_residues` refusal | every foundry run | 54 trims, 0 would newly refuse |
+| missing-partner refusal in `_stage_trim` | any `disrupt` run | 112 handoffs, 0 would newly refuse |
+| `_REGION_LABEL` gained `]` | every report | 0 labels affected |
+| chain-aware trim cross-check | archived trims take the stronger branch | 53 of 53 pass |
+
+The second is the one to remember: a `disrupt` run whose interface stage omits
+`partner_chain` now **refuses** where it previously degraded silently into
+single-target mode. Nothing on disk triggers it, but it is a real behaviour
+change on the non-glue path.
+
+---
+
+## 7. Outstanding work, in dependency order
+
+### Stage 5 — the first glue campaign (~1 d + 10–20 GPU-h)
+See §2. Blocked on nothing; needs the apo-fold writer (item 17's GPU half).
+
+### Stage 6 — two-chain trimming (~6 d), items 7, 8, 9, 10, 13, 14
+**88% of real complexes need a trim**, so glue is not generally usable until
+this lands — 4ZGM was chosen precisely because it is one of the 12% that fits.
+The riskiest change in the whole plan: `trim_target` is the one function every
+one of the 13 calibrated campaigns' targets went through.
+
+- item 7 — per-chain `segment_domains`/`plan_trim`, joint budget
+- item 8 — assembly-context `_exposed_hydrophobic` (§4 risk 3). **Must stay
+  byte-identical for a one-chain target**; the R2 wall is what proves it
+- item 9 — `glue_interface_retention` replacing `min_bsa_retention` on the
+  glue path, which today measures the retention of the very interface a glue
+  is stabilising and is calibrated for campaigns that cut into one
+- item 10 — `MIN_TARGET_RESIDUES` on the total plus a per-chain floor.
+  Today's consequence: **4ZGM chain B (28 residues) can never be the primary
+  `target_chain`**, because `plan_trim` raises below 80. Undocumented
+  precondition, currently satisfied by picking the larger chain
+- item 13 — `_stage_trim` two-chain topology + chain-keyed `allowed_auth`
+- item 14 — `membrane_topology.restriction_for` per chain. Today the topology
+  and ortholog guards run on the target chain only and **say so in a warning**;
+  a membrane co-target's TM residues are not stripped
+
+### Stage 7 — site selection, reports, second engine (~6 d), items 19, 20, 22, 26
+- item 19 — `_select_designable_structure` two-accession, `stabilize`
+  preference. Until this lands, `--workflow ppi` cannot ask for a glue at all
+- item 20 — deterministic glue-site pre-pass over `find_glue_pockets`
+- item 22 — both reports: two target chains in the Mol* payload, a chain
+  column in the hotspot table, non-`disrupt` hero text. **`binder_report`
+  currently renders a glue campaign with no idea the epitope has two sides**
+- item 26 — BoltzGen glue spec, per-chain `include`/`binding_types`
+
+### Smaller, unowned by any stage
+- **`foundry_spec.MAX_HOTSPOTS = 12` is per-region and a glue set is two
+  regions.** 12 per chain = 24 trips the warning. The scope's inferred answer
+  is a cap of 12 on the UNION; nothing implements it yet, and
+  `--hotspots` already errors above the cap rather than warning
+- **glue + `cyclic_peptide` is unsized** — no RFD3 cyclic campaign exists, so
+  the ≤35 Å union-diameter ceiling is unmeasurable. Currently refused
+- **the design-analyst caveat** is in the prompt; it is not yet in either
+  HTML report's rendered narrative
+
+---
+
+## 8. First commands to run, cold
+
+    # 1. the wall, before touching anything
+    .venv/bin/python -m pytest tests/ -q
+    # 1,598 passed on 2026-09-23 @ e2d46dc. The count moves as the repo
+    # grows; ZERO failures is the check, not the number.
+
+    # 2. the end-to-end glue command — no LLM, no GPU, ~3 s
+    .venv/bin/python scripts/run_pipeline.py --workflow structure --pdb 4ZGM \
+        --project glue_check --chains A,B --design-intent stabilize \
+        --hotspots A113,A119,A120,B30,B31,B34,B35,B37 --stop-after spec
+    # expect contig 70-86,/0,A29-128,B10-37 and 8 hotspots across A and B
+
+    # 3. both archived glue reports, parsed and grounded
+    .venv/bin/python -m pytest tests/test_glue_hotspot_parsing.py \
+        tests/test_glue_grounding.py tests/test_glue_label_seq.py -q
+
+    # 4. the survivor wall — the one that protects every disrupt campaign
+    .venv/bin/python -m pytest \
+        tests/test_glue_scoring.py::test_the_survivor_counts_of_every_shipped_campaign_are_unchanged -q
+
+    # 5. fixtures (data/ is gitignored; fetch on a fresh checkout)
+    ls data/structures/{4ZGM,5VAI,6JJW}_ba1.cif || \
+    .venv/bin/python -c "from pathlib import Path; from src.target_resolve import ensure_assembly; \
+        [print(ensure_assembly(i, Path('data/structures'))) for i in ('4ZGM','5VAI','6JJW')]"

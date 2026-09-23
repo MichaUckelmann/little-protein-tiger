@@ -551,6 +551,94 @@ It was nevertheless unreachable until 2026-09-14.
   model wrote `none`. With the instruction it writes a blank. The SKILL.md
   template gap is unfixed — the prompt overrides it.
 
+## A molecular glue has TWO target chains, and the epitope spans both
+
+`design_intent: stabilize` — hold two proteins together rather than come
+between them. `--design-intent {disrupt,stabilize,inhibit_active_site}` on
+**`--workflow structure` only**; the other two tracks take their intent from a
+stage handoff that also names the chains it was derived from, so overriding it
+there would contradict the report. Same posture as `--modality` and
+`--hotspots`: the track MEASURES an intent from the geometry and the operator
+decides. `stabilize` needs two chains and is refused on one — not a preference
+that can be honoured differently, there is no second protein to hold.
+
+Reaches a validated spec today; **no glue campaign has ever run on a GPU.**
+`GLUE_IMPLEMENTATION_NOTES.md` is the cold-start handover,
+`GLUE_STAGE3_PLAN.md` §2 the corrections to the older docs.
+
+- **RFD3 merges the two target chains itself, and that is what makes the whole
+  thing cheap.** `/0` is the chain-INCREMENT token, so there is exactly ONE of
+  them whatever the chain count and every span after it lands in one output
+  chain. Measured on 4ZGM: `70-86,/0,A29-128,B10-37` gives two output chains,
+  binder A and target B numbered 1..128, with all 128 `diffused_index_map`
+  entries (100 keyed `A*`, 28 keyed `B*`) mapping into `B`. So
+  `binder_metrics`, `binder_ranking`, the `chain_pair_*` `[0][1]` read and
+  ipSAE all still see one binder against one target — **no scoring adapter and
+  no second refold vocabulary**. A second `/0` would split the target and break
+  every one of them.
+- **The input chain letter survives ONLY in the `diffused_index_map` key.**
+  `hotspots_from_rfd3` reads the value (output numbering);
+  `hotspots_from_rfd3_by_side` reads the key. That distinction is the whole of
+  `hotspot_engagement_min_side`, because the pooled `hotspot_engagement`
+  cannot tell a glue bridging both proteins from a competitive binder that
+  grabbed one — both score the same fraction of the same union.
+- **Two chains share ONE author-number space, and on a real target the
+  collisions are total.** Every chain-B hotspot number on 4ZGM also exists on
+  chain A under a different residue name. So every chain-less `set[int]` on
+  this path is a silent mis-attribution: `retained`/`lost`, `_write_mapping`'s
+  `retained` flag, `_stage_binder_spec`'s kept-set and `_stage_trim`'s hotspot
+  argument were all keyed that way and all now key on `(chain, auth)`. The
+  failure mode is not a crash — the residues are real and carry the stated
+  atoms, they are simply on the wrong molecule, and `validate_spec` accepts it.
+- **Grounding was the ACCIDENTAL guard against a cross-chain table**, and
+  per-chain grounding removed it. What replaces it is the three chain-aware
+  filters landing together (`_hotspot_key`, the spec filter, the trim
+  argument). The refusal is preserved for exactly the shape that has not said
+  what it means: a row with no `chain` key still groups under `target_chain`.
+- **`kept_segments` is NOT deprecated and NOT a flattening of `kept_by_chain`.**
+  It keeps its exact meaning — the primary target chain's spans — and every
+  existing consumer is right to read it. A consumer meaning "everything RFD3 is
+  conditioned on" must read `kept_by_chain`, whose ORDER is load-bearing:
+  primary chain first, because it fixes the output 1..N numbering and
+  `_run_cluster_stage` takes `spans[0][0]` as the target chain.
+- **A glue trim must be a NO-OP, and that is a refusal rather than a
+  convention.** Every measurement inside `trim_target` —
+  `_exposed_hydrophobic`, `_per_residue_bsa`, `bsa_retention`,
+  `min_bsa_retention`, `allowed_auth` — is written against ONE chain.
+  `_exposed_hydrophobic` compares each chain against itself in ISOLATION, so a
+  cut that strips the other chain's buried face reads as clean: on 5VAI an
+  `R29-128 + P7-37` trim opens **492 A^2 across 8 hydrophobic residues on
+  chain P** and measures 0. Two-chain trimming is scope item 7, Stage 6, and
+  **88% of real complexes need a trim** — 4ZGM was chosen as one of the 12%
+  that does not.
+- **Every glue gate ships `null`, and that is load-bearing.** A record missing
+  a criterion's column FAILS it, and `hotspot_engagement_min_side` /
+  `glue_ipsae_delta` / `target_rmsd` are blank on every non-glue run — so a
+  non-null value empties an ordinary campaign outright. Measured: 1,352 real
+  3KYS records, 317 survivors -> **0**. It looks like a bad target, not a bad
+  config, so `filter_records` warns BY NAME when a glue gate is active and
+  nothing carries the column.
+- **`glue_ipsae_delta` is the readout; `glue_ipsae_ab` alone is not**, because
+  a well-folded native interface scores high with or without a binder. The
+  reference is ONE apo fold per CAMPAIGN. `_glue_apo_ipsae` reads
+  `binder/apo/glue_apo.json` and leaves the column BLANK when it is absent —
+  blank, not 0.0, because a delta against a missing reference is not zero.
+  **Nothing writes that file yet**; it is the GPU half of scope item 17.
+  `ipsae_from_pae_matrix` is the wrong entry point for the AB number (it
+  hard-codes a two-block split at `n_binder`); `glue_ipsae_ab` synthesises
+  three-way labels — deliberately NOT the input chain letters, since an input
+  chain is routinely "A", which is the binder's own output chain.
+- **None of these metrics shows stabilisation.** They show a folding model
+  became more confident about an interface. `skills/design-analyst/SKILL.md`
+  says so and forbids writing the verdict the other way; that belongs in the
+  prompt, not only in a document.
+- **`_note_glue_guards` returns the prose it logs**, so the report and the log
+  cannot drift, and it names the four guards that do not cover this track —
+  `min_bsa_retention` measuring the interface a glue is stabilising, the
+  isolation blindness above, the pooled `hotspot_engagement` denominator, and
+  the fact that the chain guards matter MORE here because both chains are
+  design targets.
+
 ## The operator can name the epitope
 
 `--hotspots B74,B83,B84` (or bare `74,83,84` for the target chain) makes the

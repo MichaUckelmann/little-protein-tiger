@@ -1,5 +1,47 @@
 # Stage 3 — the executable plan (`design_intent: stabilize`, up to a validated spec)
 
+> ## ✅ EXECUTED — Stage 3 complete 2026-09-16, Stage 4 complete 2026-09-18
+>
+> All eleven steps shipped, in the order below, on `main` @ `e2d46dc`. All five
+> go/no-go criteria pass (§5). **§2 of this document — the corrections to
+> `GLUE_IMPLEMENTATION_NOTES.md` and `GLUE_PIPELINE_SCOPE.md` — is still the
+> live reference**, and is why this file is kept rather than archived: both
+> older documents are wrong in ways that would make you build the wrong thing,
+> and nothing else records that.
+>
+> **What deviated from the plan, and why:**
+>
+> - **`trim_cross_check` returns the chain-AWARE branch for archived trims**,
+>   not the chain-less one the plan expected (§ step 9). Step 7's
+>   `_TrimFromDisk` reconstructs `{target_chain: kept_segments}`, so archived
+>   trims take the stronger check. Verified before relying on it: all 53 pass,
+>   now as a test.
+> - **A twelfth commit was needed, and the plan's own criterion 5 is what found
+>   it.** Every step was correct in isolation and two wires between them were
+>   missing: `--stop-after spec` routes through `_run_site_trials`, which
+>   carries no co-target, and `_stage_trim` never passed `co_target_chains`.
+>   The result was a single-chain spec with 3 of 8 hotspots, printing PIPELINE
+>   COMPLETE. Unit tests did not catch it; running the command did.
+> - **Three corpus-invariant tests had to be re-scoped** once a glue project
+>   existed on disk. They assert every artifact is single-chain, which was true
+>   of the corpus and is no longer true of it. Each now says explicitly that it
+>   proves the SINGLE-chain spelling did not move.
+> - **`--design-intent` gained `target_chains` as an authoritative handoff
+>   field**, so new runs disambiguate from the handoff rather than relying on
+>   the positional A/B fallback that exists only for the reports already on
+>   disk.
+>
+> **Four changes are NOT intent-gated**, each measured across the whole corpus:
+> `expected_target_residues` (54 trims, 0 newly refuse), the missing-partner
+> refusal in `_stage_trim` (112 handoffs, 0), `_REGION_LABEL` gaining `]` (0
+> labels), and the chain-aware cross-check (53 of 53 pass). The second is a
+> real behaviour change on the disrupt path: a run whose interface stage omits
+> `partner_chain` now refuses where it previously degraded silently into
+> single-target mode.
+>
+> **Next:** Stage 5, the first GPU campaign. See `GLUE_IMPLEMENTATION_NOTES.md`
+> §2 and §7 for what is outstanding.
+
 **Written 2026-09-16 against HEAD `1f8c5dc`.** Successor to
 `GLUE_IMPLEMENTATION_NOTES.md`, which stays as the cold-start handover — what
 the eight stages are, what Stages 0–2 measured, why 4ZGM and not 5VAI. This
