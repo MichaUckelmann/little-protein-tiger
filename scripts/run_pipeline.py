@@ -264,6 +264,23 @@ def _build_parser() -> argparse.ArgumentParser:
             "so a project can set its own default."),
     )
     p.add_argument(
+        "--hypothesis-policy",
+        choices=["off", "novel_if_eligible", "canonical", "skill_preference"],
+        default="off",
+        dest="hypothesis_policy",
+        help=(
+            "--workflow ppi --pathway-mode wildcard --provider gemini only. 'off' (default) forwards the wildcard "
+            "skill's own recommendation, as before. Otherwise the skill is run in its two-track form (a canonical "
+            "shortlist plus corpus-derived hypotheses, each with an evidence chain) and every candidate is checked "
+            "in code: each number and DOI in its evidence must appear in a tool response from the same run, a PDB "
+            "entry must contain BOTH named proteins, it must differ from the canonical pick, and it needs some "
+            "grounded support. 'novel_if_eligible' forwards the best candidate that passes and is corpus-derived, "
+            "else the canonical one; 'canonical' prefers the canonical candidate; 'skill_preference' keeps the "
+            "skill's pick if it passes. If nothing passes, the skill's pick goes forward and the report says it was "
+            "UNGATED. --pdb always wins. The decision is written into 00_pathway.md and the project manifest. "
+            "See docs/phase4_wildcard_results.md for what this was measured to do, and not to do."),
+    )
+    p.add_argument(
         "--design-engine",
         choices=["foundry", "boltzgen"],
         default=None,
@@ -481,6 +498,17 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
+
+    if args.hypothesis_policy != "off":
+        problems = []
+        if args.workflow != "ppi":
+            problems.append("--workflow ppi")
+        if args.pathway_mode != "wildcard":
+            problems.append("--pathway-mode wildcard")
+        if args.provider != "gemini":
+            problems.append("--provider gemini (tool responses are read from Gemini conversations only)")
+        if problems:
+            parser.error("--hypothesis-policy needs " + ", ".join(problems) + ".")
 
     is_binder = args.workflow == "binder"
     is_structure = args.workflow == "structure"
@@ -768,6 +796,7 @@ def main() -> int:
         modality=args.modality,
         design_intent=args.design_intent,
         pathway_mode=args.pathway_mode,
+        hypothesis_policy=args.hypothesis_policy,
     )
 
     logger.info(f"Query: {query[:120]}{'...' if len(query) > 120 else ''}")

@@ -391,6 +391,22 @@ which triages on graph novelty and DepMap co-essentiality instead and
 deliberately favours targets the literature has not converged on. Use
 wildcard when you want a candidate nobody is already working on.
 
+`--hypothesis-policy` (default `off`) changes who decides what wildcard mode
+forwards. Off, the skill's own recommendation goes to the next stage. On
+(`--pathway-mode wildcard --provider gemini`), the skill is run in a two-track
+form, a canonical shortlist plus corpus-derived hypotheses each with an evidence
+chain, and every candidate is checked in code: each number and DOI in its
+evidence must appear in a tool response from the same run, a PDB entry must
+contain both named proteins, it must differ from the canonical pick, and it
+needs some grounded support. `novel_if_eligible` forwards the best candidate
+that passes (corpus-derived first), `canonical` prefers the canonical one,
+`skill_preference` keeps the skill's pick if it passes. If nothing passes, the
+skill's pick goes forward and the report says it was ungated; `--pdb` always
+wins. What it was measured to do is in `docs/phase4_wildcard_results.md`: the
+checks catch ungrounded and structureless candidates, but judged report quality
+was no better than the standard skill, and whether a forwarded hypothesis is a
+good target is untested.
+
 The three PPI stages (0-2) are LLM-driven skills. Of the binder-track
 stages they bridge into, only `binder_summary` calls an LLM — `trim`,
 `binder_spec`, `pilot`, `calibration`, `production` and `binder_scoring`
@@ -715,6 +731,12 @@ python scripts/run_pipeline.py --workflow ppi \
   --query "Identify a novel tractable PPI in the unfolded protein response." \
   --project upr_wildcard \
   --pathway-mode wildcard
+
+# Same, but check the candidates in code and forward the best one that passes.
+python scripts/run_pipeline.py --workflow ppi \
+  --query "Identify a novel tractable PPI in the unfolded protein response." \
+  --project upr_wildcard_gated \
+  --pathway-mode wildcard --hypothesis-policy novel_if_eligible
 
 # The same run with per-stage conversation traces captured for audit.
 # Campaign size is not a flag here — both live engines size themselves from a

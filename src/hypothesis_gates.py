@@ -229,3 +229,100 @@ def select_forward(cands: list[dict], results: list[GateResult], policy: str = "
         "rejected": {r.complex: r.failed for r in results if not r.eligible},
         "policy": policy,
     }
+
+
+# ---------------------------------------------------------------------------
+# From a finished stage to a decision. Everything above is pure; this part reads a run.
+# ---------------------------------------------------------------------------
+
+def gemini_responses_by_tool(messages: list[dict] | None) -> dict[str, str]:
+    """Tool name -> concatenated response text, from a finished Gemini conversation.
+
+    Only Gemini's message format is read. The gates need what the tools actually returned, and the
+    other providers store tool results differently; `PipelineRunner` therefore refuses
+    `--hypothesis-policy` on them rather than gating against an empty record, which would fail every
+    candidate and quietly make the policy a no-op.
+    """
+    by: dict[str, list[str]] = {}
+    for msg in messages or []:
+        for part in msg.get("parts", []) if isinstance(msg, dict) else []:
+            fr = part.get("functionResponse") if isinstance(part, dict) else None
+            if fr:
+                by.setdefault(fr.get("name", ""), []).append(str((fr.get("response") or {}).get("result", "")))
+    return {k: "\n".join(v) for k, v in by.items()}
+
+
+def default_resolver() -> Callable[[str], str]:
+    """Gene-name resolver backed by the identifier tables (HGNC/UniProt)."""
+    from src.identifier_normalizer import get_normalizer
+    norm = get_normalizer()
+
+    def resolve(name: str) -> str:
+        r = norm.resolve(name)
+        sym = getattr(r, "human_gene_symbol", None) or (r.get("human_gene_symbol") if isinstance(r, dict) else None)
+        return sym or re.sub(r"[^A-Z0-9]", "", str(name).upper())
+    return resolve
+
+
+_RCSB_GQL = ("query($ids:[String!]!){entries(entry_ids:$ids){rcsb_id polymer_entities{rcsb_polymer_entity{pdbx_description}"
+             " rcsb_entity_source_organism{rcsb_gene_name{value}}}}}")
+
+
+def fetch_rcsb_entries(ids: Iterable[str], cache: dict | None = None, timeout: int = 40) -> dict[str, dict]:
+    """PDB id -> {exists, descriptions, genes}, from RCSB's GraphQL API, 40 ids per request.
+
+    A failed request leaves an id out of the result (not marked as nonexistent), so the structure gate
+    reports "could not be looked up" instead of treating an outage as a missing structure.
+    """
+    import requests
+    cache = {} if cache is None else cache
+    todo = [i for i in dict.fromkeys(str(x).upper() for x in ids) if i not in cache]
+    for k in range(0, len(todo), 40):
+        chunk = todo[k:k + 40]
+        try:
+            r = requests.post("https://data.rcsb.org/graphql", json={"query": _RCSB_GQL, "variables": {"ids": chunk}}, timeout=timeout)
+            r.raise_for_status()
+            entries = (r.json().get("data") or {}).get("entries") or []
+        except Exception:
+            continue
+        found = {}
+        for e in entries:
+            desc, genes = [], set()
+            for pe in e.get("polymer_entities") or []:
+                desc.append(((pe.get("rcsb_polymer_entity") or {}).get("pdbx_description")) or "")
+                for src in pe.get("rcsb_entity_source_organism") or []:
+                    genes |= {g.get("value", "") for g in src.get("rcsb_gene_name") or []}
+            found[e["rcsb_id"].upper()] = {"exists": True, "descriptions": desc, "genes": sorted(genes)}
+        for pid in chunk:
+            cache[pid] = found.get(pid, {"exists": False})
+    return cache
+
+
+def decide(report_text: str, responses: dict[str, str], policy: str, *, resolve: Callable[[str], str],
+           entries_fn: Callable[[list[str]], dict[str, dict]], skill_preference: str | None = None) -> dict:
+    """Parse a two-track report, apply the gates and the policy, and say what to forward and why.
+
+    Returns {"ok": False, "reason": ...} when the report has no usable `choices_json` (the pipeline then
+    leaves the skill's own pick alone). Otherwise `selection` is `select_forward`'s explanation,
+    `chosen` is the winning candidate's dict, `pdb_id` the first of its listed entries that contains both
+    proteins (or None), and `candidates` a serialisable summary of every gate result for the report.
+    """
+    cands = parse_choices(report_text)
+    if not cands:
+        return {"ok": False, "reason": "the report has no parseable choices_json"}
+    ids = [i for c in cands for i in (c.get("pdb_ids") or [])]
+    entries = entries_fn(ids) if ids else {}
+    results = evaluate(cands, responses, entries, resolve)
+    sel = select_forward(cands, results, policy, skill_preference)
+    chosen = next((c for c in cands if c.get("complex") == sel["chosen"]), None)
+    pdb = None
+    if chosen:
+        parts = [p.strip() for p in re.split(r"\s*/\s*", str(chosen.get("complex", ""))) if p.strip()]
+        for i in chosen.get("pdb_ids") or []:
+            e = entries.get(str(i).upper())
+            if e and len(parts) == 2 and entry_names_both(e, parts[0], parts[1], resolve):
+                pdb = str(i).upper()
+                break
+    return {"ok": True, "selection": sel, "chosen": chosen, "pdb_id": pdb,
+            "candidates": [{"complex": r.complex, "track": r.track, "eligible": r.eligible, "failed": r.failed,
+                            "checks": {k: v[1] for k, v in r.checks.items()}} for r in results]}

@@ -683,6 +683,50 @@ operator believes otherwise.
   the spec declared, re-derived at scoring time from the RFD3 design sidecar,
   so an explicit set becomes the denominator automatically.
 
+## `--hypothesis-policy`: the skill proposes, code decides
+
+Off by default, and with it off nothing about the pathway stage changes. On, it needs
+`--workflow ppi --pathway-mode wildcard --provider gemini`; the constructor and the CLI both refuse
+anything else, rather than degrade, because the gates compare a candidate's evidence with what the tools
+returned and that record is read from Gemini conversations only (`gemini_responses_by_tool`). A policy that
+could not read the record would fail every candidate and quietly become a no-op.
+
+- **The skill is edited at run time, not on disk.** `skill_variants.two_track_wildcard` rewrites the loaded
+  `wildcard-expert` prompt by asserted edits (each anchor must occur exactly once, so a change to the skill
+  fails the build instead of producing a different prompt). `skills/wildcard-expert/SKILL.md` is unchanged.
+  The two-track form keeps the heading `### PRIMARY RECOMMENDATION` and its fields, because parsers read
+  them; it is now the skill's advisory preference. `choices_json` gains `track` and `evidence_chain`.
+- **Four checks, in `src/hypothesis_gates.py`, none of which the skill can argue with:** every number and DOI
+  in the evidence chain appears in a tool response from the same run; a PDB entry contains BOTH named
+  proteins (RCSB entities); the pair differs from the report's canonical pick; there is a grounded DOI or a
+  grounded DepMap r of at least 0.3. A corpus-derived hypothesis must state a chain; a canonical one need not.
+  Chain size is NOT checked here: `_designable_chain_sizes` does it downstream with the real structure, and a
+  second check would be a second dispatch.
+- **Only an eligible candidate that differs from the skill's pick changes anything.** `_apply_hypothesis_policy`
+  rewrites `handoff["pdb_id"]`, `target_complex` and `design_intent`, and BLANKS `structure_query`, so
+  `_stage_structure` takes the path it already uses when an operator picks a non-primary choice and builds the
+  query for THAT candidate from `choices_json`. Leaving the skill's query in place would hand the next stage
+  a query naming the pair it preferred. If nothing passes, the skill's pick goes forward and the report says
+  `UNGATED`. `--pdb` always wins (the stage returns before deciding).
+- **The decision survives a restart in the same way the structure switch does, and for the same reason.** The
+  handoff block on disk still names the skill's pick, so `--start-from literature|structure` would revert it.
+  The `hypothesis_forwarded` checkpoint is restored by `_reapply_recorded_hypothesis_forward` BEFORE the
+  structure-switch restore, because the switch was decided on the forwarded target. It applies even if the
+  flag is not repeated on the resume: the decision belongs to the campaign.
+- **The `## HYPOTHESIS GATES` note goes in before `## MODEL PROVENANCE` and `## CITATION VERIFICATION`,**
+  which `report_common.extract_citation_section` matches through end-of-file; anything after them is rendered
+  inside the citation block.
+- **What it was measured to do** (`docs/phase4_wildcard_results.md`, 7 prompts, 2 repeats): grounded evidence
+  96% against 91%, the skill's own preference passing every check in 8 of 14 runs against 5 of 14, hypotheses
+  absent from a closed-book model's candidate lists in 35 of 38 cases. Judged report quality was NOT better
+  than the standard skill or the current wildcard skill, and there is no ground truth for whether a forwarded
+  hypothesis is a good target.
+- **Known weaknesses, not fixed:** the novelty check compares a hypothesis with the SAME report's canonical
+  pick, not with established knowledge, so a canonical pair can pass as "novel" (ASF1A/HIRA and EZH2/SUZ12 did);
+  complex names are not validated (a PDB-style token passed as a partner); the two-track skill runs about 40 to
+  65 tool calls and needs more than the production defaults of 30 rounds and 100k tokens, which the
+  experiments raised to 60 and 400k and which `--max-iter`/`--max-tokens` set for a real run.
+
 ## A third entry point: structure-first
 
 `--workflow structure` (`_stage_structure_intel`) exists because the other two

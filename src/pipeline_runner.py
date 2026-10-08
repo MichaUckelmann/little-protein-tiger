@@ -32,7 +32,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, Callable, NoReturn
 
 import requests
 import yaml
@@ -402,6 +402,9 @@ class PipelineResult:
     #: choice, so the substitution is visible in artifacts a person reads and
     #: not only in the log and the manifest checkpoint.
     structure_switch: dict | None = None
+    #: What `--hypothesis-policy` decided about the pathway stage's candidates (None when the flag is off):
+    #: the policy, the skill's own preference, what was forwarded and why, and every gate result.
+    hypothesis_decision: dict | None = None
     pathway_handoff: dict | None = None
     structure_handoff: dict | None = None
     literature_handoff: dict | None = None
@@ -491,6 +494,7 @@ class PipelineRunner:
         design_engine: str | None = None,
         modality: str = "mini_protein",
         design_intent: str | None = None,
+        hypothesis_policy: str = "off",
     ) -> None:
         self.config = config
         self.provider = provider
@@ -615,6 +619,26 @@ class PipelineRunner:
                 f"'standard' or 'wildcard'."
             )
         self._pathway_mode: str = resolved_mode
+        # What to forward from a two-track wildcard report. "off" (the default) leaves the stage exactly
+        # as it was: the skill's own recommendation goes forward. Otherwise the candidates are checked in
+        # code (`src/hypothesis_gates.py`) and the policy picks among those that pass; see
+        # `_apply_hypothesis_policy`. Refused, not degraded, where it cannot work: the checks compare a
+        # candidate's evidence with what the tools returned, and that record is read only for Gemini runs.
+        if hypothesis_policy not in ("off", "novel_if_eligible", "canonical", "skill_preference"):
+            raise ValueError(
+                f"Invalid hypothesis_policy={hypothesis_policy!r}; expected 'off', 'novel_if_eligible', "
+                f"'canonical' or 'skill_preference'.")
+        if hypothesis_policy != "off":
+            problems = []
+            if resolved_mode != "wildcard":
+                problems.append("--pathway-mode wildcard (only wildcard-expert has a two-track form)")
+            if workflow != "ppi":
+                problems.append("--workflow ppi (the pathway stage only exists there)")
+            if provider != "gemini":
+                problems.append("--provider gemini (tool responses are read from Gemini conversations only)")
+            if problems:
+                raise ValueError("--hypothesis-policy needs " + "; ".join(problems) + ".")
+        self._hypothesis_policy: str = hypothesis_policy
         # Which generator builds the designs: "foundry" (default) |
         # "boltzgen". (`boltzgen_legacy` is a name the constructor still
         # recognises, in order to refuse it specifically — see below.)
@@ -887,6 +911,10 @@ class PipelineRunner:
         # than re-deriving (which would cost another RCSB round-trip) or trusting
         # the stale file.
         # `--pdb` always wins, on a resume exactly as on a fresh run.
+        # A forwarded hypothesis is restored FIRST: the structure switch above was decided on the forwarded
+        # target, so its recorded "from" entry is the one this restores.
+        if start_idx > 0 and handoff and not pdb_id:
+            self._reapply_recorded_hypothesis_forward(result, handoff)
         if start_idx > 1 and result.pdb_id and not pdb_id:
             self._reapply_recorded_structure_switch(result, handoff)
 
@@ -3781,6 +3809,130 @@ class PipelineRunner:
     #: the pipeline is being told to do; leave what it was told as true.
     _STRUCTURE_INSTRUCTION_FIELDS = ("structure_query", "design_query",
                                      "literature_query")
+
+    def _apply_hypothesis_policy(self, handoff: dict, output_file: Path, result: "PipelineResult",
+                                 *, pinned: bool) -> None:
+        """Check a two-track report's candidates in code and forward the one the policy picks.
+
+        The wildcard skill used to choose its own primary recommendation. Observed: 4 of 41 numbers in its
+        reports appeared in no tool response, and its preference passed every check in only 5 of 14 runs.
+        So the skill generates and states a preference, and this decides: every candidate is checked
+        (`src/hypothesis_gates.py`: evidence grounded in this run's tool output, a PDB entry that contains
+        both proteins, not the canonical pick, some support), and the policy picks among those that pass.
+
+        Only an eligible candidate that differs from the skill's own pick changes anything. When nothing
+        passes, the skill's pick goes forward unchanged and the report says it was UNGATED; when the report
+        cannot be parsed, nothing changes. `--pdb` always wins. The decision is written into the report (before
+        the provenance and citation sections, which are matched to end-of-file) and into a manifest
+        checkpoint, because the handoff block on disk still names the skill's pick and a resume would
+        otherwise revert it.
+        """
+        if pinned:
+            logger.info("  hypothesis policy: --pdb is pinned, the operator's structure wins; policy not applied")
+            return
+        from src import hypothesis_gates as G
+
+        last = getattr(self, "_last_stage", None) or {}
+        text = output_file.read_text(encoding="utf-8")
+        preference = (handoff.get("target_complex") or "").strip() or None
+        decision = G.decide(
+            text, G.gemini_responses_by_tool(last.get("messages")), self._hypothesis_policy,
+            resolve=G.default_resolver(), entries_fn=lambda ids: G.fetch_rcsb_entries(ids),
+            skill_preference=preference)
+        record: dict[str, Any] = {"policy": self._hypothesis_policy, "skill_preference": preference}
+        if not decision["ok"]:
+            logger.warning(f"  hypothesis policy: {decision['reason']}; the skill's own pick goes forward unchecked")
+            record.update(forwarded=preference, changed=False, gated=False, reason=decision["reason"])
+            result.hypothesis_decision = record
+            self._write_hypothesis_note(output_file, record, [])
+            return
+
+        sel, chosen = decision["selection"], decision["chosen"]
+        changed = bool(chosen and sel["gated"] and chosen.get("complex") != preference and decision["pdb_id"])
+        record.update(forwarded=sel["chosen"], track=sel["track"], gated=sel["gated"], reason=sel["reason"],
+                      eligible=sel["eligible"], rejected=sel["rejected"], changed=changed,
+                      pdb_id=decision["pdb_id"], candidates=decision["candidates"])
+        if changed:
+            old_pdb = handoff.get("pdb_id")
+            handoff["pdb_id"] = decision["pdb_id"]
+            handoff["target_complex"] = chosen["complex"]
+            if chosen.get("design_intent"):
+                handoff["design_intent"] = chosen["design_intent"]
+            # Blank, so `_stage_structure` builds the query for THIS candidate from choices_json, the path
+            # it already takes when an operator picks a non-primary choice. The skill's own query names
+            # the pair it preferred.
+            handoff["structure_query"] = ""
+            result.pdb_id = None
+            record.update(from_complex=preference, from_pdb=old_pdb, to_complex=chosen["complex"],
+                          to_pdb=decision["pdb_id"], design_intent=chosen.get("design_intent"))
+            logger.warning(
+                f"  hypothesis policy ({self._hypothesis_policy}): forwarding {chosen['complex']} "
+                f"[{sel['track']}, PDB {decision['pdb_id']}] instead of the skill's {preference!r}: {sel['reason']}")
+            self._binder_checkpoint("hypothesis_forwarded", "pathway", "choice", {
+                k: record.get(k) for k in ("policy", "from_complex", "from_pdb", "to_complex", "to_pdb",
+                                            "design_intent", "track", "reason")})
+        elif not sel["gated"]:
+            logger.warning(f"  hypothesis policy: NO candidate passed the gates; the skill's own pick "
+                           f"({preference!r}) goes forward UNGATED.")
+        else:
+            logger.info(f"  hypothesis policy: the skill's pick {preference!r} passed the gates and goes forward.")
+        result.hypothesis_decision = record
+        self._write_hypothesis_note(output_file, record, decision["candidates"])
+
+    @staticmethod
+    def _write_hypothesis_note(output_file: Path, record: dict, candidates: list[dict]) -> None:
+        """Add a `## HYPOTHESIS GATES` section to the report, ahead of the sections matched to end-of-file."""
+        lines = ["", "## HYPOTHESIS GATES", "",
+                 f"- Policy: `{record.get('policy')}`",
+                 f"- Skill preference: {record.get('skill_preference')}",
+                 f"- Forwarded: **{record.get('forwarded')}**"
+                 + (f" ({record.get('track')}, PDB {record.get('pdb_id')})" if record.get("track") else "")
+                 + (" — CHANGED from the skill's preference" if record.get("changed") else "")
+                 + ("" if record.get("gated") else " — UNGATED"),
+                 f"- Why: {record.get('reason')}"]
+        if candidates:
+            lines += ["", "| Candidate | Track | Eligible | Failed checks |", "|---|---|---|---|"]
+            lines += [f"| {c['complex']} | {c['track']} | {'yes' if c['eligible'] else 'no'} | {', '.join(c['failed']) or '—'} |"
+                      for c in candidates]
+        note = "\n".join(lines) + "\n"
+        text = output_file.read_text(encoding="utf-8")
+        cuts = [i for i in (text.find("\n## MODEL PROVENANCE"), text.find("\n## CITATION VERIFICATION")) if i >= 0]
+        at = min(cuts) if cuts else len(text)
+        output_file.write_text(text[:at].rstrip("\n") + "\n" + note + text[at:], encoding="utf-8")
+
+    def _reapply_recorded_hypothesis_forward(self, result: "PipelineResult", handoff: dict) -> None:
+        """Restore a previous process's `--hypothesis-policy` decision on resume.
+
+        The handoff parsed off disk still names the skill's own pick. The manifest checkpoint records what was
+        forwarded; point this run back at it. Applies whether or not the flag is passed again, because the
+        decision belongs to the campaign. Fails open, and the caller skips it when the operator pinned `--pdb`.
+        """
+        if self._project is None or self._round_id is None:
+            return
+        try:
+            cp = self._project.checkpoint("hypothesis_forwarded", self._round_id)
+        except Exception as exc:
+            logger.warning(f"could not read hypothesis_forwarded checkpoint: {exc}")
+            return
+        payload = (cp or {}).get("payload") or {}
+        frm, to, pdb = payload.get("from_complex"), payload.get("to_complex"), payload.get("to_pdb")
+        if not (frm and to and pdb):
+            return
+        current = (result.target_complex or handoff.get("target_complex") or "").strip().lower()
+        if current != str(frm).strip().lower():
+            return                                    # already correct, or pinned elsewhere
+        logger.warning(f"  ⚠ resumed handoff names {frm!r}, which this campaign replaced with {to!r} "
+                       f"(PDB {pdb}) under --hypothesis-policy — restoring it from the manifest checkpoint.")
+        handoff["target_complex"] = to
+        handoff["pdb_id"] = pdb
+        handoff["structure_query"] = ""
+        if payload.get("design_intent"):
+            handoff["design_intent"] = payload["design_intent"]
+        result.target_complex = to
+        result.pdb_id = pdb
+        result.hypothesis_decision = {"policy": payload.get("policy"), "changed": True, "from_complex": frm,
+                                      "to_complex": to, "to_pdb": pdb, "reason": payload.get("reason"),
+                                      "restored_on_resume": True}
 
     def _reapply_recorded_structure_switch(self, result: "PipelineResult",
                                            handoff: dict) -> None:
@@ -7077,7 +7229,19 @@ class PipelineRunner:
         output_file = run_dir / "00_pathway.md"
         skill = "wildcard-expert" if self._pathway_mode == "wildcard" else "pathway-expert"
         logger.info(f"Stage 0: {skill}")
-        handoff = self._run_stage(skill, query, [], output_file, stage="pathway")
+        variant = None
+        pinned = bool(result.pdb_id)            # `--pdb`: the operator's structure always wins
+        if self._hypothesis_policy != "off":
+            from src.skill_variants import two_track_wildcard as variant
+            provider = self._resolve_stage(skill, "pathway")[2]
+            if provider != "gemini":
+                raise PipelineError(
+                    f"--hypothesis-policy needs the pathway stage on Gemini, but it resolves to {provider!r}; "
+                    f"tool responses are read from Gemini conversations only.")
+            logger.info(f"  hypothesis policy: {self._hypothesis_policy} (two-track skill variant)")
+        handoff = self._run_stage(skill, query, [], output_file, stage="pathway", prompt_variant=variant)
+        if self._hypothesis_policy != "off":
+            self._apply_hypothesis_policy(handoff, output_file, result, pinned=pinned)
         result.stages_completed.append("pathway")
         result.stage_files["pathway"] = output_file
         result.pathway_handoff = handoff       # persist so later stages can read structure_query, etc.
@@ -7523,9 +7687,13 @@ class PipelineRunner:
         output_file: Path,
         *,
         stage: str | None = None,
+        prompt_variant: Callable[[str], str] | None = None,
     ) -> dict[str, str]:
         """
         Invoke one skill and return the parsed PIPELINE HANDOFF fields.
+
+        `prompt_variant`, when given, rewrites the loaded system prompt before the run
+        (see `src/skill_variants.py`). The skill file on disk is not touched.
 
         `stage` names the pipeline stage this invocation belongs to.  Pass it
         whenever a skill is shared between stages; it defaults to the (ambiguous)
@@ -7545,6 +7713,8 @@ class PipelineRunner:
             max_input_tokens=self.max_tokens,
             use_extended_thinking=use_thinking,
         )
+        if prompt_variant is not None:
+            runner.system_prompt = prompt_variant(runner.system_prompt)
 
         logger.info(f"  [{skill_name}] {query[:100]}{'...' if len(query) > 100 else ''}")
 
@@ -7622,6 +7792,11 @@ class PipelineRunner:
                         f"${entry.usd:.4f} ({ratio:.1f}x) — tune "
                         f"_STAGE_CALL_PRIOR / _HISTORY_GROWTH_PER_CALL if this "
                         f"is consistently off")
+
+        # Kept for `_apply_hypothesis_policy`, which must compare a report's evidence with what the tools
+        # actually returned in this run.
+        self._last_stage = {"skill": skill_name, "provider": provider,
+                            "messages": getattr(runner, "_messages", None)}
 
         # Verify corpus citations and append a summary section to the output.
         # This runs after every stage so hallucinated DOIs are flagged before
