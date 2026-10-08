@@ -129,7 +129,7 @@ Strict JSON only. No prose. No preamble. No markdown code fences. Output must co
 {
   "schema_version": "2.0",
   "relevant": true,
-  "study_category": "enum[biochemistry, pathway_biology, structural_biology, host_pathogen, clinical, review]",
+  "study_category": "enum[biochemistry, pathway_biology, structural_biology, enzymology, biocatalysis, computational_chemistry, host_pathogen, clinical, review]",
   "pathway_context": null,
   "curation_metadata": {
     "model": "string",

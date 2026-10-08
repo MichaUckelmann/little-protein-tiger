@@ -1,7 +1,25 @@
 """Read/write JSON fingerprint files; simple in-Python querying."""
+import html
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+
+def clean_title(title: str | None) -> str:
+    """Plain-text form of a database title: no JATS/HTML markup or entities.
+
+    Titles reach the database from PMC and Semantic Scholar with inline markup
+    (`<i>ndk</i>`, `CD8<sup>+</sup>T`). Tags are removed without inserting a
+    space — the source already spaces where it means to — whitespace is
+    collapsed, and one trailing full stop is dropped.
+    """
+    text = html.unescape(re.sub(r"<[^>]+>", "", title or ""))
+    text = " ".join(text.split())
+    # PubMed-sourced titles end in a full stop; Crossref and the journals' own
+    # titles do not. One convention, so the same paper reads the same whichever
+    # source supplied it.
+    return text[:-1].rstrip() if text.endswith(".") and not text.endswith("..") else text
 
 
 def save_fingerprint(paper_key: str, fingerprint: dict, output_dir: Path) -> Path:

@@ -26,7 +26,7 @@ from src.database import Database, _paper_key
 from src.models import Paper
 from src.text_extractor import extract_text
 from src.curator import curate_paper
-from src.fingerprint_store import save_fingerprint
+from src.fingerprint_store import clean_title, save_fingerprint
 
 RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 
@@ -324,15 +324,21 @@ def main():
         # extract DOI / PMCID / title from the paper text and frequently fails
         # — older papers often don't carry the DOI in the parsable text. We
         # already have the canonical values in the Paper record; trust those
-        # over the LLM extraction. Only fills in missing fields, never overwrites.
+        # over the LLM extraction. DOI and PMCID are only filled when missing.
+        # The TITLE is the exception and is always taken from the record: the
+        # JATS extractor sends body paragraphs only, so for XML papers the model
+        # never sees the title and writes one of its own (82 of the 264 corpus
+        # DOIs the pipeline cited had a different title from the paper, all of
+        # them XML-sourced). Filling only-if-missing could never fix that,
+        # because the model always supplies something.
         fingerprint.setdefault("paper_metadata", {})
         pm = fingerprint["paper_metadata"]
         if paper.doi and not pm.get("doi"):
             pm["doi"] = paper.doi
         if paper.pmcid and not pm.get("pmcid"):
             pm["pmcid"] = paper.pmcid
-        if paper.title and not pm.get("title"):
-            pm["title"] = paper.title
+        if clean_title(paper.title):
+            pm["title"] = clean_title(paper.title)
 
         # Merge RCSB-authoritative PDB accessions with whatever the curator extracted.
         # This catches structures deposited by the paper that the model missed.
