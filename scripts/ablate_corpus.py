@@ -89,11 +89,36 @@ ARMS = ("live", "blank", "decoy")
 # (`get_genetic_codependency`, `find_cocorrelated_genes`) are NOT here: they read
 # CRISPR essentiality, not papers, and leaving them live in every arm keeps the
 # ablation to one variable. RCSB and the structure tools are likewise untouched.
+#
+# `find_pdb_structures` IS here, and was missing until 2026-10-07. Its docstring
+# says "Corpus-sourced": it scans every fingerprint for PDB accessions
+# (`pathway_context.target_nodes[].suggested_pdb_structures` and
+# `paper_metadata.pdb_accessions`), so it hands back the structures the
+# literature associates with a protein. Left live, the blank and decoy arms kept
+# a corpus-derived channel (up to 99k characters per call); it was found when a
+# blank report quoted a coverage figure and the trace showed what had actually
+# been returned. `tests/test_ablate_corpus_blanking.py` now fails if any tool is
+# neither blanked here nor listed in LIVE_BY_DESIGN, so a new corpus-reading tool
+# cannot be added without someone deciding which side it is on.
 CORPUS_TOOLS = frozenset({
     "search_corpus", "get_fingerprint", "find_quantitative_evidence",
     "get_interactions_for", "shortest_interaction_path", "interaction_hubs",
     "novelty_signal", "export_subgraph", "cluster_for_protein",
-    "cluster_members", "find_clusters_by_keyword",
+    "cluster_members", "find_clusters_by_keyword", "find_pdb_structures",
+})
+
+# Tools that stay live in every arm ON PURPOSE, each with the reason it is not
+# corpus content. `tests/test_ablate_corpus_blanking.py` pins the partition and
+# `scripts/audit_blanking.py` checks the claim against the files they open.
+LIVE_BY_DESIGN = frozenset({
+    "search_rcsb_pdb",             # RCSB full-text search (network); local cache is RCSB metadata
+    "get_genetic_codependency",    # DepMap CRISPR matrix
+    "find_cocorrelated_genes",     # DepMap CRISPR matrix
+    "resolve_protein_identifier",  # HGNC / UniProt tables
+    "find_complex_structures",     # RCSB
+    "tool_find_glue_pockets", "tool_analyze_interface", "tool_get_residue_contacts",
+    "tool_check_mutation_clash", "tool_get_sequence_map", "tool_score_surface_patch",
+    "write_file",                  # not corpus; filtered out of the pathway skill anyway
 })
 
 # What the decoy arm pretends every question was about.

@@ -2319,6 +2319,13 @@ class SkillRunner:
                 "tools": gemini_tools,
                 "generationConfig": {"maxOutputTokens": 24000},
             }
+            if getattr(self, "include_thoughts", False):
+                # Opt-in, off by default. Asks Gemini to return its thought
+                # SUMMARIES (a summary the API writes, not the raw reasoning), as
+                # parts flagged `thought: true`. They are kept in the trace and
+                # filtered out of the returned text below. Used by
+                # scripts/phase3_thoughts.py to read how a stage used its tools.
+                payload["generationConfig"]["thinkingConfig"] = {"includeThoughts": True}
             for attempt in range(4):
                 # The status-code retry below only helps once a RESPONSE
                 # exists. A dropped connection or a read timeout raises out of
@@ -2453,7 +2460,8 @@ class SkillRunner:
                     f"{self._total_output_tokens:,} out across {iteration + 1} LLM calls"
                 )
                 self._messages = messages
-                text_parts = [p.get("text", "") for p in parts if "text" in p]
+                # A part flagged `thought` is a reasoning summary, not report text.
+                text_parts = [p.get("text", "") for p in parts if "text" in p and not p.get("thought")]
                 return "\n".join(text_parts)
 
             # Execute tools; batch all functionResponses in one user turn
