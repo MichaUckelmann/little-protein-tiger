@@ -55,6 +55,30 @@ def test_every_mark_carries_a_hover_title():
     assert "no DepMap pair" in svg
 
 
+def test_an_affinity_is_labelled_by_the_metric_that_was_measured():
+    """A Ki must not be rendered as a Kd.
+
+    The Edge carried a single `kd` slot until 2026-09-16 and the label was
+    hardcoded "tightest Kd", so every Ki on an edge was silently dropped —
+    575 of the 1,966 corpus edges with an affinity carry only a Ki. Observed
+    on BRD4-CDK9 (Ki 1.47e-08 M), which drew no affinity at all.
+    """
+    svg = render_svg(["A", "B", "C"],
+                     [Edge("A", "B", 0.4, 3, kd=7e-08),
+                      Edge("B", "C", 0.2, 5, ki=1.47e-08)],
+                     {})
+    assert "tightest Kd 7e-08 M" in svg
+    assert "tightest Ki 1.5e-08 M" in svg
+    assert "Kd 1.5e-08" not in svg          # the Ki is not relabelled as a Kd
+    both = render_svg(["A", "B"], [Edge("A", "B", 0.4, 3, kd=1e-9, ki=2e-9)], {})
+    assert "tightest Kd 1e-09 M, tightest Ki 2e-09 M" in both
+
+
+def test_an_edge_with_no_affinity_says_nothing_about_one():
+    svg = render_svg(["A", "B"], [Edge("A", "B", 0.4, 3)], {})
+    assert "tightest" not in svg
+
+
 def test_seeds_are_distinguishable_from_pulled_in_nodes():
     svg = render_svg(NODES, EDGES, META)
     assert 'class="nl seed"' in svg

@@ -54,14 +54,21 @@ _STYLE = """
 
 
 class Edge:
-    """source, target, depmap r (or None), corpus co-mention count, tightest Kd."""
+    """source, target, depmap r (or None), co-mention count, tightest Kd, tightest Ki.
 
-    __slots__ = ("source", "target", "r", "mentions", "kd")
+    Kd and Ki are separate slots on purpose. The corpus records them as
+    separate fields because they are separate quantities, and 575 of the 1,966
+    edges carrying an affinity have only a Ki — folding those into `kd` would
+    have labelled an inhibition constant as a dissociation constant.
+    """
+
+    __slots__ = ("source", "target", "r", "mentions", "kd", "ki")
 
     def __init__(self, source: str, target: str, r: float | None = None,
-                 mentions: int = 1, kd: float | None = None):
+                 mentions: int = 1, kd: float | None = None,
+                 ki: float | None = None):
         self.source, self.target = source, target
-        self.r, self.mentions, self.kd = r, mentions, kd
+        self.r, self.mentions, self.kd, self.ki = r, mentions, kd, ki
 
 
 def load_cyjs(path: str | Path, keep: Sequence[str] | None = None
@@ -77,7 +84,8 @@ def load_cyjs(path: str | Path, keep: Sequence[str] | None = None
             seen.add((s, t))
             edges.append(Edge(s, t, e["data"].get("depmap_r"),
                               e["data"].get("mentions", 1),
-                              e["data"].get("tightest_kd_M")))
+                              e["data"].get("tightest_kd_M"),
+                              e["data"].get("tightest_ki_M")))
     used = {n for e in edges for n in (e.source, e.target)}
     return [n for n in nodes if n in used], edges, meta
 
@@ -142,11 +150,13 @@ def render_svg(nodes: Sequence[str], edges: Sequence[Edge],
         (x1, y1), (x2, y2) = pos[e.source], pos[e.target]
         col, dash, op, lab = _edge_style(e, pal)
         w = 0.9 + min(3.2, (e.mentions or 1) ** 0.5)
-        kd = f" · tightest Kd {e.kd:.2g} M" if e.kd else ""
+        aff = ", ".join(f"tightest {name} {v:.2g} M" for name, v in
+                        (("Kd", e.kd), ("Ki", e.ki)) if v)
+        aff = f" · {aff}" if aff else ""
         plural = "s" if (e.mentions or 1) != 1 else ""
         parts.append(
             f'<g class="mk" tabindex="0"><title>{e.source} — {e.target}: '
-            f'{e.mentions} mention{plural} in the corpus, {lab}{kd}</title>'
+            f'{e.mentions} mention{plural} in the corpus, {lab}{aff}</title>'
             f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
             f'stroke="{col}" stroke-width="{w:.1f}" stroke-opacity="{op:.2f}" '
             f'stroke-dasharray="{dash}" stroke-linecap="round"/></g>')

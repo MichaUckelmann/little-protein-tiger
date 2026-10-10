@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="The BRD4 neighbourhood drawn twice: from LPT's literature interaction graph and from DepMap co-essentiality. They share one node.">
+<title>Two Surfaces on BRD4</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg:#f3f5f7; --surface:#ffffff; --surface-2:#e9ecf0; --ink:#11151b; --ink-2:#39414d;
+  --muted:#69727f; --rule:#dce0e6; --rule-2:#c6ccd5;
+  --accent:#1c5cab; --ember:#a84d18;
+  --mark-a:#1f7a52; --mark-b:#a07002;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"Archivo","Helvetica Neue",Arial,sans-serif;
+  --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0d1014; --surface:#141920; --surface-2:#1c222b; --ink:#eef1f5; --ink-2:#c2cad5;
+  --muted:#8b95a3; --rule:#252c36; --rule-2:#3c4552;
+  --accent:#7db0f0; --ember:#e08a4a;
+  --mark-a:#3fbf93; --mark-b:#d6a53c;
+}}
+:root[data-theme="dark"]{
+  --bg:#0d1014; --surface:#141920; --surface-2:#1c222b; --ink:#eef1f5; --ink-2:#c2cad5;
+  --muted:#8b95a3; --rule:#252c36; --rule-2:#3c4552;
+  --accent:#7db0f0; --ember:#e08a4a;
+  --mark-a:#3fbf93; --mark-b:#d6a53c;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--serif);
+  font-size:17px;line-height:1.62;-webkit-font-smoothing:antialiased}
+img{max-width:100%}[hidden]{display:none!important}
+a{color:var(--accent)}
+.wrap{max-width:900px;margin:0 auto;padding-inline:20px;padding-block:0}
+.mast{border-bottom:2px solid var(--ink);padding-block:34px 16px;margin-bottom:6px}
+.kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ember);margin:0 0 13px}
+h1{font-family:var(--sans);font-weight:700;font-size:clamp(30px,5.4vw,48px);line-height:1.04;
+  letter-spacing:-.025em;margin:0 0 12px;text-wrap:balance}
+h1 .sub{display:block;font-weight:500;font-size:clamp(16px,2.3vw,21px);letter-spacing:-.008em;
+  color:var(--ink-2);margin-top:13px;line-height:1.35;max-width:46ch}
+.query{font-family:var(--mono);font-size:12.5px;color:var(--ink-2);background:var(--surface);
+  border-left:3px solid var(--ember);padding:11px 14px;margin:20px 0 0;line-height:1.55}
+.query b{color:var(--ember);font-weight:600;letter-spacing:.06em;font-size:10.5px;
+  text-transform:uppercase;display:block;margin-bottom:5px}
+section{padding-block:34px;border-top:1px solid var(--rule)}
+section:first-of-type{border-top:0}
+.sec-no{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--ember);
+  display:block;margin-bottom:8px}
+h2{font-family:var(--sans);font-weight:700;font-size:24px;letter-spacing:-.018em;line-height:1.15;
+  margin:0 0 6px;text-wrap:balance;max-width:62ch}
+h3{font-family:var(--sans);font-weight:600;font-size:17px;margin:28px 0 7px;max-width:62ch}
+p{margin:0 0 14px;max-width:68ch}
+.lede{font-size:18.5px;line-height:1.55;color:var(--ink-2)}
+ul{margin:0 0 15px;padding-left:22px;max-width:68ch}li{margin:0 0 7px}
+code,.m{font-family:var(--mono);font-size:.85em;background:var(--surface-2);padding:1px 5px;border-radius:3px}
+.panel{background:var(--surface);border:1px solid var(--rule);padding:16px 16px 12px;margin:22px 0}
+.panel .plabel{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ember);margin-bottom:10px}
+.lpt-net{display:block;width:100%;height:auto;max-width:100%}
+figcaption{font-size:13.5px;line-height:1.5;color:var(--muted);margin-top:10px;
+  padding-left:11px;border-left:2px solid var(--rule-2);max-width:none}
+figcaption b{color:var(--ink-2);font-weight:600}
+figure{margin:0;padding:0}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-family:var(--mono);font-size:11px;
+  color:var(--ink-2);margin-top:12px;padding-top:11px;border-top:1px solid var(--rule)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:18px;height:3px;border-radius:2px;flex:none}
+.sw.dot{width:11px;height:11px;border-radius:50%}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;
+  background:var(--rule);border:1px solid var(--rule);margin:20px 0}
+.stat{background:var(--surface);padding:13px 14px}
+.stat .v{font-family:var(--sans);font-weight:700;font-size:24px;letter-spacing:-.02em;
+  line-height:1.05;font-variant-numeric:tabular-nums;display:block}
+.stat .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--muted);margin-top:6px;display:block;line-height:1.35}
+.tw{overflow-x:auto;margin:20px 0;border:1px solid var(--rule);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13.5px;font-family:var(--sans);font-weight:500}
+th,td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--rule);white-space:nowrap}
+th{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--muted);font-weight:600;background:var(--surface-2)}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12.5px}
+td.wrap-cell{white-space:normal;min-width:220px;font-family:var(--serif);font-size:14px}
+tbody tr:last-child td{border-bottom:0}
+.note{border-left:3px solid var(--ember);background:var(--surface);padding:14px 16px;margin:20px 0;
+  font-size:15.5px;line-height:1.55}
+.note .h{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ember);margin-bottom:6px}
+.note p:last-child{margin-bottom:0}
+.note.neutral{border-left-color:var(--rule-2)}.note.neutral .h{color:var(--muted)}
+pre{background:var(--surface);border:1px solid var(--rule);padding:13px 15px;overflow-x:auto;
+  font-family:var(--mono);font-size:12.5px;line-height:1.6;margin:16px 0}
+pre i{color:var(--muted);font-style:normal}
+footer{border-top:2px solid var(--ink);margin-top:8px;padding-block:22px 42px;
+  font-size:13px;color:var(--muted);line-height:1.55}
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+<header class="mast">
+  <p class="kicker">LPT retrieval surfaces · worked example</p>
+  <h1>Two Surfaces on BRD4
+    <span class="sub">The same protein, drawn once from what the literature says about it and once from what CRISPR essentiality says about it. They share one node.</span>
+  </h1>
+  <div class="query">
+    <b>Query</b>
+    seed = BRD4 · corpus interaction graph at depth 1, capped at 12 partners by co-mention
+    · DepMap co-essentiality, top 12 by |r| at n ≥ 100 cell lines
+  </div>
+</header>
+<section>
+  <span class="sec-no">01 — What was asked</span>
+  <h2>One seed, two independent retrieval surfaces</h2>
+  <p class="lede">BRD4 is the fourth-largest hub in the shipped corpus (22 partners, 258
+  co-mentions). It is also in DepMap, so both surfaces have something to say about it. Neither
+  graph below involved a language model: the corpus graph is built from extracted
+  <code>protein_pair</code> claims, and the co-essentiality graph from Pearson correlations over
+  CRISPR gene-effect profiles. Both are drawn by LPT's single network renderer, so the visual
+  grammar is identical and the two pictures are directly comparable.</p>
+
+  <div class="stats">
+    <div class="stat"><span class="v">12 + 12</span><span class="k">partners drawn, one seed</span></div>
+    <div class="stat"><span class="v">1</span><span class="k">node the two share — BRD4 itself</span></div>
+    <div class="stat"><span class="v">1,208</span><span class="k">cell lines behind every r</span></div>
+    <div class="stat"><span class="v">$0.00</span><span class="k">API spend — both surfaces are deterministic</span></div>
+  </div>
+</section>
+
+<section>
+  <span class="sec-no">02 — Literature</span>
+  <h2>What the corpus says BRD4 works with</h2>
+  <figure>
+  <div class="panel">
+    <div class="plabel">Graph A — corpus interaction neighbourhood, depth 1</div>
+    <svg viewBox="0 0 760 460" class="lpt-net" role="img" aria-label="Literature interaction neighbourhood of BRD4 from the LPT corpus: twelve partners, edge width is corpus co-mention count, edge colour is the sign of the DepMap correlation for that pair."><style>
+.lpt-net text{font-family:var(--mono,ui-monospace,monospace);font-size:10.5px}
+.lpt-net .nl{fill:var(--muted, #5d6357)}
+.lpt-net .nl.seed{fill:var(--ink, #171a14);font-weight:500}
+.lpt-net .mk{cursor:default}
+.lpt-net .mk:focus{outline:none}
+.lpt-net .mk:hover line,.lpt-net .mk:focus line{stroke-opacity:1}
+.lpt-net .mk:hover circle,.lpt-net .mk:focus circle{filter:brightness(1.1)}
+</style><g class="mk" tabindex="0"><title>AR — BRD4: 6 mentions in the corpus, DepMap r = +0.018 · tightest Kd 7e-08 M</title><line x1="630.9" y1="271.1" x2="413.1" y2="232.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="3.3" stroke-opacity="0.35" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — E2F1: 5 mentions in the corpus, DepMap r = -0.003</title><line x1="413.1" y1="232.0" x2="221.2" y2="266.1" stroke="var(--mark-b, #a07002)" stroke-width="3.1" stroke-opacity="0.32" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — POLII: 5 mentions in the corpus, no DepMap pair</title><line x1="413.1" y1="232.0" x2="261.8" y2="150.8" stroke="var(--rule-2, #c6c9be)" stroke-width="3.1" stroke-opacity="0.35" stroke-dasharray="3 3" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — RNAPOLII: 6 mentions in the corpus, no DepMap pair</title><line x1="413.1" y1="232.0" x2="582.4" y2="382.6" stroke="var(--rule-2, #c6c9be)" stroke-width="3.3" stroke-opacity="0.35" stroke-dasharray="3 3" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — MYC: 10 mentions in the corpus, DepMap r = +0.132</title><line x1="413.1" y1="232.0" x2="464.6" y2="434.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="4.1" stroke-opacity="0.52" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — CDK9: 5 mentions in the corpus, DepMap r = +0.056 · tightest Ki 1.5e-08 M</title><line x1="413.1" y1="232.0" x2="177.3" y2="154.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="3.1" stroke-opacity="0.40" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — CRBN: 7 mentions in the corpus, DepMap r = -0.027</title><line x1="413.1" y1="232.0" x2="276.1" y2="410.3" stroke="var(--mark-b, #a07002)" stroke-width="3.5" stroke-opacity="0.36" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — BRD9: 5 mentions in the corpus, DepMap r = +0.176</title><line x1="413.1" y1="232.0" x2="369.4" y2="434.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="3.1" stroke-opacity="0.58" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — TWIST: 4 mentions in the corpus, DepMap r = +0.018</title><line x1="413.1" y1="232.0" x2="436.6" y2="26.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.9" stroke-opacity="0.35" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — PARP1: 3 mentions in the corpus, DepMap r = -0.085</title><line x1="413.1" y1="232.0" x2="302.2" y2="48.2" stroke="var(--mark-b, #a07002)" stroke-width="2.6" stroke-opacity="0.45" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — ERΑ: 3 mentions in the corpus, DepMap r = +0.002</title><line x1="413.1" y1="232.0" x2="552.3" y2="51.6" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.6" stroke-opacity="0.32" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — MTHFD1: 3 mentions in the corpus, DepMap r = +0.107</title><line x1="413.1" y1="232.0" x2="619.4" y2="152.7" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.6" stroke-opacity="0.48" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>E2F1 — POLII: 5 mentions in the corpus, no DepMap pair</title><line x1="221.2" y1="266.1" x2="261.8" y2="150.8" stroke="var(--rule-2, #c6c9be)" stroke-width="3.1" stroke-opacity="0.35" stroke-dasharray="3 3" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>MYC — BRD9: 3 mentions in the corpus, DepMap r = +0.064</title><line x1="464.6" y1="434.0" x2="369.4" y2="434.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="2.6" stroke-opacity="0.42" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>CRBN — BRD9: 3 mentions in the corpus, DepMap r = -0.021</title><line x1="276.1" y1="410.3" x2="369.4" y2="434.0" stroke="var(--mark-b, #a07002)" stroke-width="2.6" stroke-opacity="0.35" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>CDK9 — POLII: 1 mention in the corpus, no DepMap pair</title><line x1="177.3" y1="154.4" x2="261.8" y2="150.8" stroke="var(--rule-2, #c6c9be)" stroke-width="1.9" stroke-opacity="0.35" stroke-dasharray="3 3" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>POLII — PARP1: 1 mention in the corpus, no DepMap pair</title><line x1="261.8" y1="150.8" x2="302.2" y2="48.2" stroke="var(--rule-2, #c6c9be)" stroke-width="1.9" stroke-opacity="0.35" stroke-dasharray="3 3" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — 12 edges in this view, 258 mentions in the corpus</title><circle cx="413.1" cy="232.0" r="15.0" fill="var(--mark-a, #2b8f5d)" stroke="var(--mark-a, #2b8f5d)" stroke-width="2"/><text x="413.1" y="211.0" text-anchor="middle" class="nl seed">BRD4</text></g><g class="mk" tabindex="0"><title>MYC — 2 edges in this view, 155 mentions in the corpus</title><circle cx="464.6" cy="434.0" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="464.6" y="420.2" text-anchor="middle" class="nl">MYC</text></g><g class="mk" tabindex="0"><title>CRBN — 2 edges in this view, 52 mentions in the corpus</title><circle cx="276.1" cy="410.3" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="276.1" y="396.5" text-anchor="middle" class="nl">CRBN</text></g><g class="mk" tabindex="0"><title>AR — 1 edges in this view, 61 mentions in the corpus</title><circle cx="630.9" cy="271.1" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="630.9" y="258.2" text-anchor="middle" class="nl">AR</text></g><g class="mk" tabindex="0"><title>RNAPOLII — 1 edges in this view, 34 mentions in the corpus</title><circle cx="582.4" cy="382.6" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="582.4" y="369.7" text-anchor="middle" class="nl">RNAPOLII</text></g><g class="mk" tabindex="0"><title>E2F1 — 2 edges in this view, 36 mentions in the corpus</title><circle cx="221.2" cy="266.1" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="221.2" y="252.3" text-anchor="middle" class="nl">E2F1</text></g><g class="mk" tabindex="0"><title>POLII — 4 edges in this view, 85 mentions in the corpus</title><circle cx="261.8" cy="150.8" r="9.6" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="261.8" y="135.2" text-anchor="middle" class="nl">POLII</text></g><g class="mk" tabindex="0"><title>CDK9 — 2 edges in this view, 38 mentions in the corpus</title><circle cx="177.3" cy="154.4" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="177.3" y="140.6" text-anchor="middle" class="nl">CDK9</text></g><g class="mk" tabindex="0"><title>BRD9 — 3 edges in this view, 65 mentions in the corpus</title><circle cx="369.4" cy="434.0" r="8.7" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="369.4" y="419.3" text-anchor="middle" class="nl">BRD9</text></g><g class="mk" tabindex="0"><title>TWIST — 1 edges in this view, 11 mentions in the corpus</title><circle cx="436.6" cy="26.0" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="436.6" y="13.1" text-anchor="middle" class="nl">TWIST</text></g><g class="mk" tabindex="0"><title>PARP1 — 2 edges in this view, 102 mentions in the corpus</title><circle cx="302.2" cy="48.2" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="302.2" y="34.4" text-anchor="middle" class="nl">PARP1</text></g><g class="mk" tabindex="0"><title>ERΑ — 1 edges in this view, 32 mentions in the corpus</title><circle cx="552.3" cy="51.6" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="552.3" y="38.7" text-anchor="middle" class="nl">ERΑ</text></g><g class="mk" tabindex="0"><title>MTHFD1 — 1 edges in this view, 3 mentions in the corpus</title><circle cx="619.4" cy="152.7" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="619.4" y="139.8" text-anchor="middle" class="nl">MTHFD1</text></g></svg>
+    <div class="legend">
+      <span><i class="sw dot" style="background:var(--mark-a)"></i>seed</span>
+      <span><i class="sw" style="background:var(--mark-a)"></i>positive DepMap r</span>
+      <span><i class="sw" style="background:var(--mark-b)"></i>negative DepMap r</span>
+      <span><i class="sw" style="background:var(--rule-2)"></i>co-mentioned, no DepMap pair</span>
+      <span>edge width = co-mentions · node size = degree here · hover for affinity where recorded</span>
+    </div>
+  </div>
+  <figcaption><b>Graph A.</b> Every edge is a claim extracted from a curated paper in which both
+  proteins appear in the same <code>protein_pair</code>. Edge width is the corpus co-mention count;
+  edge colour is the sign of the DepMap correlation <i>for that pair</i>, which is a second,
+  independent channel painted onto a literature-derived topology. Hover any mark for its counts.
+  13 nodes, 17 edges.</figcaption>
+  </figure>
+
+  <p>The neighbourhood is recognisably BRD4's published biology: <b>CDK9</b> (the P-TEFb kinase
+  BRD4 recruits to pause-released polymerase), <b>RNA Pol II</b>, <b>MYC</b> (the canonical
+  BET-inhibitor readout, and the heaviest edge at 10 co-mentions), <b>CRBN</b> (cereblon — the E3
+  ligase handle every BRD4 degrader is built on), the nuclear receptors <b>AR</b> and <b>ERα</b>,
+  and the paralog <b>BRD9</b>.</p>
+
+  <div class="note neutral">
+    <div class="h">Two artefacts visible in the picture, not hidden</div>
+    <p><b>RNAPOLII and POLII are separate nodes</b>, each with its own edge to BRD4 (6 and 5
+    co-mentions). They are the same molecule under two spellings the identifier normaliser does not
+    collapse — the same alias fragmentation the maintainers documented for <code>YAP1</code> vs
+    <code>YAP</code>. And <b>ERα is stored with a Greek capital alpha</b>. A map drawn on raw graph
+    nodes shows this; the persisted edge index, which collapses by approved gene symbol, would
+    not.</p>
+  </div>
+
+  <h3>Two of these edges carry a measured affinity</h3>
+  <p>An edge is not only a count. Where a curated finding recorded a binding constant, the edge
+  carries it — and in this neighbourhood two do, both visible on hover:</p>
+  <div class="tw">
+  <table>
+    <thead><tr><th>Edge</th><th class="n">Affinity</th><th>Method</th><th>Provenance</th></tr></thead>
+    <tbody>
+      <tr><td>AR – BRD4</td><td class="n">K<sub>d</sub> 70 nM</td><td class="wrap-cell">biolayer interferometry, purified recombinant proteins</td><td class="wrap-cell">doi:10.1038/nature13229 · Page 3, Para 1</td></tr>
+      <tr><td>BRD4 – CDK9</td><td class="n">K<sub>i</sub> 14.7 nM</td><td class="wrap-cell">in vitro kinase assay, synthetic Pol II CTD peptide</td><td class="wrap-cell">doi:10.7554/eLife.06535 · Page 12, Para 4</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Coverage is thin and worth stating plainly: <b>1,966 of the graph's 26,490 edges (7.4%)</b>
+  carry any affinity — 1,503 a K<sub>d</sub>, 575 a K<sub>i</sub>. An edge without one means the
+  corpus recorded no number, never that the interaction is weak.</p>
+
+  <div class="note neutral">
+    <div class="h">Three things the number on an edge does not tell you</div>
+    <p><b>"Tightest" is a best case.</b> The edge stores the strongest value across every finding
+    for that pair, so an edge backed by four papers shows the most favourable one. The full list of
+    anchors, each with its own DOI and page reference, is what the graph tools hand a model — the
+    reduction to a single minimum exists only for the drawn map.</p>
+    <p><b>The field can be looser than the assay.</b> The BRD4–CDK9 finding's own
+    <code>experimental_context</code> reads "IC50 in nM", but the extraction schema offers only
+    K<sub>d</sub> and K<sub>i</sub>, so an IC50 was recorded as a K<sub>i</sub>. The context string
+    is the ground truth about what was measured; the number alone is not.</p>
+    <p><b>It belongs to the pair, not to a construct.</b> AR–BRD4's 70 nM is an NTD-to-BD1/BD2
+    domain measurement. The claim text says so; the edge does not.</p>
+  </div>
+</section>
+
+<section>
+  <span class="sec-no">03 — Co-essentiality</span>
+  <h2>What cells say BRD4 is needed alongside</h2>
+  <figure>
+  <div class="panel">
+    <div class="plabel">Graph B — DepMap co-essentiality neighbourhood, seed edges plus partner modules</div>
+    <svg viewBox="0 0 820 530" class="lpt-net" role="img" aria-label="DepMap co-essentiality neighbourhood of BRD4: twelve genes whose CRISPR essentiality profile tracks BRD4's across 1,208 cell lines. Every edge from BRD4 is drawn, plus partner-partner correlations above 0.50, which separates a SAGA module and a Mediator module."><style>
+.lpt-net text{font-family:var(--mono,ui-monospace,monospace);font-size:10.5px}
+.lpt-net .nl{fill:var(--muted, #5d6357)}
+.lpt-net .nl.seed{fill:var(--ink, #171a14);font-weight:500}
+.lpt-net .mk{cursor:default}
+.lpt-net .mk:focus{outline:none}
+.lpt-net .mk:hover line,.lpt-net .mk:focus line{stroke-opacity:1}
+.lpt-net .mk:hover circle,.lpt-net .mk:focus circle{filter:brightness(1.1)}
+</style><g class="mk" tabindex="0"><title>BRD4 — MED19: 1 mention in the corpus, DepMap r = +0.273</title><line x1="469.5" y1="265.6" x2="700.3" y2="325.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.73" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — MED24: 1 mention in the corpus, DepMap r = +0.270</title><line x1="469.5" y1="265.6" x2="657.6" y2="429.1" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.73" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — TAF5L: 1 mention in the corpus, DepMap r = +0.242</title><line x1="469.5" y1="265.6" x2="419.3" y2="461.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.68" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — TADA2B: 1 mention in the corpus, DepMap r = +0.238</title><line x1="469.5" y1="265.6" x2="341.3" y2="487.3" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.68" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — SUPT20H: 1 mention in the corpus, DepMap r = +0.234</title><line x1="469.5" y1="265.6" x2="276.7" y2="431.5" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.67" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — SGF29: 1 mention in the corpus, DepMap r = +0.232</title><line x1="469.5" y1="265.6" x2="295.7" y2="352.5" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.67" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — MED15: 1 mention in the corpus, DepMap r = +0.231</title><line x1="469.5" y1="265.6" x2="708.2" y2="215.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.67" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — ZMYND8: 1 mention in the corpus, DepMap r = +0.225</title><line x1="469.5" y1="265.6" x2="247.8" y2="139.1" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.66" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — HEXIM1: 1 mention in the corpus, DepMap r = -0.214</title><line x1="469.5" y1="265.6" x2="361.9" y2="38.4" stroke="var(--mark-b, #a07002)" stroke-width="1.9" stroke-opacity="0.64" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — NIPBL: 1 mention in the corpus, DepMap r = +0.208</title><line x1="469.5" y1="265.6" x2="502.6" y2="26.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.63" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — ZNF592: 1 mention in the corpus, DepMap r = +0.206</title><line x1="469.5" y1="265.6" x2="634.9" y2="75.1" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.63" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — TAF6L: 1 mention in the corpus, DepMap r = +0.206</title><line x1="469.5" y1="265.6" x2="379.2" y2="383.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.63" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>MED19 — MED24: 1 mention in the corpus, DepMap r = +0.574</title><line x1="700.3" y1="325.0" x2="657.6" y2="429.1" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>MED19 — MED15: 1 mention in the corpus, DepMap r = +0.503</title><line x1="700.3" y1="325.0" x2="708.2" y2="215.0" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TAF5L — TADA2B: 1 mention in the corpus, DepMap r = +0.819</title><line x1="419.3" y1="461.0" x2="341.3" y2="487.3" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TAF5L — SUPT20H: 1 mention in the corpus, DepMap r = +0.819</title><line x1="419.3" y1="461.0" x2="276.7" y2="431.5" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TAF5L — SGF29: 1 mention in the corpus, DepMap r = +0.667</title><line x1="419.3" y1="461.0" x2="295.7" y2="352.5" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TAF5L — TAF6L: 1 mention in the corpus, DepMap r = +0.736</title><line x1="419.3" y1="461.0" x2="379.2" y2="383.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TADA2B — SUPT20H: 1 mention in the corpus, DepMap r = +0.820</title><line x1="341.3" y1="487.3" x2="276.7" y2="431.5" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TADA2B — SGF29: 1 mention in the corpus, DepMap r = +0.676</title><line x1="341.3" y1="487.3" x2="295.7" y2="352.5" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>TADA2B — TAF6L: 1 mention in the corpus, DepMap r = +0.752</title><line x1="341.3" y1="487.3" x2="379.2" y2="383.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>SUPT20H — SGF29: 1 mention in the corpus, DepMap r = +0.625</title><line x1="276.7" y1="431.5" x2="295.7" y2="352.5" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>SUPT20H — TAF6L: 1 mention in the corpus, DepMap r = +0.747</title><line x1="276.7" y1="431.5" x2="379.2" y2="383.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>SGF29 — TAF6L: 1 mention in the corpus, DepMap r = +0.574</title><line x1="295.7" y1="352.5" x2="379.2" y2="383.4" stroke="var(--mark-a, #2b8f5d)" stroke-width="1.9" stroke-opacity="0.95" stroke-dasharray="" stroke-linecap="round"/></g><g class="mk" tabindex="0"><title>BRD4 — 12 edges in this view, 0 mentions in the corpus</title><circle cx="469.5" cy="265.6" r="15.0" fill="var(--mark-a, #2b8f5d)" stroke="var(--mark-a, #2b8f5d)" stroke-width="2"/><text x="469.5" y="244.6" text-anchor="middle" class="nl seed">BRD4</text></g><g class="mk" tabindex="0"><title>MED19 — 3 edges in this view, 0 mentions in the corpus</title><circle cx="700.3" cy="325.0" r="8.7" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="700.3" y="310.3" text-anchor="middle" class="nl">MED19</text></g><g class="mk" tabindex="0"><title>MED24 — 2 edges in this view, 0 mentions in the corpus</title><circle cx="657.6" cy="429.1" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="657.6" y="415.3" text-anchor="middle" class="nl">MED24</text></g><g class="mk" tabindex="0"><title>TAF5L — 5 edges in this view, 0 mentions in the corpus</title><circle cx="419.3" cy="461.0" r="10.5" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="419.3" y="444.5" text-anchor="middle" class="nl">TAF5L</text></g><g class="mk" tabindex="0"><title>TADA2B — 5 edges in this view, 0 mentions in the corpus</title><circle cx="341.3" cy="487.3" r="10.5" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="341.3" y="470.8" text-anchor="middle" class="nl">TADA2B</text></g><g class="mk" tabindex="0"><title>SUPT20H — 5 edges in this view, 0 mentions in the corpus</title><circle cx="276.7" cy="431.5" r="10.5" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="276.7" y="415.0" text-anchor="middle" class="nl">SUPT20H</text></g><g class="mk" tabindex="0"><title>SGF29 — 5 edges in this view, 0 mentions in the corpus</title><circle cx="295.7" cy="352.5" r="10.5" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="295.7" y="336.0" text-anchor="middle" class="nl">SGF29</text></g><g class="mk" tabindex="0"><title>MED15 — 2 edges in this view, 0 mentions in the corpus</title><circle cx="708.2" cy="215.0" r="7.8" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="708.2" y="201.2" text-anchor="middle" class="nl">MED15</text></g><g class="mk" tabindex="0"><title>ZMYND8 — 1 edges in this view, 0 mentions in the corpus</title><circle cx="247.8" cy="139.1" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="247.8" y="126.2" text-anchor="middle" class="nl">ZMYND8</text></g><g class="mk" tabindex="0"><title>HEXIM1 — 1 edges in this view, 0 mentions in the corpus</title><circle cx="361.9" cy="38.4" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="361.9" y="25.5" text-anchor="middle" class="nl">HEXIM1</text></g><g class="mk" tabindex="0"><title>NIPBL — 1 edges in this view, 0 mentions in the corpus</title><circle cx="502.6" cy="26.0" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="502.6" y="13.1" text-anchor="middle" class="nl">NIPBL</text></g><g class="mk" tabindex="0"><title>ZNF592 — 1 edges in this view, 0 mentions in the corpus</title><circle cx="634.9" cy="75.1" r="6.9" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="634.9" y="62.2" text-anchor="middle" class="nl">ZNF592</text></g><g class="mk" tabindex="0"><title>TAF6L — 5 edges in this view, 0 mentions in the corpus</title><circle cx="379.2" cy="383.4" r="10.5" fill="var(--surface, #ffffff)" stroke="var(--rule-2, #c6c9be)" stroke-width="2"/><text x="379.2" y="366.9" text-anchor="middle" class="nl">TAF6L</text></g></svg>
+    <div class="legend">
+      <span><i class="sw dot" style="background:var(--mark-a)"></i>seed</span>
+      <span><i class="sw" style="background:var(--mark-a)"></i>positive r — co-essential</span>
+      <span><i class="sw" style="background:var(--mark-b)"></i>negative r — compensatory</span>
+      <span>edge opacity = |r| · node size = degree here · partner edges shown above |r| = 0.50</span>
+    </div>
+  </div>
+  <figcaption><b>Graph B.</b> The 12 genes whose CRISPR essentiality profile most closely tracks
+  BRD4's across 1,208 cell lines. Every edge BRD4 itself has is drawn; among the partners only
+  correlations above <b>|r| = 0.50</b> are, which is what turns a star into a graph and lets the
+  modules separate without a hairball. 13 nodes, 24 edges, of 66 pairs above 0.15. No literature
+  was consulted to build this.</figcaption>
+  </figure>
+
+  <p>Two protein complexes fall out of the correlations without being told to:</p>
+  <ul>
+    <li><b>SAGA</b> — TAF5L, TAF6L, TADA2B, SUPT20H, SGF29 form the densest clique in the graph, at
+    <b>r = 0.62 to 0.82</b> among themselves. Those five are literally subunits of the same
+    coactivator complex, recovered from nothing but the pattern of which cell lines die when each
+    is knocked out.</li>
+    <li><b>Mediator</b> — MED19–MED24 at r = 0.574 and MED19–MED15 at 0.503. BRD4's own two
+    strongest correlates anywhere are MED19 (0.273) and MED24 (0.270).</li>
+  </ul>
+
+  <div class="note">
+    <div class="h">The one negative edge is the interesting one</div>
+    <p>Of the 66 correlated pairs exactly one is negative: <b>BRD4 – HEXIM1, r = −0.214</b>. HEXIM1 is the
+    subunit of the 7SK snRNP that <i>sequesters and inhibits</i> P-TEFb — the same CDK9-containing
+    kinase that Graph A shows BRD4 recruiting. The two surfaces have independently converged on
+    opposite ends of one mechanism: the literature graph names the activator BRD4 delivers, and the
+    essentiality graph names its endogenous brake, with the sign to match. Neither graph contains
+    both.</p>
+  </div>
+</section>
+
+<section>
+  <span class="sec-no">04 — The comparison</span>
+  <h2>The surfaces are near-orthogonal, and that is the point</h2>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th></th><th>Graph A — literature</th><th>Graph B — co-essentiality</th></tr></thead>
+    <tbody>
+      <tr><td>Built from</td><td class="wrap-cell">extracted <code>protein_pair</code> claims in curated papers</td><td class="wrap-cell">Pearson r over CRISPR Chronos gene-effect profiles</td></tr>
+      <tr><td>Evidence unit</td><td class="wrap-cell">a sentence someone wrote, with a DOI and a page reference</td><td class="wrap-cell">1,208 cell lines, no text at all</td></tr>
+      <tr><td>Answers</td><td class="wrap-cell">"who has been reported to act with this protein"</td><td class="wrap-cell">"what does a cell need at the same time as this protein"</td></tr>
+      <tr><td>Top partner</td><td class="wrap-cell">MYC — 10 co-mentions</td><td class="wrap-cell">MED19 — r = 0.273</td></tr>
+      <tr><td class="n">Shared nodes</td><td class="n" colspan="2">0, excluding the seed</td></tr>
+      <tr><td class="wrap-cell">Strongest DepMap r on any Graph-A edge</td><td class="n" colspan="2">0.176 (BRD4–BRD9); 12 of 17 edges have a defined r, and every one is under 0.18</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>The two neighbourhoods do not merely differ in ranking — they do not intersect at all, and the
+  literature edges that <i>can</i> be scored against DepMap are all essentially uncorrelated. A
+  target-selection step reading only one surface would see a coherent, well-evidenced picture and
+  never learn that it was seeing half of one.</p>
+
+  <p>That is why the pipeline exposes both and uses them for different jobs. The literature graph
+  supports "is this interaction real, and who has drugged it" — the question the pathway and
+  literature stages ask. Co-essentiality supports "is this dependency load-bearing in actual cells,
+  independent of how fashionable the protein is" — which is the wildcard track's novelty triage,
+  and why the edge index <b>drops</b> a co-mentioned pair that DepMap actively says is uncorrelated
+  rather than keeping it at a default weight.</p>
+
+  <div class="note neutral">
+    <div class="h">What this example does not show</div>
+    <p>Correlation over essentiality profiles is not physical interaction: SAGA subunits correlate
+    because knocking any of them out cripples the same complex, not because they were observed to
+    touch. The sign convention is equally slippery — a negative r can mean compensation, a
+    synthetic-lethal-style relationship, or an inhibitor/target pair as with HEXIM1, and magnitude
+    is the reliable signal. And BRD4 is a best case for both surfaces; a protein with two corpus
+    papers and no DepMap entry produces two nearly empty graphs, which is itself the answer the
+    novelty triage is looking for.</p>
+  </div>
+</section>
+
+<section>
+  <span class="sec-no">05 — Reproducing it</span>
+  <h2>The exact calls</h2>
+  <p>Both graphs come from the tool surface the skills use, so the same neighbourhoods are
+  reachable conversationally over MCP or from any skill that carries the graph tools.</p>
+<pre><i># Graph A — literature interaction neighbourhood (Cytoscape JSON, then render)</i>
+export_subgraph(["BRD4"], Path("data/fingerprints"), "brd4.cyjs",
+                depth=1, max_nodes=40, with_depmap=True, human_only=True)
+<i># keep the seed + top 12 partners by co-mention, plus every edge among them</i>
+
+<i># Graph B — DepMap co-essentiality neighbourhood</i>
+find_cocorrelated_genes("BRD4", top_k=12, min_abs_r=0.2, min_n=100)
+<i># then correlation_for_pair() over all 78 pairs; draw every BRD4 edge,</i>
+<i># and partner-partner edges only above |r| = 0.50</i>
+
+<i># both rendered by the one canonical renderer</i>
+network_svg.render_svg(nodes, edges, meta, width=760, height=460)</pre>
+  <p>Runtime is dominated by loading the 421 MB DepMap matrix once (~16 s, 18,531 genes × 1,208
+  cell lines, 90 MB as float32); the graph itself builds from 14,514 fingerprints in under a
+  second and is cached by file mtime. The layout is a seeded Fruchterman-Reingold with no RNG, so
+  re-running this produces a byte-identical picture.</p>
+</section>
+
+<footer>
+  Built 2026-09-16 from the LPT working corpus (14,514 fingerprints, 22,424-node interaction graph)
+  and DepMap Public CRISPR gene effect. Graphs drawn by <code>src/network_svg.py</code> — node fill
+  marks the seed, node radius is degree within the drawn subgraph, edge width is corpus co-mention
+  count, edge colour is the sign of the DepMap correlation and edge opacity its magnitude.
+  Co-essentiality is a statistical relationship between knockout phenotypes, not evidence of a
+  physical interaction.
+</footer>
+</div>
+
+</body>
+</html>
