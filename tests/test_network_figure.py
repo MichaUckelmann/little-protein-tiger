@@ -66,3 +66,11 @@ def test_an_isolated_seed_is_stated(tmp_path):
         {"source": "A", "target": "B", "dois": "10.1/a"}, {"source": "B", "target": "C", "dois": "10.1/b"}])
     sel = NF.select(NF.collapse(p, ["A", "B"])[0], ("A", "B"))
     assert "no other partners in the corpus" in NF.render(sel, ("A", "B"), "t", "s", "f")
+
+
+def test_weak_correlations_are_grey_not_coloured():
+    assert NF.edge_color(0.149) == NF.NONE_COL and NF.edge_color(-0.149) == NF.NONE_COL
+    assert NF.edge_color(0.15) == NF.POS and NF.edge_color(-0.15) == NF.NEG
+    assert NF.edge_color(None) == NF.NONE_COL
+    assert NF.edge_opacity(0.15) < NF.edge_opacity(0.6)       # deeper colour for stronger r
+    assert NF.edge_opacity(0.6) == 1.0

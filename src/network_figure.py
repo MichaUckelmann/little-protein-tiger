@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 POS, NEG, NONE_COL = "#0072B2", "#D55E00", "#8C8C8C"      # Okabe-Ito blue / vermilion
+R_CUTOFF = 0.15      # below this |r| a correlation is drawn grey: it is measured, but not worth a colour
 SEED_FILL = "#1B2A41"
 FONT = "Liberation Sans, Arial, Helvetica, sans-serif"
 E = html.escape
@@ -94,7 +95,7 @@ def collapse(cyjs: str | Path, seeds: list[str]) -> tuple[dict[str, GEdge], dict
     return edges, {"unresolved_nodes": dropped, "seeds": seeds}
 
 
-def select(edges: dict, seeds: tuple[str, str], per_seed: int = 4, shared: int = 5) -> dict:
+def select(edges: dict, seeds: tuple[str, str], per_seed: int = 4, shared: int = 4) -> dict:
     """Pick the nodes to draw: shared partners, then each seed's strongest private partners."""
     a, b = seeds
     nb: dict[str, dict[str, GEdge]] = defaultdict(dict)       # neighbour -> {seed: edge}
@@ -130,12 +131,18 @@ def edge_width(n: int) -> float:
     return min(8.0, 1.3 + 1.15 * math.log2(max(n, 1)))
 
 
+def coloured(r: float | None) -> bool:
+    return r is not None and abs(r) >= R_CUTOFF
+
+
 def edge_opacity(r: float | None) -> float:
-    return 0.5 if r is None else 0.38 + 0.62 * min(abs(r) / 0.6, 1.0)
+    if not coloured(r):
+        return 0.55
+    return 0.45 + 0.55 * min((abs(r) - R_CUTOFF) / (0.6 - R_CUTOFF), 1.0)
 
 
 def edge_color(r: float | None) -> str:
-    return NONE_COL if r is None else (NEG if r < 0 else POS)
+    return NONE_COL if not coloured(r) else (NEG if r < 0 else POS)
 
 
 def layout(sel: dict, seeds: tuple[str, str], W: int, top: int, bottom: int) -> dict[str, tuple[float, float]]:
@@ -294,14 +301,14 @@ def render(sel: dict, seeds: tuple[str, str], title: str, subtitle: str, footer:
     out.append(f'<line x1="24" y1="{ly0 - 12}" x2="{W - 24}" y2="{ly0 - 12}" stroke="#DDD"/>')
     out.append(f'<text x="24" y="{ly0 + 8}" font-size="13" font-weight="bold" fill="#333">DepMap r</text>')
     lx = 100
-    for col, dash, lab, r in ((POS, "", "positive", 0.5), (NEG, "", "negative", -0.5),
-                              (NONE_COL, "2 7", "no DepMap pair", None)):
+    for col, dash, lab, r in ((POS, "", f"r \u2265 +{R_CUTOFF}", 0.5), (NEG, "", f"r \u2264 \u2212{R_CUTOFF}", -0.5),
+                              (NONE_COL, "", f"|r| < {R_CUTOFF}", 0.0), (NONE_COL, "2 7", "no DepMap pair", None)):
         da = f' stroke-dasharray="{dash}"' if dash else ""
         out.append(f'<line x1="{lx}" y1="{ly0 + 3}" x2="{lx + 34}" y2="{ly0 + 3}" stroke="{col}" stroke-width="3.5" '
                    f'stroke-opacity="{edge_opacity(r):.2f}" stroke-linecap="round"{da}/>')
         out.append(f'<text x="{lx + 42}" y="{ly0 + 8}" font-size="13" fill="#333">{lab}</text>')
-        lx += 42 + tw(lab, 13) + 24
-    out.append(f'<text x="{lx + 10}" y="{ly0 + 8}" font-size="13" fill="#555">fainter = weaker |r|</text>')
+        lx += 42 + tw(lab, 13) + 22
+    out.append(f'<text x="{lx + 4}" y="{ly0 + 8}" font-size="13" fill="#555">stronger |r| = deeper colour</text>')
     out.append(f'<text x="24" y="{ly0 + 36}" font-size="13" font-weight="bold" fill="#333">Papers</text>')
     lx = 100
     for n in (1, 3, 10, 30):

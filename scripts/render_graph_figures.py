@@ -28,6 +28,8 @@ W, H = 960, 724
 PAIRS = {   # name: (seed A, seed B, title, which wildcard runs forwarded it)
     "shoc2_kras": ("SHOC2", "KRAS", "SHOC2 and KRAS", "forwarded in 2 of 2 KRAS runs"),
     "spsb3_cgas": ("SPSB3", "CGAS", "SPSB3 and CGAS (cGAS)", "forwarded in 1 of 2 STING runs"),
+    "ezh2_suz12": ("EZH2", "SUZ12", "EZH2 and SUZ12", "forwarded in 1 of 2 epigenetics runs; a canonical PRC2 pair"),
+    "asf1a_hira": ("ASF1A", "HIRA", "ASF1A and HIRA", "forwarded in 2 of 2 histone-chaperone runs, once as a canonical-track pick"),
     "menin_kmt2a": ("MEN1", "KMT2A", "MEN1 (menin) and KMT2A", "forwarded in 1 of 2 epigenetics runs"),
 }
 
@@ -44,7 +46,7 @@ def build(name: str, tmp: Path) -> list[Path]:
     n_dep = pair.depmap_n if pair and pair.depmap_n else 1208
     foot = (f"Gene-level view; spelling variants merged. Edge width counts distinct papers. Drawn: edges between a protein of interest and its\n"
             f"strongest partners ({sel['n_candidates']} partners in the corpus); edges among partners are omitted. "
-            f"DepMap r: Pearson correlation of CRISPR gene\n"
+            f"DepMap r (coloured when |r| \u2265 0.15): Pearson correlation of CRISPR gene\n"
             f"effect over {n_dep:,} cell lines. Kd, Ki: tightest value reported for the wild-type protein"
             f"{'; * = reported only for a mutant form' if NF.uses_mutant(sel, (a, b)) else ''}.\n"
             f"This pair was {why} in the wildcard evaluation.")
