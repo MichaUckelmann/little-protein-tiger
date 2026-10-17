@@ -56,18 +56,21 @@ and RFD3.
 
 ## CITATION POLICY — READ FIRST
 
-**This report has NO access to the literature corpus.** All geometric facts come from
-tool results. All reference facts must come from Step 3 web search results.
+**Literature enters this report only through Step 3's search results.** All geometric facts
+come from structure-tool results. All reference facts must come from Step 3 search results:
+`search_corpus` / `get_fingerprint` (the curated literature corpus; DOIs are in the results)
+or a web-search tool where the host provides one. The corpus is limited, so an empty result
+means `not found`, never "no such paper". Nothing else is a source.
 
 ### Rules — enforced throughout this entire report:
 
 1. **No author names, journal names, or years** — ever. These are unverifiable in this
    context and will be hallucinated from training knowledge. The sentence
    `"Smith et al. 2023 showed..."` or `"Nature 2024"` or `"Ratti et al."` is
-   **always wrong** unless the text was returned verbatim by a web search tool call.
+   **always wrong** unless the text was returned verbatim by a Step 3 search call.
 
 2. **DOI-only citation format.** The only permitted citation is a DOI string, e.g.
-   `10.7554/eLife.77415`. Write this only if a web search tool returned it explicitly.
+   `10.7554/eLife.77415`. Write this only if a Step 3 search result contained it explicitly.
    Never construct or guess a DOI from memory.
 
 3. **Biological facts without a DOI: state the fact without any citation.** If you
@@ -545,7 +548,12 @@ patch, dropped 7 rim/polar positions."*
 - Very deep, narrow geometry (high BSA but few residues with many contacts) →
   small molecule territory, not peptide-accessible
 
-### Step 3 — Literature cross-reference (web search)
+### Step 3 — Literature cross-reference (corpus search, or web search if available)
+
+Use `search_corpus` (e.g. `query="<complex_name> hotspot residues alanine scanning"`, `top_k=8`) and,
+where a hit looks relevant, `get_fingerprint` for its key findings. If the host also provides a
+web-search tool, it may be used for the same queries. Run a few targeted queries; do not walk the
+corpus.
 
 **[DISRUPT mode]** — search for published mutagenesis or inhibitor data:
 - `<complex_name> hotspot residues alanine scanning`
@@ -563,7 +571,7 @@ patch, dropped 7 rim/polar positions."*
 - If no DOI is visible in the search result, cite the URL instead, or write `Literature: not found`.
 - Never write author names, journal names, or publication years — not even if you
   recognize the protein/complex from training knowledge.
-- **If the web search returns no result for this complex, write `Literature: not found`
+- **If the search returns no result for this complex, write `Literature: not found`
   and stop.** Do not substitute training-knowledge facts with invented citations.
 
 ---
@@ -747,7 +755,7 @@ multi-day campaign.
 - Spatial spread (Cα RMSD): <Å>
 - Mean KD hydrophobicity: <score>
 - Partner contacts: <which partner residues engage this region>
-- Literature evidence: <DOI from Step 3 web search only, e.g. "10.1038/..." — or "not found". No author/journal/year.>
+- Literature evidence: <DOI from a Step 3 search result only, e.g. "10.1038/..." — or "not found". No author/journal/year.>
 - Design note: <what the binder must mimic — biological rationale without citations>
 - Separability: <"Independent — separate design submission required" if Cα-Cα centroid
   distance to other region > 15 Å, otherwise "Combined with Region X feasible">
@@ -769,7 +777,7 @@ for design unless top-2 has a meaningfully better combined_rating.
 - Design note: <design_note from tool result>
 - Chain A patch (<ProteinA>): residues <list>, hydrophobic fraction <f>, suitability <rating>
 - Chain B patch (<ProteinB>): residues <list>, hydrophobic fraction <f>, suitability <rating>
-- Literature evidence: <DOI from Step 3 web search only — or "not found". No author/journal/year.>
+- Literature evidence: <DOI from a Step 3 search result only — or "not found". No author/journal/year.>
 - Design challenge: <any flags — e.g. long span, poor hydrophobicity, shallow patches>
 ```
 
@@ -935,9 +943,9 @@ The programmatic orchestrator parses these lines with a regex — any deviation 
 - **Hallucinated citations** — the most common error in this skill. The model recognizes
   a protein or complex from training knowledge and invents plausible-sounding author names,
   journal names, and years. These are always wrong. Enforce the CITATION POLICY at the top:
-  DOI-only citations from web search results, or no citation at all. The phrases
+  DOI-only citations from Step 3 search results, or no citation at all. The phrases
   `"Smith et al."`, `"Nature 2024"`, `"NSMB"`, `"eLife 77415"`, and all similar forms are
-  **forbidden** unless verbatim-copied from a web search tool result.
+  **forbidden** unless verbatim-copied from a Step 3 search result.
 
 - **Spontaneous extra sections** — do not add `### BIOLOGICAL CONTEXT`,
   `### CLINICAL SIGNIFICANCE`, or any other section not in this template. Extra sections
