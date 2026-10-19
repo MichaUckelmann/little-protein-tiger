@@ -65,6 +65,104 @@ def _hotspot_key(chain: str, auth_seq_id: int) -> str:
     return f"{chain}{int(auth_seq_id)}"
 
 
+#: A repaired hotspot set smaller than this (or than the original, if that was
+#: already smaller) no longer describes the epitope the interface stage chose,
+#: so `reconcile_hotspots` halts instead of continuing with a token handful.
+MIN_HOTSPOTS_AFTER_REPAIR = 3
+
+
+@dataclass
+class HotspotRepair:
+    """What `reconcile_hotspots` changed, for the stage report and manifest."""
+    #: key -> (atoms requested, atoms kept): the residue stays, minus the
+    #: atoms the model does not contain.
+    trimmed_atoms: dict[str, tuple[str, str]] = field(default_factory=dict)
+    #: key -> why the residue was dropped.
+    dropped: dict[str, str] = field(default_factory=dict)
+
+    def __bool__(self) -> bool:
+        return bool(self.trimmed_atoms or self.dropped)
+
+    def describe(self) -> str:
+        parts = [f"{k}: atoms {a} -> {b}" for k, (a, b) in self.trimmed_atoms.items()]
+        parts += [f"{k}: dropped ({why})" for k, why in self.dropped.items()]
+        return "; ".join(parts)
+
+
+def reconcile_hotspots(
+    hotspots: Sequence[dict],
+    structure_path: Path,
+    target_chain: str,
+    *,
+    min_hotspots: int = MIN_HOTSPOTS_AFTER_REPAIR,
+) -> tuple[list[dict], HotspotRepair]:
+    """
+    Make a hotspot table agree with the structure RFD3 will actually load.
+
+    The interface stage names atoms from the residue's chemistry (Arg ->
+    `CZ,NH1`), not from the file. A side chain that is disordered in the crystal
+    is deposited truncated — 4ZQK Arg125 stops at CD — and `validate_spec`
+    rightly refuses a hotspot on an atom that is not there. Refusing is the
+    right last check and the wrong place to find out, so this runs first:
+
+    * some named atoms exist  -> keep the residue with just those atoms;
+    * none exist, or the residue is not in the file -> drop the residue.
+
+    Dropping, not substituting the nearest present atom: the binder is then
+    never steered at coordinates nobody modelled.
+
+    Raises SpecError only if a repair was needed AND fewer than
+    `min(min_hotspots, len(hotspots))` survive; an untouched table, however
+    small, passes through unchanged.
+    """
+    import gemmi
+
+    st = gemmi.read_structure(str(structure_path))
+    present: dict[tuple[str, int], set[str]] = {}
+    for ch in st[0]:
+        for res in ch:
+            present[(ch.name, int(res.seqid.num))] = {a.name for a in res}
+
+    kept: list[dict] = []
+    repair = HotspotRepair()
+    for h in hotspots:
+        auth = h.get("auth_seq_id")
+        atoms = (h.get("rfd3_atoms") or "").strip()
+        chain = str(h.get("chain") or "").strip() or target_chain
+        if auth is None or not atoms:
+            kept.append(h)        # build_rfd3_spec names these precisely
+            continue
+        key = _hotspot_key(chain, auth)
+        have = present.get((chain, int(auth)))
+        if have is None:
+            repair.dropped[key] = "residue not modelled in the structure"
+            continue
+        wanted = [a.strip() for a in atoms.split(",") if a.strip()]
+        ok = [a for a in wanted if a in have]
+        if not ok:
+            repair.dropped[key] = (
+                f"none of {','.join(wanted)} modelled; residue has "
+                f"{','.join(sorted(have))}")
+        elif len(ok) < len(wanted):
+            repair.trimmed_atoms[key] = (",".join(wanted), ",".join(ok))
+            kept.append({**h, "rfd3_atoms": ",".join(ok)})
+        else:
+            kept.append(h)
+
+    if repair:
+        logger.warning(
+            f"hotspot table did not match {Path(structure_path).name}; repaired "
+            f"and continuing — {repair.describe()}")
+        floor = min(min_hotspots, len(hotspots))
+        if len(kept) < floor:
+            raise SpecError(
+                f"only {len(kept)} of {len(hotspots)} hotspots survive "
+                f"reconciliation against {Path(structure_path).name} (floor "
+                f"{floor}) — that is no longer the epitope the interface stage "
+                f"chose. {repair.describe()}")
+    return kept, repair
+
+
 def build_rfd3_spec(
     *,
     name: str,

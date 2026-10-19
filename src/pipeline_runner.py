@@ -4721,7 +4721,8 @@ class PipelineRunner:
     def _stage_binder_spec(self, intel: dict[str, str], hotspots_json: str,
                            trim, dirs: dict[str, Path],
                            result: PipelineResult) -> Path:
-        from src.foundry_spec import build_rfd3_spec, trim_cross_check
+        from src.foundry_spec import (
+            build_rfd3_spec, reconcile_hotspots, trim_cross_check)
 
         hs = json.loads(hotspots_json)
         # (chain, auth) membership, not a flat author-id set. Two chains
@@ -4748,9 +4749,16 @@ class PipelineRunner:
         # RFD3 reads the target from a PDB; the trim writes both formats.
         pdb_input = Path(str(trim.trimmed_path)).with_suffix(".pdb")
         spec_lo, spec_hi = self._binder_length_range(intel)
+        spec_structure = pdb_input if pdb_input.exists() else trim.trimmed_path
+        # The interface stage names atoms from residue chemistry, not from the
+        # file, and a disordered side chain is deposited truncated (4ZQK Arg125
+        # stops at CD). Repair against the exact file RFD3 loads, warn, record,
+        # and continue; `validate_spec` stays strict as the backstop.
+        hotspots, repair = reconcile_hotspots(
+            hotspots, spec_structure, hs["target_chain"])
         spec = build_rfd3_spec(
             name=name,
-            structure_path=pdb_input if pdb_input.exists() else trim.trimmed_path,
+            structure_path=spec_structure,
             contig=trim.contig, hotspots=hotspots,
             target_chain=hs["target_chain"],
             out_path=dirs["spec"] / f"{name}.json",
@@ -4758,10 +4766,22 @@ class PipelineRunner:
             binder_max=spec_hi,
         )
         out = dirs["binder"] / self._BINDER_STAGE_FILES["binder_spec"]
+        body = (f"Contig `{spec.contig}` with {len(spec.hotspots)} atom-level "
+                f"hotspot(s): {', '.join(sorted(spec.hotspots))}.")
+        if repair:
+            body += (
+                "\n\n**Hotspots repaired against the structure.** The interface "
+                "report named atoms or residues the modelled structure does not "
+                "contain (typically a disordered side-chain tip). The campaign "
+                "is designed against the repaired set above, not the table in "
+                f"`21_interface.md`: {repair.describe()}.")
+            self._binder_checkpoint(
+                "hotspots_reconciled", "binder_spec", "gate",
+                {"trimmed_atoms": repair.trimmed_atoms,
+                 "dropped": repair.dropped,
+                 "kept": sorted(spec.hotspots)})
         self._write_binder_report(
-            out, "RFD3 design specification",
-            f"Contig `{spec.contig}` with {len(spec.hotspots)} atom-level "
-            f"hotspot(s): {', '.join(sorted(spec.hotspots))}.",
+            out, "RFD3 design specification", body,
             {"spec_path": str(spec.path), "design_name": name})
         self._record_stage("binder_spec", "complete", out, stage="binder_spec")
         result.stage_files["binder_spec"] = out

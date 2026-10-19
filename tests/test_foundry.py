@@ -879,3 +879,94 @@ class TestCheckpointDirOverride:
         driver = write_campaign_driver(
             design_cfg, spec_path, paths, plan).read_text()
         assert str(_P.home() / "pip_rcfoundry_ckpt") in driver
+
+
+# ----------------------------------------------------------------------
+# reconcile_hotspots — a truncated side chain must not end an unattended run
+# ----------------------------------------------------------------------
+
+def _pdb_with_truncated_arg(tmp_path):
+    """Chain A 10-14: ARG at 12 is modelled only to CD (the 4ZQK Arg125 shape)."""
+    rows = []
+    n = 1
+
+    def add(name, resname, num, el):
+        nonlocal n
+        rows.append(f"ATOM  {n:5d} {name:<4s} {resname} A{num:4d}    "
+                    f"{n:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00          {el:>2s}")
+        n += 1
+
+    for num, resname, atoms in [
+        (10, "ILE", ["N", "CA", "C", "O", "CB", "CG1", "CG2", "CD1"]),
+        (11, "TYR", ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"]),
+        (12, "ARG", ["N", "CA", "C", "O", "CB", "CG", "CD"]),
+        (13, "MET", ["N", "CA", "C", "O", "CB", "CG", "SD", "CE"]),
+        (14, "LYS", ["N", "CA", "C", "O", "CB", "CG", "CD", "CE", "NZ"]),
+    ]:
+        for a in atoms:
+            add(a, resname, num, a[0])
+    p = tmp_path / "t.pdb"
+    p.write_text("\n".join(rows) + "\nEND\n")
+    return p
+
+
+def _hs(num, atoms, res="XXX"):
+    return {"residue": res, "auth_seq_id": num, "rfd3_atoms": atoms}
+
+
+def test_reconcile_drops_a_residue_whose_atoms_are_not_modelled(tmp_path):
+    from src.foundry_spec import reconcile_hotspots
+    pdb = _pdb_with_truncated_arg(tmp_path)
+    rows = [_hs(10, "CD1,CG2"), _hs(11, "CD2,OH"), _hs(12, "CZ,NH1"), _hs(13, "CG,SD")]
+    kept, repair = reconcile_hotspots(rows, pdb, "A")
+    assert [h["auth_seq_id"] for h in kept] == [10, 11, 13]
+    assert list(repair.dropped) == ["A12"] and not repair.trimmed_atoms
+
+
+def test_reconcile_keeps_the_atoms_that_exist(tmp_path):
+    from src.foundry_spec import reconcile_hotspots
+    pdb = _pdb_with_truncated_arg(tmp_path)
+    rows = [_hs(10, "CD1,CG2"), _hs(11, "CD2,OH"), _hs(12, "CD,CZ"), _hs(13, "CG,SD")]
+    kept, repair = reconcile_hotspots(rows, pdb, "A")
+    assert [h["rfd3_atoms"] for h in kept] == ["CD1,CG2", "CD2,OH", "CD", "CG,SD"]
+    assert repair.trimmed_atoms == {"A12": ("CD,CZ", "CD")} and not repair.dropped
+
+
+def test_reconcile_leaves_a_clean_table_untouched(tmp_path):
+    from src.foundry_spec import reconcile_hotspots
+    pdb = _pdb_with_truncated_arg(tmp_path)
+    rows = [_hs(10, "CD1"), _hs(13, "SD")]
+    kept, repair = reconcile_hotspots(rows, pdb, "A")
+    assert kept == rows and not repair
+
+
+def test_reconcile_halts_below_the_floor_of_three(tmp_path):
+    from src.foundry_spec import reconcile_hotspots
+    pdb = _pdb_with_truncated_arg(tmp_path)
+    rows = [_hs(10, "CD1"), _hs(12, "CZ,NH1"), _hs(13, "SD"), _hs(99, "CB")]
+    with pytest.raises(SpecError, match="only 2 of 4"):
+        reconcile_hotspots(rows, pdb, "A")
+
+
+def test_reconcile_floor_scales_down_for_a_small_original_table(tmp_path):
+    from src.foundry_spec import reconcile_hotspots
+    pdb = _pdb_with_truncated_arg(tmp_path)
+    with pytest.raises(SpecError, match="only 1 of 2"):
+        reconcile_hotspots([_hs(10, "CD1"), _hs(12, "CZ")], pdb, "A")
+    kept, _ = reconcile_hotspots([_hs(10, "CD1"), _hs(13, "SD")], pdb, "A")
+    assert len(kept) == 2
+
+
+def test_a_reconciled_table_passes_validate_spec(tmp_path):
+    """The unrepaired table is what raised 'residue does not have'."""
+    from src.foundry_spec import reconcile_hotspots
+    pdb = _pdb_with_truncated_arg(tmp_path)
+    rows = [_hs(10, "CD1,CG2"), _hs(11, "CD2,OH"), _hs(12, "CZ,NH1"), _hs(13, "CG,SD")]
+    kw = dict(name="d", structure_path=pdb, contig="70-86,/0,A10-14",
+              target_chain="A", binder_min=70, binder_max=86)
+    bad = build_rfd3_spec(hotspots=rows, out_path=tmp_path / "bad.json", **kw)
+    with pytest.raises(SpecError, match="does not have"):
+        validate_spec(bad.path)
+    kept, _ = reconcile_hotspots(rows, pdb, "A")
+    good = build_rfd3_spec(hotspots=kept, out_path=tmp_path / "good.json", **kw)
+    validate_spec(good.path)
