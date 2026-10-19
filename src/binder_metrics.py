@@ -87,9 +87,10 @@ def read_structure(path: Path, plddt_scale: float = 1.0):
         # there. Fall back gracefully for inputs with no B-factor column at all
         # (RFD3 design CIFs) so geometry-only scoring still works.
         try:
-            a = get_structure(cif, model=1, extra_fields=["b_factor"])
+            a = get_structure(cif, model=1, extra_fields=["b_factor"],
+                              use_author_fields=True)
         except Exception:
-            a = get_structure(cif, model=1)
+            a = get_structure(cif, model=1, use_author_fields=True)
     a = a[~np.isnan(a.coord).any(axis=1)]
     if plddt_scale != 1.0 and "b_factor" in a.get_annotation_categories():
         a.b_factor = a.b_factor / plddt_scale
@@ -701,6 +702,35 @@ def _pair(summary: dict, key: str):
         return None
 
 
+def _superimpose(fixed, mobile):
+    """`(fitted mobile, transformation)` under biotite 1.x and 2.x.
+
+    1.x returns that pair; 2.0 returns only the RigidTransformation, and
+    unpacking it raised `cannot unpack non-iterable RigidTransformation` —
+    which no CI job saw, because the reference-data tests that reach it skip
+    there.
+    """
+    import biotite.structure as struc
+
+    out = struc.superimpose(fixed, mobile)
+    if isinstance(out, tuple):
+        return out[0], out[1]
+    return out.apply(mobile), out
+
+
+def _superimpose_homologs(fixed, mobile, **kw):
+    """`(superimposed mobile, fixed_idx, mobile_idx)` under biotite 1.x and 2.x
+    (1.x also returns the transformation, 2.0 returns it INSTEAD of the
+    superimposed structure)."""
+    import biotite.structure as struc
+
+    out = struc.superimpose_structural_homologs(fixed, mobile, **kw)
+    if len(out) == 4:
+        return out[0], out[2], out[3]
+    tf, ri, si = out
+    return tf.apply(mobile), ri, si
+
+
 def score_one(
     name: str,
     pred_path: Path,
@@ -785,17 +815,17 @@ def score_one(
     if dA.array_length() == 0 or dT.array_length() == 0:
         raise ValueError(f"no shared residues for chain {B}/{T}")
 
-    _, tf_t = struc.superimpose(dT, pT)               # fit on the TARGET only
+    _, tf_t = _superimpose(dT, pT)                    # fit on the TARGET only
     row["target_rmsd"] = round(float(struc.rmsd(dT, tf_t.apply(pT))), 3)
     # Binder RMSD *in the target frame*: no binder-on-binder fitting, so this
     # measures the docked pose rather than just the fold. The primary gate.
     row["binder_rmsd_dock"] = round(float(struc.rmsd(dA, tf_t.apply(pA))), 3)
-    fit_a, _ = struc.superimpose(dA, pA)              # binder -> binder
+    fit_a, _ = _superimpose(dA, pA)              # binder -> binder
     row["binder_rmsd_fold"] = round(float(struc.rmsd(dA, fit_a)), 3)
 
     bA, bP = matched_backbone(des, prd, B)
     if bA.array_length():
-        fit_bb, _ = struc.superimpose(bA, bP)
+        fit_bb, _ = _superimpose(bA, bP)
         row["binder_rmsd_bb"] = round(float(struc.rmsd(bA, fit_bb)), 3)
     else:
         row["binder_rmsd_bb"] = ""
@@ -804,7 +834,7 @@ def score_one(
     # RMSD fitting lets a few badly-placed termini drag the whole alignment and
     # understates the score (0.72 vs 0.91 on one reference design).
     try:
-        sup, _, ri, si = struc.superimpose_structural_homologs(dA, pA, max_iterations=5)
+        sup, ri, si = _superimpose_homologs(dA, pA, max_iterations=5)
         row["binder_tm"] = round(
             float(struc.tm_score(dA, sup, ri, si, reference_length="reference")), 4)
     except Exception:

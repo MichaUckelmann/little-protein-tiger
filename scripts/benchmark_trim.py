@@ -170,7 +170,7 @@ def sasa_biotite(path: Path, chain: str) -> dict[int, tuple[str, float]]:
     import biotite.structure as struc
     import biotite.structure.io.pdbx as pdbx
     f = pdbx.CIFFile.read(str(path))
-    arr = pdbx.get_structure(f, model=1)
+    arr = pdbx.get_structure(f, model=1, use_author_fields=True)
     arr = arr[struc.filter_amino_acids(arr) & (arr.chain_id == chain)]
     if arr.array_length() == 0:
         return {}

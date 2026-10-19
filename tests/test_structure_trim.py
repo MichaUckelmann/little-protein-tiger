@@ -856,3 +856,15 @@ def test_a_trim_with_no_modified_residues_adds_no_section():
         modified_residues: list = []
 
     assert PipelineRunner._modified_residue_notes(_Bare()) == []
+
+
+@pytest.mark.skipif(not (_ROOT / "data" / "structures" / "5VAI_ba1.cif").exists(),
+                    reason="5VAI not downloaded")
+def test_sse_is_always_a_b_c_whatever_biotite_returns():
+    """biotite 2.0 returns integer PSeaElement codes where 1.x returned letters;
+    unmapped they became "0"/"1"/"2" and cut snapping went wrong silently."""
+    from src.structure_trim import sse_by_residue
+
+    sse = sse_by_residue(_ROOT / "data" / "structures" / "5VAI_ba1.cif", "R")
+    assert sse and set(sse.values()) <= {"a", "b", "c"}
+    assert "a" in sse.values() and "c" in sse.values()

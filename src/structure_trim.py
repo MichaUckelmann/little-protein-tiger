@@ -765,7 +765,8 @@ def sse_by_residue(structure_path: Path, chain: str) -> dict[int, str]:
             from biotite.structure.io.pdb import PDBFile
             atoms = PDBFile.read(str(path)).get_structure(model=1)
         else:
-            atoms = get_structure(CIFFile.read(str(path)), model=1)
+            atoms = get_structure(CIFFile.read(str(path)), model=1,
+                                  use_author_fields=True)
         atoms = atoms[(atoms.chain_id == chain) & struc.filter_amino_acids(atoms)]
         atoms = atoms[~np.isnan(atoms.coord).any(axis=1)]
         if atoms.array_length() == 0:
@@ -774,7 +775,14 @@ def sse_by_residue(structure_path: Path, chain: str) -> dict[int, str]:
         res_ids = np.unique(atoms.res_id)
         if len(sse) != len(res_ids):
             return {}
-        return {int(r): str(s) for r, s in zip(res_ids, sse)}
+        # biotite < 2 returns the letters 'a'/'b'/'c'; 2.0 returns integer
+        # PSeaElement codes (NONE -1, COIL 0, HELIX 1, STRAND 2). Unmapped, the
+        # codes became "0"/"1"/"2", never equal to "c", so every residue read
+        # as secondary structure and the cut snapping walked the wrong way —
+        # silently, no exception.
+        letters = {-1: "c", 0: "c", 1: "a", 2: "b"}
+        return {int(r): letters.get(int(s), "c") if not isinstance(s, str)
+                else str(s) for r, s in zip(res_ids, sse)}
     except Exception as exc:
         logger.warning(f"secondary-structure annotation unavailable: {exc}")
         return {}
@@ -1863,7 +1871,8 @@ def _exposed_hydrophobic(original: Path, trimmed: Path, chain: str,
         if pth.suffix.lower() in (".pdb", ".ent"):
             arr = PDBFile.read(str(pth)).get_structure(model=1)
         else:
-            arr = get_structure(CIFFile.read(str(pth)), model=1)
+            arr = get_structure(CIFFile.read(str(pth)), model=1,
+                                use_author_fields=True)
         from src.structure_tools import parent_atom_names, parent_residue
 
         arr = arr[struc.filter_amino_acids(arr) & (arr.chain_id == chain)]
