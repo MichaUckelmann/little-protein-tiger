@@ -177,7 +177,7 @@ def test_the_refusal_survives_the_process_in_the_manifest(tmp_path,
     assert recorded, "a refusal that stopped the run left no manifest record"
     cp_id, stage, _kind, payload = recorded[-1]
     assert cp_id == "refusal:interface" and stage == "interface"
-    assert payload["declined_by"] == "gemini-3.7-flash"
+    assert payload["declined_by"] == "gemini-3.8-flash"
     assert payload["category"] == "bio"
     assert payload["automatic_fallback"] is False
 
@@ -259,11 +259,11 @@ def test_every_stage_report_names_the_model_that_wrote_it():
 
     note = pr.PipelineRunner._stage_provenance_note(
         pr.PipelineRunner.__new__(pr.PipelineRunner),
-        "complex-structure-analysis", "gemini", "gemini-3.7-flash")
+        "complex-structure-analysis", "gemini", "gemini-3.8-flash")
     assert "## MODEL PROVENANCE" in note
-    assert "gemini:gemini-3.7-flash" in note
+    assert "gemini:gemini-3.8-flash" in note
     parsed = parse_provenance(note)
-    assert parsed["written_by"] == "gemini:gemini-3.7-flash"
+    assert parsed["written_by"] == "gemini:gemini-3.8-flash"
     assert parsed["skill"] == "complex-structure-analysis"
     # Nothing can have declined first: the run would have stopped.
     assert parsed["declined"] == []
@@ -276,7 +276,7 @@ def test_the_block_says_no_model_was_substituted():
 
     note = pr.PipelineRunner._stage_provenance_note(
         pr.PipelineRunner.__new__(pr.PipelineRunner),
-        "complex-structure-analysis", "gemini", "gemini-3.7-flash")
+        "complex-structure-analysis", "gemini", "gemini-3.8-flash")
     assert "never substitutes" in note
     assert "ends the run" in note
 
@@ -291,10 +291,10 @@ def test_an_old_campaigns_declined_list_is_still_read():
     historical = ("## MODEL PROVENANCE\n\n- skill: `x`\n"
                   "- written by: **claude-opus-5** — model 2 of 2 asked\n"
                   "- declined first (1):\n"
-                  "    - `gemini-3.7-flash` — safety classifier, category "
+                  "    - `gemini-3.8-flash` — safety classifier, category "
                   "`bio` (call #4)\n")
     parsed = parse_provenance(historical)
-    assert parsed["declined"] == [{"model": "gemini-3.7-flash",
+    assert parsed["declined"] == [{"model": "gemini-3.8-flash",
                                    "category": "bio"}]
     assert parsed["asked"] == 2
 
@@ -306,7 +306,7 @@ def test_provenance_goes_in_before_the_citation_block():
     from src.report_common import extract_citation_section, parse_provenance
 
     text = ("# Stage\n\nbody\n\n## MODEL PROVENANCE\n\n"
-            "- skill: `x`\n- written by: **gemini:gemini-3.7-flash** — the "
+            "- skill: `x`\n- written by: **gemini:gemini-3.8-flash** — the "
             "first model asked\n\n## CITATION VERIFICATION\n\n- checked: 3\n")
     assert parse_provenance(text) is not None
     citations = extract_citation_section(text)
@@ -321,20 +321,20 @@ def test_provenance_record_collects_a_real_campaign(tmp_path):
         "# Intel\n\n### PIPELINE HANDOFF\n- target_gene: CD274\n"
         "- pdb_id: 8ZNL\n- target_chain: B\n\n## MODEL PROVENANCE\n\n"
         "- skill: `binder-target-intel`\n"
-        "- written by: **gemini:gemini-3.7-flash** — the first model asked\n",
+        "- written by: **gemini:gemini-3.8-flash** — the first model asked\n",
         encoding="utf-8")
     (tmp_path / "21_interface.md").write_text(
         "# Interface\n\n## MODEL PROVENANCE\n\n- skill: `x`\n"
         "- written by: **claude-opus-5** — model 2 of 2 asked\n"
         "- declined first (1):\n"
-        "    - `gemini-3.7-flash` — safety classifier, category `bio` "
+        "    - `gemini-3.8-flash` — safety classifier, category `bio` "
         "(call #4)\n", encoding="utf-8")
 
     rec = run_provenance.collect(tmp_path)
     assert rec["target"]["target_gene"] == "CD274"
     assert rec["target"]["pdb_id"] == "8ZNL"
     assert rec["models"]["any_refusal"] is True
-    assert rec["models"]["declined"][0]["model"] == "gemini-3.7-flash"
+    assert rec["models"]["declined"][0]["model"] == "gemini-3.8-flash"
     assert rec["select_agent_screen"]["flagged"] is False
     assert "unvalidated computational hypothesis" in rec["disclaimer"]
 
@@ -342,7 +342,7 @@ def test_provenance_record_collects_a_real_campaign(tmp_path):
     assert out and json.loads(out.read_text(encoding="utf-8"))["schema_version"]
 
     footer = run_provenance.footer_html(rec)
-    assert "claude-opus-5" in footer and "gemini-3.7-flash" in footer
+    assert "claude-opus-5" in footer and "gemini-3.8-flash" in footer
 
 
 def test_a_campaign_with_no_provenance_blocks_still_collects(tmp_path):

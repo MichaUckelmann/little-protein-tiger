@@ -326,7 +326,7 @@ python scripts/generate_binder_report.py projects/<slug>/runs/round-1/binder
 python scripts/ask_corpus.py "How does the FACT complex reposition the H2A-H2B dimer?"
 ```
 
-Runs an interactive session on `gemini-3.7-flash`; each answer cites papers by
+Runs an interactive session on `gemini-3.8-flash`; each answer cites papers by
 title and DOI, and says explicitly what the corpus does *not* contain. It has
 the full corpus toolset, not just search — the interaction graph, DepMap
 co-essentiality, clusters and quantitative-evidence lookup — so questions like

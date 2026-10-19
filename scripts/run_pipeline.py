@@ -459,7 +459,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider",
         choices=["claude", "gemini", "openai"],
         default="gemini",
-        help="LLM provider. Default: gemini (gemini-3.7-flash) — cheaper "
+        help="LLM provider. Default: gemini (gemini-3.8-flash) — cheaper "
              "and does not hit the 'bio'-category safety refusals "
              "claude-sonnet-5 routinely triggers on target-intel/interface.",
     )

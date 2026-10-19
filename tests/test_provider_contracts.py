@@ -145,7 +145,7 @@ def test_gemini_usage_metadata_keys_are_unchanged():
     from src.skill_runner import _GEMINI_GENERATE_URL
 
     r = _http().post(
-        _GEMINI_GENERATE_URL.format(model="gemini-3.7-flash"),
+        _GEMINI_GENERATE_URL.format(model="gemini-3.8-flash"),
         headers={"x-goog-api-key": key}, timeout=120,
         json={"contents": [{"role": "user",
                             "parts": [{"text": "Reply with exactly: ok"}]}]})

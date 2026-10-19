@@ -263,7 +263,7 @@ a single stage to one. Neither is needed to recover from a safety-classifier
 refusal automatically — nothing does that; a declined stage ends the run and
 picking another model is your call. `--provider openai` is also **several
 times more expensive per token** than the default: `gpt-5.6-terra` is
-$2.00/$12.00 per million input/output tokens against gemini-3.7-flash's
+$2.00/$12.00 per million input/output tokens against gemini-3.8-flash's
 $0.75/$3.75. `gpt-5.6-luna`'s entry in `config.yaml` is still a placeholder —
 check it against your own account before trusting `--budget` on it.
 
@@ -509,7 +509,7 @@ python scripts/ingest_vectors.py --rebuild
 
 ### 4. Ask the corpus a question
 
-A conversational loop on **gemini-3.7-flash**, with the full corpus toolset —
+A conversational loop on **gemini-3.8-flash**, with the full corpus toolset —
 semantic search, the interaction graph, DepMap co-essentiality, clusters,
 quantitative evidence — so "what interacts with SPT16, and at what affinity?"
 comes back as a sourced table with DOIs.
@@ -603,7 +603,7 @@ python scripts/run_skill.py \
 | `--interactive`, `-i` | off | After the initial query (or with no `--query`), drop into a REPL for multi-turn follow-ups |
 | `--trace` | — | Write a conversation trace (raw JSON + rendered Markdown) to this directory |
 
-Default models: `gemini-3.7-flash` for Gemini (the pipeline-wide default provider — see
+Default models: `gemini-3.8-flash` for Gemini (the pipeline-wide default provider — see
 "Safety-classifier refusals" in CLAUDE.md for why), `claude-sonnet-5` for Claude.
 
 Token usage is logged after every LLM call. If the per-call input token count exceeds `--max-tokens`, the run is aborted with a clear error showing cumulative usage.

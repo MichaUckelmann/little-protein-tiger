@@ -78,7 +78,7 @@ _BRIDGED_ENGINES = ("foundry", "boltzgen")
 
 _DEFAULT_MODELS = {
     "claude": "claude-sonnet-5",
-    "gemini": "gemini-3.7-flash",
+    "gemini": "gemini-3.8-flash",
     "openai": "gpt-5.6-terra",
 }
 
@@ -437,7 +437,7 @@ class PipelineRunner:
         Loaded config.yaml content.
     provider : str
         LLM provider — "claude" or "gemini". Default "gemini"
-        (gemini-3.7-flash): ~4x cheaper input than claude-sonnet-5, and
+        (gemini-3.8-flash): ~4x cheaper input than claude-sonnet-5, and
         this pipeline's own ledger shows it reliably answering the same
         target-intel/interface prompts claude-sonnet-5 refuses (category
         "bio"). Gemini can decline too, and when it does the run STOPS:
@@ -7910,7 +7910,7 @@ class PipelineRunner:
         The counter is provider-specific. Anthropic's `count_tokens` 404s on a
         non-Claude model id, and the default provider is Gemini, so EVERY stage
         used to pay a wasted round trip and log a scary "count_tokens
-        unavailable (404 ... model: gemini-3.7-flash)" before landing on the
+        unavailable (404 ... model: gemini-3.8-flash)" before landing on the
         heuristic anyway. Ask only the provider that can answer.
         """
         n_calls = self._STAGE_CALL_PRIOR.get(runner.skill_name, 8)

@@ -389,7 +389,7 @@ If they do want to extend it, then and only then:
    run averaged 23.5k tokens per paper at a 92/8 input/output split.
    - `gemini-3.1-flash-lite` (the default): **~$0.008 per paper** — ~$4 for
      500, ~$25 for 3,000.
-   - `gemini-3.7-flash`: **~$0.024 per paper**, about 3x that, and its price
+   - `gemini-3.8-flash`: **~$0.024 per paper**, about 3x that, and its price
      doubles in January 2027.
    Add `--discard-documents` if they will not re-curate.
 

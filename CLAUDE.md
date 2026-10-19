@@ -1667,7 +1667,7 @@ against live calls, not docs:
   instead. Omitting `--budget` still runs unmetered — the refusal is about an
   unenforceable cap, not about unpriced models. `gpt-5.6-terra` is priced at the
   account's real $2.00/$12.00 per Mtok (2026-09-10) — ~2.7x/3.2x
-  gemini-3.7-flash, so an `--provider openai` run costs several times the
+  gemini-3.8-flash, so an `--provider openai` run costs several times the
   default's. **`gpt-5.6-luna` is still a PLACEHOLDER**; replace it with your
   account's before relying on a budget for it. Note the built-in `_PRICES`
   fallback in `token_budget.py` carries no OpenAI entry at all — every
@@ -1697,6 +1697,15 @@ hallucinated citations, same primary target on every query), cost a wash
 token pattern is 0.82x input / 1.65x output: more of its own reasoning, less
 retrieval, which for this pipeline is the wrong direction. It is priced in
 config.yaml so `--model-id gemini-3.8-flash` and a `--budget` cap both work.
+
+**Superseded 2026-10-19: the default IS now `gemini-3.8-flash`.** Not a
+measurement result — `gemini-3.7-flash` is deprecated, so the choice was
+forced, and the verdict above stays the record of what the swap costs (about
+1.8x wall clock, the same quality and cost within noise on the 14-cell
+bench). `_DEFAULT_MODELS`, `config.yaml` (`models.gemini.default`), the
+`--provider` help text and the `token_budget` rate table all name it; its
+rate is an INTRODUCTORY one that doubles in January 2027, so re-check
+`--budget` caps then.
 
 ## One agentic loop, not one per entry point
 
@@ -1745,7 +1754,7 @@ free: ~$0.13 spent for nothing per attempt. `claude-haiku-4-5` eventually
 answered in that same run, and that observation is now a warning rather than a
 feature: see "A refusal is terminal" below.
 
-**This is why `provider` defaults to `"gemini"` (`gemini-3.7-flash`), not
+**This is why `provider` defaults to `"gemini"` (`gemini-3.8-flash`), not
 `"claude"`, for every pipeline stage** (`PipelineRunner.__init__`'s
 `provider` default, `run_pipeline.py --provider`, `run_skill.py --model`) —
 not only ~4× cheaper on input than Sonnet, but a real IL7RA end-to-end run

@@ -93,7 +93,7 @@ def build() -> None:
 def make_runner(arm: str, config: dict):
     import src.skill_runner as sr
     models = config.get("models", {}).get("gemini", {})
-    r = sr.SkillRunner(skill_name="corpus-explorer", provider="gemini", model_id=models.get("default") or "gemini-3.7-flash",
+    r = sr.SkillRunner(skill_name="corpus-explorer", provider="gemini", model_id=models.get("default") or "gemini-3.8-flash",
                        config=config, max_input_tokens=200_000)
     r.system_prompt = QA_PROMPT + (OPEN_NOTE if arm == "open" else "") + sr._OUTPUT_FORMAT_RULE
     if arm == "closed":

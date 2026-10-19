@@ -634,7 +634,7 @@ def test_gemini_stages_do_not_call_anthropics_token_counter(config, monkeypatch)
 
     r = PipelineRunner(config, workflow="ppi")
     usage = r._estimate_stage_usage(_Runner(), "q" * 100, None,
-                                    "gemini-3.7-flash", "gemini")
+                                    "gemini-3.8-flash", "gemini")
     assert not called, "asked Anthropic to count Gemini tokens"
     assert usage.cache_creation_tokens == (4000 + 100) // 4
 

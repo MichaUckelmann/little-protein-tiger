@@ -115,15 +115,15 @@ def test_falls_back_to_the_code_table_without_a_models_block(config):
 
 
 def test_pipeline_defaults_to_gemini(config):
-    """gemini-3.7-flash is the pipeline-wide default now: cheaper, and this
+    """gemini-3.8-flash is the pipeline-wide default now: cheaper, and this
     pipeline's own ledger shows it answering target-intel/interface prompts
     claude-sonnet-5 routinely refuses (category 'bio')."""
     r = PipelineRunner(config)
     assert r.provider == "gemini"
-    assert r._default_model == "gemini-3.7-flash"
+    assert r._default_model == "gemini-3.8-flash"
     model, _, provider = r._resolve_stage("pathway-expert", "pathway")
     assert provider == "gemini"
-    assert model == "gemini-3.7-flash"
+    assert model == "gemini-3.8-flash"
 
 
 def test_extended_thinking_upgrades_off_haiku(config):
@@ -640,7 +640,7 @@ def test_the_refusing_model_is_named_in_the_error(config, tmp_path,
     with pytest.raises(SkillRefusedError) as exc:
         r._run_stage("complex-structure-analysis", "q", [], tmp_path / "o.md",
                      stage="interface")
-    assert "gemini-3.7-flash" in str(exc.value)
+    assert "gemini-3.8-flash" in str(exc.value)
     assert "bio" in str(exc.value)
 
 
@@ -700,12 +700,12 @@ def test_a_stage_can_be_routed_to_another_provider(config):
     by claude-sonnet-5 with category "bio".
     """
     cfg = json.loads(json.dumps(config))
-    cfg["models"]["claude"]["stages"]["interface"] = "gemini:gemini-3.7-flash"
+    cfg["models"]["claude"]["stages"]["interface"] = "gemini:gemini-3.8-flash"
     r = PipelineRunner(cfg, workflow="binder", provider="claude")
 
     model, thinking, provider = r._resolve_stage("complex-structure-analysis",
                                                  "interface")
-    assert (model, provider) == ("gemini-3.7-flash", "gemini")
+    assert (model, provider) == ("gemini-3.8-flash", "gemini")
     # Extended thinking is Claude-only and must not leak across.
     assert thinking is False
 
@@ -717,7 +717,7 @@ def test_gemini_models_are_priced():
     """An unpriced model silently understates the ledger."""
     from src.token_budget import rates_for
 
-    r = rates_for("gemini-3.7-flash")
+    r = rates_for("gemini-3.8-flash")
     assert r is not None and r.input_per_mtok > 0
 
 
@@ -788,7 +788,7 @@ def test_gemini_prompt_level_block_is_a_refusal_not_a_crash(monkeypatch):
 
     r = SkillRunner.__new__(SkillRunner)
     r.skill_name = "complex-structure-analysis"
-    r.model_id = "gemini-3.7-flash"
+    r.model_id = "gemini-3.8-flash"
     r.system_prompt = "x"
     r.max_iter = 3
     # The REST providers share a pooled `requests.Session`, so the seam is
@@ -821,7 +821,7 @@ def test_gemini_per_candidate_safety_stop_is_a_refusal_not_a_crash(monkeypatch):
 
     r = SkillRunner.__new__(SkillRunner)
     r.skill_name = "complex-structure-analysis"
-    r.model_id = "gemini-3.7-flash"
+    r.model_id = "gemini-3.8-flash"
     r.system_prompt = "x"
     r.max_iter = 3
     # The REST providers share a pooled `requests.Session`, so the seam is

@@ -29,14 +29,14 @@ def config() -> dict:
 # ----------------------------------------------------------------------
 
 def test_explicit_provider_prefix_wins():
-    assert _split_model_spec("gemini:gemini-3.7-flash", "claude") == (
-        "gemini", "gemini-3.7-flash")
+    assert _split_model_spec("gemini:gemini-3.8-flash", "claude") == (
+        "gemini", "gemini-3.8-flash")
 
 
 @pytest.mark.parametrize("model,expected", [
     ("claude-opus-5", "claude"),
     ("claude-haiku-4-5", "claude"),
-    ("gemini-3.7-flash", "gemini"),
+    ("gemini-3.8-flash", "gemini"),
 ])
 def test_provider_is_inferred_from_an_unprefixed_model_id(model, expected):
     """The bug, found on the refusal chains this helper used to serve: they
@@ -91,7 +91,7 @@ def test_any_per_stage_override_resolves_to_a_real_provider(config):
     # the incident: an unprefixed cross-provider id under the gemini default.
     cases += [("gemini", "binder_summary", "claude-opus-5"),
               ("gemini", "interface", "claude:claude-opus-5"),
-              ("claude", "summary", "gemini:gemini-3.7-flash"),
+              ("claude", "summary", "gemini:gemini-3.8-flash"),
               ("gemini", "summary", "gpt-5.6-terra")]
 
     for provider, stage, entry in cases:
@@ -1675,7 +1675,7 @@ def test_the_rule_reaches_a_real_skill_prompt(config, monkeypatch):
     from src.skill_runner import SkillRunner
 
     r = SkillRunner(skill_name="corpus-explorer", provider="gemini",
-                    model_id="gemini-3.7-flash", config=config)
+                    model_id="gemini-3.8-flash", config=config)
     assert "Never use LaTeX" in r.system_prompt
 
 

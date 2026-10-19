@@ -98,6 +98,7 @@ _PRICES: dict[str, Rates] = {
     "claude-fable-5":    Rates(10.00, 50.00),
     # Gemini responses carry no cache buckets; the multipliers are inert.
     "gemini-3.7-flash":              Rates(0.75, 3.75),   # intro; DOUBLES to 1.50/7.50 Jan 2027
+    "gemini-3.8-flash":              Rates(0.75, 3.75),   # intro; DOUBLES to 1.50/7.50 Jan 2027
     "gemini-3.5-flash":              Rates(0.50, 2.50),
     "gemini-3.1-flash-lite":         Rates(0.25, 1.50),
     "gemini-3.1-flash-lite-preview": Rates(0.25, 1.50),

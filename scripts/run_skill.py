@@ -42,7 +42,7 @@ from src.skill_runner import SkillRunner
 
 _DEFAULT_MODELS = {
     "claude": "claude-sonnet-5",
-    "gemini": "gemini-3.7-flash",
+    "gemini": "gemini-3.8-flash",
     "openai": "gpt-5.6-terra",
 }
 
@@ -98,7 +98,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model",
         choices=["claude", "gemini", "openai"],
         default="gemini",
-        help="LLM provider (default: gemini — gemini-3.7-flash, cheaper "
+        help="LLM provider (default: gemini — gemini-3.8-flash, cheaper "
              "and less prone to safety-classifier refusals on these "
              "prompts than claude-sonnet-5)",
     )

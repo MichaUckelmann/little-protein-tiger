@@ -108,7 +108,7 @@ paths:
 models:
   # Default provider for every pipeline stage (PipelineRunner's `provider`
   # constructor default and --provider CLI default) is now "gemini" —
-  # gemini-3.7-flash below. Not just cost (~4x cheaper input than Sonnet):
+  # gemini-3.8-flash below. Not just cost (~4x cheaper input than Sonnet):
   # this run's own live evidence is claude-sonnet-5 refusing (category
   # "bio") on BOTH the target_intel and interface stages for a routine
   # antagonist-design query, each refusal burning real spend (one cost
@@ -167,7 +167,7 @@ models:
     # is for:
     #
     #   stages:
-    #     binder_summary: "gemini:gemini-3.7-flash"
+    #     binder_summary: "gemini:gemini-3.8-flash"
     #
     # The binder track's `interface` stage is the other known refusal: declined
     # by claude-sonnet-5 and often by claude-opus-5 with category "bio". Do not
@@ -176,8 +176,8 @@ models:
     # answers and is ~4x cheaper on input.
     stages: {}
   gemini:
-    default: "gemini-3.7-flash"
-    # gemini-3.7-flash can decline too (`_run_gemini` raises
+    default: "gemini-3.8-flash"
+    # gemini-3.8-flash can decline too (`_run_gemini` raises
     # SkillRefusedError for an empty-candidates response, a
     # promptFeedback.blockReason, or a SAFETY-class per-candidate
     # finishReason). When it does, the run stops — see the note at the top of
@@ -221,7 +221,7 @@ models:
     # turns that bypass into a hard error instead. Check luna against your own
     # account before trusting a cap on it.
     #
-    # Note terra is ~2.7x gemini-3.7-flash on input and ~3.2x on output, so an
+    # Note terra is ~2.7x gemini-3.8-flash on input and ~3.2x on output, so an
     # --provider openai run costs several times what the same run costs on the
     # default provider. Nothing in the pipeline changes; the bill does.
     gpt-5.6-terra:      {input: 2.00, output: 12.00}   # real, 2026-09-10
@@ -240,7 +240,7 @@ curation:
   # errors back as a correction turn), which is the shape of work the smaller
   # model handles at ~1/8 the cost.
   gemini_model: "gemini-3.1-flash-lite"
-  # alternatives: "gemini-3.7-flash" (stronger, ~8x the cost), "gemini-3-flash-preview"
+  # alternatives: "gemini-3.8-flash" (stronger, ~8x the cost), "gemini-3-flash-preview"
 
   # ── Local provider ────────────────────────────────────────────────────────
   # Default points at Ollama's OpenAI-compatible endpoint.

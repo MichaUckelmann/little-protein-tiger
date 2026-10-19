@@ -144,7 +144,7 @@ def make_runner(config: dict):
     # approached it, so the cells already collected stay comparable.
     return SkillRunner(
         skill_name=SKILL, provider="gemini",
-        model_id=models.get("default") or "gemini-3.7-flash",
+        model_id=models.get("default") or "gemini-3.8-flash",
         config=config, max_input_tokens=200_000)
 
 

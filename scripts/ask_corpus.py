@@ -87,7 +87,7 @@ def _build_parser() -> argparse.ArgumentParser:
              f"point; claude uses {_DEFAULT_MODELS['claude']})")
     parser.add_argument(
         "--model", dest="model_id", default=None, metavar="MODEL_ID",
-        help="Specific model id (e.g. gemini-3.7-flash, claude-sonnet-5). "
+        help="Specific model id (e.g. gemini-3.8-flash, claude-sonnet-5). "
              "The provider is inferred from the name when it is unambiguous.")
     parser.add_argument(
         "--config", default=str(ROOT / "config.yaml"),
