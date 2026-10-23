@@ -1,4 +1,4 @@
-<p align="center"><a href="docs/preprint/lpt_preprint.pdf"><b>Read the preprint</b></a>
+<p align="center"><a href="https://michauckelmann.github.io/little-protein-tiger/preprint/lpt_preprint.pdf"><b>Read the preprint</b></a>
 &nbsp;&middot;&nbsp; <sub><a href="docs/preprint/">supplement and appendices</a></sub></p>
 
 # Little Protein Tiger
