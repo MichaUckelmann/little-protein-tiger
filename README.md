@@ -1,6 +1,3 @@
-<p align="center"><a href="https://michauckelmann.github.io/little-protein-tiger/preprint/lpt_preprint.pdf"><b>Read the preprint</b></a>
-&nbsp;&middot;&nbsp; <sub><a href="docs/preprint/">supplement and appendices</a></sub></p>
-
 # Little Protein Tiger
 
 <p align="center">
@@ -19,6 +16,9 @@ ectodomain trim with no peptide and no membrane and never saw 6E3Y, which is
 what makes the overlap a check rather than a restatement.<br>
 <a href="https://michauckelmann.github.io/little-protein-tiger/">See the
 showcases &rarr;</a></sub></p>
+
+<h1 align="center"><a href="https://michauckelmann.github.io/little-protein-tiger/preprint/lpt_preprint.pdf">Read the preprint</a></h1>
+<p align="center"><a href="docs/preprint/">Supplement and appendices</a></p>
 
 > [!IMPORTANT]
 > **This codebase is in active development, code is updated almost daily. Make
