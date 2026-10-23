@@ -1,3 +1,6 @@
+<p align="center"><a href="docs/preprint/lpt_preprint.pdf"><b>Read the preprint</b></a>
+&nbsp;&middot;&nbsp; <sub><a href="docs/preprint/">supplement and appendices</a></sub></p>
+
 # Little Protein Tiger
 
 <p align="center">
