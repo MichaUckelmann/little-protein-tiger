@@ -108,28 +108,30 @@ One natural-language prompt in; ranked, in silico validated binder designs out.<
 
 def s2() -> str:
     return slide(f"""
-<div class="eyebrow">Figure 3A &nbsp;/&nbsp; structure analysis</div>
+<div class="eyebrow">Figure 3 &nbsp;/&nbsp; structure analysis</div>
 <h2>&ldquo;Design novel inhibitors for pain receptors that are promising drug targets.&rdquo;</h2>
-{fig('fig3A.png', 'The pathway stage recommended disrupting CALCRL&ndash;RAMP1. Left: the complex selected for design (PDB 3N7S). Middle: interface residues on RAMP1 returned by the structure-analysis tool call (light red); H-bonding residues on CALCRL shown as grey sticks. Right: the two target patches analysed by the LLM stage.')}
-<div class="box"><div class="h">Prompt in, structure analysis out</div>
-<p class="wide" style="font-size:23px">The prompt above was the only input. Target, structure and
-patches were chosen by the pipeline. A code-based tool first measures the interface (buried
-surface area, H-bonds, per-residue contacts and an estimated binding contribution &epsilon;);
-the model then groups residues into clusters.</p></div>
+<figure class="f" style="margin-top:18px;display:block"><img src="{img('fig3A.png')}" alt="" style="display:block;width:100%">
+<img src="{img('fig3B.png')}" alt="" style="display:block;width:100%;margin-top:10px"></figure>
+<div class="box"><div class="h">From prompt to hotspots</div>
+<p class="wide" style="font-size:22px">Starting from the prompt alone, the pipeline selected CALCRL&ndash;RAMP1 (PDB 3N7S).
+The structure-analysis tool returns the interface analysis: interface residues, H-bonds and an
+estimated binding contribution &epsilon; per residue. The model then groups residues into clusters
+and chooses Region 1, a 10-residue patch spanning the core heterodimerisation surface of RAMP1,
+and forwards it to the design phase as hotspots.</p></div>
 <div class="grow"></div>
 """, page=pg(2))
 
 
 def s3() -> str:
     return slide(f"""
-<div class="eyebrow">Figure 3B &nbsp;/&nbsp; hotspot selection</div>
-<h2>Per-residue binding contribution picks the hotspots.</h2>
-{fig('fig3B.png', 'Estimated binding contribution &epsilon; (kcal/mol) returned by the structure-analysis tool for each interface residue of RAMP1. Residues of Region 1 were forwarded to the design phase as hotspots.')}
-<div class="box"><div class="h">What the stage did</div>
-<p class="wide" style="font-size:23px">The model grouped interface residues into clusters, had a second tool rate each patch
-(hydrophobic fraction, spatial spread, suitability), checked the choice against the literature
-database, and selected Region 1: a 10-residue patch with high aromatic density spanning the core
-heterodimerisation surface of RAMP1.</p></div>
+<div class="eyebrow">Figure 4A &nbsp;/&nbsp; end-to-end run 1</div>
+<h2>&ldquo;Design de novo inhibitors for pain receptors that are promising drug targets.&rdquo;</h2>
+{fig('fig4A.png', 'The pipeline chose to disrupt CALCRL&ndash;RAMP1 (PDB 3N7S). Hotspots in gold; two highly ranked designs in pink, with ipTM, minimum ipSAE and composite score.')}
+<div class="stats">
+  <div class="stat"><div class="n">{PAPER['rate'][0]}</div><div class="k">of refolds pass all gates, ipTM &ge; 0.7</div></div>
+  <div class="stat"><div class="n">{PAPER['usd'][0]}</div><div class="k">LLM API cost</div></div>
+  <div class="stat"><div class="n">{PAPER['gpu'][0]}</div><div class="k">GPU time, local workstation</div></div>
+</div>
 <div class="grow"></div>
 """, page=pg(3))
 
