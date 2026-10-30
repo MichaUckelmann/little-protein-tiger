@@ -10,7 +10,7 @@ design system, maintained once.
 
 Unlike its siblings this deck does NOT read `facts/*.json`: its figures are
 panels cropped from the submitted manuscript's own Figures 2, 3 and 4
-(`assets/preprint/fig*.png`, extracted from `lpt_manuscript_Uckelmann_20261029_submitted.pdf`), so the deck cannot disagree with the paper. The
+(`assets/preprint/fig*.png`, extracted from `lpt_manuscript_Uckelmann_20261030_patterns.pdf`), so the deck cannot disagree with the paper. The
 few numbers typed below are quoted from the manuscript text and are listed in
 one place (`PAPER`) so they can be checked against it in a single read.
 
@@ -109,7 +109,7 @@ One natural-language prompt in; ranked, in silico validated binder designs out.<
 def s2() -> str:
     return slide(f"""
 <div class="eyebrow">Figure 3 &nbsp;/&nbsp; structure analysis</div>
-<h2>&ldquo;Design de novo inhibitors for pain receptors that are promising drug targets.&rdquo;</h2>
+<h2>&ldquo;Design novel inhibitors for pain receptors that are promising drug targets.&rdquo;</h2>
 <figure class="f" style="margin-top:18px;display:block"><img src="{img('fig3A.png')}" alt="" style="display:block;width:100%">
 <img src="{img('fig3B.png')}" alt="" style="display:block;width:100%;margin-top:10px"></figure>
 <div class="box"><div class="h">From prompt to hotspots</div>
