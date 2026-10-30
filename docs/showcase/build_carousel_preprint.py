@@ -109,7 +109,7 @@ One natural-language prompt in; ranked, in silico validated binder designs out.<
 def s2() -> str:
     return slide(f"""
 <div class="eyebrow">Figure 3 &nbsp;/&nbsp; structure analysis</div>
-<h2>&ldquo;Design novel inhibitors for pain receptors that are promising drug targets.&rdquo;</h2>
+<h2>&ldquo;Design de novo inhibitors for pain receptors that are promising drug targets.&rdquo;</h2>
 <figure class="f" style="margin-top:18px;display:block"><img src="{img('fig3A.png')}" alt="" style="display:block;width:100%">
 <img src="{img('fig3B.png')}" alt="" style="display:block;width:100%;margin-top:10px"></figure>
 <div class="box"><div class="h">From prompt to hotspots</div>
@@ -125,7 +125,7 @@ and forwards it to the design phase as hotspots.</p></div>
 def s3() -> str:
     return slide(f"""
 <div class="eyebrow">Figure 4A &nbsp;/&nbsp; end-to-end run 1</div>
-<h2>&ldquo;Design de novo inhibitors for pain receptors that are promising drug targets.&rdquo;</h2>
+<h2>Campaign results</h2>
 {fig('fig4A.png', 'The pipeline chose to disrupt CALCRL&ndash;RAMP1 (PDB 3N7S). Hotspots in gold; two highly ranked designs in pink, with ipTM, minimum ipSAE and composite score.')}
 <div class="stats">
   <div class="stat"><div class="n">{PAPER['rate'][0]}</div><div class="k">of refolds pass all gates, ipTM &ge; 0.7</div></div>
